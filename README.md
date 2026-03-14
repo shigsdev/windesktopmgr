@@ -1,51 +1,109 @@
-# WindowsDriverMgr — Dell XPS 8960
+# WinDesktopMgr
 
-A Python + Flask web app that scans your installed Windows drivers,
-compares them against Dell's support catalog, and highlights anything
-that needs updating — all in a slick browser dashboard.
+A local Windows system management dashboard built with Python and Flask. 
+Runs at `http://localhost:5000` and launches automatically at login.
 
----
+Built specifically for the **Dell XPS 8960 (i9-14900K)** but works on any Windows 11 machine.
 
-## Setup
-
-```
-pip install -r requirements.txt
-python windowsdrivermgr.py
-```
-
-Then open **http://localhost:5000** in your browser and click **Run Scan**.
+![Python](https://img.shields.io/badge/Python-3.14-blue)
+![Flask](https://img.shields.io/badge/Flask-3.0-green)
+![Windows](https://img.shields.io/badge/Windows-11-lightblue)
 
 ---
 
-## How it works
+## Features
 
-1. **Scan** — PowerShell enumerates all signed drivers via `Win32_PnPSignedDriver`
-2. **Fetch** — Dell's driver API is queried for the XPS 8960 catalog
-3. **Compare** — Installed versions are fuzzy-matched and compared
-4. **Display** — Results shown with status badges, version diff, and direct download links
+| Tab | What it does |
+|-----|-------------|
+| ⟳ **Driver Manager** | Scans installed drivers, checks Windows Update for pending updates |
+| ⚠ **BSOD Dashboard** | Crash history, stop code analysis, faulty driver identification |
+| 🚀 **Startup Manager** | Every startup entry with plain-English descriptions, enable/disable toggles |
+| 💾 **Disk Health** | Drive usage, physical disk health status |
+| 🌐 **Network Monitor** | Active connections by process, adapter stats, suspicious port detection |
+| 🔄 **Update History** | Full Windows Update history with failed update flagging |
+| 📋 **Event Log** | Searchable System/Application/Security log with smart noise filtering |
+| ⚡ **Processes** | Running processes with plain-English descriptions and kill button |
+| 🌡 **Temps & Power** | CPU/GPU temperatures, utilisation gauges, auto-refresh |
+| ⚙ **Services** | Windows services with descriptions, start/stop/disable controls |
+| 📈 **Health History** | SystemHealthDiag report scores charted over time |
+| ⏱ **System Timeline** | BSODs, updates, driver changes correlated on one timeline |
+| 🧠 **Memory Analysis** | RAM by category, AV comparison |
+| 🔩 **BIOS & Firmware** | Current BIOS version and Dell update check |
 
-## Driver status
+---
 
-| Badge | Meaning |
-|-------|---------|
-| 🟠 Update Available | A newer version exists on Dell's site |
-| 🟢 Up to Date | Installed version matches or exceeds Dell's latest |
-| ⚫ Unknown | No matching Dell driver found (may be 3rd-party) |
+## Self-Learning Knowledge Base
 
-## Files
+Unknown Event IDs, BSOD stop codes, startup items, services, and processes are 
+automatically researched and cached locally:
+
+- **Windows Provider Registry** — reads Windows' own event metadata (offline)
+- **File version info** — reads embedded publisher/description from exe files
+- **Microsoft Learn API** — web fallback for anything not found locally
+- Results cached permanently — each item looked up at most once, retried if stale
+
+---
+
+## Requirements
+
+- Windows 11
+- Python 3.11+
+- Flask
+
+```powershell
+pip install flask
+```
+
+---
+
+## Quick Start
+
+```powershell
+git clone https://github.com/shigs1978/windesktopmgr.git
+cd windesktopmgr
+pip install flask
+py.exe .\windesktopmgr.py
+```
+
+Open `http://localhost:5000`
+
+---
+
+## Run at Login (optional)
+
+```powershell
+# Run once as Administrator
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+.\setup-startup.ps1
+```
+
+Registers a Windows Scheduled Task that starts Flask at login and opens the browser automatically.
+
+---
+
+## Project Structure
 
 ```
-driver_checker/
-  windowsdrivermgr.py    ← Flask backend
-  templates/
-    index.html        ← Browser UI
-  requirements.txt
-  README.md
+windesktopmgr/
+├── windesktopmgr.py       # Flask backend — all data collection and APIs
+├── setup-startup.ps1      # Login startup task registration (run once as Admin)
+├── requirements.txt       # Python dependencies
+├── .gitignore
+├── README.md
+└── templates/
+    └── index.html         # Single-page frontend (dark theme)
 ```
 
-## Notes
+---
 
-- Requires Windows (uses PowerShell + WMI)
-- Run as a standard user — no admin needed for reading driver info
-- Dell API is public, no auth required
-- Scans typically take 15–30 seconds
+## Background
+
+Built to diagnose recurring `HYPERVISOR_ERROR` BSODs on a Dell XPS 8960 (i9-14900K), 
+caused by `intelppm.sys` interacting badly with Hyper-V during CPU C-State transitions. 
+Grew into a full Windows management dashboard from there.
+
+---
+
+## License
+
+MIT
