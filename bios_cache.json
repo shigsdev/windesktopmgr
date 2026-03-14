@@ -1,0 +1,12 @@
+{
+  "checked_at": "2026-03-14T02:36:18.621858+00:00",
+  "current_version": "2.22.0",
+  "latest_version": "2.22.0",
+  "latest_date": "January 6, 2026",
+  "update_available": false,
+  "release_notes": "Dell confirmed: drivers and BIOS are up to date for this system.",
+  "service_tag": "9T46D14",
+  "download_url": "https://www.dell.com/support/home/en-us/product-support/servicetag/9T46D14/drivers",
+  "source": "confirmed_current",
+  "error": null
+}

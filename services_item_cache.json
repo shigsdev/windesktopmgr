@@ -1,0 +1,2394 @@
+{
+  "aarsvc_113ccd": {
+    "source": "unknown",
+    "plain": "aarsvc_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"aarsvc_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:10.690751+00:00"
+  },
+  "axinstsv": {
+    "source": "unknown",
+    "plain": "axinstsv",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"axinstsv windows service\" online.",
+    "fetched": "2026-03-14T02:36:10.807027+00:00"
+  },
+  "adobearmservice": {
+    "source": "unknown",
+    "plain": "adobearmservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"adobearmservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:10.943416+00:00"
+  },
+  "adpsvc": {
+    "source": "unknown",
+    "plain": "adpsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"adpsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:11.054115+00:00"
+  },
+  "apc data service": {
+    "source": "unknown",
+    "plain": "apc data service",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"apc data service windows service\" online.",
+    "fetched": "2026-03-14T02:36:11.208904+00:00"
+  },
+  "apc ups service": {
+    "source": "unknown",
+    "plain": "apc ups service",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"apc ups service windows service\" online.",
+    "fetched": "2026-03-14T02:36:11.329058+00:00"
+  },
+  "appreadiness": {
+    "source": "unknown",
+    "plain": "appreadiness",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"appreadiness windows service\" online.",
+    "fetched": "2026-03-14T02:36:11.483888+00:00"
+  },
+  "appidsvc": {
+    "source": "unknown",
+    "plain": "appidsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"appidsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:11.618933+00:00"
+  },
+  "appinfo": {
+    "source": "unknown",
+    "plain": "appinfo",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"appinfo windows service\" online.",
+    "fetched": "2026-03-14T02:36:11.721810+00:00"
+  },
+  "alg": {
+    "source": "unknown",
+    "plain": "alg",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"alg windows service\" online.",
+    "fetched": "2026-03-14T02:36:11.827781+00:00"
+  },
+  "appmgmt": {
+    "source": "unknown",
+    "plain": "appmgmt",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"appmgmt windows service\" online.",
+    "fetched": "2026-03-14T02:36:11.958796+00:00"
+  },
+  "appprotectionsvc": {
+    "source": "unknown",
+    "plain": "appprotectionsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"appprotectionsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:12.067762+00:00"
+  },
+  "appxsvc": {
+    "source": "unknown",
+    "plain": "appxsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"appxsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:12.185914+00:00"
+  },
+  "assignedaccessmanagersvc": {
+    "source": "unknown",
+    "plain": "assignedaccessmanagersvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"assignedaccessmanagersvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:12.356702+00:00"
+  },
+  "tzautoupdate": {
+    "source": "unknown",
+    "plain": "tzautoupdate",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"tzautoupdate windows service\" online.",
+    "fetched": "2026-03-14T02:36:12.506875+00:00"
+  },
+  "bthavctpsvc": {
+    "source": "unknown",
+    "plain": "bthavctpsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"bthavctpsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:12.615672+00:00"
+  },
+  "brokerinfrastructure": {
+    "source": "unknown",
+    "plain": "brokerinfrastructure",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"brokerinfrastructure windows service\" online.",
+    "fetched": "2026-03-14T02:36:12.989840+00:00"
+  },
+  "bfe": {
+    "source": "unknown",
+    "plain": "bfe",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"bfe windows service\" online.",
+    "fetched": "2026-03-14T02:36:13.120025+00:00"
+  },
+  "bcastdvruserservice_113ccd": {
+    "source": "unknown",
+    "plain": "bcastdvruserservice_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"bcastdvruserservice_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:13.248768+00:00"
+  },
+  "bdesvc": {
+    "source": "unknown",
+    "plain": "bdesvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"bdesvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:13.349828+00:00"
+  },
+  "wbengine": {
+    "source": "unknown",
+    "plain": "wbengine",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wbengine windows service\" online.",
+    "fetched": "2026-03-14T02:36:13.544834+00:00"
+  },
+  "btagservice": {
+    "source": "unknown",
+    "plain": "btagservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"btagservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:13.703784+00:00"
+  },
+  "bthserv": {
+    "source": "unknown",
+    "plain": "bthserv",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"bthserv windows service\" online.",
+    "fetched": "2026-03-14T02:36:13.870358+00:00"
+  },
+  "bluetoothuserservice_113ccd": {
+    "source": "unknown",
+    "plain": "bluetoothuserservice_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"bluetoothuserservice_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:13.981825+00:00"
+  },
+  "peerdistsvc": {
+    "source": "unknown",
+    "plain": "peerdistsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"peerdistsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:14.088812+00:00"
+  },
+  "camsvc": {
+    "source": "unknown",
+    "plain": "camsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"camsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:14.221369+00:00"
+  },
+  "captureservice_113ccd": {
+    "source": "unknown",
+    "plain": "captureservice_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"captureservice_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:14.362818+00:00"
+  },
+  "cbdhsvc_113ccd": {
+    "source": "unknown",
+    "plain": "cbdhsvc_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"cbdhsvc_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:14.487865+00:00"
+  },
+  "cdpusersvc_113ccd": {
+    "source": "unknown",
+    "plain": "cdpusersvc_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"cdpusersvc_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:14.622648+00:00"
+  },
+  "autotimesvc": {
+    "source": "unknown",
+    "plain": "autotimesvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"autotimesvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:14.742736+00:00"
+  },
+  "certpropsvc": {
+    "source": "unknown",
+    "plain": "certpropsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"certpropsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:14.878083+00:00"
+  },
+  "ctxpkm": {
+    "source": "unknown",
+    "plain": "ctxpkm",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"ctxpkm windows service\" online.",
+    "fetched": "2026-03-14T02:36:15.217071+00:00"
+  },
+  "ctxsdps": {
+    "source": "unknown",
+    "plain": "ctxsdps",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"ctxsdps windows service\" online.",
+    "fetched": "2026-03-14T02:36:15.360806+00:00"
+  },
+  "ctxadppolicy": {
+    "source": "unknown",
+    "plain": "ctxadppolicy",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"ctxadppolicy windows service\" online.",
+    "fetched": "2026-03-14T02:36:15.479883+00:00"
+  },
+  "cwaupdaterservice": {
+    "source": "unknown",
+    "plain": "cwaupdaterservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"cwaupdaterservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:15.625869+00:00"
+  },
+  "coworkvmservice": {
+    "source": "unknown",
+    "plain": "coworkvmservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"coworkvmservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:15.749723+00:00"
+  },
+  "clipsvc": {
+    "source": "unknown",
+    "plain": "clipsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"clipsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:15.866727+00:00"
+  },
+  "cloudbackuprestoresvc_113ccd": {
+    "source": "unknown",
+    "plain": "cloudbackuprestoresvc_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"cloudbackuprestoresvc_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:15.966103+00:00"
+  },
+  "cmigrationservice": {
+    "source": "unknown",
+    "plain": "cmigrationservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"cmigrationservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:16.090934+00:00"
+  },
+  "keyiso": {
+    "source": "unknown",
+    "plain": "keyiso",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"keyiso windows service\" online.",
+    "fetched": "2026-03-14T02:36:16.722903+00:00"
+  },
+  "eventsystem": {
+    "source": "unknown",
+    "plain": "eventsystem",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"eventsystem windows service\" online.",
+    "fetched": "2026-03-14T02:36:16.877431+00:00"
+  },
+  "comsysapp": {
+    "source": "unknown",
+    "plain": "comsysapp",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"comsysapp windows service\" online.",
+    "fetched": "2026-03-14T02:36:17.018765+00:00"
+  },
+  "cdpsvc": {
+    "source": "unknown",
+    "plain": "cdpsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"cdpsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:17.110757+00:00"
+  },
+  "consentuxusersvc_113ccd": {
+    "source": "unknown",
+    "plain": "consentuxusersvc_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"consentuxusersvc_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:17.241746+00:00"
+  },
+  "coremessagingregistrar": {
+    "source": "unknown",
+    "plain": "coremessagingregistrar",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"coremessagingregistrar windows service\" online.",
+    "fetched": "2026-03-14T02:36:17.396739+00:00"
+  },
+  "vaultsvc": {
+    "source": "unknown",
+    "plain": "vaultsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"vaultsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:17.506802+00:00"
+  },
+  "credentialenrollmentmanagerusersvc_113ccd": {
+    "source": "unknown",
+    "plain": "credentialenrollmentmanagerusersvc_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"credentialenrollmentmanagerusersvc_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:17.668906+00:00"
+  },
+  "richvideo64": {
+    "source": "unknown",
+    "plain": "richvideo64",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"richvideo64 windows service\" online.",
+    "fetched": "2026-03-14T02:36:17.796703+00:00"
+  },
+  "dssvc": {
+    "source": "unknown",
+    "plain": "dssvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"dssvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:17.925971+00:00"
+  },
+  "dusmsvc": {
+    "source": "unknown",
+    "plain": "dusmsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"dusmsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:18.038923+00:00"
+  },
+  "dcomlaunch": {
+    "source": "unknown",
+    "plain": "dcomlaunch",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"dcomlaunch windows service\" online.",
+    "fetched": "2026-03-14T02:36:18.143957+00:00"
+  },
+  "dcsvc": {
+    "source": "unknown",
+    "plain": "dcsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"dcsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:18.237728+00:00"
+  },
+  "dosvc": {
+    "source": "unknown",
+    "plain": "dosvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"dosvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:18.348825+00:00"
+  },
+  "dellclientmanagementservice": {
+    "source": "unknown",
+    "plain": "dellclientmanagementservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"dellclientmanagementservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:18.573113+00:00"
+  },
+  "supportassistagent": {
+    "source": "unknown",
+    "plain": "supportassistagent",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"supportassistagent windows service\" online.",
+    "fetched": "2026-03-14T02:36:18.684863+00:00"
+  },
+  "dell supportassist remediation": {
+    "source": "unknown",
+    "plain": "dell supportassist remediation",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"dell supportassist remediation windows service\" online.",
+    "fetched": "2026-03-14T02:36:18.829612+00:00"
+  },
+  "delltechhub": {
+    "source": "unknown",
+    "plain": "delltechhub",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"delltechhub windows service\" online.",
+    "fetched": "2026-03-14T02:36:18.968754+00:00"
+  },
+  "deviceassociationservice": {
+    "source": "unknown",
+    "plain": "deviceassociationservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"deviceassociationservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:19.124921+00:00"
+  },
+  "deviceinstall": {
+    "source": "unknown",
+    "plain": "deviceinstall",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"deviceinstall windows service\" online.",
+    "fetched": "2026-03-14T02:36:19.272440+00:00"
+  },
+  "dmenrollmentsvc": {
+    "source": "unknown",
+    "plain": "dmenrollmentsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"dmenrollmentsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:19.413091+00:00"
+  },
+  "dmwappushservice": {
+    "source": "unknown",
+    "plain": "dmwappushservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"dmwappushservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:19.505748+00:00"
+  },
+  "dsmsvc": {
+    "source": "unknown",
+    "plain": "dsmsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"dsmsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:19.623917+00:00"
+  },
+  "deviceassociationbrokersvc_113ccd": {
+    "source": "unknown",
+    "plain": "deviceassociationbrokersvc_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"deviceassociationbrokersvc_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:19.727589+00:00"
+  },
+  "devicepickerusersvc_113ccd": {
+    "source": "unknown",
+    "plain": "devicepickerusersvc_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"devicepickerusersvc_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:19.868708+00:00"
+  },
+  "devicesflowusersvc_113ccd": {
+    "source": "unknown",
+    "plain": "devicesflowusersvc_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"devicesflowusersvc_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:19.970680+00:00"
+  },
+  "devquerybroker": {
+    "source": "unknown",
+    "plain": "devquerybroker",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"devquerybroker windows service\" online.",
+    "fetched": "2026-03-14T02:36:20.129614+00:00"
+  },
+  "diagsvc": {
+    "source": "unknown",
+    "plain": "diagsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"diagsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:20.276942+00:00"
+  },
+  "dps": {
+    "source": "unknown",
+    "plain": "dps",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"dps windows service\" online.",
+    "fetched": "2026-03-14T02:36:20.435597+00:00"
+  },
+  "wdiservicehost": {
+    "source": "unknown",
+    "plain": "wdiservicehost",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wdiservicehost windows service\" online.",
+    "fetched": "2026-03-14T02:36:20.610739+00:00"
+  },
+  "wdisystemhost": {
+    "source": "unknown",
+    "plain": "wdisystemhost",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wdisystemhost windows service\" online.",
+    "fetched": "2026-03-14T02:36:20.790687+00:00"
+  },
+  "dialogblockingservice": {
+    "source": "unknown",
+    "plain": "dialogblockingservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"dialogblockingservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:20.896763+00:00"
+  },
+  "displayenhancementservice": {
+    "source": "unknown",
+    "plain": "displayenhancementservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"displayenhancementservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:21.014541+00:00"
+  },
+  "dispbrokerdesktopsvc": {
+    "source": "unknown",
+    "plain": "dispbrokerdesktopsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"dispbrokerdesktopsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:21.150685+00:00"
+  },
+  "trkwks": {
+    "source": "unknown",
+    "plain": "trkwks",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"trkwks windows service\" online.",
+    "fetched": "2026-03-14T02:36:21.252606+00:00"
+  },
+  "msdtc": {
+    "source": "unknown",
+    "plain": "msdtc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"msdtc windows service\" online.",
+    "fetched": "2026-03-14T02:36:21.394839+00:00"
+  },
+  "mapsbroker": {
+    "source": "unknown",
+    "plain": "mapsbroker",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"mapsbroker windows service\" online.",
+    "fetched": "2026-03-14T02:36:21.499540+00:00"
+  },
+  "embeddedmode": {
+    "source": "unknown",
+    "plain": "embeddedmode",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"embeddedmode windows service\" online.",
+    "fetched": "2026-03-14T02:36:21.606899+00:00"
+  },
+  "efs": {
+    "source": "unknown",
+    "plain": "efs",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"efs windows service\" online.",
+    "fetched": "2026-03-14T02:36:21.704661+00:00"
+  },
+  "entappsvc": {
+    "source": "unknown",
+    "plain": "entappsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"entappsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:21.843733+00:00"
+  },
+  "expressvpn app service": {
+    "source": "unknown",
+    "plain": "expressvpn app service",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"expressvpn app service windows service\" online.",
+    "fetched": "2026-03-14T02:36:21.968655+00:00"
+  },
+  "expressvpn system service": {
+    "source": "unknown",
+    "plain": "expressvpn system service",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"expressvpn system service windows service\" online.",
+    "fetched": "2026-03-14T02:36:22.090662+00:00"
+  },
+  "expressvpn vpn service": {
+    "source": "unknown",
+    "plain": "expressvpn vpn service",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"expressvpn vpn service windows service\" online.",
+    "fetched": "2026-03-14T02:36:22.247675+00:00"
+  },
+  "eaphost": {
+    "source": "unknown",
+    "plain": "eaphost",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"eaphost windows service\" online.",
+    "fetched": "2026-03-14T02:36:22.350572+00:00"
+  },
+  "fhsvc": {
+    "source": "unknown",
+    "plain": "fhsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"fhsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:22.460693+00:00"
+  },
+  "filesynchelper": {
+    "source": "unknown",
+    "plain": "filesynchelper",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"filesynchelper windows service\" online.",
+    "fetched": "2026-03-14T02:36:22.605669+00:00"
+  },
+  "fdphost": {
+    "source": "unknown",
+    "plain": "fdphost",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"fdphost windows service\" online.",
+    "fetched": "2026-03-14T02:36:22.707672+00:00"
+  },
+  "fdrespub": {
+    "source": "unknown",
+    "plain": "fdrespub",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"fdrespub windows service\" online.",
+    "fetched": "2026-03-14T02:36:22.818651+00:00"
+  },
+  "gameinputsvc": {
+    "source": "unknown",
+    "plain": "gameinputsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"gameinputsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:22.938653+00:00"
+  },
+  "lfsvc": {
+    "source": "unknown",
+    "plain": "lfsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"lfsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:23.052678+00:00"
+  },
+  "googlechromeelevationservice": {
+    "source": "unknown",
+    "plain": "googlechromeelevationservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"googlechromeelevationservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:23.163683+00:00"
+  },
+  "googleupdaterinternalservice147.0.7703.0": {
+    "source": "unknown",
+    "plain": "googleupdaterinternalservice147.0.7703.0",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"googleupdaterinternalservice147.0.7703.0 windows service\" online.",
+    "fetched": "2026-03-14T02:36:23.301683+00:00"
+  },
+  "googleupdaterservice147.0.7703.0": {
+    "source": "unknown",
+    "plain": "googleupdaterservice147.0.7703.0",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"googleupdaterservice147.0.7703.0 windows service\" online.",
+    "fetched": "2026-03-14T02:36:23.439670+00:00"
+  },
+  "graphicsperfsvc": {
+    "source": "unknown",
+    "plain": "graphicsperfsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"graphicsperfsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:23.590641+00:00"
+  },
+  "gpsvc": {
+    "source": "unknown",
+    "plain": "gpsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"gpsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:23.712727+00:00"
+  },
+  "hns": {
+    "source": "unknown",
+    "plain": "hns",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"hns windows service\" online.",
+    "fetched": "2026-03-14T02:36:23.870698+00:00"
+  },
+  "hpatchmon": {
+    "source": "unknown",
+    "plain": "hpatchmon",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"hpatchmon windows service\" online.",
+    "fetched": "2026-03-14T02:36:24.030637+00:00"
+  },
+  "hpprintscandoctorservice": {
+    "source": "unknown",
+    "plain": "hpprintscandoctorservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"hpprintscandoctorservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:24.164782+00:00"
+  },
+  "hidserv": {
+    "source": "unknown",
+    "plain": "hidserv",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"hidserv windows service\" online.",
+    "fetched": "2026-03-14T02:36:24.282528+00:00"
+  },
+  "hvhost": {
+    "source": "unknown",
+    "plain": "hvhost",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"hvhost windows service\" online.",
+    "fetched": "2026-03-14T02:36:24.390727+00:00"
+  },
+  "vmickvpexchange": {
+    "source": "unknown",
+    "plain": "vmickvpexchange",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"vmickvpexchange windows service\" online.",
+    "fetched": "2026-03-14T02:36:24.487505+00:00"
+  },
+  "vmicguestinterface": {
+    "source": "unknown",
+    "plain": "vmicguestinterface",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"vmicguestinterface windows service\" online.",
+    "fetched": "2026-03-14T02:36:24.603558+00:00"
+  },
+  "vmicshutdown": {
+    "source": "unknown",
+    "plain": "vmicshutdown",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"vmicshutdown windows service\" online.",
+    "fetched": "2026-03-14T02:36:24.716098+00:00"
+  },
+  "vmicheartbeat": {
+    "source": "unknown",
+    "plain": "vmicheartbeat",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"vmicheartbeat windows service\" online.",
+    "fetched": "2026-03-14T02:36:24.815132+00:00"
+  },
+  "vmcompute": {
+    "source": "unknown",
+    "plain": "vmcompute",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"vmcompute windows service\" online.",
+    "fetched": "2026-03-14T02:36:24.912003+00:00"
+  },
+  "vmicvmsession": {
+    "source": "unknown",
+    "plain": "vmicvmsession",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"vmicvmsession windows service\" online.",
+    "fetched": "2026-03-14T02:36:25.038543+00:00"
+  },
+  "vmicrdv": {
+    "source": "unknown",
+    "plain": "vmicrdv",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"vmicrdv windows service\" online.",
+    "fetched": "2026-03-14T02:36:25.185650+00:00"
+  },
+  "vmictimesync": {
+    "source": "unknown",
+    "plain": "vmictimesync",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"vmictimesync windows service\" online.",
+    "fetched": "2026-03-14T02:36:25.296787+00:00"
+  },
+  "vmicvss": {
+    "source": "unknown",
+    "plain": "vmicvss",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"vmicvss windows service\" online.",
+    "fetched": "2026-03-14T02:36:25.456645+00:00"
+  },
+  "ikeext": {
+    "source": "unknown",
+    "plain": "ikeext",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"ikeext windows service\" online.",
+    "fetched": "2026-03-14T02:36:25.586625+00:00"
+  },
+  "intel network helper service": {
+    "source": "unknown",
+    "plain": "intel network helper service",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"intel network helper service windows service\" online.",
+    "fetched": "2026-03-14T02:36:25.688825+00:00"
+  },
+  "cplspcon": {
+    "source": "unknown",
+    "plain": "cplspcon",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"cplspcon windows service\" online.",
+    "fetched": "2026-03-14T02:36:25.806657+00:00"
+  },
+  "jhi_service": {
+    "source": "unknown",
+    "plain": "jhi_service",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"jhi_service windows service\" online.",
+    "fetched": "2026-03-14T02:36:25.942675+00:00"
+  },
+  "dptftcs": {
+    "source": "unknown",
+    "plain": "dptftcs",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"dptftcs windows service\" online.",
+    "fetched": "2026-03-14T02:36:26.061783+00:00"
+  },
+  "xtuservice": {
+    "source": "unknown",
+    "plain": "xtuservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"xtuservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:26.189592+00:00"
+  },
+  "ipfsvc": {
+    "source": "unknown",
+    "plain": "ipfsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"ipfsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:26.283742+00:00"
+  },
+  "wmiregistrationservice": {
+    "source": "unknown",
+    "plain": "wmiregistrationservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wmiregistrationservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:26.442686+00:00"
+  },
+  "intel(r) platform license manager service": {
+    "source": "unknown",
+    "plain": "intel(r) platform license manager service",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"intel(r) platform license manager service windows service\" online.",
+    "fetched": "2026-03-14T02:36:26.584618+00:00"
+  },
+  "rstmwservice": {
+    "source": "unknown",
+    "plain": "rstmwservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"rstmwservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:26.744548+00:00"
+  },
+  "intelgraphicssoftwareservice": {
+    "source": "unknown",
+    "plain": "intelgraphicssoftwareservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"intelgraphicssoftwareservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:26.883567+00:00"
+  },
+  "pieservicenew": {
+    "source": "unknown",
+    "plain": "pieservicenew",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"pieservicenew windows service\" online.",
+    "fetched": "2026-03-14T02:36:27.050625+00:00"
+  },
+  "sharedaccess": {
+    "source": "unknown",
+    "plain": "sharedaccess",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"sharedaccess windows service\" online.",
+    "fetched": "2026-03-14T02:36:27.173971+00:00"
+  },
+  "inventorysvc": {
+    "source": "unknown",
+    "plain": "inventorysvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"inventorysvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:27.317742+00:00"
+  },
+  "iphlpsvc": {
+    "source": "unknown",
+    "plain": "iphlpsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"iphlpsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:27.433571+00:00"
+  },
+  "ipxlatcfgsvc": {
+    "source": "unknown",
+    "plain": "ipxlatcfgsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"ipxlatcfgsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:27.543588+00:00"
+  },
+  "policyagent": {
+    "source": "unknown",
+    "plain": "policyagent",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"policyagent windows service\" online.",
+    "fetched": "2026-03-14T02:36:27.688698+00:00"
+  },
+  "localkdc": {
+    "source": "unknown",
+    "plain": "localkdc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"localkdc windows service\" online.",
+    "fetched": "2026-03-14T02:36:27.839707+00:00"
+  },
+  "killer analytics service": {
+    "source": "unknown",
+    "plain": "killer analytics service",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"killer analytics service windows service\" online.",
+    "fetched": "2026-03-14T02:36:27.966841+00:00"
+  },
+  "kndbwm": {
+    "source": "unknown",
+    "plain": "kndbwm",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"kndbwm windows service\" online.",
+    "fetched": "2026-03-14T02:36:28.109565+00:00"
+  },
+  "killer network service": {
+    "source": "unknown",
+    "plain": "killer network service",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"killer network service windows service\" online.",
+    "fetched": "2026-03-14T02:36:28.211688+00:00"
+  },
+  "killer provider data helper service": {
+    "source": "unknown",
+    "plain": "killer provider data helper service",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"killer provider data helper service windows service\" online.",
+    "fetched": "2026-03-14T02:36:28.302500+00:00"
+  },
+  "kapsservice": {
+    "source": "unknown",
+    "plain": "kapsservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"kapsservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:28.445614+00:00"
+  },
+  "ktmrm": {
+    "source": "unknown",
+    "plain": "ktmrm",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"ktmrm windows service\" online.",
+    "fetched": "2026-03-14T02:36:28.531820+00:00"
+  },
+  "lxpsvc": {
+    "source": "unknown",
+    "plain": "lxpsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"lxpsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:28.654661+00:00"
+  },
+  "lltdsvc": {
+    "source": "unknown",
+    "plain": "lltdsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"lltdsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:28.777654+00:00"
+  },
+  "wlpasvc": {
+    "source": "unknown",
+    "plain": "wlpasvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wlpasvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:28.901810+00:00"
+  },
+  "lsm": {
+    "source": "unknown",
+    "plain": "lsm",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"lsm windows service\" online.",
+    "fetched": "2026-03-14T02:36:29.014572+00:00"
+  },
+  "optionsplusupdaterservice": {
+    "source": "unknown",
+    "plain": "optionsplusupdaterservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"optionsplusupdaterservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:29.122434+00:00"
+  },
+  "mc-fw-host": {
+    "source": "unknown",
+    "plain": "mc-fw-host",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"mc-fw-host windows service\" online.",
+    "fetched": "2026-03-14T02:36:29.220801+00:00"
+  },
+  "mc-wps-update": {
+    "source": "unknown",
+    "plain": "mc-wps-update",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"mc-wps-update windows service\" online.",
+    "fetched": "2026-03-14T02:36:29.339530+00:00"
+  },
+  "mcafee webadvisor": {
+    "source": "unknown",
+    "plain": "mcafee webadvisor",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"mcafee webadvisor windows service\" online.",
+    "fetched": "2026-03-14T02:36:29.455515+00:00"
+  },
+  "mcpmanagementservice": {
+    "source": "unknown",
+    "plain": "mcpmanagementservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"mcpmanagementservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:29.555595+00:00"
+  },
+  "mc-wps-secdashboardservice": {
+    "source": "unknown",
+    "plain": "mc-wps-secdashboardservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"mc-wps-secdashboardservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:29.643535+00:00"
+  },
+  "messagingservice_113ccd": {
+    "source": "unknown",
+    "plain": "messagingservice_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"messagingservice_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:29.763634+00:00"
+  },
+  "wlidsvc": {
+    "source": "unknown",
+    "plain": "wlidsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wlidsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:29.903545+00:00"
+  },
+  "appvclient": {
+    "source": "unknown",
+    "plain": "appvclient",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"appvclient windows service\" online.",
+    "fetched": "2026-03-14T02:36:30.026576+00:00"
+  },
+  "cloudidsvc": {
+    "source": "unknown",
+    "plain": "cloudidsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"cloudidsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:30.173674+00:00"
+  },
+  "wdnissvc": {
+    "source": "unknown",
+    "plain": "wdnissvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wdnissvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:30.292281+00:00"
+  },
+  "mdcoresvc": {
+    "source": "unknown",
+    "plain": "mdcoresvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"mdcoresvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:30.402865+00:00"
+  },
+  "microsoftedgeelevationservice": {
+    "source": "unknown",
+    "plain": "microsoftedgeelevationservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"microsoftedgeelevationservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:30.550514+00:00"
+  },
+  "edgeupdate": {
+    "source": "unknown",
+    "plain": "edgeupdate",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"edgeupdate windows service\" online.",
+    "fetched": "2026-03-14T02:36:30.671656+00:00"
+  },
+  "edgeupdatem": {
+    "source": "unknown",
+    "plain": "edgeupdatem",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"edgeupdatem windows service\" online.",
+    "fetched": "2026-03-14T02:36:30.782501+00:00"
+  },
+  "msiscsi": {
+    "source": "unknown",
+    "plain": "msiscsi",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"msiscsi windows service\" online.",
+    "fetched": "2026-03-14T02:36:30.917619+00:00"
+  },
+  "mskeyboardfilter": {
+    "source": "unknown",
+    "plain": "mskeyboardfilter",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"mskeyboardfilter windows service\" online.",
+    "fetched": "2026-03-14T02:36:31.062625+00:00"
+  },
+  "clicktorunsvc": {
+    "source": "unknown",
+    "plain": "clicktorunsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"clicktorunsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:31.194507+00:00"
+  },
+  "ngcsvc": {
+    "source": "unknown",
+    "plain": "ngcsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"ngcsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:31.306711+00:00"
+  },
+  "ngcctnrsvc": {
+    "source": "unknown",
+    "plain": "ngcctnrsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"ngcctnrsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:31.425436+00:00"
+  },
+  "pcmanager service store": {
+    "source": "unknown",
+    "plain": "pcmanager service store",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"pcmanager service store windows service\" online.",
+    "fetched": "2026-03-14T02:36:31.543543+00:00"
+  },
+  "swprv": {
+    "source": "unknown",
+    "plain": "swprv",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"swprv windows service\" online.",
+    "fetched": "2026-03-14T02:36:31.670556+00:00"
+  },
+  "smphost": {
+    "source": "unknown",
+    "plain": "smphost",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"smphost windows service\" online.",
+    "fetched": "2026-03-14T02:36:31.806496+00:00"
+  },
+  "installservice": {
+    "source": "unknown",
+    "plain": "installservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"installservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:31.942587+00:00"
+  },
+  "wuqisvc": {
+    "source": "unknown",
+    "plain": "wuqisvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wuqisvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:32.086968+00:00"
+  },
+  "smsrouter": {
+    "source": "unknown",
+    "plain": "smsrouter",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"smsrouter windows service\" online.",
+    "fetched": "2026-03-14T02:36:32.194575+00:00"
+  },
+  "mcmsvc": {
+    "source": "unknown",
+    "plain": "mcmsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"mcmsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:32.293416+00:00"
+  },
+  "naturalauthentication": {
+    "source": "unknown",
+    "plain": "naturalauthentication",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"naturalauthentication windows service\" online.",
+    "fetched": "2026-03-14T02:36:32.441468+00:00"
+  },
+  "nettcpportsharing": {
+    "source": "unknown",
+    "plain": "nettcpportsharing",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"nettcpportsharing windows service\" online.",
+    "fetched": "2026-03-14T02:36:32.586867+00:00"
+  },
+  "netlogon": {
+    "source": "unknown",
+    "plain": "netlogon",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"netlogon windows service\" online.",
+    "fetched": "2026-03-14T02:36:32.697649+00:00"
+  },
+  "ncdautosetup": {
+    "source": "unknown",
+    "plain": "ncdautosetup",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"ncdautosetup windows service\" online.",
+    "fetched": "2026-03-14T02:36:32.796413+00:00"
+  },
+  "ncbservice": {
+    "source": "unknown",
+    "plain": "ncbservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"ncbservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:32.921616+00:00"
+  },
+  "netman": {
+    "source": "unknown",
+    "plain": "netman",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"netman windows service\" online.",
+    "fetched": "2026-03-14T02:36:33.082540+00:00"
+  },
+  "ncasvc": {
+    "source": "unknown",
+    "plain": "ncasvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"ncasvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:33.196541+00:00"
+  },
+  "netprofm": {
+    "source": "unknown",
+    "plain": "netprofm",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"netprofm windows service\" online.",
+    "fetched": "2026-03-14T02:36:33.285528+00:00"
+  },
+  "nlasvc": {
+    "source": "unknown",
+    "plain": "nlasvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"nlasvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:33.385384+00:00"
+  },
+  "netsetupsvc": {
+    "source": "unknown",
+    "plain": "netsetupsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"netsetupsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:33.514620+00:00"
+  },
+  "nsi": {
+    "source": "unknown",
+    "plain": "nsi",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"nsi windows service\" online.",
+    "fetched": "2026-03-14T02:36:33.612665+00:00"
+  },
+  "nvagent": {
+    "source": "unknown",
+    "plain": "nvagent",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"nvagent windows service\" online.",
+    "fetched": "2026-03-14T02:36:33.738409+00:00"
+  },
+  "npsmsvc_113ccd": {
+    "source": "unknown",
+    "plain": "npsmsvc_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"npsmsvc_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:33.911559+00:00"
+  },
+  "nvdisplay.containerlocalsystem": {
+    "source": "unknown",
+    "plain": "nvdisplay.containerlocalsystem",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"nvdisplay.containerlocalsystem windows service\" online.",
+    "fetched": "2026-03-14T02:36:34.050458+00:00"
+  },
+  "fvsvc": {
+    "source": "unknown",
+    "plain": "fvsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"fvsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:34.192510+00:00"
+  },
+  "nvcontainerlocalsystem": {
+    "source": "unknown",
+    "plain": "nvcontainerlocalsystem",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"nvcontainerlocalsystem windows service\" online.",
+    "fetched": "2026-03-14T02:36:34.311582+00:00"
+  },
+  "cscservice": {
+    "source": "unknown",
+    "plain": "cscservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"cscservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:34.418574+00:00"
+  },
+  "onedrive updater service": {
+    "source": "unknown",
+    "plain": "onedrive updater service",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"onedrive updater service windows service\" online.",
+    "fetched": "2026-03-14T02:36:34.517402+00:00"
+  },
+  "onesyncsvc_113ccd": {
+    "source": "unknown",
+    "plain": "onesyncsvc_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"onesyncsvc_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:34.692612+00:00"
+  },
+  "ssh-agent": {
+    "source": "unknown",
+    "plain": "ssh-agent",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"ssh-agent windows service\" online.",
+    "fetched": "2026-03-14T02:36:34.813455+00:00"
+  },
+  "defragsvc": {
+    "source": "unknown",
+    "plain": "defragsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"defragsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:34.912046+00:00"
+  },
+  "p9rdrservice_113ccd": {
+    "source": "unknown",
+    "plain": "p9rdrservice_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"p9rdrservice_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:35.030472+00:00"
+  },
+  "wpcmonsvc": {
+    "source": "unknown",
+    "plain": "wpcmonsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wpcmonsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:35.125449+00:00"
+  },
+  "semgrsvc": {
+    "source": "unknown",
+    "plain": "semgrsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"semgrsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:35.225562+00:00"
+  },
+  "penservice_113ccd": {
+    "source": "unknown",
+    "plain": "penservice_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"penservice_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:35.343548+00:00"
+  },
+  "perfhost": {
+    "source": "unknown",
+    "plain": "perfhost",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"perfhost windows service\" online.",
+    "fetched": "2026-03-14T02:36:35.461425+00:00"
+  },
+  "pla": {
+    "source": "unknown",
+    "plain": "pla",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"pla windows service\" online.",
+    "fetched": "2026-03-14T02:36:35.581573+00:00"
+  },
+  "phonesvc": {
+    "source": "unknown",
+    "plain": "phonesvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"phonesvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:35.715474+00:00"
+  },
+  "pimindexmaintenancesvc_113ccd": {
+    "source": "unknown",
+    "plain": "pimindexmaintenancesvc_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"pimindexmaintenancesvc_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:35.859546+00:00"
+  },
+  "plexupdateservice": {
+    "source": "unknown",
+    "plain": "plexupdateservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"plexupdateservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:35.968120+00:00"
+  },
+  "plugplay": {
+    "source": "unknown",
+    "plain": "plugplay",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"plugplay windows service\" online.",
+    "fetched": "2026-03-14T02:36:36.087441+00:00"
+  },
+  "wpdbusenum": {
+    "source": "unknown",
+    "plain": "wpdbusenum",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wpdbusenum windows service\" online.",
+    "fetched": "2026-03-14T02:36:36.239696+00:00"
+  },
+  "power": {
+    "source": "unknown",
+    "plain": "power",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"power windows service\" online.",
+    "fetched": "2026-03-14T02:36:36.368733+00:00"
+  },
+  "printdeviceconfigurationservice": {
+    "source": "unknown",
+    "plain": "printdeviceconfigurationservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"printdeviceconfigurationservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:36.471761+00:00"
+  },
+  "printnotify": {
+    "source": "unknown",
+    "plain": "printnotify",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"printnotify windows service\" online.",
+    "fetched": "2026-03-14T02:36:36.623520+00:00"
+  },
+  "printscanbrokerservice": {
+    "source": "unknown",
+    "plain": "printscanbrokerservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"printscanbrokerservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:36.728554+00:00"
+  },
+  "printworkflowusersvc_113ccd": {
+    "source": "unknown",
+    "plain": "printworkflowusersvc_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"printworkflowusersvc_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:36.824537+00:00"
+  },
+  "wercplsupport": {
+    "source": "unknown",
+    "plain": "wercplsupport",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wercplsupport windows service\" online.",
+    "fetched": "2026-03-14T02:36:36.944568+00:00"
+  },
+  "pcasvc": {
+    "source": "unknown",
+    "plain": "pcasvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"pcasvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:37.078417+00:00"
+  },
+  "qwave": {
+    "source": "unknown",
+    "plain": "qwave",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"qwave windows service\" online.",
+    "fetched": "2026-03-14T02:36:37.207485+00:00"
+  },
+  "rmsvc": {
+    "source": "unknown",
+    "plain": "rmsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"rmsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:37.316570+00:00"
+  },
+  "rtkaudiouniversalservice": {
+    "source": "unknown",
+    "plain": "rtkaudiouniversalservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"rtkaudiouniversalservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:37.442438+00:00"
+  },
+  "troubleshootingsvc": {
+    "source": "unknown",
+    "plain": "troubleshootingsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"troubleshootingsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:37.539697+00:00"
+  },
+  "refsdedupsvc": {
+    "source": "unknown",
+    "plain": "refsdedupsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"refsdedupsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:37.648443+00:00"
+  },
+  "rasauto": {
+    "source": "unknown",
+    "plain": "rasauto",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"rasauto windows service\" online.",
+    "fetched": "2026-03-14T02:36:37.791649+00:00"
+  },
+  "rasman": {
+    "source": "unknown",
+    "plain": "rasman",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"rasman windows service\" online.",
+    "fetched": "2026-03-14T02:36:37.922552+00:00"
+  },
+  "sessionenv": {
+    "source": "unknown",
+    "plain": "sessionenv",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"sessionenv windows service\" online.",
+    "fetched": "2026-03-14T02:36:38.023558+00:00"
+  },
+  "umrdpservice": {
+    "source": "unknown",
+    "plain": "umrdpservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"umrdpservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:38.141780+00:00"
+  },
+  "rpclocator": {
+    "source": "unknown",
+    "plain": "rpclocator",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"rpclocator windows service\" online.",
+    "fetched": "2026-03-14T02:36:38.272719+00:00"
+  },
+  "retaildemo": {
+    "source": "unknown",
+    "plain": "retaildemo",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"retaildemo windows service\" online.",
+    "fetched": "2026-03-14T02:36:38.397594+00:00"
+  },
+  "remoteaccess": {
+    "source": "unknown",
+    "plain": "remoteaccess",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"remoteaccess windows service\" online.",
+    "fetched": "2026-03-14T02:36:38.535967+00:00"
+  },
+  "rpceptmapper": {
+    "source": "unknown",
+    "plain": "rpceptmapper",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"rpceptmapper windows service\" online.",
+    "fetched": "2026-03-14T02:36:38.680482+00:00"
+  },
+  "samsungmagiciansvc": {
+    "source": "unknown",
+    "plain": "samsungmagiciansvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"samsungmagiciansvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:38.790776+00:00"
+  },
+  "sstpsvc": {
+    "source": "unknown",
+    "plain": "sstpsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"sstpsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:39.008914+00:00"
+  },
+  "samss": {
+    "source": "unknown",
+    "plain": "samss",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"samss windows service\" online.",
+    "fetched": "2026-03-14T02:36:39.126609+00:00"
+  },
+  "wscsvc": {
+    "source": "unknown",
+    "plain": "wscsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wscsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:39.241420+00:00"
+  },
+  "sensordataservice": {
+    "source": "unknown",
+    "plain": "sensordataservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"sensordataservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:39.381390+00:00"
+  },
+  "sensrsvc": {
+    "source": "unknown",
+    "plain": "sensrsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"sensrsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:39.530685+00:00"
+  },
+  "sensorservice": {
+    "source": "unknown",
+    "plain": "sensorservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"sensorservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:39.658620+00:00"
+  },
+  "shpamsvc": {
+    "source": "unknown",
+    "plain": "shpamsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"shpamsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:39.775350+00:00"
+  },
+  "shellhwdetection": {
+    "source": "unknown",
+    "plain": "shellhwdetection",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"shellhwdetection windows service\" online.",
+    "fetched": "2026-03-14T02:36:39.913560+00:00"
+  },
+  "scardsvr": {
+    "source": "unknown",
+    "plain": "scardsvr",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"scardsvr windows service\" online.",
+    "fetched": "2026-03-14T02:36:40.062601+00:00"
+  },
+  "scdeviceenum": {
+    "source": "unknown",
+    "plain": "scdeviceenum",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"scdeviceenum windows service\" online.",
+    "fetched": "2026-03-14T02:36:40.222400+00:00"
+  },
+  "scpolicysvc": {
+    "source": "unknown",
+    "plain": "scpolicysvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"scpolicysvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:40.345382+00:00"
+  },
+  "snmptrap": {
+    "source": "unknown",
+    "plain": "snmptrap",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"snmptrap windows service\" online.",
+    "fetched": "2026-03-14T02:36:40.488592+00:00"
+  },
+  "sppsvc": {
+    "source": "unknown",
+    "plain": "sppsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"sppsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:40.597536+00:00"
+  },
+  "svsvc": {
+    "source": "unknown",
+    "plain": "svsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"svsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:40.767574+00:00"
+  },
+  "staterepository": {
+    "source": "unknown",
+    "plain": "staterepository",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"staterepository windows service\" online.",
+    "fetched": "2026-03-14T02:36:40.916774+00:00"
+  },
+  "wiarpc": {
+    "source": "unknown",
+    "plain": "wiarpc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wiarpc windows service\" online.",
+    "fetched": "2026-03-14T02:36:41.066483+00:00"
+  },
+  "storsvc": {
+    "source": "unknown",
+    "plain": "storsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"storsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:41.188336+00:00"
+  },
+  "tieringengineservice": {
+    "source": "unknown",
+    "plain": "tieringengineservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"tieringengineservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:41.312641+00:00"
+  },
+  "sens": {
+    "source": "unknown",
+    "plain": "sens",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"sens windows service\" online.",
+    "fetched": "2026-03-14T02:36:41.442329+00:00"
+  },
+  "systemeventsbroker": {
+    "source": "unknown",
+    "plain": "systemeventsbroker",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"systemeventsbroker windows service\" online.",
+    "fetched": "2026-03-14T02:36:41.580528+00:00"
+  },
+  "tapisrv": {
+    "source": "unknown",
+    "plain": "tapisrv",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"tapisrv windows service\" online.",
+    "fetched": "2026-03-14T02:36:41.735357+00:00"
+  },
+  "textinputmanagementservice": {
+    "source": "unknown",
+    "plain": "textinputmanagementservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"textinputmanagementservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:41.880661+00:00"
+  },
+  "timebrokersvc": {
+    "source": "unknown",
+    "plain": "timebrokersvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"timebrokersvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:42.062405+00:00"
+  },
+  "udkusersvc_113ccd": {
+    "source": "unknown",
+    "plain": "udkusersvc_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"udkusersvc_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:42.192447+00:00"
+  },
+  "unistoresvc_113ccd": {
+    "source": "unknown",
+    "plain": "unistoresvc_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"unistoresvc_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:42.273530+00:00"
+  },
+  "usosvc": {
+    "source": "unknown",
+    "plain": "usosvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"usosvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:42.382328+00:00"
+  },
+  "uevagentservice": {
+    "source": "unknown",
+    "plain": "uevagentservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"uevagentservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:42.508399+00:00"
+  },
+  "usermanager": {
+    "source": "unknown",
+    "plain": "usermanager",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"usermanager windows service\" online.",
+    "fetched": "2026-03-14T02:36:42.598400+00:00"
+  },
+  "profsvc": {
+    "source": "unknown",
+    "plain": "profsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"profsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:42.715388+00:00"
+  },
+  "userdatasvc_113ccd": {
+    "source": "unknown",
+    "plain": "userdatasvc_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"userdatasvc_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:42.850330+00:00"
+  },
+  "vds": {
+    "source": "unknown",
+    "plain": "vds",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"vds windows service\" online.",
+    "fetched": "2026-03-14T02:36:42.943457+00:00"
+  },
+  "vss": {
+    "source": "unknown",
+    "plain": "vss",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"vss windows service\" online.",
+    "fetched": "2026-03-14T02:36:43.068460+00:00"
+  },
+  "waasmedicsvc": {
+    "source": "unknown",
+    "plain": "waasmedicsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"waasmedicsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:43.158386+00:00"
+  },
+  "walletservice": {
+    "source": "unknown",
+    "plain": "walletservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"walletservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:43.285438+00:00"
+  },
+  "warpjitsvc": {
+    "source": "unknown",
+    "plain": "warpjitsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"warpjitsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:43.364386+00:00"
+  },
+  "wavessyssvc": {
+    "source": "unknown",
+    "plain": "wavessyssvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wavessyssvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:43.478286+00:00"
+  },
+  "wavesaudioservice": {
+    "source": "unknown",
+    "plain": "wavesaudioservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wavesaudioservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:43.601731+00:00"
+  },
+  "tokenbroker": {
+    "source": "unknown",
+    "plain": "tokenbroker",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"tokenbroker windows service\" online.",
+    "fetched": "2026-03-14T02:36:43.726677+00:00"
+  },
+  "webthreatdefsvc": {
+    "source": "unknown",
+    "plain": "webthreatdefsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"webthreatdefsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:43.843527+00:00"
+  },
+  "webclient": {
+    "source": "unknown",
+    "plain": "webclient",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"webclient windows service\" online.",
+    "fetched": "2026-03-14T02:36:43.968419+00:00"
+  },
+  "webthreatdefusersvc_113ccd": {
+    "source": "unknown",
+    "plain": "webthreatdefusersvc_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"webthreatdefusersvc_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:44.118484+00:00"
+  },
+  "wfdsconmgrsvc": {
+    "source": "unknown",
+    "plain": "wfdsconmgrsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wfdsconmgrsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:44.211390+00:00"
+  },
+  "audiosrv": {
+    "source": "unknown",
+    "plain": "audiosrv",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"audiosrv windows service\" online.",
+    "fetched": "2026-03-14T02:36:44.371336+00:00"
+  },
+  "audioendpointbuilder": {
+    "source": "unknown",
+    "plain": "audioendpointbuilder",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"audioendpointbuilder windows service\" online.",
+    "fetched": "2026-03-14T02:36:44.520708+00:00"
+  },
+  "sdrsvc": {
+    "source": "unknown",
+    "plain": "sdrsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"sdrsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:44.654384+00:00"
+  },
+  "wbiosrvc": {
+    "source": "unknown",
+    "plain": "wbiosrvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wbiosrvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:44.743270+00:00"
+  },
+  "frameserver": {
+    "source": "unknown",
+    "plain": "frameserver",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"frameserver windows service\" online.",
+    "fetched": "2026-03-14T02:36:44.851329+00:00"
+  },
+  "frameservermonitor": {
+    "source": "unknown",
+    "plain": "frameservermonitor",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"frameservermonitor windows service\" online.",
+    "fetched": "2026-03-14T02:36:44.950418+00:00"
+  },
+  "wcncsvc": {
+    "source": "unknown",
+    "plain": "wcncsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wcncsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:45.091585+00:00"
+  },
+  "wcmsvc": {
+    "source": "unknown",
+    "plain": "wcmsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wcmsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:45.216365+00:00"
+  },
+  "sense": {
+    "source": "unknown",
+    "plain": "sense",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"sense windows service\" online.",
+    "fetched": "2026-03-14T02:36:45.316354+00:00"
+  },
+  "wephostsvc": {
+    "source": "unknown",
+    "plain": "wephostsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wephostsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:45.511954+00:00"
+  },
+  "wecsvc": {
+    "source": "unknown",
+    "plain": "wecsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wecsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:45.733392+00:00"
+  },
+  "fontcache": {
+    "source": "unknown",
+    "plain": "fontcache",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"fontcache windows service\" online.",
+    "fetched": "2026-03-14T02:36:45.846382+00:00"
+  },
+  "whesvc": {
+    "source": "unknown",
+    "plain": "whesvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"whesvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:45.964384+00:00"
+  },
+  "stisvc": {
+    "source": "unknown",
+    "plain": "stisvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"stisvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:46.073374+00:00"
+  },
+  "wisvc": {
+    "source": "unknown",
+    "plain": "wisvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wisvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:46.265502+00:00"
+  },
+  "msiserver": {
+    "source": "unknown",
+    "plain": "msiserver",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"msiserver windows service\" online.",
+    "fetched": "2026-03-14T02:36:46.379360+00:00"
+  },
+  "licensemanager": {
+    "source": "unknown",
+    "plain": "licensemanager",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"licensemanager windows service\" online.",
+    "fetched": "2026-03-14T02:36:46.527354+00:00"
+  },
+  "winmgmt": {
+    "source": "unknown",
+    "plain": "winmgmt",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"winmgmt windows service\" online.",
+    "fetched": "2026-03-14T02:36:46.657880+00:00"
+  },
+  "wmansvc": {
+    "source": "unknown",
+    "plain": "wmansvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wmansvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:46.780643+00:00"
+  },
+  "midisrv": {
+    "source": "unknown",
+    "plain": "midisrv",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"midisrv windows service\" online.",
+    "fetched": "2026-03-14T02:36:46.890516+00:00"
+  },
+  "icssvc": {
+    "source": "unknown",
+    "plain": "icssvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"icssvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:46.997400+00:00"
+  },
+  "trustedinstaller": {
+    "source": "unknown",
+    "plain": "trustedinstaller",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"trustedinstaller windows service\" online.",
+    "fetched": "2026-03-14T02:36:47.081637+00:00"
+  },
+  "perceptionsimulation": {
+    "source": "unknown",
+    "plain": "perceptionsimulation",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"perceptionsimulation windows service\" online.",
+    "fetched": "2026-03-14T02:36:47.226250+00:00"
+  },
+  "wpnservice": {
+    "source": "unknown",
+    "plain": "wpnservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wpnservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:47.343356+00:00"
+  },
+  "pushtoinstall": {
+    "source": "unknown",
+    "plain": "pushtoinstall",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"pushtoinstall windows service\" online.",
+    "fetched": "2026-03-14T02:36:47.460382+00:00"
+  },
+  "winrm": {
+    "source": "unknown",
+    "plain": "winrm",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"winrm windows service\" online.",
+    "fetched": "2026-03-14T02:36:47.606655+00:00"
+  },
+  "securityhealthservice": {
+    "source": "unknown",
+    "plain": "securityhealthservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"securityhealthservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:47.697297+00:00"
+  },
+  "w32time": {
+    "source": "unknown",
+    "plain": "w32time",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"w32time windows service\" online.",
+    "fetched": "2026-03-14T02:36:47.810461+00:00"
+  },
+  "apxsvc": {
+    "source": "unknown",
+    "plain": "apxsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"apxsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:47.942502+00:00"
+  },
+  "winhttpautoproxysvc": {
+    "source": "unknown",
+    "plain": "winhttpautoproxysvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"winhttpautoproxysvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:48.072349+00:00"
+  },
+  "dot3svc": {
+    "source": "unknown",
+    "plain": "dot3svc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"dot3svc windows service\" online.",
+    "fetched": "2026-03-14T02:36:48.208317+00:00"
+  },
+  "wlansvc": {
+    "source": "unknown",
+    "plain": "wlansvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wlansvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:48.318253+00:00"
+  },
+  "wmiapsrv": {
+    "source": "unknown",
+    "plain": "wmiapsrv",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wmiapsrv windows service\" online.",
+    "fetched": "2026-03-14T02:36:48.454470+00:00"
+  },
+  "workfolderssvc": {
+    "source": "unknown",
+    "plain": "workfolderssvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"workfolderssvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:48.571276+00:00"
+  },
+  "wpnuserservice_113ccd": {
+    "source": "unknown",
+    "plain": "wpnuserservice_113ccd",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wpnuserservice_113ccd windows service\" online.",
+    "fetched": "2026-03-14T02:36:48.704340+00:00"
+  },
+  "wsaifabricsvc": {
+    "source": "unknown",
+    "plain": "wsaifabricsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wsaifabricsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:48.819294+00:00"
+  },
+  "wslservice": {
+    "source": "unknown",
+    "plain": "wslservice",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wslservice windows service\" online.",
+    "fetched": "2026-03-14T02:36:48.941277+00:00"
+  },
+  "wwansvc": {
+    "source": "unknown",
+    "plain": "wwansvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"wwansvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:49.048347+00:00"
+  },
+  "xboxgipsvc": {
+    "source": "unknown",
+    "plain": "xboxgipsvc",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"xboxgipsvc windows service\" online.",
+    "fetched": "2026-03-14T02:36:49.200310+00:00"
+  },
+  "zoomcptserviceforvdipluginmgmt": {
+    "source": "unknown",
+    "plain": "zoomcptserviceforvdipluginmgmt",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"zoomcptserviceforvdipluginmgmt windows service\" online.",
+    "fetched": "2026-03-14T02:36:49.315278+00:00"
+  },
+  "zthelper": {
+    "source": "unknown",
+    "plain": "zthelper",
+    "what": "No description found.",
+    "safe_stop": true,
+    "reason": "Search \"zthelper windows service\" online.",
+    "fetched": "2026-03-14T02:36:49.469220+00:00"
+  }
+}

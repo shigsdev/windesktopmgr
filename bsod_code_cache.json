@@ -1,0 +1,44 @@
+{
+  "unexpected_shutdown": {
+    "source": "microsoft_learn",
+    "title": "Event ID 41 The system has rebooted without cleanly shutting down first - Windows Client",
+    "detail": "See Microsoft documentation for stop code unexpected_shutdown.",
+    "priority": "high",
+    "action": "Full details: https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/event-id-41-restart",
+    "fetched": "2026-03-13T20:44:46.197847+00:00"
+  },
+  "kernel_power_loss": {
+    "source": "microsoft_learn",
+    "title": "Event ID 41 The system has rebooted without cleanly shutting down first - Windows Client",
+    "detail": "See Microsoft documentation for stop code kernel_power_loss.",
+    "priority": "high",
+    "action": "Full details: https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/event-id-41-restart",
+    "fetched": "2026-03-13T20:44:47.118862+00:00"
+  },
+  "0x0000001e": {
+    "source": "windows_bugcheck_table",
+    "name": "KMODE_EXCEPTION_NOT_HANDLED",
+    "title": "Kmode Exception Not Handled",
+    "detail": "Stop code 0X0000001E \u2014 KMODE_EXCEPTION_NOT_HANDLED. This is a Windows kernel bugcheck. Check the faulty driver in the crash details above for root cause.",
+    "priority": "high",
+    "action": "Run: windbg -z <minidump> to analyse. Check Driver Manager tab for updates to the faulty driver.",
+    "fetched": "2026-03-13T20:44:47.294823+00:00"
+  },
+  "0x000000ef": {
+    "source": "windows_bugcheck_table",
+    "name": "CRITICAL_PROCESS_DIED",
+    "title": "Critical Process Died",
+    "detail": "Stop code 0X000000EF \u2014 CRITICAL_PROCESS_DIED. This is a Windows kernel bugcheck. Check the faulty driver in the crash details above for root cause.",
+    "priority": "high",
+    "action": "Run: windbg -z <minidump> to analyse. Check Driver Manager tab for updates to the faulty driver.",
+    "fetched": "2026-03-13T20:44:47.465029+00:00"
+  },
+  "bugcheck_0x000000f7": {
+    "source": "microsoft_learn",
+    "title": "Debugging Tools for Windows SDK and WDK - Windows drivers",
+    "detail": "See Microsoft documentation for stop code bugcheck_0x000000f7.",
+    "priority": "high",
+    "action": "Full details: https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/debugger-download-tools",
+    "fetched": "2026-03-13T20:44:48.470549+00:00"
+  }
+}
