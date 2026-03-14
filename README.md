@@ -59,7 +59,7 @@ pip install flask
 ## Quick Start
 
 ```powershell
-git clone https://github.com/shigs1978/windesktopmgr.git
+git clone https://github.com/shigsdev/windesktopmgr.git
 cd windesktopmgr
 pip install flask
 py.exe .\windesktopmgr.py

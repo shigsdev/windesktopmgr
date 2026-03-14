@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WinDesktopMgr — Architecture Diagram</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:      #07090f;
+    --surface: #0d1017;
+    --card:    #111520;
+    --border:  #1e2535;
+    --text:    #e2e8f0;
+    --muted:   #4a5568;
+    --cyan:    #00d4ff;
+    --orange:  #ff7043;
+    --green:   #00e676;
+    --purple:  #b388ff;
+    --yellow:  #ffd740;
+    --red:     #ff4560;
+    --blue:    #448aff;
+    --font-head: 'Syne', sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    min-height: 100vh;
+    padding: 36px 40px 48px;
+  }
+  body::before {
+    content: '';
+    position: fixed; inset: 0; z-index: -1;
+    background-image:
+      linear-gradient(rgba(0,212,255,.018) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,212,255,.018) 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+
+  /* Header */
+  .header {
+    display: flex; align-items: flex-end; justify-content: space-between;
+    margin-bottom: 36px; padding-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .logo { font-family: var(--font-head); font-size: 28px; font-weight: 800; }
+  .logo span { color: var(--cyan); }
+  .subtitle { font-size: 11px; color: var(--muted); letter-spacing: .1em; text-transform: uppercase; margin-top: 3px; }
+  .badge { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 7px 14px; font-size: 11px; color: var(--muted); }
+  .badge a { color: var(--cyan); text-decoration: none; }
+
+  /* Architecture canvas */
+  .arch {
+    display: grid;
+    grid-template-columns: 200px 1fr 220px;
+    grid-template-rows: auto auto auto;
+    gap: 0;
+    position: relative;
+  }
+
+  /* Layer labels */
+  .layer-label {
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    transform: rotate(180deg);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .15em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px 0;
+    border-right: 1px solid var(--border);
+    margin-right: 20px;
+  }
+
+  /* Section wrappers */
+  .section {
+    padding: 16px 0 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .section:last-child { border-bottom: none; }
+  .section-title {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 14px;
+  }
+
+  /* Node boxes */
+  .nodes { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
+
+  .node {
+    border-radius: 8px;
+    padding: 10px 14px;
+    border: 1px solid;
+    position: relative;
+    min-width: 120px;
+  }
+  .node-title {
+    font-weight: 700;
+    font-size: 12px;
+    margin-bottom: 3px;
+    white-space: nowrap;
+  }
+  .node-sub {
+    font-size: 10px;
+    color: var(--muted);
+    line-height: 1.4;
+  }
+  .node-tag {
+    font-size: 9px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-weight: 700;
+    display: inline-block;
+    margin-top: 4px;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+  }
+
+  /* Colour variants */
+  .node-cyan   { background: #00d4ff0a; border-color: #00d4ff33; }
+  .node-cyan   .node-title { color: var(--cyan); }
+  .node-cyan   .node-tag   { background: #00d4ff22; color: var(--cyan); }
+
+  .node-orange { background: #ff70430a; border-color: #ff704333; }
+  .node-orange .node-title { color: var(--orange); }
+  .node-orange .node-tag   { background: #ff704322; color: var(--orange); }
+
+  .node-green  { background: #00e6760a; border-color: #00e67633; }
+  .node-green  .node-title { color: var(--green); }
+  .node-green  .node-tag   { background: #00e67622; color: var(--green); }
+
+  .node-purple { background: #b388ff0a; border-color: #b388ff33; }
+  .node-purple .node-title { color: var(--purple); }
+  .node-purple .node-tag   { background: #b388ff22; color: var(--purple); }
+
+  .node-yellow { background: #ffd7400a; border-color: #ffd74033; }
+  .node-yellow .node-title { color: var(--yellow); }
+  .node-yellow .node-tag   { background: #ffd74022; color: var(--yellow); }
+
+  .node-red    { background: #ff45600a; border-color: #ff456033; }
+  .node-red    .node-title { color: var(--red); }
+  .node-red    .node-tag   { background: #ff456022; color: var(--red); }
+
+  .node-blue   { background: #448aff0a; border-color: #448aff33; }
+  .node-blue   .node-title { color: var(--blue); }
+  .node-blue   .node-tag   { background: #448aff22; color: var(--blue); }
+
+  .node-muted  { background: #ffffff05; border-color: #ffffff15; }
+  .node-muted  .node-title { color: #888; }
+
+  /* The main layout — three rows */
+  .diagram {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  .row {
+    display: grid;
+    padding: 20px 24px;
+    gap: 16px;
+    border-bottom: 1px solid var(--border);
+    position: relative;
+  }
+  .row:last-child { border-bottom: none; }
+
+  .row-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .row-label::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  /* Row specific layouts */
+  .row-browser  { background: #00d4ff04; }
+  .row-flask    { background: #b388ff04; }
+  .row-workers  { background: #ff704304; }
+  .row-data     { background: #00e67604; }
+  .row-external { background: #ffd74004; }
+  .row-fs       { background: #448aff04; }
+
+  /* Tab grid for browser row */
+  .tab-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+  .tab-grid-2 {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 6px;
+  }
+  .tab-chip {
+    background: #00d4ff0d;
+    border: 1px solid #00d4ff22;
+    border-radius: 5px;
+    padding: 6px 8px;
+    text-align: center;
+    font-size: 10px;
+    color: var(--cyan);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .tab-chip .tab-icon { display: block; font-size: 13px; margin-bottom: 2px; }
+
+  /* API routes */
+  .route-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .route-chip {
+    background: #b388ff0d;
+    border: 1px solid #b388ff22;
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 10px;
+    color: var(--purple);
+    white-space: nowrap;
+  }
+  .route-chip .method {
+    color: var(--orange);
+    font-weight: 700;
+    margin-right: 4px;
+  }
+
+  /* Worker threads */
+  .worker-row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .worker-chip {
+    background: #ff70430d;
+    border: 1px solid #ff704333;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 11px;
+    color: var(--orange);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .worker-dot {
+    width: 6px; height: 6px;
+    background: var(--green);
+    border-radius: 50%;
+    box-shadow: 0 0 6px var(--green);
+    animation: pulse 2s infinite;
+    flex-shrink: 0;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+  .worker-sub { font-size: 10px; color: var(--muted); display: block; margin-top: 1px; }
+
+  /* Cache files */
+  .cache-grid {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .cache-chip {
+    background: #ffd7400a;
+    border: 1px solid #ffd74033;
+    border-radius: 5px;
+    padding: 6px 10px;
+    font-size: 10px;
+    color: var(--yellow);
+    font-family: var(--font-mono);
+  }
+
+  /* WMI / PowerShell sources */
+  .wmi-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+  }
+  .wmi-chip {
+    background: #00e6760a;
+    border: 1px solid #00e67633;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 10px;
+  }
+  .wmi-chip .wmi-title { color: var(--green); font-weight: 700; margin-bottom: 2px; }
+  .wmi-chip .wmi-sub   { color: var(--muted); font-size: 9px; line-height: 1.4; }
+
+  /* External */
+  .ext-grid {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .ext-chip {
+    background: #ffd7400a;
+    border: 1px solid #ffd74033;
+    border-radius: 6px;
+    padding: 8px 12px;
+  }
+  .ext-chip .ext-title { color: var(--yellow); font-weight: 700; font-size: 11px; }
+  .ext-chip .ext-sub   { color: var(--muted); font-size: 10px; margin-top: 2px; }
+  .ext-chip .ext-badge {
+    font-size: 9px; padding: 1px 6px; border-radius: 8px;
+    background: #ffd74022; color: var(--yellow);
+    display: inline-block; margin-top: 4px;
+    text-transform: uppercase; font-weight: 700;
+  }
+
+  /* File system */
+  .fs-grid {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .fs-chip {
+    background: #448aff0a;
+    border: 1px solid #448aff33;
+    border-radius: 6px;
+    padding: 8px 12px;
+  }
+  .fs-chip .fs-title { color: var(--blue); font-weight: 700; font-size: 11px; }
+  .fs-chip .fs-sub   { color: var(--muted); font-size: 10px; margin-top: 2px; }
+
+  /* Arrows legend */
+  .legend {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    padding: 16px 24px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-top: 20px;
+  }
+  .legend-item { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
+  .legend-line { width: 24px; height: 2px; }
+
+  /* Flow arrows SVG overlay */
+  .flow-section {
+    position: relative;
+  }
+
+  /* Footer */
+  .footer {
+    margin-top: 28px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  /* Startup task box */
+  .startup-box {
+    background: #448aff08;
+    border: 1px solid #448aff33;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 11px;
+  }
+  .startup-box .sb-title { color: var(--blue); font-weight: 700; margin-bottom: 6px; }
+  .startup-task {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 4px;
+    align-items: center;
+  }
+  .startup-task .st-name { color: var(--text); font-weight: 600; min-width: 160px; }
+  .startup-task .st-desc { color: var(--muted); font-size: 10px; }
+
+  @media print {
+    body { padding: 16px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    body::before { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="logo">Win<span>DesktopMgr</span></div>
+    <div class="subtitle">Software Architecture Diagram</div>
+  </div>
+  <div class="badge">
+    <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
+  </div>
+</div>
+
+<div class="diagram">
+
+  <!-- ── LAYER 1: BROWSER / FRONTEND ──────────────────────────── -->
+  <div class="row row-browser">
+    <div class="row-label">🌐 Frontend — Browser (index.html · Single Page App · Chart.js 4.4)</div>
+    <div class="tab-grid">
+      <div class="tab-chip"><span class="tab-icon">⟳</span>Driver Mgr</div>
+      <div class="tab-chip"><span class="tab-icon">⚠</span>BSOD</div>
+      <div class="tab-chip"><span class="tab-icon">🚀</span>Startup</div>
+      <div class="tab-chip"><span class="tab-icon">💾</span>Disk</div>
+      <div class="tab-chip"><span class="tab-icon">🌐</span>Network</div>
+      <div class="tab-chip"><span class="tab-icon">🔄</span>Updates</div>
+      <div class="tab-chip"><span class="tab-icon">📋</span>Event Log</div>
+    </div>
+    <div class="tab-grid-2">
+      <div class="tab-chip"><span class="tab-icon">⚡</span>Processes</div>
+      <div class="tab-chip"><span class="tab-icon">🌡</span>Thermals</div>
+      <div class="tab-chip"><span class="tab-icon">⚙</span>Services</div>
+      <div class="tab-chip"><span class="tab-icon">📈</span>Health Hist</div>
+      <div class="tab-chip"><span class="tab-icon">⏱</span>Timeline</div>
+      <div class="tab-chip"><span class="tab-icon">🧠</span>Memory</div>
+      <div class="tab-chip"><span class="tab-icon">🔩</span>BIOS</div>
+    </div>
+  </div>
+
+  <!-- ── LAYER 2: FLASK BACKEND ───────────────────────────────── -->
+  <div class="row row-flask">
+    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · Python 3.14 · port 5000</div>
+    <div style="margin-bottom:10px">
+      <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes</div>
+      <div class="route-grid">
+        <div class="route-chip"><span class="method">GET</span>/api/scan/results</div>
+        <div class="route-chip"><span class="method">GET</span>/api/bsod/data</div>
+        <div class="route-chip"><span class="method">GET</span>/api/startup/list</div>
+        <div class="route-chip"><span class="method">GET</span>/api/disk/data</div>
+        <div class="route-chip"><span class="method">GET</span>/api/network/data</div>
+        <div class="route-chip"><span class="method">GET</span>/api/updates/history</div>
+        <div class="route-chip"><span class="method">POST</span>/api/events/query</div>
+        <div class="route-chip"><span class="method">GET</span>/api/processes/list</div>
+        <div class="route-chip"><span class="method">POST</span>/api/processes/kill</div>
+        <div class="route-chip"><span class="method">GET</span>/api/thermals/data</div>
+        <div class="route-chip"><span class="method">GET</span>/api/services/list</div>
+        <div class="route-chip"><span class="method">POST</span>/api/services/toggle</div>
+        <div class="route-chip"><span class="method">GET</span>/api/health-history/data</div>
+        <div class="route-chip"><span class="method">GET</span>/api/timeline/data</div>
+        <div class="route-chip"><span class="method">GET</span>/api/memory/data</div>
+        <div class="route-chip"><span class="method">GET</span>/api/bios/status</div>
+        <div class="route-chip"><span class="method">POST</span>/api/summary/&lt;tab&gt;</div>
+        <div class="route-chip"><span class="method">POST</span>/api/startup/lookup-unknowns</div>
+        <div class="route-chip"><span class="method">POST</span>/api/startup/toggle</div>
+        <div class="route-chip"><span class="method">GET</span>/api/events/cache</div>
+        <div class="route-chip"><span class="method">GET</span>/api/bsod/cache</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── LAYER 3: BACKGROUND WORKERS ─────────────────────────── -->
+  <div class="row row-workers">
+    <div class="row-label">🔄 Background Worker Threads — daemon=True · self-learning knowledge enrichment</div>
+    <div class="worker-row">
+      <div class="worker-chip">
+        <div class="worker-dot"></div>
+        <div>
+          <div>EventLookupWorker</div>
+          <span class="worker-sub">Event IDs → WMI provider → MS Learn</span>
+        </div>
+      </div>
+      <div class="worker-chip">
+        <div class="worker-dot"></div>
+        <div>
+          <div>BSODLookupWorker</div>
+          <span class="worker-sub">Stop codes → bugcheck table → MS Learn</span>
+        </div>
+      </div>
+      <div class="worker-chip">
+        <div class="worker-dot"></div>
+        <div>
+          <div>StartupLookupWorker</div>
+          <span class="worker-sub">Exe names → file version info → web</span>
+        </div>
+      </div>
+      <div class="worker-chip">
+        <div class="worker-dot"></div>
+        <div>
+          <div>ServicesLookupWorker</div>
+          <span class="worker-sub">Service names → MS Learn API</span>
+        </div>
+      </div>
+      <div class="worker-chip">
+        <div class="worker-dot"></div>
+        <div>
+          <div>ProcessLookupWorker</div>
+          <span class="worker-sub">Process names → file info → web</span>
+        </div>
+      </div>
+    </div>
+    <div style="margin-top:12px">
+      <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">Knowledge Cache Files (JSON · 24h stale refresh · unknown retry on startup)</div>
+      <div class="cache-grid">
+        <div class="cache-chip">event_id_cache.json</div>
+        <div class="cache-chip">bsod_code_cache.json</div>
+        <div class="cache-chip">startup_item_cache.json</div>
+        <div class="cache-chip">services_item_cache.json</div>
+        <div class="cache-chip">process_cache.json</div>
+        <div class="cache-chip">bios_cache.json</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── LAYER 4: WINDOWS DATA SOURCES ────────────────────────── -->
+  <div class="row row-data">
+    <div class="row-label">🖥 Windows Data Sources — PowerShell / WMI / COM Objects</div>
+    <div class="wmi-grid">
+      <div class="wmi-chip">
+        <div class="wmi-title">Win32_PnPSignedDriver</div>
+        <div class="wmi-sub">Installed drivers · version · date · class</div>
+      </div>
+      <div class="wmi-chip">
+        <div class="wmi-title">Microsoft.Update.Session</div>
+        <div class="wmi-sub">Windows Update history · pending updates · driver updates</div>
+      </div>
+      <div class="wmi-chip">
+        <div class="wmi-title">Get-WinEvent</div>
+        <div class="wmi-sub">System/App/Security event log · IDs 41, 1001, 6008, 7036</div>
+      </div>
+      <div class="wmi-chip">
+        <div class="wmi-title">Get-Process + Win32_Process</div>
+        <div class="wmi-sub">Running processes · RAM · CPU · path · description</div>
+      </div>
+      <div class="wmi-chip">
+        <div class="wmi-title">Get-NetTCPConnection</div>
+        <div class="wmi-sub">Active TCP connections · ports · owning process</div>
+      </div>
+      <div class="wmi-chip">
+        <div class="wmi-title">MSAcpi_ThermalZoneTemperature</div>
+        <div class="wmi-sub">CPU thermal zones · OpenHardwareMonitor WMI namespace</div>
+      </div>
+      <div class="wmi-chip">
+        <div class="wmi-title">Win32_Service</div>
+        <div class="wmi-sub">All services · state · start mode · PID · path</div>
+      </div>
+      <div class="wmi-chip">
+        <div class="wmi-title">Win32_BIOS + Win32_BaseBoard</div>
+        <div class="wmi-sub">BIOS version · date · manufacturer · service tag · board</div>
+      </div>
+      <div class="wmi-chip">
+        <div class="wmi-title">Get-PSDrive + Get-PhysicalDisk</div>
+        <div class="wmi-sub">Drive usage · free space · health · bus type · media type</div>
+      </div>
+      <div class="wmi-chip">
+        <div class="wmi-title">Registry Run Keys</div>
+        <div class="wmi-sub">HKLM/HKCU startup entries · enabled/disabled</div>
+      </div>
+      <div class="wmi-chip">
+        <div class="wmi-title">Get-ScheduledTask</div>
+        <div class="wmi-sub">Logon/boot triggered tasks · state · last run</div>
+      </div>
+      <div class="wmi-chip">
+        <div class="wmi-title">Win32_OperatingSystem</div>
+        <div class="wmi-sub">Total/free RAM · uptime · OS version</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── LAYER 5: EXTERNAL SERVICES ───────────────────────────── -->
+  <div class="row row-external">
+    <div class="row-label">☁ External Services — internet fallback · results cached locally</div>
+    <div class="ext-grid">
+      <div class="ext-chip">
+        <div class="ext-title">Microsoft Learn API</div>
+        <div class="ext-sub">learn.microsoft.com/api/search<br>Event IDs · stop codes · process/service descriptions</div>
+        <span class="ext-badge">fallback</span>
+      </div>
+      <div class="ext-chip">
+        <div class="ext-title">Windows Event Provider Registry</div>
+        <div class="ext-sub">Get-WinEvent -ListProvider<br>Local Windows metadata — no internet needed</div>
+        <span class="ext-badge">offline first</span>
+      </div>
+      <div class="ext-chip">
+        <div class="ext-title">Dell Support (BIOS)</div>
+        <div class="ext-sub">dell.com/support/servicetag/9T46D14<br>Dell Command Update CLI · catalog XML</div>
+        <span class="ext-badge">24h cache</span>
+      </div>
+      <div class="ext-chip">
+        <div class="ext-title">Windows Update Service</div>
+        <div class="ext-sub">Microsoft.Update.Session COM<br>Pending driver updates · BIOS firmware</div>
+        <span class="ext-badge">local COM</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── LAYER 6: FILE SYSTEM & TASKS ─────────────────────────── -->
+  <div class="row row-fs">
+    <div class="row-label">📁 File System &amp; Scheduled Tasks</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div>
+        <div style="font-size:10px;color:var(--muted);font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">Files — OneDrive\Coding\Windows Tools\windesktopmgr\</div>
+        <div class="fs-grid">
+          <div class="fs-chip">
+            <div class="fs-title">windesktopmgr.py</div>
+            <div class="fs-sub">Flask backend · ~4,600 lines</div>
+          </div>
+          <div class="fs-chip">
+            <div class="fs-title">templates/index.html</div>
+            <div class="fs-sub">Single-page frontend · ~2,900 lines</div>
+          </div>
+          <div class="fs-chip">
+            <div class="fs-title">setup-startup.ps1</div>
+            <div class="fs-sub">Task Scheduler registration</div>
+          </div>
+          <div class="fs-chip">
+            <div class="fs-title">windesktopmgr.log</div>
+            <div class="fs-sub">Server output log</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:10px;color:var(--muted);font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">Scheduled Tasks — Windows Task Scheduler</div>
+        <div class="startup-box">
+          <div class="startup-task">
+            <div class="st-name" style="color:var(--blue)">WinDesktopMgr</div>
+            <div class="st-desc">At login → start Flask + open browser (6s delay)</div>
+          </div>
+          <div class="startup-task">
+            <div class="st-name" style="color:var(--green)">SystemHealthDiagnostic</div>
+            <div class="st-desc">Daily 7:00 AM → run SystemHealthDiag.ps1 → PDF + email</div>
+          </div>
+          <div style="margin-top:8px;font-size:10px;color:var(--muted)">
+            Both use <code style="color:var(--orange)">-ExecutionPolicy Bypass</code> to avoid signing errors
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="margin-top:14px">
+      <div style="font-size:10px;color:var(--muted);font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">Health Reports — OneDrive\Coding\Windows Tools\System Health Reports\</div>
+      <div class="fs-grid">
+        <div class="fs-chip">
+          <div class="fs-title">SystemHealthReport_*.html</div>
+          <div class="fs-sub">Daily HTML report · parsed by Health History tab</div>
+        </div>
+        <div class="fs-chip">
+          <div class="fs-title">SystemHealthReport_*.pdf</div>
+          <div class="fs-sub">PDF version via Edge headless · emailed via Gmail</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Data flow legend -->
+<div class="legend">
+  <div style="font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);align-self:center;margin-right:8px">Data flow:</div>
+  <div class="legend-item">
+    <div class="legend-line" style="background:var(--cyan)"></div>
+    Browser → Flask (HTTP fetch/POST)
+  </div>
+  <div class="legend-item">
+    <div class="legend-line" style="background:var(--green)"></div>
+    Flask → PowerShell/WMI (subprocess)
+  </div>
+  <div class="legend-item">
+    <div class="legend-line" style="background:var(--orange); height:2px; border-top: 1px dashed var(--orange); background: none;"></div>
+    Workers → External APIs (urllib · async · cached)
+  </div>
+  <div class="legend-item">
+    <div class="legend-line" style="background:var(--yellow)"></div>
+    Cache read/write (JSON files on disk)
+  </div>
+  <div class="legend-item">
+    <div class="legend-line" style="background:var(--blue)"></div>
+    Task Scheduler → Scripts (at login / daily)
+  </div>
+  <div style="margin-left:auto;font-size:10px;color:var(--muted)">
+    All PowerShell calls run via <code style="color:var(--purple)">subprocess.run()</code> · results parsed as JSON
+  </div>
+</div>
+
+<div class="footer">
+  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro</span>
+  <span>github.com/shigsdev/windesktopmgr</span>
+</div>
+
+</body>
+</html>
