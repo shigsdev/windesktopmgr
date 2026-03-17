@@ -691,6 +691,217 @@
   </div>
 </div>
 
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     DIAGRAM 1: DATA FLOW — Tab click to rendered data
+═══════════════════════════════════════════════════════════════════════ -->
+<div style="margin-top:32px;border:1px solid var(--border);border-radius:12px;overflow:hidden">
+  <div style="background:var(--card);padding:14px 24px;border-bottom:1px solid var(--border)">
+    <div style="font-family:var(--font-head);font-size:14px;font-weight:700;color:var(--cyan)">
+      Data Flow — From Tab Click to Rendered Data
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:2px">What happens every time you open a tab</div>
+  </div>
+  <div style="padding:24px;background:var(--surface)">
+
+    <!-- Flow steps -->
+    <div style="display:flex;align-items:stretch;gap:0;flex-wrap:nowrap;overflow-x:auto">
+
+      <!-- Step 1 -->
+      <div style="flex-shrink:0;width:150px;background:#00d4ff0a;border:1px solid #00d4ff33;border-radius:8px;padding:14px 12px;text-align:center">
+        <div style="font-size:18px;margin-bottom:6px">🖱</div>
+        <div style="color:var(--cyan);font-weight:700;font-size:11px;margin-bottom:4px">USER CLICKS TAB</div>
+        <div style="color:var(--muted);font-size:10px;line-height:1.4">Browser JS detects click, checks _tabLoaded cache</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 6px;flex-shrink:0">
+        <div style="font-size:10px;color:var(--cyan);font-weight:700;white-space:nowrap">fetch()</div>
+        <div style="font-size:16px;color:var(--cyan)">→</div>
+      </div>
+
+      <!-- Step 2 -->
+      <div style="flex-shrink:0;width:150px;background:#b388ff0a;border:1px solid #b388ff33;border-radius:8px;padding:14px 12px;text-align:center">
+        <div style="font-size:18px;margin-bottom:6px">🐍</div>
+        <div style="color:var(--purple);font-weight:700;font-size:11px;margin-bottom:4px">FLASK ROUTE</div>
+        <div style="color:var(--muted);font-size:10px;line-height:1.4">e.g. GET /api/processes/list receives the request</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 6px;flex-shrink:0">
+        <div style="font-size:10px;color:var(--purple);font-weight:700;white-space:nowrap">subprocess</div>
+        <div style="font-size:16px;color:var(--purple)">→</div>
+      </div>
+
+      <!-- Step 3 -->
+      <div style="flex-shrink:0;width:150px;background:#00e6760a;border:1px solid #00e67633;border-radius:8px;padding:14px 12px;text-align:center">
+        <div style="font-size:18px;margin-bottom:6px">⚡</div>
+        <div style="color:var(--green);font-weight:700;font-size:11px;margin-bottom:4px">POWERSHELL / WMI</div>
+        <div style="color:var(--muted);font-size:10px;line-height:1.4">Query Windows — Get-Process, Win32_Service, Get-WinEvent etc.</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 6px;flex-shrink:0">
+        <div style="font-size:10px;color:var(--green);font-weight:700;white-space:nowrap">JSON</div>
+        <div style="font-size:16px;color:var(--green)">→</div>
+      </div>
+
+      <!-- Step 4 -->
+      <div style="flex-shrink:0;width:150px;background:#ff70430a;border:1px solid #ff704333;border-radius:8px;padding:14px 12px;text-align:center">
+        <div style="font-size:18px;margin-bottom:6px">🔄</div>
+        <div style="color:var(--orange);font-weight:700;font-size:11px;margin-bottom:4px">ENRICH + PROCESS</div>
+        <div style="color:var(--muted);font-size:10px;line-height:1.4">Merge KB lookup, flag anomalies, build summary insights</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 6px;flex-shrink:0">
+        <div style="font-size:10px;color:var(--orange);font-weight:700;white-space:nowrap">jsonify()</div>
+        <div style="font-size:16px;color:var(--orange)">→</div>
+      </div>
+
+      <!-- Step 5 -->
+      <div style="flex-shrink:0;width:150px;background:#ffd7400a;border:1px solid #ffd74033;border-radius:8px;padding:14px 12px;text-align:center">
+        <div style="font-size:18px;margin-bottom:6px">📊</div>
+        <div style="color:var(--yellow);font-weight:700;font-size:11px;margin-bottom:4px">BROWSER RENDERS</div>
+        <div style="color:var(--muted);font-size:10px;line-height:1.4">JS renders table/chart, summary banner updates with status</div>
+      </div>
+
+    </div>
+
+    <!-- Background enrichment side path -->
+    <div style="margin-top:20px;background:#ffffff05;border:1px solid var(--border);border-radius:8px;padding:14px 20px">
+      <div style="font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:10px">
+        Parallel — Background Worker Enrichment (for unknown items)
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <div style="background:#ff70430d;border:1px solid #ff704333;border-radius:5px;padding:5px 10px;font-size:11px;color:var(--orange)">Unknown item detected</div>
+        <div style="color:var(--muted)">→</div>
+        <div style="background:#ff70430d;border:1px solid #ff704333;border-radius:5px;padding:5px 10px;font-size:11px;color:var(--orange)">Added to worker queue</div>
+        <div style="color:var(--muted)">→</div>
+        <div style="background:#ff70430d;border:1px solid #ff704333;border-radius:5px;padding:5px 10px;font-size:11px;color:var(--orange)">Windows provider registry (offline)</div>
+        <div style="color:var(--muted)">→</div>
+        <div style="background:#ff70430d;border:1px solid #ff704333;border-radius:5px;padding:5px 10px;font-size:11px;color:var(--orange)">File version info</div>
+        <div style="color:var(--muted)">→</div>
+        <div style="background:#ff70430d;border:1px solid #ff704333;border-radius:5px;padding:5px 10px;font-size:11px;color:var(--orange)">MS Learn API (web fallback)</div>
+        <div style="color:var(--muted)">→</div>
+        <div style="background:#ffd7400d;border:1px solid #ffd74033;border-radius:5px;padding:5px 10px;font-size:11px;color:var(--yellow)">Saved to JSON cache permanently</div>
+      </div>
+      <div style="font-size:10px;color:var(--muted);margin-top:8px">Tab auto-refreshes after 4 seconds to show enriched descriptions</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     DIAGRAM 2: DEPLOYMENT / STARTUP FLOW
+═══════════════════════════════════════════════════════════════════════ -->
+<div style="margin-top:24px;border:1px solid var(--border);border-radius:12px;overflow:hidden">
+  <div style="background:var(--card);padding:14px 24px;border-bottom:1px solid var(--border)">
+    <div style="font-family:var(--font-head);font-size:14px;font-weight:700;color:var(--blue)">
+      Deployment and Startup Flow
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:2px">What happens automatically every time you log into Windows</div>
+  </div>
+  <div style="padding:24px;background:var(--surface)">
+
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:0;align-items:start">
+
+      <!-- Step 1 -->
+      <div style="text-align:center;padding:0 6px">
+        <div style="background:#448aff0a;border:1px solid #448aff33;border-radius:8px;padding:12px 8px;margin-bottom:8px">
+          <div style="font-size:20px;margin-bottom:4px">👤</div>
+          <div style="color:var(--blue);font-weight:700;font-size:10px">WINDOWS LOGIN</div>
+          <div style="color:var(--muted);font-size:9px;margin-top:4px;line-height:1.4">User signs in to Windows 11</div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:center;padding-top:20px">
+        <div style="text-align:center">
+          <div style="font-size:9px;color:var(--muted);white-space:nowrap">triggers</div>
+          <div style="font-size:18px;color:var(--blue)">→</div>
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div style="text-align:center;padding:0 6px">
+        <div style="background:#448aff0a;border:1px solid #448aff33;border-radius:8px;padding:12px 8px;margin-bottom:8px">
+          <div style="font-size:20px;margin-bottom:4px">📅</div>
+          <div style="color:var(--blue);font-weight:700;font-size:10px">TASK SCHEDULER</div>
+          <div style="color:var(--muted);font-size:9px;margin-top:4px;line-height:1.4">WinDesktopMgr task fires on login trigger</div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:center;padding-top:20px">
+        <div style="text-align:center">
+          <div style="font-size:9px;color:var(--muted);white-space:nowrap">runs</div>
+          <div style="font-size:18px;color:var(--blue)">→</div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div style="text-align:center;padding:0 6px">
+        <div style="background:#448aff0a;border:1px solid #448aff33;border-radius:8px;padding:12px 8px;margin-bottom:8px">
+          <div style="font-size:20px;margin-bottom:4px">📄</div>
+          <div style="color:var(--blue);font-weight:700;font-size:10px">start-windesktopmgr.bat</div>
+          <div style="color:var(--muted);font-size:9px;margin-top:4px;line-height:1.4">Resolves Python path (py.exe fallback chain)</div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:center;padding-top:20px">
+        <div style="text-align:center">
+          <div style="font-size:9px;color:var(--muted);white-space:nowrap">starts</div>
+          <div style="font-size:18px;color:var(--blue)">→</div>
+        </div>
+      </div>
+
+      <!-- Step 4 placeholder for next row -->
+    </div>
+
+    <!-- Row 2 -->
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:0;align-items:start;margin-top:8px">
+      <div></div><div></div><div></div><div></div>
+
+      <!-- Step 4 -->
+      <div style="text-align:center;padding:0 6px">
+        <div style="background:#00d4ff0a;border:1px solid #00d4ff33;border-radius:8px;padding:12px 8px;margin-bottom:8px">
+          <div style="font-size:20px;margin-bottom:4px">🐍</div>
+          <div style="color:var(--cyan);font-weight:700;font-size:10px">FLASK STARTS</div>
+          <div style="color:var(--muted);font-size:9px;margin-top:4px;line-height:1.4">windesktopmgr.py launches silently on port 5000</div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:center;padding-top:20px">
+        <div style="text-align:center">
+          <div style="font-size:9px;color:var(--muted);white-space:nowrap">6s delay</div>
+          <div style="font-size:18px;color:var(--cyan)">→</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 3: full width final step -->
+    <div style="margin-top:8px;display:grid;grid-template-columns:repeat(6,1fr);gap:0;align-items:start">
+      <div></div><div></div><div></div><div></div><div></div>
+      <div style="text-align:center;padding:0 6px">
+        <div style="background:#00e6760a;border:1px solid #00e67633;border-radius:8px;padding:12px 8px">
+          <div style="font-size:20px;margin-bottom:4px">🌐</div>
+          <div style="color:var(--green);font-weight:700;font-size:10px">BROWSER OPENS</div>
+          <div style="color:var(--muted);font-size:9px;margin-top:4px;line-height:1.4">localhost:5000 opens automatically — dashboard is live</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Side task -->
+    <div style="margin-top:20px;display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div style="background:#00e67608;border:1px solid #00e67633;border-radius:8px;padding:14px 16px">
+        <div style="color:var(--green);font-weight:700;font-size:11px;margin-bottom:8px">📅 Daily at 7:00 AM — SystemHealthDiagnostic Task</div>
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <div style="background:#00e6760d;border:1px solid #00e67622;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--green)">Task fires</div>
+          <div style="color:var(--muted);font-size:12px">→</div>
+          <div style="background:#00e6760d;border:1px solid #00e67622;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--green)">SystemHealthDiag.ps1</div>
+          <div style="color:var(--muted);font-size:12px">→</div>
+          <div style="background:#00e6760d;border:1px solid #00e67622;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--green)">HTML + PDF report</div>
+          <div style="color:var(--muted);font-size:12px">→</div>
+          <div style="background:#00e6760d;border:1px solid #00e67622;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--green)">Gmail via SMTP</div>
+        </div>
+      </div>
+      <div style="background:#448aff08;border:1px solid #448aff33;border-radius:8px;padding:14px 16px">
+        <div style="color:var(--blue);font-weight:700;font-size:11px;margin-bottom:8px">🔑 Key: -ExecutionPolicy Bypass</div>
+        <div style="color:var(--muted);font-size:10px;line-height:1.5">Both tasks use <code style="color:var(--orange)">-ExecutionPolicy Bypass</code> in their action arguments. Without this, Windows blocks unsigned PowerShell scripts and the task silently fails with <code style="color:var(--red)">0xC0000005</code>.</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+
 <div class="footer">
   <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro</span>
   <span>github.com/shigsdev/windesktopmgr</span>

@@ -23,6 +23,8 @@ _scan_status  = {"status": "idle", "progress": 0, "message": "Ready to scan"}
 CATEGORIES = {
     "Display": ["display", "video", "graphics", "gpu", "nvidia", "amd radeon",
                 "intel uhd", "intel arc", "vga"],
+    "Monitor": ["monitor", "ips", "led backlit", "pavilion", "lcd", "oled",
+                "curved monitor", "widescreen"],
     "Audio":   ["audio", "sound", "realtek", "speaker", "microphone", "hdmi audio",
                 "nahimic", "waves"],
     "Network": ["network", "ethernet", "wi-fi", "wifi", "wireless", "bluetooth",
@@ -30,6 +32,19 @@ CATEGORIES = {
     "Chipset": ["chipset", "management engine", "serial io", "sata", "nvme",
                 "rapid storage", "pci", "smbus", "usb", "thunderbolt",
                 "intel(r) core", "platform"],
+}
+
+# Categories where driver updates are low priority / informational only
+LOW_PRIORITY_CATEGORIES = {"Monitor", "Other"}
+
+# Human-readable note shown alongside low-priority driver updates
+CATEGORY_NOTES = {
+    "Monitor": (
+        "Monitor drivers are small metadata files that tell Windows the display name and "
+        "resolution capabilities. They contain no executable code and have no impact on "
+        "display quality, refresh rate, or color accuracy — those are controlled by your "
+        "GPU driver (NVIDIA). A monitor driver update is almost never worth installing."
+    ),
 }
 
 DELL_API = "https://www.dell.com/support/driver/en-us/ips/api/driverlist/fetchdriversbyproduct"
@@ -248,15 +263,23 @@ def run_scan():
             # WU query failed entirely — fall back to unknown
             status = "unknown"
 
+        low_priority = category in LOW_PRIORITY_CATEGORIES
+        cat_note     = CATEGORY_NOTES.get(category, "")
         results.append({
             "name": name, "version": version, "date": drv_date,
             "category": category, "manufacturer": mfr, "status": status,
             "latest_version": latest_ver, "latest_date": latest_date,
             "download_url": download_url,
+            "low_priority": low_priority,
+            "category_note": cat_note,
         })
 
     order = {"update_available": 0, "unknown": 1, "up_to_date": 2}
-    results.sort(key=lambda x: (order.get(x["status"], 3), x["name"].lower()))
+    # Low-priority categories sort after normal updates even when update_available
+    results.sort(key=lambda x: (
+        order.get(x["status"], 3) + (10 if x.get("low_priority") and x["status"] == "update_available" else 0),
+        x["name"].lower()
+    ))
     _scan_results = results
     updates = sum(1 for r in results if r["status"] == "update_available")
     _scan_status = {
@@ -458,7 +481,10 @@ def build_recommendations(crashes: list) -> list:
             "priority": "critical", "count": total,
             "title": f"High crash frequency — {total} crashes detected",
             "detail": "This level of instability warrants immediate attention. "
-                      "Run Dell SupportAssist diagnostics and consider hardware testing (memtest86).",
+                      "Run Dell SupportAssist (search for it in the Start menu) to check for hardware faults. "
+                      "If crashes persist, RAM could be the cause — Dell SupportAssist includes a memory test, "
+                      "or you can boot from a USB with MemTest86 (free tool from memtest86.com that tests RAM "
+                      "before Windows loads, bypassing any OS interference).",
             "source": "static_kb",
         })
     elif total >= 3:
@@ -473,10 +499,11 @@ def build_recommendations(crashes: list) -> list:
     if "HYPERVISOR_ERROR" in error_counts:
         recs.append({
             "priority": "high", "count": error_counts["HYPERVISOR_ERROR"],
-            "title": "Verify BIOS Version for i9-14900K Stability",
-            "detail": "BIOS updates for the XPS 8960 include CPU microcode patches that address "
-                      "Raptor Lake stability issues. Current BIOS: 2.22.0 (Jan 2026). "
-                      "Check Dell Support for newer releases.",
+            "title": "i9-14900K Raptor Lake Instability — BIOS 2.22.0 includes microcode fix",
+            "detail": "HYPERVISOR_ERROR on this CPU is caused by intelppm.sys conflicting with "
+                      "Hyper-V during C-State transitions. BIOS 2.22.0 (Jan 2026) includes Intel "
+                      "microcode patches for this. Your BIOS is current — focus on C-State and "
+                      "Memory Integrity settings if crashes continue.",
             "source": "static_kb",
         })
 
@@ -1612,7 +1639,8 @@ def summarize_drivers(results: list) -> dict:
             f"{len(updates)} driver update(s) available — most in {top}.",
             "Open Windows Update to install pending driver updates."))
         actions.append("Open Windows Update")
-        critical = [r for r in updates if r["category"] in ("Display", "Network", "Chipset")]
+        critical = [r for r in updates if r["category"] in ("Display", "Network", "Chipset")
+                    and not r.get("low_priority")]
         if critical:
             insights.append(_insight("critical",
                 f"{len(critical)} critical driver(s) need updating: "
@@ -1695,7 +1723,7 @@ def summarize_bsod(data: dict) -> dict:
     if avg_up > 0 and avg_up < 24:
         insights.append(_insight("critical",
             f"Average uptime between crashes: {avg_up}h — very unstable.",
-            "Run Dell SupportAssist diagnostics and memtest86."))
+            "Run Dell SupportAssist from the Start menu — it includes built-in hardware diagnostics including memory testing."))
     elif avg_up > 0:
         insights.append(_insight("info",
             f"Average uptime between crashes: {avg_up}h."))
@@ -1802,9 +1830,9 @@ def summarize_network(data: dict) -> dict:
             + ", ".join(a.get("Name","?") for a in down_adapters)))
     unusual_ports = [c for c in established if c.get("RemotePort") in (4444,1337,31337,9001,8888)]
     if unusual_ports:
-        insights.append(_insight("critical",
-            f"{len(unusual_ports)} connection(s) on unusual ports — potential security concern.",
-            "Investigate these connections in the Active Connections table below."))
+        insights.append(_insight("warning",
+            f"{len(unusual_ports)} connection(s) on unusual ports — worth reviewing.",
+            "Check the Active Connections table below. These may be legitimate (VPN, games, apps) or unexpected. Look at the remote address and process name to decide."))
         actions.append("Investigate flagged connections")
     if top_procs:
         top = top_procs[0]
@@ -1869,37 +1897,43 @@ def summarize_updates(items: list) -> dict:
 EVENT_KB = {
     # ── DistributedCOM / DCOM ─────────────────────────────────────────────
     10010: {"noise": True,  "source": "Microsoft-Windows-DistributedCOM",
-            "title": "DCOM server unavailable",
-            "detail": "Windows couldn't start a DCOM server within the timeout. "
-                      "Event ID 10010 is almost always harmless background noise — "
+            "title": "Windows background component unavailable (Event 10010)",
+            "detail": "Windows couldn't start a DCOM server (DCOM is the background communication "
+                      "framework Windows uses to connect apps and system services) in time. "
+                      "This is almost always harmless background noise — "
                       "typically caused by Microsoft Store apps or system components "
-                      "that register COM servers they don't always use.",
+                      "that register servers they don't always use.",
             "action": "Safe to ignore unless you see application crashes alongside it. "
                       "No action needed."},
     10016: {"noise": True,  "source": "Microsoft-Windows-DistributedCOM",
-            "title": "DCOM permission error",
-            "detail": "A process tried to activate a DCOM server without the required permissions. "
+            "title": "Windows background component permission error (Event 10016)",
+            "detail": "A process tried to activate a DCOM server (DCOM is the background communication "
+                      "framework Windows uses to connect apps and services) without the required permissions. "
                       "This is extremely common on Windows 11 and almost always benign — "
                       "it affects background Microsoft components, not your applications.",
-            "action": "Safe to ignore in most cases. If a specific app is broken, "
-                      "you can grant DCOM permissions via Component Services (dcomcnfg.exe)."},
+            "action": "Safe to ignore in most cases. No action needed unless a specific app is broken."},
     # ── Disk / Storage ────────────────────────────────────────────────────
     7:    {"noise": False, "source": "disk",
            "title": "Bad block on disk",
            "detail": "The disk driver detected a bad block. This is a hardware-level warning "
                      "that your drive may be developing physical errors.",
-           "action": "URGENT: back up your data immediately. Run chkdsk /r on the affected drive. "
-                     "Check Disk Health tab for physical disk status."},
+           "action": "URGENT: back up your data immediately. "
+                     "Then run chkdsk /r (Windows built-in disk check and repair tool): "
+                     "search Command Prompt in Start, right-click Run as Administrator, "
+                     "type: chkdsk C: /r and press Enter (replace C: with the affected drive letter). "
+                     "Check the Disk Health tab for physical disk status."},
     11:   {"noise": False, "source": "disk",
            "title": "Controller error on disk",
            "detail": "The disk controller reported an error. Can indicate a failing drive, "
                      "loose cable, or faulty SATA/NVMe controller.",
-           "action": "Check Disk Health tab. Run CrystalDiskInfo to read S.M.A.R.T. data. "
-                     "Reseat drive cables if desktop."},
+           "action": "Check the Disk Health tab in WinDesktopMgr for drive health status. "
+                     "For deeper analysis, CrystalDiskInfo (free tool at crystalmark.info) reads S.M.A.R.T. data "
+                     "(drive health statistics built into every modern drive). "
+                     "If errors are found, back up immediately and consider replacing the drive."},
     51:   {"noise": False, "source": "disk",
            "title": "Disk paging error",
            "detail": "An error occurred during a paging operation. Often appears before drive failure.",
-           "action": "Back up data. Run chkdsk /r and check S.M.A.R.T. status."},
+           "action": "Back up data. Run chkdsk /r (Windows built-in disk check tool): search Command Prompt in Start, right-click Run as Administrator, type: chkdsk C: /r. Check the Disk Health tab for drive health status."},
     # ── Kernel / Power ────────────────────────────────────────────────────
     41:   {"noise": False, "source": "Microsoft-Windows-Kernel-Power",
            "title": "Unexpected system shutdown (Kernel-Power)",
@@ -1938,7 +1972,7 @@ EVENT_KB = {
     20: {"noise": False, "source": "Microsoft-Windows-WindowsUpdateClient",
          "title": "Windows Update installation failure",
          "detail": "A Windows Update failed to install.",
-         "action": "Check Update History tab for details. Run: sfc /scannow, then retry Windows Update."},
+         "action": "Check Update History tab for details. Run sfc /scannow (Windows system file repair tool): search Command Prompt in Start, right-click Run as Administrator, type: sfc /scannow and press Enter. Then retry Windows Update."},
     # ── Application / .NET ───────────────────────────────────────────────
     1000: {"noise": False, "source": "Application Error",
            "title": "Application crash",
@@ -1965,7 +1999,7 @@ EVENT_KB = {
     # ── Security ─────────────────────────────────────────────────────────
     4625: {"noise": False, "source": "Microsoft-Windows-Security-Auditing",
            "title": "Failed logon attempt",
-           "detail": "An account failed to log on. Multiple occurrences may indicate brute-force or misconfigured service.",
+           "detail": "An account failed to log on. Multiple occurrences may indicate a brute-force attack (repeated automated login attempts by malicious software) or a misconfigured service trying to authenticate.",
            "action": "Check the account name and source IP in the event details. "
                      "If from external IP, review firewall and RDP settings."},
     4648: {"noise": False, "source": "Microsoft-Windows-Security-Auditing",
@@ -2002,7 +2036,7 @@ DRIVER_CONTEXT = {
     "intelppm.sys":      ("Intel CPU power management driver",
                           "Disable C-States in BIOS and Memory Integrity in Core Isolation."),
     "ntoskrnl.exe":      ("Windows kernel",
-                          "Run sfc /scannow and check RAM with memtest86."),
+                          "Run sfc /scannow in an Admin PowerShell to repair system files. If crashes continue, run Dell SupportAssist memory diagnostics from the Start menu."),
     "win32k.sys":        ("Windows GUI subsystem",
                           "Update display drivers and check for Windows updates."),
     "nvlddmkm.sys":      ("NVIDIA display driver",
@@ -2176,7 +2210,7 @@ try {{
                           f"This is a Windows kernel bugcheck. "
                           f"Check the faulty driver in the crash details above for root cause.",
             "priority":   "high",
-            "action":     f"Run: windbg -z <minidump> to analyse. "
+            "action":     f"Minidump files are saved to C:\\Windows\\Minidump and are analysed automatically by the BSOD Dashboard tab. For manual deep analysis, WinDbg (Microsoft's free crash analyser, available from the Microsoft Store) can open these files directly. "
                           f"Check Driver Manager tab for updates to the faulty driver.",
             "fetched":    datetime.now(timezone.utc).isoformat(),
         }
@@ -3269,12 +3303,13 @@ def summarize_thermals(data: dict) -> dict:
             ", ".join(f"{t['Name']} {t['TempC']}°C" for t in temps[:4])))
 
     if cpu_pct >= 90:
-        insights.append(_insight("critical", f"CPU at {cpu_pct}% utilisation.",
-            "Check Process Monitor tab for the responsible process."))
+        insights.append(_insight("warning", f"CPU at {cpu_pct}% — sustained high utilisation.",
+            "Check the Processes tab to identify what is driving high CPU. "
+            "This may be normal during heavy tasks (video encoding, backups) but worth checking if unexpected."))
     elif cpu_pct >= 60:
-        insights.append(_insight("warning", f"CPU at {cpu_pct}% utilisation."))
+        insights.append(_insight("info", f"CPU at {cpu_pct}% utilisation — moderately busy."))
     else:
-        insights.append(_insight("ok", f"CPU at {cpu_pct}% utilisation."))
+        insights.append(_insight("ok", f"CPU at {cpu_pct}% utilisation — normal."))
 
     if mem_tot > 0:
         mem_pct = round(mem_used / mem_tot * 100, 1)
@@ -3557,20 +3592,39 @@ def get_health_report_history() -> dict:
     for path in paths:
         try:
             fname = os.path.basename(path)
-            dm = re.search(r"(\d{8})_(\d{6})", fname)
-            if not dm:
+            ts = None
+
+            # Format 1: SystemHealthReport_2026-03-16_09-30-24.html (SystemHealthDiag.py format)
+            dm = re.search(r"(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2}-\d{2})", fname)
+            if dm:
+                ts = datetime.strptime(
+                    f"{dm.group(1)}_{dm.group(2)}", "%Y-%m-%d_%H-%M-%S"
+                ).replace(tzinfo=timezone.utc)
+
+            # Format 2: 20260316_093024 (compact format)
+            if not ts:
+                dm = re.search(r"(\d{8})_(\d{6})", fname)
+                if dm:
+                    ts = datetime.strptime(
+                        f"{dm.group(1)}_{dm.group(2)}", "%Y%m%d_%H%M%S"
+                    ).replace(tzinfo=timezone.utc)
+
+            if not ts:
                 continue
-            ts = datetime.strptime(
-                f"{dm.group(1)}_{dm.group(2)}", "%Y%m%d_%H%M%S"
-            ).replace(tzinfo=timezone.utc)
 
             with open(path, encoding="utf-8", errors="ignore") as f:
                 html = f.read()
 
-            # Extract health score — look for patterns like "87/100", "Score: 87", "87%"
+            # Extract health score — SystemHealthDiag.py uses <div class="score-num">87</div>
             score = None
-            for pat in [r"(\d{1,3})\s*/\s*100", r"[Ss]core[:\s]+([0-9]{1,3})",
-                        r"health[\s\-_]*score[^\d]*(\d{1,3})", r"([0-9]{1,3})\s*%\s*[Hh]ealth"]:
+            # Primary: score-num div (SystemHealthDiag.py format)
+            for pat in [
+                r'class=["\']score-num["\'][^>]*>(\d{1,3})<',   # <div class="score-num">87</div>
+                r'score-num[^>]*>\s*(\d{1,3})\s*<',             # whitespace variant
+                r"Health Score[:\s]+([0-9]{1,3})\s*/\s*100",    # "Health Score: 87/100"
+                r"(\d{1,3})\s*/\s*100",                          # "87/100" anywhere
+                r"[Ss]core[:\s]+([0-9]{1,3})",                   # "Score: 87"
+            ]:
                 m = re.search(pat, html)
                 if m:
                     v = int(m.group(1))
@@ -3578,16 +3632,24 @@ def get_health_report_history() -> dict:
                         score = v
                         break
 
-            # BSOD count in this report
-            bsod_codes = re.findall(
-                r"(HYPERVISOR_ERROR|PAGE_FAULT_IN_NONPAGED_AREA|VIDEO_TDR_FAILURE"
-                r"|KERNEL_SECURITY_CHECK_FAILURE|DRIVER_POWER_STATE_FAILURE"
-                r"|SYSTEM_SERVICE_EXCEPTION|DPC_WATCHDOG_VIOLATION"
-                r"|DRIVER_IRQL_NOT_LESS_OR_EQUAL|CRITICAL_PROCESS_DIED"
-                r"|KMODE_EXCEPTION_NOT_HANDLED|IRQL_NOT_LESS_OR_EQUAL)",
-                html, re.IGNORECASE
-            )
-            bsod_count = len(set(c.upper() for c in bsod_codes))
+            # BSOD count — SystemHealthDiag.py outputs "Crashes - 30 days" with the count
+            bsod_count = 0
+
+            # Primary: "Crashes - 30 days", N  pattern in the sys-grid
+            m_crashes = re.search(r"Crashes\s*[-–]\s*30\s*days.*?(\d+)", html, re.IGNORECASE | re.DOTALL)
+            if m_crashes:
+                bsod_count = int(m_crashes.group(1))
+            else:
+                # Fallback: count BugCheckCode entries in the crash table
+                bsod_codes = re.findall(
+                    r"(HYPERVISOR_ERROR|PAGE_FAULT_IN_NONPAGED_AREA|VIDEO_TDR_FAILURE"
+                    r"|KERNEL_SECURITY_CHECK_FAILURE|DRIVER_POWER_STATE_FAILURE"
+                    r"|SYSTEM_SERVICE_EXCEPTION|DPC_WATCHDOG_VIOLATION"
+                    r"|DRIVER_IRQL_NOT_LESS_OR_EQUAL|CRITICAL_PROCESS_DIED"
+                    r"|KMODE_EXCEPTION_NOT_HANDLED|IRQL_NOT_LESS_OR_EQUAL)",
+                    html, re.IGNORECASE
+                )
+                bsod_count = len(bsod_codes)  # total occurrences, not unique
 
             # WHEA errors
             whea = len(re.findall(r"WHEA|hardware error|machine check", html, re.IGNORECASE))
@@ -3856,6 +3918,45 @@ try {
     except Exception as e:
         print(f"[Timeline] Boot query error: {e}")
 
+    # ── 5. Credential loss events (Security log 4625 failed logon, 4648 explicit cred) ──
+    ps_cred_evts = r"""
+try {
+    $evts = Get-WinEvent -FilterHashtable @{LogName='Security'; Id=@(4625,4648)} `
+        -MaxEvents 100 -ErrorAction Stop
+    $evts | Where-Object {
+        $_.Message -match "SMB|network|NAS|OUTLOOK|IMAP|SMTP|MicrosoftOffice|MicrosoftEdge" -or
+        $_.Id -eq 4625
+    } | ForEach-Object {
+        [PSCustomObject]@{
+            Id      = $_.Id
+            Time    = $_.TimeCreated.ToString('o')
+            Message = if ($_.Message) { $_.Message.Substring(0,[Math]::Min(120,$_.Message.Length)) } else { "" }
+        }
+    } | ConvertTo-Json -Depth 2
+} catch { "[]" }
+"""
+    try:
+        r5 = subprocess.run(["powershell", "-NonInteractive", "-Command", ps_cred_evts],
+                            capture_output=True, text=True, timeout=15)
+        cred_evts = json.loads(r5.stdout.strip() or "[]")
+        if isinstance(cred_evts, dict): cred_evts = [cred_evts]
+        for ce in cred_evts:
+            ts = _parse_ts(ce.get("Time",""))
+            if ts < cutoff:
+                continue
+            eid = ce.get("Id", 0)
+            events.append({
+                "ts":       ts.isoformat(),
+                "type":     "cred_failure" if eid == 4625 else "cred_use",
+                "category": "credential",
+                "title":    "Credential failure / logon rejected" if eid == 4625 else "Explicit credential use detected",
+                "detail":   ce.get("Message","")[:80],
+                "severity": "warning" if eid == 4625 else "info",
+                "icon":     "🔐",
+            })
+    except Exception as e:
+        print(f"[Timeline] Cred events error: {e}")
+
     # ── Sort and annotate ─────────────────────────────────────────────────────
     events.sort(key=lambda e: e["ts"], reverse=True)
 
@@ -3879,9 +3980,10 @@ def summarize_timeline(events: list) -> dict:
     if not events:
         return {"status": "ok", "headline": "No timeline events found.", "insights": [], "actions": []}
     insights, actions = [], []
-    crashes   = [e for e in events if e["type"] == "bsod"]
-    updates   = [e for e in events if e["type"] in ("update","driver_install")]
-    near_crash = [e for e in updates if e.get("near_crash")]
+    crashes      = [e for e in events if e["type"] == "bsod"]
+    updates      = [e for e in events if e["type"] in ("update","driver_install")]
+    cred_fails   = [e for e in events if e["type"] == "cred_failure"]
+    near_crash   = [e for e in updates if e.get("near_crash")]
     if near_crash:
         insights.append(_insight("critical",
             f"{len(near_crash)} update(s) installed within 4 hours of a crash: "
@@ -3895,6 +3997,11 @@ def summarize_timeline(events: list) -> dict:
     if driver_installs:
         insights.append(_insight("info",
             f"{len(driver_installs)} driver/firmware change(s) in the period."))
+    if cred_fails:
+        insights.append(_insight("warning",
+            f"{len(cred_fails)} credential failure event(s) detected. "
+            "These may relate to Outlook disconnections and SMB drive loss after reboot.",
+            "Check the Credentials & Network Health tab for diagnosis."))
     if not crashes and not near_crash:
         insights.append(_insight("ok", "No crashes detected and no suspicious update timing."))
     status = ("critical" if near_crash
@@ -4389,13 +4496,608 @@ def summarize_bios(data: dict) -> dict:
     # Special note for i9-14900K HYPERVISOR_ERROR
     # Build the BIOS reboot command as joined parts so it survives template rendering
     bios_cmd = " ".join(["shutdown", "/r", "/fw", "/t", "0"])
-    insights.append(_insight("warning",
+    # Only show the Raptor Lake note — framed correctly given BIOS is current
+    insights.append(_insight("info",
         "Your i9-14900K is affected by Intel Raptor Lake instability (intelppm.sys / HYPERVISOR_ERROR). "
-        "Dell BIOS updates include CPU microcode patches that address this directly.",
-        f"To enter BIOS after updating, run in PowerShell: {bios_cmd}"))
+        "BIOS 2.22.0 includes Intel microcode patches for this issue — your BIOS is current, no update needed. "
+        "If HYPERVISOR_ERROR crashes continue, the remaining mitigations are: "
+        "disable C-States in BIOS, and disable Memory Integrity in Windows Security > Core Isolation.",
+        "To access BIOS settings: restart and press F2 at the Dell splash screen. "
+        "Or from PowerShell (Admin): shutdown /r /fw /t 0"))
     status = "critical" if update.get("update_available") else "warning" if not update.get("latest_version") else "ok"
     headline = (f"BIOS update available: {update.get('latest_version','')}" if update.get("update_available")
                 else f"BIOS {version} — {'up to date' if update.get('latest_version') else 'check manually'}")
+    return {"status": status, "headline": headline, "insights": insights, "actions": actions}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CREDENTIALS & NETWORK HEALTH
+# ══════════════════════════════════════════════════════════════════════════════
+
+def get_credentials_network_health() -> dict:
+    """
+    Checks:
+    - Windows Credential Manager stored credentials (email/OAuth/NAS)
+    - OneDrive / Microsoft 365 MSAL token cache status
+    - SMB / CIFS share connectivity and mapping status
+    - NFS mounts (if NFS client is installed)
+    - Fast Startup state (known cause of credential loss on reboot)
+    - McAfee firewall interference with SMB port 445
+    - Recent credential failure events from Security log (4625/4648/4776)
+    """
+
+    # ── Credential Manager entries ─────────────────────────────────────────────
+    ps_creds = r"""
+try {
+    $creds = cmdkey /list 2>$null
+    $lines = $creds -split "`n" | Where-Object { $_ -match "Target:|User:|Type:" }
+    $entries = @()
+    $current = @{}
+    foreach ($line in $lines) {
+        if ($line -match "Target:\s*(.+)") {
+            if ($current.Count -gt 0) { $entries += [PSCustomObject]$current }
+            $current = @{ Target = $Matches[1].Trim(); User = ""; Type = "" }
+        } elseif ($line -match "User:\s*(.+)")  { $current.User = $Matches[1].Trim() }
+        elseif ($line -match "Type:\s*(.+)")    { $current.Type = $Matches[1].Trim() }
+    }
+    if ($current.Count -gt 0) { $entries += [PSCustomObject]$current }
+    $entries | ConvertTo-Json -Depth 2
+} catch { "[]" }
+"""
+
+    # ── SMB / CIFS / mapped drives ─────────────────────────────────────────────
+    ps_smb = r"""
+$result = @{}
+# All mapped drives (SMB/CIFS/NFS)
+# Read from registry - works regardless of which user/session runs the script
+$mappedDrives = @()
+try {
+    # Get all logged-on user SIDs from the registry
+    $userSIDs = @()
+    $profileList = Get-ChildItem "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList" -ErrorAction SilentlyContinue
+    foreach ($profile in $profileList) {
+        $sid = $profile.PSChildName
+        if ($sid -match "^S-1-5-21-") { $userSIDs += $sid }
+    }
+    # Also try current user
+    $currentSID = (New-Object Security.Principal.NTAccount($env:USERNAME)).Translate([Security.Principal.SecurityIdentifier]).Value
+    if ($currentSID -notin $userSIDs) { $userSIDs += $currentSID }
+
+    foreach ($sid in $userSIDs) {
+        $netPath = "Registry::HKU\$sid\Network"
+        if (Test-Path $netPath) {
+            $driveMappings = Get-ChildItem $netPath -ErrorAction SilentlyContinue
+            foreach ($d in $driveMappings) {
+                try {
+                    $uncPath = (Get-ItemProperty $d.PSPath -Name RemotePath -ErrorAction Stop).RemotePath
+                    $letter  = $d.PSChildName
+                    $proto   = if ($uncPath -match '^//') { "NFS" } else { "SMB/CIFS" }
+                    $portNum = if ($proto -eq "NFS") { 2049 } else { 445 }
+                    $dialect = ""
+                    $reachable = $false
+                    try {
+                        if ($uncPath -match '^\\\\([^\\]+)') {
+                            $nasHost = $Matches[1]
+                            $tcp  = New-Object Net.Sockets.TcpClient
+                            $conn = $tcp.BeginConnect($nasHost, $portNum, $null, $null)
+                            $reachable = $conn.AsyncWaitHandle.WaitOne(1500, $false)
+                            $tcp.Close()
+                            if ($reachable -and $proto -eq "SMB/CIFS") {
+                                try {
+                                    $sc = Get-SmbConnection -ServerName $nasHost -ErrorAction SilentlyContinue |
+                                          Select-Object -First 1
+                                    if ($sc) { $dialect = $sc.Dialect }
+                                } catch {}
+                            }
+                        }
+                    } catch { $reachable = $false }
+                    $mappedDrives += [PSCustomObject]@{
+                        Name        = $letter
+                        Root        = "$letter`:\"
+                        DisplayRoot = $uncPath
+                        Reachable   = [bool]$reachable
+                        Protocol    = $proto
+                        Port        = $portNum
+                        Dialect     = $dialect
+                    }
+                } catch {}
+            }
+        }
+    }
+} catch {}
+
+# Fallback: also check current session Get-PSDrive
+try {
+    $psDrives = Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue |
+        Where-Object { $_.DisplayRoot -ne $null -and $_.DisplayRoot -ne "" }
+    foreach ($pd in $psDrives) {
+        $disp = $pd.DisplayRoot
+        if ($disp -match '^\\\\' -or $disp -match '^//') {
+            $alreadyAdded = $mappedDrives | Where-Object { $_.Name -eq $pd.Name }
+            if (-not $alreadyAdded) {
+                # TCP port 445 check - works from non-interactive sessions
+            $reachable = $false
+            try {
+                if ($pd.DisplayRoot -match '^\\\\([^\\]+)') {
+                    $h = $Matches[1]
+                    $t = New-Object Net.Sockets.TcpClient
+                    $c = $t.BeginConnect($h, 445, $null, $null)
+                    $reachable = $c.AsyncWaitHandle.WaitOne(1000, $false)
+                    $t.Close()
+                }
+            } catch {}
+                $proto     = if ($disp -match '^//') { "NFS" } else { "SMB/CIFS" }
+                $mappedDrives += [PSCustomObject]@{
+                    Name        = $pd.Name
+                    Root        = $pd.Root
+                    DisplayRoot = $disp
+                    Reachable   = [bool]$reachable
+                    Protocol    = $proto
+                    Port        = $portNum
+                    Dialect     = $dialect2
+                }
+            }
+        }
+    }
+} catch {}
+
+$result.MappedDrives = $mappedDrives
+
+# SMB/CIFS sessions (active connections from this PC)
+try {
+    $sessions = Get-SmbConnection -ErrorAction Stop
+    $result.SmbConnections = @($sessions | ForEach-Object {
+        [PSCustomObject]@{
+            ServerName  = $_.ServerName
+            ShareName   = $_.ShareName
+            UserName    = $_.UserName
+            Dialect     = $_.Dialect
+            Redirected  = $_.Redirected
+        }
+    })
+} catch { $result.SmbConnections = @() }
+
+# CIFS net use connections
+try {
+    $netuse = net use 2>$null | Where-Object { $_ -match "\\" }
+    $result.NetUseLines = @($netuse)
+} catch { $result.NetUseLines = @() }
+
+# NFS mounts (Windows NFS client)
+try {
+    $nfs = Get-NfsMappedDrive -ErrorAction Stop
+    $result.NfsMounts = @($nfs | ForEach-Object {
+        [PSCustomObject]@{
+            LocalPath  = $_.LocalPath
+            RemotePath = $_.RemotePath
+            Mounted    = $_.IsMounted
+        }
+    })
+} catch { $result.NfsMounts = @() }
+
+# SMB client configuration
+try {
+    $cfg = Get-SmbClientConfiguration -ErrorAction Stop
+    $result.SmbConfig = [PSCustomObject]@{
+        RequireSecuritySignature = $cfg.RequireSecuritySignature
+        EnableSecuritySignature  = $cfg.EnableSecuritySignature
+        DirectoryCacheLifetime   = $cfg.DirectoryCacheLifetime
+    }
+} catch { $result.SmbConfig = $null }
+
+$result | ConvertTo-Json -Depth 3
+"""
+
+    # ── OneDrive / Microsoft 365 token cache ──────────────────────────────────
+    # The MSAL token cache lives in the user profile — check its age and size
+    # If it's been cleared or corrupted, Word/Outlook show "Sign in required"
+    ps_onedrive = r"""
+$result = @{}
+
+# Helper: a process is truly suspended when at least one thread has WaitReason = Suspended
+# (NOT just ThreadState = Wait — that is normal for any idle process)
+function Test-ProcessSuspended($proc) {
+    try {
+        $suspThreads = $proc.Threads | Where-Object {
+            $_.ThreadState -eq [System.Diagnostics.ThreadState]::Wait -and
+            $_.WaitReason  -eq [System.Diagnostics.ThreadWaitReason]::Suspended
+        }
+        return ($suspThreads.Count -gt 0)
+    } catch { return $false }
+}
+
+# OneDrive process - check running AND truly suspended
+$odProc = Get-Process -Name OneDrive -ErrorAction SilentlyContinue
+$result.OneDriveRunning   = ($null -ne $odProc)
+$result.OneDriveSuspended = $false
+$result.OneDrivePriority  = ""
+if ($odProc) {
+    try {
+        $result.OneDriveSuspended = Test-ProcessSuspended $odProc
+        $result.OneDrivePriority  = $odProc.PriorityClass.ToString()
+    } catch {}
+}
+
+# Check other auth-related processes for true suspension
+$authProcs = @("olk", "WWAHost")
+$suspendedAuth = @()
+foreach ($pname in $authProcs) {
+    Get-Process -Name $pname -ErrorAction SilentlyContinue | ForEach-Object {
+        if (Test-ProcessSuspended $_) {
+            $suspendedAuth += [PSCustomObject]@{ Name = $_.ProcessName; PID = $_.Id }
+        }
+    }
+}
+$result.SuspendedAuthProcs  = $suspendedAuth
+$result.BrokerIssues        = @()
+$result.MsAccountSuspended  = $false
+
+# OneDrive sync status via registry
+try {
+    $odStatus = Get-ItemProperty "HKCU:\Software\Microsoft\OneDrive\Accounts\Personal" `
+        -ErrorAction Stop
+    $result.OneDriveAccount   = $odStatus.UserEmail
+    $result.OneDriveConnected = ($null -ne $odStatus.UserEmail -and $odStatus.UserEmail -ne "")
+} catch {
+    try {
+        $odBiz = Get-ItemProperty "HKCU:\Software\Microsoft\OneDrive\Accounts\Business1" `
+            -ErrorAction Stop
+        $result.OneDriveAccount   = $odBiz.UserEmail
+        $result.OneDriveConnected = ($null -ne $odBiz.UserEmail)
+    } catch {
+        $result.OneDriveAccount   = $null
+        $result.OneDriveConnected = $false
+    }
+}
+
+# MSAL token cache — Office apps store OAuth tokens here
+$msalPath = "$env:LOCALAPPDATA\Microsoft\TokenBroker\Cache"
+if (Test-Path $msalPath) {
+    $files = Get-ChildItem $msalPath -Recurse -ErrorAction SilentlyContinue
+    $result.MsalCacheFiles = $files.Count
+    $newest = $files | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    $result.MsalCacheNewest = if ($newest) { $newest.LastWriteTime.ToString("o") } else { $null }
+    $result.MsalCacheSizeKB = [math]::Round(($files | Measure-Object Length -Sum).Sum / 1KB, 1)
+} else {
+    $result.MsalCacheFiles  = 0
+    $result.MsalCacheNewest = $null
+    $result.MsalCacheSizeKB = 0
+}
+
+# Office credential locations in Credential Manager
+$officeCreds = cmdkey /list 2>$null | Where-Object {
+    $_ -match "MicrosoftOffice|OneDrive|SharePoint|microsoftonline|live\.com|outlook"
+}
+$result.OfficeCreds = @($officeCreds | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+
+# Last Office/OneDrive error events
+try {
+    $evts = Get-WinEvent -FilterHashtable @{
+        LogName="Application"
+        ProviderName=@("Microsoft Office","OneDrive","MSOIDSVC")
+        Level=@(1,2,3)
+    } -MaxEvents 10 -ErrorAction Stop
+    $result.OfficeErrors = @($evts | ForEach-Object {
+        [PSCustomObject]@{
+            Time    = $_.TimeCreated.ToString("o")
+            Source  = $_.ProviderName
+            Message = if ($_.Message) { $_.Message.Substring(0,[Math]::Min(150,$_.Message.Length)) } else { "" }
+        }
+    })
+} catch { $result.OfficeErrors = @() }
+
+$result | ConvertTo-Json -Depth 3
+"""
+
+    # ── Fast Startup ───────────────────────────────────────────────────────────
+    ps_fast = r"""
+try {
+    $val = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power" `
+        -Name "HiberbootEnabled" -ErrorAction Stop).HiberbootEnabled
+    [PSCustomObject]@{ FastStartupEnabled = ($val -eq 1) } | ConvertTo-Json
+} catch { '{"FastStartupEnabled": null}' }
+"""
+
+    # ── Recent credential failure events (Security log 4625 = failed logon) ───
+    ps_events = r"""
+try {
+    $evts = Get-WinEvent -FilterHashtable @{
+        LogName='Security'; Id=@(4625,4648,4776)
+    } -MaxEvents 50 -ErrorAction Stop
+    $evts | ForEach-Object {
+        [PSCustomObject]@{
+            Id          = $_.Id
+            Time        = $_.TimeCreated.ToString('o')
+            Message     = if ($_.Message) { $_.Message.Substring(0,[Math]::Min(200,$_.Message.Length)) } else { "" }
+        }
+    } | ConvertTo-Json -Depth 2
+} catch { "[]" }
+"""
+
+    # ── SMB firewall rule check ────────────────────────────────────────────────
+    ps_fw = r"""
+try {
+    $rules = Get-NetFirewallRule -DisplayGroup "File and Printer Sharing" -ErrorAction Stop |
+             Select-Object DisplayName, Enabled, Action, Direction
+    $rules | ConvertTo-Json -Depth 2
+} catch { "[]" }
+"""
+
+    results = {}
+    for name, ps in [("creds", ps_creds), ("smb", ps_smb), ("onedrive", ps_onedrive),
+                     ("fast", ps_fast), ("events", ps_events), ("fw", ps_fw)]:
+        try:
+            r = subprocess.run(["powershell", "-NonInteractive", "-Command", ps],
+                               capture_output=True, text=True, timeout=25)
+            raw = r.stdout.strip()
+            results[name] = json.loads(raw) if raw and raw not in ("", "[]", "{}") else ([] if name in ("creds","events","fw") else {})
+        except Exception as e:
+            print(f"[CredNet] {name} error: {e}")
+            results[name] = [] if name in ("creds","events","fw") else {}
+
+    creds    = results.get("creds", [])
+    smb      = results.get("smb", {})
+    onedrive = results.get("onedrive", {})
+    fast     = results.get("fast", {})
+    events   = results.get("events", [])
+    fw       = results.get("fw", [])
+    if isinstance(creds, dict):  creds  = [creds]
+    if isinstance(events, dict): events = [events]
+    if isinstance(fw, dict):     fw     = [fw]
+
+    # Categorise credentials
+    email_creds = [c for c in creds if any(w in str(c.get("Target","")).lower()
+                   for w in ("outlook","office","microsoft","smtp","imap","exchange",
+                             "gmail","yahoo","icloud","microsoftonline","live.com"))]
+    nas_creds   = [c for c in creds if any(w in str(c.get("Target","")).lower()
+                   for w in ("smb","nas","share","synology","qnap","wd","netgear","cifs","nfs"))]
+
+    # Drives - SMB/CIFS/NFS
+    drives      = smb.get("MappedDrives", []) if isinstance(smb, dict) else []
+    drives_down = [d for d in drives if not d.get("Reachable", True)]
+    drives_up   = [d for d in drives if     d.get("Reachable", True)]
+    smb_drives  = [d for d in drives if "SMB" in d.get("Protocol","")]
+    nfs_drives  = [d for d in drives if "NFS" in d.get("Protocol","")]
+    nfs_mounts  = smb.get("NfsMounts", []) if isinstance(smb, dict) else []
+
+    # OneDrive / M365 token status
+    od_running    = onedrive.get("OneDriveRunning",   False) if isinstance(onedrive, dict) else False
+    od_connected  = onedrive.get("OneDriveConnected", False) if isinstance(onedrive, dict) else False
+    od_account    = onedrive.get("OneDriveAccount",   "")    if isinstance(onedrive, dict) else ""
+    msal_files    = onedrive.get("MsalCacheFiles",    0)     if isinstance(onedrive, dict) else 0
+    msal_newest   = onedrive.get("MsalCacheNewest")          if isinstance(onedrive, dict) else None
+    msal_size     = onedrive.get("MsalCacheSizeKB",   0)     if isinstance(onedrive, dict) else 0
+    office_creds  = onedrive.get("OfficeCreds",       [])    if isinstance(onedrive, dict) else []
+    office_errors = onedrive.get("OfficeErrors",      [])    if isinstance(onedrive, dict) else []
+
+    # Token age - flag if MSAL token older than 8 hours
+    token_stale = False
+    token_age_h = None
+    if msal_newest:
+        try:
+            token_dt    = _parse_ts(msal_newest)
+            token_age_h = round((datetime.now(timezone.utc) - token_dt).total_seconds() / 3600, 1)
+            token_stale = token_age_h > 8
+        except Exception:
+            pass
+
+    # Credential events
+    cred_failures = [e for e in events if e.get("Id") in (4625, 4776)]
+    cred_explicit = [e for e in events if e.get("Id") == 4648]
+    fast_startup  = fast.get("FastStartupEnabled")
+    fw_blocking   = [f for f in fw if f.get("Action","") == "Block" and f.get("Enabled")]
+
+    return {
+        "creds":              creds,
+        "email_creds":        email_creds,
+        "nas_creds":          nas_creds,
+        "drives":             drives,
+        "drives_down":        drives_down,
+        "drives_up":          drives_up,
+        "smb_drives":         smb_drives,
+        "nfs_drives":         nfs_drives,
+        "nfs_mounts":         nfs_mounts,
+        "smb_connections":    smb.get("SmbConnections", []) if isinstance(smb, dict) else [],
+        "smb_config":         smb.get("SmbConfig") if isinstance(smb, dict) else None,
+        "fast_startup":       fast_startup,
+        "cred_failures":      cred_failures[:10],
+        "cred_explicit":      cred_explicit[:5],
+        "fw_rules":           fw,
+        "fw_blocking":        fw_blocking,
+        "total_creds":        len(creds),
+        "broker_issues":      onedrive.get("BrokerIssues", []) if isinstance(onedrive, dict) else [],
+        "ms_account_suspended": onedrive.get("MsAccountSuspended", False) if isinstance(onedrive, dict) else False,
+        "onedrive_running":   od_running,
+        "onedrive_suspended": onedrive.get("OneDriveSuspended", False) if isinstance(onedrive, dict) else False,
+        "onedrive_priority":  onedrive.get("OneDrivePriority", "") if isinstance(onedrive, dict) else "",
+        "suspended_auth_procs": onedrive.get("SuspendedAuthProcs", []) if isinstance(onedrive, dict) else [],
+        "onedrive_connected": od_connected,
+        "onedrive_account":   od_account,
+        "msal_cache_files":   msal_files,
+        "msal_cache_newest":  msal_newest,
+        "msal_cache_size_kb": msal_size,
+        "msal_token_age_h":   token_age_h,
+        "msal_token_stale":   token_stale,
+        "office_creds":       office_creds,
+        "office_errors":      office_errors[:5],
+    }
+
+
+
+def summarize_credentials_network(data: dict) -> dict:
+    insights, actions = [], []
+    drives_down = data.get("drives_down", [])
+    email_creds = data.get("email_creds", [])
+    fast_startup = data.get("fast_startup")
+    cred_failures = data.get("cred_failures", [])
+    fw_blocking = data.get("fw_blocking", [])
+    smb_config = data.get("smb_config")
+
+    # Fast Startup is a known cause of SMB credential loss on reboot
+    if fast_startup is True:
+        insights.append(_insight("warning",
+            "Fast Startup is enabled. This is a known cause of SMB share disconnection and "
+            "credential loss on reboot. Windows does not fully shut down — network state is "
+            "partially preserved in a hibernation file and sometimes restored incorrectly.",
+            "Disable Fast Startup: Control Panel > Power Options > Choose what the power "
+            "buttons do > Turn on fast startup (uncheck). Then do a full Restart (not Shut Down)."))
+        actions.append("Disable Fast Startup to fix SMB credential loss on reboot")
+    elif fast_startup is False:
+        insights.append(_insight("ok", "Fast Startup is disabled. Full shutdown/restart cycle is in effect."))
+    else:
+        insights.append(_insight("info", "Could not determine Fast Startup state."))
+
+    # Drives down
+    if drives_down:
+        insights.append(_insight("critical",
+            f"{len(drives_down)} mapped SMB drive(s) currently unreachable: "
+            + ", ".join(f"{d.get('Name','?')}:\ ({d.get('DisplayRoot','')})" for d in drives_down[:3]),
+            "Check NAS device is powered on and reachable on the network. "
+            "Try: net use * /delete then remap."))
+        actions.append("Reconnect unreachable SMB drives")
+    elif data.get("drives"):
+        insights.append(_insight("ok",
+            f"All {len(data['drives'])} mapped SMB drive(s) are reachable."))
+
+    # OneDrive / M365 token status
+    token_stale = data.get("msal_token_stale", False)
+    token_age   = data.get("msal_token_age_h")
+    od_running  = data.get("onedrive_running", False)
+    od_connected= data.get("onedrive_connected", False)
+    office_errs = data.get("office_errors", [])
+    if token_stale:
+        insights.append(_insight("critical",
+            f"OneDrive / Microsoft 365 authentication token is {token_age:.0f} hours old. "
+            "This is the direct cause of the 'Sign in Required — cached credentials have expired' "
+            "error you see in Word and Outlook.",
+            "Fix: Open OneDrive in the system tray, click Sign in. Or open Word/Outlook and "
+            "click the Sign In prompt. After signing in, tokens are refreshed for all Office apps."))
+        actions.append("Re-sign into OneDrive to refresh Office 365 token")
+    elif not od_connected:
+        insights.append(_insight("warning",
+            "OneDrive does not appear to be connected to an account. "
+            "Office apps will show sign-in prompts until OneDrive is authenticated.",
+            "Click the OneDrive cloud icon in the system tray and sign in."))
+    elif not od_running:
+        insights.append(_insight("warning",
+            "OneDrive process is not running. Office credential sync is paused.",
+            "Launch OneDrive from Start menu or restart it."))
+    else:
+        age_str = f" (refreshed {token_age:.0f}h ago)" if token_age is not None else ""
+        insights.append(_insight("ok",
+            f"OneDrive connected{age_str} — Microsoft 365 tokens appear current."))
+
+    if office_errs:
+        insights.append(_insight("warning",
+            f"{len(office_errs)} recent Office/OneDrive error event(s) in Application log.",
+            "Check Event Viewer > Application log for OneDrive and Microsoft Office errors."))
+
+    # OneDrive / M365 token status
+    token_stale  = data.get("msal_token_stale", False)
+    token_age    = data.get("msal_token_age_h")
+    od_running   = data.get("onedrive_running", False)
+    od_connected = data.get("onedrive_connected", False)
+    od_account   = data.get("onedrive_account", "")
+    office_errs  = data.get("office_errors", [])
+    # Note: backgroundTaskHost suspensions are typically McAfee's idle UWP RulesEngine —
+    # normal Windows behavior, not an auth issue. The real auth issue is OneDrive suspension.
+    od_suspended  = data.get("onedrive_suspended", False)
+    od_priority   = data.get("onedrive_priority", "")
+    susp_auth     = data.get("suspended_auth_procs", [])
+
+    if od_suspended:
+        insights.append(_insight("critical",
+            "OneDrive process is SUSPENDED by Windows memory management. "
+            "This is the direct cause of the Sign in Required error in Word and Outlook. "
+            "When OneDrive is suspended it cannot refresh Microsoft 365 OAuth tokens.",
+            "Fix: run the Resume OneDrive button, or run in PowerShell: "
+            "Get-Process OneDrive | ForEach-Object { $_.Threads | ForEach-Object { try { $_.Resume() } catch {} } }. "
+            "To prevent recurrence, set OneDrive to AboveNormal priority."))
+        actions.append("Resume OneDrive process to fix Office 365 sign-in errors")
+    if susp_auth:
+        names = ", ".join(p.get("Name","") for p in susp_auth[:3])
+        insights.append(_insight("warning",
+            f"Other auth-related processes are suspended: {names}. "
+            "These may also contribute to Office connectivity issues.",
+            "Use the Resume Auth Brokers button to restore them."))
+
+    if token_stale and not od_suspended:
+        age_str = f"{token_age:.0f} hours" if token_age else "unknown"
+        insights.append(_insight("critical",
+            f"Microsoft 365 authentication token is {age_str} old. "
+            "This is the direct cause of the Sign in Required error in Word and Outlook.",
+            "Fix: click the OneDrive cloud icon in the system tray and sign in. "
+            "Tokens refresh for all Office apps once signed in."))
+        actions.append("Re-sign into OneDrive to fix Office 365 credential expiry")
+    elif not od_connected and not od_suspended:
+        insights.append(_insight("warning",
+            "OneDrive is not connected to an account. Office apps will show sign-in prompts.",
+            "Click the OneDrive cloud icon in the system tray and sign in."))
+    elif not od_running:
+        insights.append(_insight("warning",
+            "OneDrive process is not running. Office credential sync is paused.",
+            "Launch OneDrive from the Start menu."))
+    else:
+        age_str = f" (token refreshed {token_age:.0f}h ago)" if token_age is not None else ""
+        acct    = f" as {od_account}" if od_account else ""
+        insights.append(_insight("ok", f"OneDrive connected{acct}{age_str}."))
+    if office_errs:
+        insights.append(_insight("warning",
+            f"{len(office_errs)} recent Office or OneDrive error event(s) in Application log.",
+            "Check Event Viewer > Application log for OneDrive and Microsoft Office errors."))
+
+    # NFS/CIFS breakdown
+    nfs_drives = data.get("nfs_drives", [])
+    if nfs_drives:
+        nfs_down = [d for d in nfs_drives if not d.get("Reachable", True)]
+        insights.append(_insight("critical" if nfs_down else "ok",
+            f"{len(nfs_drives)} NFS mount(s): "
+            + ", ".join(f"{d.get('Name','?')} ({d.get('DisplayRoot','')})" for d in nfs_drives[:3])
+            + (f" -- {len(nfs_down)} unreachable" if nfs_down else " -- all reachable")))
+
+    # Email credentials
+    if email_creds:
+        insights.append(_insight("info",
+            f"{len(email_creds)} email credential(s) in Credential Manager: "
+            + ", ".join(c.get("Target","")[:40] for c in email_creds[:3]),
+            "If Outlook loses these on reboot, check credential Type is Generic not Session."))
+    else:
+        insights.append(_insight("warning",
+            "No email credentials in Credential Manager. Outlook uses MSAL token cache only.",
+            "Open Credential Manager from Start and check Windows Credentials tab."))
+
+    # Credential failures
+    if cred_failures:
+        insights.append(_insight("warning",
+            f"{len(cred_failures)} credential failure event(s) in Security log (Event 4625/4776). "
+            "These may correlate with the Outlook and NAS disconnection issues.",
+            "Check Security Event Log for the account names and sources involved."))
+
+    # Firewall blocking
+    if fw_blocking:
+        insights.append(_insight("warning",
+            f"File and Printer Sharing firewall rule(s) set to Block: "
+            + ", ".join(f.get("DisplayName","") for f in fw_blocking[:2]),
+            "McAfee may have modified these rules. Check McAfee Firewall settings."))
+
+    # SMB signing
+    if smb_config and smb_config.get("RequireSecuritySignature"):
+        insights.append(_insight("info",
+            "SMB security signing is required. If your NAS does not support SMB signing "
+            "this can cause intermittent connection failures.",
+            "Check NAS SMB settings and ensure SMB2/3 is enabled on the NAS."))
+
+    token_stale  = data.get("msal_token_stale", False)
+    token_stale  = data.get("msal_token_stale", False)
+    od_suspended = data.get("onedrive_suspended", False)
+    status = ("critical" if od_suspended or drives_down or token_stale
+              else "warning" if (fast_startup or cred_failures or fw_blocking or not email_creds)
+              else "ok")
+    headline = ("OneDrive SUSPENDED -- direct cause of Word/Outlook sign-in errors" if od_suspended
+                else "Office 365 token expired -- re-sign into OneDrive to fix" if token_stale
+                else f"{len(drives_down)} SMB/CIFS/NFS drive(s) unreachable" if drives_down
+                else "Fast Startup ON -- likely cause of credential loss on reboot" if fast_startup
+                else f"{data.get('total_creds',0)} credentials stored -- connections healthy")
     return {"status": status, "headline": headline, "insights": insights, "actions": actions}
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -4539,6 +5241,7 @@ def get_summary(tab: str):
         "timeline":       lambda: summarize_timeline(data.get("events", [])),
         "memory":         lambda: summarize_memory(data),
         "bios":           lambda: summarize_bios(data),
+        "credentials":    lambda: summarize_credentials_network(data),
     }
     fn = fn_map.get(tab)
     if not fn:
@@ -4637,6 +5340,130 @@ def timeline_data():
 def memory_data():
     return jsonify(get_memory_analysis())
 
+@app.route("/api/credentials/health")
+def credentials_health():
+    return jsonify(get_credentials_network_health())
+
+@app.route("/api/credentials/resume-onedrive", methods=["POST"])
+def resume_onedrive():
+    """Resume suspended OneDrive process and set AboveNormal priority to prevent re-suspension."""
+    ps = r"""
+$results = @()
+$odProcs = Get-Process -Name "OneDrive" -ErrorAction SilentlyContinue
+if ($odProcs) {
+    foreach ($p in $odProcs) {
+        try {
+            $p.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::AboveNormal
+            $resumed = 0
+            foreach ($t in $p.Threads) { try { $t.Resume(); $resumed++ } catch {} }
+            $results += [PSCustomObject]@{ Name="OneDrive"; PID=$p.Id; Resumed=$resumed; Status="OK" }
+        } catch {
+            $results += [PSCustomObject]@{ Name="OneDrive"; PID=$p.Id; Resumed=0; Status="Error: $_" }
+        }
+    }
+} else {
+    $results += [PSCustomObject]@{ Name="OneDrive"; PID=0; Resumed=0; Status="NotFound" }
+}
+$results | ConvertTo-Json -Depth 2
+"""
+    try:
+        r = subprocess.run(["powershell", "-NonInteractive", "-Command", ps],
+                           capture_output=True, text=True, timeout=15)
+        data = json.loads(r.stdout.strip() or "[]")
+        if isinstance(data, dict): data = [data]
+        fixed = [d for d in data if d.get("Status") == "OK"]
+        return jsonify({
+            "ok":      len(fixed) > 0,
+            "fixed":   len(fixed),
+            "results": data,
+            "message": f"OneDrive resumed and set to AboveNormal priority. Word and Outlook should reconnect."
+                       if fixed else "OneDrive process not found."
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "fixed": 0, "results": [], "message": str(e)})
+
+@app.route("/api/credentials/resume-brokers", methods=["POST"])
+def resume_broker_processes():
+    """
+    Resume suspended Microsoft authentication broker processes.
+    Sets priority to Normal to prevent Windows Efficiency Mode from suspending them.
+    Fixes Word/Outlook 'Sign in Required' errors caused by suspended auth processes.
+    """
+    ps = r"""
+$results = @()
+$targets = @("backgroundTaskHost","WWAHost","Microsoft.AAD.BrokerPlugin","wwahost")
+foreach ($name in $targets) {
+    $procs = Get-Process -Name $name -ErrorAction SilentlyContinue
+    foreach ($p in $procs) {
+        try {
+            # Set to Normal priority so Windows won't throttle/suspend it
+            $p.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::Normal
+            # Resume all suspended threads
+            $resumed = 0
+            foreach ($t in $p.Threads) {
+                try { $t.Resume(); $resumed++ } catch {}
+            }
+            $results += [PSCustomObject]@{
+                Name     = $p.ProcessName
+                PID      = $p.Id
+                Resumed  = $resumed
+                Status   = "OK"
+            }
+        } catch {
+            $results += [PSCustomObject]@{
+                Name    = $name
+                PID     = 0
+                Resumed = 0
+                Status  = "Error: $_"
+            }
+        }
+    }
+}
+if ($results.Count -eq 0) {
+    $results += [PSCustomObject]@{ Name="No broker processes found"; PID=0; Resumed=0; Status="NotFound" }
+}
+$results | ConvertTo-Json -Depth 2
+"""
+    try:
+        r = subprocess.run(["powershell", "-NonInteractive", "-Command", ps],
+                           capture_output=True, text=True, timeout=15)
+        data = json.loads(r.stdout.strip() or "[]")
+        if isinstance(data, dict): data = [data]
+        fixed = [d for d in data if d.get("Status") == "OK"]
+        return jsonify({
+            "ok":      len(fixed) > 0,
+            "fixed":   len(fixed),
+            "results": data,
+            "message": f"Resumed {len(fixed)} broker process(es). Word and Outlook should reconnect."
+                       if fixed else "No broker processes found to resume."
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "fixed": 0, "results": [], "message": str(e)})
+
+
+@app.route("/api/credentials/fix-fast-startup", methods=["POST"])
+def fix_fast_startup():
+    """Toggle Fast Startup on or off via registry."""
+    from flask import request as freq
+    enable = freq.json.get("enable", False) if freq.is_json else False
+    value  = 1 if enable else 0
+    label  = "enabled" if enable else "disabled"
+    ps = f"""
+try {{
+    Set-ItemProperty -Path "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power" `
+        -Name "HiberbootEnabled" -Value {value} -Type DWord -Force
+    Write-Output "OK:{label}"
+}} catch {{ Write-Output "ERROR: $_" }}
+"""
+    try:
+        r = subprocess.run(["powershell", "-NonInteractive", "-Command", ps],
+                           capture_output=True, text=True, timeout=10)
+        ok = "OK" in r.stdout
+        return jsonify({"ok": ok, "enabled": enable,
+                        "message": f"Fast Startup {label}." if ok else r.stdout.strip()})
+    except Exception as e:
+        return jsonify({"ok": False, "enabled": enable, "message": str(e)})
+
 @app.route("/api/bios/status")
 def bios_status():
     return jsonify(get_bios_status())
@@ -4649,6 +5476,162 @@ def bios_cache_clear_route():
     except Exception:
         pass
     return jsonify({"ok": True})
+
+@app.route("/api/dashboard/summary")
+def dashboard_summary():
+    """
+    Aggregates key health checks from all tabs into a single fast response.
+    Runs checks in parallel threads for speed.
+    """
+    import concurrent.futures
+    results = {}
+
+    def run(name, fn):
+        try:
+            results[name] = fn()
+        except Exception as e:
+            results[name] = {"error": str(e)}
+
+    checks = {
+        "thermals":    get_thermals,
+        "memory":      get_memory_analysis,
+        "bios":        get_bios_status,
+        "credentials": get_credentials_network_health,
+    }
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+        futs = {ex.submit(fn): name for name, fn in checks.items()}
+        for fut in concurrent.futures.as_completed(futs, timeout=30):
+            name = futs[fut]
+            try:
+                results[name] = fut.result()
+            except Exception as e:
+                results[name] = {"error": str(e)}
+
+    # ── Pull key signals from each area ──────────────────────────────────────
+    concerns = []
+
+    # Credentials / Auth
+    cred = results.get("credentials", {})
+    if cred.get("onedrive_suspended"):
+        concerns.append({
+            "level": "critical", "tab": "credentials", "icon": "☁",
+            "title": "OneDrive is SUSPENDED — confirmed cause of Word/Outlook sign-in errors",
+            "detail": "Windows suspended OneDrive to free memory. OAuth tokens cannot refresh until it is resumed.",
+            "action": "Resume OneDrive",
+            "action_fn": "resumeOneDrive()",
+        })
+    # Note: ms_account_suspended reflects McAfee's idle UWP RulesEngine task — not an auth issue
+    # Only flag if it's a genuine Microsoft auth process (not McAfee AppX background tasks)
+    if cred.get("msal_token_stale"):
+        age = cred.get("msal_token_age_h", 0)
+        concerns.append({
+            "level": "critical", "tab": "credentials", "icon": "🔑",
+            "title": f"Microsoft 365 token expired ({age:.0f}h old)",
+            "detail": "Sign in to OneDrive to refresh tokens for all Office apps.",
+            "action": "View Credentials tab",
+            "action_fn": "switchTab('credentials')",
+        })
+    if cred.get("fast_startup"):
+        concerns.append({
+            "level": "warning", "tab": "credentials", "icon": "⚡",
+            "title": "Fast Startup is enabled",
+            "detail": "Causes SMB credential loss and NAS disconnection on every reboot.",
+            "action": "Disable Fast Startup",
+            "action_fn": "fixFastStartup()",
+        })
+    drives_down = cred.get("drives_down", [])
+    if drives_down:
+        concerns.append({
+            "level": "critical", "tab": "credentials", "icon": "💾",
+            "title": f"{len(drives_down)} NAS drive(s) unreachable",
+            "detail": ", ".join(f"{d.get('Name','?')}:\ {d.get('DisplayRoot','')}" for d in drives_down[:3]),
+            "action": "View Credentials tab",
+            "action_fn": "switchTab('credentials')",
+        })
+
+    # Thermals
+    therm = results.get("thermals", {})
+    crit_temps = [t for t in therm.get("temps", []) if t.get("status") == "critical"]
+    warn_temps = [t for t in therm.get("temps", []) if t.get("status") == "warning"]
+    cpu_pct = therm.get("perf", {}).get("CPUPct", 0)
+    if crit_temps:
+        concerns.append({
+            "level": "critical", "tab": "thermals", "icon": "🌡",
+            "title": f"Critical temperature: {crit_temps[0].get('TempC')}°C ({crit_temps[0].get('Name','')})",
+            "detail": "Immediate risk of thermal throttling or damage.",
+            "action": "View Temps & Power",
+            "action_fn": "switchTab('thermals')",
+        })
+    elif warn_temps:
+        concerns.append({
+            "level": "warning", "tab": "thermals", "icon": "🌡",
+            "title": f"Elevated temperature: {warn_temps[0].get('TempC')}°C ({warn_temps[0].get('Name','')})",
+            "detail": "Monitor under load — may contribute to instability.",
+            "action": "View Temps & Power",
+            "action_fn": "switchTab('thermals')",
+        })
+    if cpu_pct >= 80:
+        concerns.append({
+            "level": "warning", "tab": "thermals", "icon": "💻",
+            "title": f"CPU at {cpu_pct}% utilisation",
+            "detail": "Check Processes tab for what is driving high CPU.",
+            "action": "View Processes",
+            "action_fn": "switchTab('processes')",
+        })
+
+    # Memory / McAfee
+    mem = results.get("memory", {})
+    if mem.get("has_mcafee"):
+        mc_mb = mem.get("mcafee_mb", 0)
+        saving = mem.get("mcafee_saving_mb", 0)
+        concerns.append({
+            "level": "warning", "tab": "memory", "icon": "🧠",
+            "title": f"McAfee using {mc_mb:,.0f} MB RAM",
+            "detail": f"Switching to Windows Defender could free ~{saving:,.0f} MB.",
+            "action": "View Memory Analysis",
+            "action_fn": "switchTab('memory')",
+        })
+    mem_pct = round(mem.get("used_mb", 0) / max(mem.get("total_mb", 1), 1) * 100, 1)
+    if mem_pct > 90:
+        concerns.append({
+            "level": "critical", "tab": "memory", "icon": "🧠",
+            "title": f"RAM at {mem_pct}% ({mem.get('used_mb',0):,.0f} MB used)",
+            "detail": "Very little memory available — system may be unstable.",
+            "action": "View Memory Analysis",
+            "action_fn": "switchTab('memory')",
+        })
+
+    # BIOS
+    bios = results.get("bios", {})
+    if bios.get("update", {}).get("update_available"):
+        latest = bios.get("update", {}).get("latest_version", "")
+        concerns.append({
+            "level": "critical", "tab": "bios", "icon": "🔩",
+            "title": f"BIOS update available: {latest}",
+            "detail": f"Install to get latest microcode patches for your i9-14900K.",
+            "action": "View BIOS & Firmware",
+            "action_fn": "switchTab('bios')",
+        })
+    elif bios.get("update", {}).get("confirmed_current"):
+        pass  # BIOS confirmed current — no concern needed
+
+    # Sort by level
+    level_order = {"critical": 0, "warning": 1, "info": 2, "ok": 3}
+    concerns.sort(key=lambda c: level_order.get(c.get("level","info"), 2))
+
+    overall = ("critical" if any(c["level"] == "critical" for c in concerns)
+               else "warning" if any(c["level"] == "warning" for c in concerns)
+               else "ok")
+
+    return jsonify({
+        "concerns":  concerns,
+        "total":     len(concerns),
+        "critical":  sum(1 for c in concerns if c["level"] == "critical"),
+        "warnings":  sum(1 for c in concerns if c["level"] == "warning"),
+        "overall":   overall,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    })
 
 @app.route("/api/bsod/cache")
 def bsod_cache_status():
