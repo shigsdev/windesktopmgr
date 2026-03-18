@@ -4951,7 +4951,7 @@ def summarize_credentials_network(data: dict) -> dict:
     if drives_down:
         insights.append(_insight("critical",
             f"{len(drives_down)} mapped SMB drive(s) currently unreachable: "
-            + ", ".join(f"{d.get('Name','?')}:\ ({d.get('DisplayRoot','')})" for d in drives_down[:3]),
+            + ", ".join(f"{d.get('Name','?')}: ({d.get('DisplayRoot','')})" for d in drives_down[:3]),
             "Check NAS device is powered on and reachable on the network. "
             "Try: net use * /delete then remap."))
         actions.append("Reconnect unreachable SMB drives")
@@ -5545,7 +5545,7 @@ def dashboard_summary():
         concerns.append({
             "level": "critical", "tab": "credentials", "icon": "💾",
             "title": f"{len(drives_down)} NAS drive(s) unreachable",
-            "detail": ", ".join(f"{d.get('Name','?')}:\ {d.get('DisplayRoot','')}" for d in drives_down[:3]),
+            "detail": ", ".join(f"{d.get('Name','?')}: {d.get('DisplayRoot','')}" for d in drives_down[:3]),
             "action": "View Credentials tab",
             "action_fn": "switchTab('credentials')",
         })
