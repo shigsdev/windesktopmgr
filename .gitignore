@@ -1,0 +1,7 @@
+
+diag_email_config.xml
+System Health Reports/
+.idea/
+*.log
+*_cache.json
+windesktopmgr/
