@@ -1,4 +1,4 @@
-"""
+﻿"""
 WinDesktopMgr
 Flask backend — driver update checker + BSOD trend dashboard.
 Reads from Windows Event Log and existing SystemHealthDiag HTML reports.
@@ -5766,3 +5766,4 @@ if __name__ == "__main__":
 
     print("\n  WinDesktopMgr running at http://localhost:5000\n")
     app.run(debug=False, port=5000, use_reloader=False)
+

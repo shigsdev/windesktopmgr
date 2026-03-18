@@ -1,8 +1,8 @@
-# WinDesktopMgr — Startup Setup
+﻿# WinDesktopMgr — Startup Setup
 # Run this once as Administrator to register the app as a login startup task.
 # It will launch the Flask server and open the browser automatically on login.
 
-$AppDir   = "C:\Users\higs7\OneDrive\Coding\Windows Tools\windesktopmgr"
+$AppDir   = "C:\shigsapps\windesktopmgr\windesktopmgr"
 $PyScript = Join-Path $AppDir "windesktopmgr.py"
 $LogFile  = Join-Path $AppDir "windesktopmgr.log"
 $BatFile  = Join-Path $AppDir "start-windesktopmgr.bat"
@@ -113,3 +113,4 @@ Write-Host "  Start-ScheduledTask -TaskName '$TaskName'"
 Write-Host ""
 Write-Host "Remove the startup task later:" -ForegroundColor Yellow
 Write-Host "  Unregister-ScheduledTask -TaskName '$TaskName' -Confirm:`$false"
+

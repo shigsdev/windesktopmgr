@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Git Cheat Sheet — WinDesktopMgr</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:       #07090f;
+    --surface:  #0d1017;
+    --card:     #111520;
+    --border:   #1e2535;
+    --text:     #e2e8f0;
+    --muted:    #4a5568;
+    --cyan:     #00d4ff;
+    --orange:   #ff7043;
+    --green:    #00e676;
+    --purple:   #b388ff;
+    --yellow:   #ffd740;
+    --red:      #ff4560;
+    --font-head: 'Syne', sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.6;
+    padding: 40px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  body::before {
+    content: '';
+    position: fixed; inset: 0; z-index: -1;
+    background-image:
+      linear-gradient(rgba(0,212,255,.02) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,212,255,.02) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+
+  /* ── Header ── */
+  .header {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    margin-bottom: 40px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .logo { font-family: var(--font-head); font-size: 32px; font-weight: 800; }
+  .logo span { color: var(--cyan); }
+  .subtitle { font-size: 11px; color: var(--muted); letter-spacing: .12em; text-transform: uppercase; margin-top: 4px; }
+  .repo-badge {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 14px; font-size: 11px; color: var(--muted);
+  }
+  .repo-badge a { color: var(--cyan); text-decoration: none; }
+  .repo-badge a:hover { text-decoration: underline; }
+
+  /* ── Grid ── */
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px 24px;
+    break-inside: avoid;
+  }
+
+  .card.full { grid-column: 1 / -1; }
+  .card.accent-cyan  { border-left: 3px solid var(--cyan); }
+  .card.accent-orange{ border-left: 3px solid var(--orange); }
+  .card.accent-green { border-left: 3px solid var(--green); }
+  .card.accent-purple{ border-left: 3px solid var(--purple); }
+  .card.accent-yellow{ border-left: 3px solid var(--yellow); }
+  .card.accent-red   { border-left: 3px solid var(--red); }
+
+  .card-title {
+    font-family: var(--font-head);
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .card-title .icon { font-size: 16px; }
+
+  /* ── Command rows ── */
+  .cmd-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 20px;
+    align-items: start;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .cmd-row:last-child { border-bottom: none; }
+
+  .cmd {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--cyan);
+    background: #00d4ff0d;
+    border: 1px solid #00d4ff22;
+    border-radius: 4px;
+    padding: 3px 8px;
+    white-space: nowrap;
+  }
+  .cmd .flag { color: var(--orange); }
+  .cmd .arg  { color: var(--yellow); }
+
+  .desc {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+  .desc strong { color: var(--text); font-weight: 600; }
+
+  /* ── Workflow block ── */
+  .workflow {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    margin-top: 4px;
+  }
+  .workflow-step {
+    flex: 1;
+    background: #00d4ff08;
+    border: 1px solid #00d4ff22;
+    border-radius: 8px;
+    padding: 14px 16px;
+    position: relative;
+  }
+  .workflow-step + .workflow-step {
+    margin-left: 8px;
+  }
+  .step-num {
+    font-family: var(--font-head);
+    font-size: 28px;
+    font-weight: 800;
+    color: #00d4ff22;
+    line-height: 1;
+    margin-bottom: 6px;
+  }
+  .step-cmd {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--cyan);
+    margin-bottom: 4px;
+  }
+  .step-desc {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .arrow {
+    display: flex;
+    align-items: center;
+    color: var(--border);
+    font-size: 18px;
+    padding: 0 4px;
+    flex-shrink: 0;
+  }
+
+  /* ── Status table ── */
+  .status-table { width: 100%; border-collapse: collapse; }
+  .status-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .status-table td:first-child { font-family: var(--font-mono); color: var(--yellow); font-weight: 700; white-space: nowrap; }
+  .status-table td:last-child { color: var(--muted); }
+  .status-table tr:last-child td { border-bottom: none; }
+
+  /* ── Concept pills ── */
+  .concepts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+  .concept {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 11px;
+  }
+  .concept .term { color: var(--purple); font-weight: 700; font-size: 12px; display: block; margin-bottom: 2px; }
+  .concept .def  { color: var(--muted); }
+
+  /* ── Note box ── */
+  .note {
+    background: #ff704308;
+    border: 1px solid #ff704330;
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 12px;
+  }
+  .note strong { color: var(--orange); }
+
+  /* ── Footer ── */
+  .footer {
+    margin-top: 36px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  @media print {
+    body { padding: 20px; background: #07090f !important; -webkit-print-color-adjust: exact; }
+    body::before { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <div>
+    <div class="logo">Win<span>DesktopMgr</span></div>
+    <div class="subtitle">Git &amp; GitHub Cheat Sheet</div>
+  </div>
+  <div class="repo-badge">
+    <span>⬡</span>
+    <a href="https://github.com/shigsdev/windesktopmgr" target="_blank">github.com/shigsdev/windesktopmgr</a>
+  </div>
+</div>
+
+<!-- Daily workflow — full width -->
+<div class="card full accent-cyan" style="margin-bottom:20px">
+  <div class="card-title"><span class="icon">⟳</span> Daily Workflow — 3 Commands to Save &amp; Publish Changes</div>
+  <div class="workflow">
+    <div class="workflow-step">
+      <div class="step-num">01</div>
+      <div class="step-cmd">git add .</div>
+      <div class="step-desc">Stage all changed files — tells Git which changes to include in the next snapshot</div>
+    </div>
+    <div class="arrow">→</div>
+    <div class="workflow-step">
+      <div class="step-num">02</div>
+      <div class="step-cmd">git commit -m "message"</div>
+      <div class="step-desc">Save a snapshot locally with a short description of what changed</div>
+    </div>
+    <div class="arrow">→</div>
+    <div class="workflow-step">
+      <div class="step-num">03</div>
+      <div class="step-cmd">git push</div>
+      <div class="step-desc">Upload your commits to GitHub so they're backed up and visible online</div>
+    </div>
+  </div>
+  <div class="note"><strong>Example commit messages:</strong> "Fix BIOS checker", "Add memory analysis tab", "Update README"</div>
+</div>
+
+<div class="grid">
+
+  <!-- Setup — once only -->
+  <div class="card accent-purple">
+    <div class="card-title"><span class="icon">⚙</span> Setup — Run Once</div>
+    <div class="cmd-row">
+      <div class="cmd">git config <span class="flag">--global</span> user.name <span class="arg">"Name"</span></div>
+      <div class="desc">Set your name for commits</div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git config <span class="flag">--global</span> user.email <span class="arg">"email"</span></div>
+      <div class="desc">Set your email (use your GitHub email)</div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git init</div>
+      <div class="desc">Start tracking a folder with Git</div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git remote add origin <span class="arg">URL</span></div>
+      <div class="desc">Connect local folder to a GitHub repo</div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git branch <span class="flag">-M</span> main</div>
+      <div class="desc">Rename branch to <strong>main</strong></div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git push <span class="flag">-u</span> origin main</div>
+      <div class="desc">First push — sets up tracking</div>
+    </div>
+  </div>
+
+  <!-- Status & inspection -->
+  <div class="card accent-yellow">
+    <div class="card-title"><span class="icon">🔍</span> Check What's Going On</div>
+    <div class="cmd-row">
+      <div class="cmd">git status</div>
+      <div class="desc">See which files changed since last commit</div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git log <span class="flag">--oneline</span></div>
+      <div class="desc">See commit history as a compact list</div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git log <span class="flag">--oneline --graph</span></div>
+      <div class="desc">History with branch diagram</div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git diff</div>
+      <div class="desc">See exactly what lines changed (unstaged)</div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git diff <span class="flag">--staged</span></div>
+      <div class="desc">See what's staged and ready to commit</div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git remote <span class="flag">-v</span></div>
+      <div class="desc">Show connected GitHub URL</div>
+    </div>
+  </div>
+
+  <!-- Staging & committing -->
+  <div class="card accent-green">
+    <div class="card-title"><span class="icon">📦</span> Staging &amp; Committing</div>
+    <div class="cmd-row">
+      <div class="cmd">git add <span class="arg">.</span></div>
+      <div class="desc">Stage <strong>all</strong> changed files</div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git add <span class="arg">filename.py</span></div>
+      <div class="desc">Stage one specific file</div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git restore <span class="flag">--staged</span> <span class="arg">file</span></div>
+      <div class="desc">Unstage a file (undo git add)</div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git commit <span class="flag">-m</span> <span class="arg">"message"</span></div>
+      <div class="desc">Save snapshot with a description</div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git commit <span class="flag">--amend -m</span> <span class="arg">"new msg"</span></div>
+      <div class="desc">Fix the last commit message</div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git restore <span class="arg">file</span></div>
+      <div class="desc">Discard changes to a file (undo edits)</div>
+    </div>
+  </div>
+
+  <!-- Push & pull -->
+  <div class="card accent-orange">
+    <div class="card-title"><span class="icon">☁</span> Push &amp; Pull (GitHub Sync)</div>
+    <div class="cmd-row">
+      <div class="cmd">git push</div>
+      <div class="desc">Upload commits to GitHub</div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git pull</div>
+      <div class="desc">Download changes from GitHub</div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git pull <span class="flag">--allow-unrelated-histories</span></div>
+      <div class="desc">Merge two separate histories (one-time fix)</div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git push <span class="flag">-u</span> origin main</div>
+      <div class="desc">Push and set tracking branch</div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git fetch</div>
+      <div class="desc">Download changes without merging yet</div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git clone <span class="arg">URL</span></div>
+      <div class="desc">Download a repo from GitHub to your machine</div>
+    </div>
+  </div>
+
+  <!-- Undoing things -->
+  <div class="card accent-red">
+    <div class="card-title"><span class="icon">↩</span> Undoing Things</div>
+    <div class="cmd-row">
+      <div class="cmd">git restore <span class="arg">file</span></div>
+      <div class="desc">Discard unsaved changes to a file</div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git revert <span class="arg">abc1234</span></div>
+      <div class="desc">Undo a commit safely (creates new commit)</div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git reset <span class="flag">--soft</span> HEAD~1</div>
+      <div class="desc">Undo last commit, keep changes staged</div>
+    </div>
+    <div class="cmd-row">
+      <div class="cmd">git reset <span class="flag">--hard</span> HEAD~1</div>
+      <div class="desc"><strong style="color:var(--red)">⚠ Destructive</strong> — delete last commit + changes</div>
+    </div>
+    <div class="note"><strong>Safest undo:</strong> always prefer <code style="color:var(--cyan)">git revert</code> — it keeps history intact. Only use <code style="color:var(--red)">--hard reset</code> if you're certain.</div>
+  </div>
+
+  <!-- Exit codes / result codes -->
+  <div class="card accent-yellow">
+    <div class="card-title"><span class="icon">📋</span> Task Scheduler Result Codes</div>
+    <table class="status-table">
+      <tr><td>0x0</td><td>Success — ran without errors</td></tr>
+      <tr><td>0x1</td><td>General failure — script error</td></tr>
+      <tr><td>0x41301</td><td>Task is currently running</td></tr>
+      <tr><td>0x41303</td><td>Task has not run yet</td></tr>
+      <tr><td>0x41306</td><td>Task was terminated</td></tr>
+      <tr><td>0xC0000005</td><td>Access violation — execution policy blocked script</td></tr>
+      <tr><td>0x800704DD</td><td>Can't run — user not logged in</td></tr>
+    </table>
+  </div>
+
+  <!-- Key concepts — full width -->
+  <div class="card full accent-purple">
+    <div class="card-title"><span class="icon">💡</span> Key Concepts</div>
+    <div class="concepts">
+      <div class="concept">
+        <span class="term">repository (repo)</span>
+        <span class="def">A project folder tracked by Git. Contains all your files + full history of every change.</span>
+      </div>
+      <div class="concept">
+        <span class="term">commit</span>
+        <span class="def">A saved snapshot of your project at a point in time. Like a save game — you can always go back.</span>
+      </div>
+      <div class="concept">
+        <span class="term">staging area</span>
+        <span class="def">A holding area for changes you're about to commit. git add puts files here.</span>
+      </div>
+      <div class="concept">
+        <span class="term">branch</span>
+        <span class="def">A parallel version of your code. main is the primary branch. Create others to experiment safely.</span>
+      </div>
+      <div class="concept">
+        <span class="term">remote</span>
+        <span class="def">The GitHub copy of your repo. "origin" is the standard name for it.</span>
+      </div>
+      <div class="concept">
+        <span class="term">push / pull</span>
+        <span class="def">push = upload to GitHub. pull = download from GitHub. Always pull before pushing on shared repos.</span>
+      </div>
+      <div class="concept">
+        <span class="term">.gitignore</span>
+        <span class="def">A file listing what Git should never track — passwords, cache files, logs, personal data.</span>
+      </div>
+      <div class="concept">
+        <span class="term">HEAD</span>
+        <span class="def">A pointer to your current position in history. HEAD~1 means "one commit before current".</span>
+      </div>
+      <div class="concept">
+        <span class="term">merge</span>
+        <span class="def">Combining two branches. git pull performs a merge automatically when remote has changes you don't.</span>
+      </div>
+      <div class="concept">
+        <span class="term">Personal Access Token</span>
+        <span class="def">GitHub's substitute for a password when pushing from the command line. Generate at github.com/settings/tokens.</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Footer -->
+<div class="footer">
+  <span>WinDesktopMgr · github.com/shigsdev/windesktopmgr</span>
+  <span>Git Cheat Sheet · Save this file to your windesktopmgr folder</span>
+</div>
+
+</body>
+</html>

@@ -102,5 +102,37 @@
     "noise": false,
     "action": "See event message details for specific context.",
     "fetched": "2026-03-15T21:40:41.893747+00:00"
+  },
+  "44": {
+    "source": "windows_provider",
+    "title": "Event 44 from Microsoft-Windows-WindowsUpdateClient",
+    "detail": "Windows Update started downloading an update.",
+    "noise": false,
+    "action": "See event message details for specific context.",
+    "fetched": "2026-03-18T22:56:18.394730+00:00"
+  },
+  "17": {
+    "source": "windows_provider",
+    "title": "Event 17 from TPM",
+    "detail": "The Trusted Platform Module (TPM) hardware failed to execute a TPM command.",
+    "noise": false,
+    "action": "See event message details for specific context.",
+    "fetched": "2026-03-18T22:56:21.390670+00:00"
+  },
+  "43": {
+    "source": "windows_provider",
+    "title": "Event 43 from Microsoft-Windows-WindowsUpdateClient",
+    "detail": "Installation Started: Windows has started installing the following update: [value]",
+    "noise": false,
+    "action": "See event message details for specific context.",
+    "fetched": "2026-03-18T22:56:24.258313+00:00"
+  },
+  "19": {
+    "source": "windows_provider",
+    "title": "Event 19 from Microsoft-Windows-WindowsUpdateClient",
+    "detail": "Installation Successful: Windows successfully installed the following update: [value]",
+    "noise": false,
+    "action": "See event message details for specific context.",
+    "fetched": "2026-03-18T22:56:27.226771+00:00"
   }
 }

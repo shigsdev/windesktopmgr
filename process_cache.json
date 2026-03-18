@@ -5,7 +5,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:45.835124+00:00"
+    "fetched": "2026-03-18T22:55:00.948835+00:00"
   },
   "phoneexperiencehost": {
     "source": "unknown",
@@ -13,7 +13,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:46.161602+00:00"
+    "fetched": "2026-03-18T22:55:02.600811+00:00"
   },
   "claude": {
     "source": "unknown",
@@ -21,7 +21,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:46.694460+00:00"
+    "fetched": "2026-03-18T22:55:04.142742+00:00"
   },
   "code": {
     "source": "unknown",
@@ -29,7 +29,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:47.076507+00:00"
+    "fetched": "2026-03-18T22:55:05.703664+00:00"
   },
   "plex transcoder": {
     "source": "unknown",
@@ -37,7 +37,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:47.426384+00:00"
+    "fetched": "2026-03-18T22:55:07.493581+00:00"
   },
   "jetbrains-toolbox": {
     "source": "unknown",
@@ -45,7 +45,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:47.839498+00:00"
+    "fetched": "2026-03-18T22:55:09.189648+00:00"
   },
   "dell.techhub.instrumentation.subagent": {
     "source": "unknown",
@@ -53,7 +53,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:48.245290+00:00"
+    "fetched": "2026-03-18T22:55:10.712728+00:00"
   },
   "supportassistagent": {
     "source": "unknown",
@@ -61,7 +61,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:48.607587+00:00"
+    "fetched": "2026-03-18T22:55:12.214423+00:00"
   },
   "wavessyssvc64": {
     "source": "unknown",
@@ -69,7 +69,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:48.941509+00:00"
+    "fetched": "2026-03-18T22:55:13.671678+00:00"
   },
   "whatsapp.root": {
     "source": "unknown",
@@ -77,7 +77,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:49.284388+00:00"
+    "fetched": "2026-03-18T22:55:15.278782+00:00"
   },
   "mstsc": {
     "source": "unknown",
@@ -85,7 +85,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:49.630293+00:00"
+    "fetched": "2026-03-18T22:55:16.733651+00:00"
   },
   "dell.techhub.diagnostics.subagent": {
     "source": "unknown",
@@ -93,7 +93,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:50.005312+00:00"
+    "fetched": "2026-03-18T22:55:18.200582+00:00"
   },
   "snippingtool": {
     "source": "unknown",
@@ -101,7 +101,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:50.403692+00:00"
+    "fetched": "2026-03-18T22:55:19.827555+00:00"
   },
   "killer": {
     "source": "unknown",
@@ -109,7 +109,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:50.766553+00:00"
+    "fetched": "2026-03-18T22:55:21.428374+00:00"
   },
   "delloptimizer.systray": {
     "source": "unknown",
@@ -117,7 +117,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:51.177548+00:00"
+    "fetched": "2026-03-18T22:55:22.868779+00:00"
   },
   "dell.techhub.instrumentation.userprocess": {
     "source": "unknown",
@@ -125,7 +125,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:51.640926+00:00"
+    "fetched": "2026-03-18T22:55:24.273713+00:00"
   },
   "dellenterpriseclientframeworksubagent": {
     "source": "unknown",
@@ -133,7 +133,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:52.039324+00:00"
+    "fetched": "2026-03-18T22:55:25.769294+00:00"
   },
   "dell.digital.delivery.service.subagent": {
     "source": "unknown",
@@ -141,7 +141,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:52.457786+00:00"
+    "fetched": "2026-03-18T22:55:27.430891+00:00"
   },
   "signal": {
     "source": "unknown",
@@ -149,7 +149,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:52.871620+00:00"
+    "fetched": "2026-03-18T22:55:29.079547+00:00"
   },
   "nvidia overlay": {
     "source": "unknown",
@@ -157,7 +157,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:53.293474+00:00"
+    "fetched": "2026-03-18T22:55:30.735617+00:00"
   },
   "mspcmanagerservice": {
     "source": "unknown",
@@ -165,7 +165,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:53.798427+00:00"
+    "fetched": "2026-03-18T22:55:32.230374+00:00"
   },
   "expressvpn.appservice": {
     "source": "unknown",
@@ -173,7 +173,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:54.139278+00:00"
+    "fetched": "2026-03-18T22:55:33.584554+00:00"
   },
   "logioptionsplus_agent": {
     "source": "unknown",
@@ -181,7 +181,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:54.462695+00:00"
+    "fetched": "2026-03-18T22:55:35.005460+00:00"
   },
   "dell.techhub.datamanager.subagent": {
     "source": "unknown",
@@ -189,7 +189,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:54.829265+00:00"
+    "fetched": "2026-03-18T22:55:36.499613+00:00"
   },
   "pwsh": {
     "source": "unknown",
@@ -197,7 +197,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:55.213345+00:00"
+    "fetched": "2026-03-18T22:55:38.121474+00:00"
   },
   "widgetboard": {
     "source": "unknown",
@@ -205,7 +205,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:55.557290+00:00"
+    "fetched": "2026-03-18T22:55:39.823445+00:00"
   },
   "lockapp": {
     "source": "unknown",
@@ -213,7 +213,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:55.940334+00:00"
+    "fetched": "2026-03-18T22:55:41.613354+00:00"
   },
   "icloudhome": {
     "source": "unknown",
@@ -221,7 +221,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:56.329546+00:00"
+    "fetched": "2026-03-18T22:55:43.128408+00:00"
   },
   "dell.remediation.agent": {
     "source": "unknown",
@@ -229,7 +229,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:56.689274+00:00"
+    "fetched": "2026-03-18T22:55:44.753553+00:00"
   },
   "dell.techhub.analytics.subagent": {
     "source": "unknown",
@@ -237,7 +237,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:57.054391+00:00"
+    "fetched": "2026-03-18T22:55:46.220593+00:00"
   },
   "powershell": {
     "source": "unknown",
@@ -245,7 +245,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:57.378327+00:00"
+    "fetched": "2026-03-18T22:55:47.879159+00:00"
   },
   "crossdeviceservice": {
     "source": "unknown",
@@ -253,7 +253,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:57.767160+00:00"
+    "fetched": "2026-03-18T22:55:49.504307+00:00"
   },
   "dell.uca.manager": {
     "source": "unknown",
@@ -261,7 +261,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:58.138509+00:00"
+    "fetched": "2026-03-18T22:55:51.206211+00:00"
   },
   "killernetworkservice": {
     "source": "unknown",
@@ -269,7 +269,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:58.536353+00:00"
+    "fetched": "2026-03-18T22:55:52.832305+00:00"
   },
   "icloudphotos": {
     "source": "unknown",
@@ -277,7 +277,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:58.874711+00:00"
+    "fetched": "2026-03-18T22:55:54.391559+00:00"
   },
   "plex media server": {
     "source": "unknown",
@@ -285,7 +285,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:59.216621+00:00"
+    "fetched": "2026-03-18T22:55:56.075579+00:00"
   },
   "xtuservice": {
     "source": "unknown",
@@ -293,7 +293,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:59.614184+00:00"
+    "fetched": "2026-03-18T22:55:57.680271+00:00"
   },
   "dell.uue.coresubagent": {
     "source": "unknown",
@@ -301,7 +301,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:12:59.964476+00:00"
+    "fetched": "2026-03-18T22:55:59.326674+00:00"
   },
   "wmiprvse": {
     "source": "unknown",
@@ -309,7 +309,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:00.360261+00:00"
+    "fetched": "2026-03-18T22:56:00.915258+00:00"
   },
   "dell.techhub": {
     "source": "unknown",
@@ -317,7 +317,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:00.723390+00:00"
+    "fetched": "2026-03-18T22:56:02.589553+00:00"
   },
   "logiaipromptbuilder": {
     "source": "unknown",
@@ -325,7 +325,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:01.057285+00:00"
+    "fetched": "2026-03-18T22:56:04.368635+00:00"
   },
   "crossdeviceresume": {
     "source": "unknown",
@@ -333,7 +333,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:01.405200+00:00"
+    "fetched": "2026-03-18T22:56:05.950888+00:00"
   },
   "dell.uue.user.subagent": {
     "source": "unknown",
@@ -341,7 +341,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:01.769307+00:00"
+    "fetched": "2026-03-18T22:56:07.701106+00:00"
   },
   "mmgaserver": {
     "source": "unknown",
@@ -349,7 +349,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:02.123253+00:00"
+    "fetched": "2026-03-18T22:56:09.124144+00:00"
   },
   "uihost": {
     "source": "unknown",
@@ -357,7 +357,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:02.541478+00:00"
+    "fetched": "2026-03-18T22:56:10.823139+00:00"
   },
   "jetbrainsd": {
     "source": "unknown",
@@ -365,7 +365,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:02.998249+00:00"
+    "fetched": "2026-03-18T22:56:12.258363+00:00"
   },
   "dell.update.subagent": {
     "source": "unknown",
@@ -373,7 +373,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:03.361298+00:00"
+    "fetched": "2026-03-18T22:56:14.157988+00:00"
   },
   "selfserviceplugin": {
     "source": "unknown",
@@ -381,7 +381,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:03.856210+00:00"
+    "fetched": "2026-03-18T22:56:15.964290+00:00"
   },
   "iclouddrive": {
     "source": "unknown",
@@ -389,7 +389,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:04.173185+00:00"
+    "fetched": "2026-03-18T22:56:17.531978+00:00"
   },
   "backgroundtaskhost": {
     "source": "unknown",
@@ -397,7 +397,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:04.538234+00:00"
+    "fetched": "2026-03-18T22:56:19.164890+00:00"
   },
   "samsungmagician": {
     "source": "unknown",
@@ -405,7 +405,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:04.877569+00:00"
+    "fetched": "2026-03-18T22:56:20.782009+00:00"
   },
   "intelnetworkhelperservice": {
     "source": "unknown",
@@ -413,7 +413,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:05.242868+00:00"
+    "fetched": "2026-03-18T22:56:22.492032+00:00"
   },
   "shellhost": {
     "source": "unknown",
@@ -421,7 +421,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:05.621332+00:00"
+    "fetched": "2026-03-18T22:56:24.131160+00:00"
   },
   "microsoftstartfeedprovider": {
     "source": "unknown",
@@ -429,7 +429,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:06.007141+00:00"
+    "fetched": "2026-03-18T22:56:25.482891+00:00"
   },
   "expressvpn.vpnservice": {
     "source": "unknown",
@@ -437,7 +437,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:06.362217+00:00"
+    "fetched": "2026-03-18T22:56:26.942795+00:00"
   },
   "dataserv": {
     "source": "unknown",
@@ -445,7 +445,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:06.681366+00:00"
+    "fetched": "2026-03-18T22:56:28.552951+00:00"
   },
   "appactions": {
     "source": "unknown",
@@ -453,7 +453,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:07.026159+00:00"
+    "fetched": "2026-03-18T22:56:30.073045+00:00"
   },
   "adobecollabsync": {
     "source": "unknown",
@@ -461,7 +461,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:07.359107+00:00"
+    "fetched": "2026-03-18T22:56:31.918920+00:00"
   },
   "updaterservice": {
     "source": "unknown",
@@ -469,7 +469,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:07.698231+00:00"
+    "fetched": "2026-03-18T22:56:33.553908+00:00"
   },
   "receiver": {
     "source": "unknown",
@@ -477,7 +477,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:08.083109+00:00"
+    "fetched": "2026-03-18T22:56:35.017949+00:00"
   },
   "filecoauth": {
     "source": "unknown",
@@ -485,7 +485,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:08.425174+00:00"
+    "fetched": "2026-03-18T22:56:36.592024+00:00"
   },
   "servicehost": {
     "source": "unknown",
@@ -493,7 +493,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:08.777060+00:00"
+    "fetched": "2026-03-18T22:56:38.160978+00:00"
   },
   "plex media scanner": {
     "source": "unknown",
@@ -501,7 +501,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:09.191146+00:00"
+    "fetched": "2026-03-18T22:56:40.026839+00:00"
   },
   "intelgraphicssoftware.service": {
     "source": "unknown",
@@ -509,7 +509,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:09.557497+00:00"
+    "fetched": "2026-03-18T22:56:41.684368+00:00"
   },
   "mc-neo-host": {
     "source": "unknown",
@@ -517,7 +517,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:09.872297+00:00"
+    "fetched": "2026-03-18T22:56:43.273179+00:00"
   },
   "icloudckks": {
     "source": "unknown",
@@ -525,7 +525,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:10.256200+00:00"
+    "fetched": "2026-03-18T22:56:44.857798+00:00"
   },
   "kaps": {
     "source": "unknown",
@@ -533,7 +533,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:10.612362+00:00"
+    "fetched": "2026-03-18T22:56:46.412797+00:00"
   },
   "wfcrun32": {
     "source": "unknown",
@@ -541,7 +541,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:10.974033+00:00"
+    "fetched": "2026-03-18T22:56:47.855657+00:00"
   },
   "aotlistenerservice": {
     "source": "unknown",
@@ -549,7 +549,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:11.282183+00:00"
+    "fetched": "2026-03-18T22:56:49.384895+00:00"
   },
   "samsungmagiciansvc": {
     "source": "unknown",
@@ -557,7 +557,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:11.636063+00:00"
+    "fetched": "2026-03-18T22:56:50.757808+00:00"
   },
   "widgetservice": {
     "source": "unknown",
@@ -565,7 +565,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:11.982273+00:00"
+    "fetched": "2026-03-18T22:56:52.225002+00:00"
   },
   "logioptionsplus_updater": {
     "source": "unknown",
@@ -573,7 +573,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:12.358073+00:00"
+    "fetched": "2026-03-18T22:56:53.858744+00:00"
   },
   "wslservice": {
     "source": "unknown",
@@ -581,7 +581,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:12.705303+00:00"
+    "fetched": "2026-03-18T22:56:55.263063+00:00"
   },
   "concentr": {
     "source": "unknown",
@@ -589,7 +589,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:13.031348+00:00"
+    "fetched": "2026-03-18T22:56:56.885713+00:00"
   },
   "appprotection": {
     "source": "unknown",
@@ -597,7 +597,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:13.423154+00:00"
+    "fetched": "2026-03-18T22:56:58.590777+00:00"
   },
   "cowork-svc": {
     "source": "unknown",
@@ -605,7 +605,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:13.773325+00:00"
+    "fetched": "2026-03-18T22:57:00.125526+00:00"
   },
   "applephotostreams": {
     "source": "unknown",
@@ -613,7 +613,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:14.214002+00:00"
+    "fetched": "2026-03-18T22:57:01.702734+00:00"
   },
   "filesynchelper": {
     "source": "unknown",
@@ -621,7 +621,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:14.573341+00:00"
+    "fetched": "2026-03-18T22:57:03.368360+00:00"
   },
   "midisrv": {
     "source": "unknown",
@@ -629,7 +629,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:15.544031+00:00"
+    "fetched": "2026-03-18T22:57:05.040564+00:00"
   },
   "mintty": {
     "source": "unknown",
@@ -637,7 +637,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:15.915070+00:00"
+    "fetched": "2026-03-18T22:57:06.529461+00:00"
   },
   "hpprintscandoctorservice": {
     "source": "unknown",
@@ -645,7 +645,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:16.853515+00:00"
+    "fetched": "2026-03-18T22:57:08.220332+00:00"
   },
   "mc-extn-browserhost": {
     "source": "unknown",
@@ -653,7 +653,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:18.249394+00:00"
+    "fetched": "2026-03-18T22:57:09.656390+00:00"
   },
   "searchprotocolhost": {
     "source": "unknown",
@@ -661,7 +661,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:18.661073+00:00"
+    "fetched": "2026-03-18T22:57:11.376364+00:00"
   },
   "apsdaemon": {
     "source": "unknown",
@@ -669,7 +669,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:19.040945+00:00"
+    "fetched": "2026-03-18T22:57:13.185215+00:00"
   },
   "mainserv": {
     "source": "unknown",
@@ -677,7 +677,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:19.404716+00:00"
+    "fetched": "2026-03-18T22:57:14.808365+00:00"
   },
   "kndbwm": {
     "source": "unknown",
@@ -685,7 +685,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:20.352905+00:00"
+    "fetched": "2026-03-18T22:57:16.229119+00:00"
   },
   "plex tuner service": {
     "source": "unknown",
@@ -693,7 +693,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:22.223001+00:00"
+    "fetched": "2026-03-18T22:57:18.009082+00:00"
   },
   "secd": {
     "source": "unknown",
@@ -701,7 +701,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:22.631162+00:00"
+    "fetched": "2026-03-18T22:57:19.631553+00:00"
   },
   "kndbwmservice": {
     "source": "unknown",
@@ -709,7 +709,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:24.219433+00:00"
+    "fetched": "2026-03-18T22:57:21.011098+00:00"
   },
   "rtkauduservice64": {
     "source": "unknown",
@@ -717,7 +717,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:24.577215+00:00"
+    "fetched": "2026-03-18T22:57:22.494036+00:00"
   },
   "kapsservice": {
     "source": "unknown",
@@ -725,7 +725,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:26.268227+00:00"
+    "fetched": "2026-03-18T22:57:24.187049+00:00"
   },
   "wudfhost": {
     "source": "unknown",
@@ -733,7 +733,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:27.267914+00:00"
+    "fetched": "2026-03-18T22:57:25.879969+00:00"
   },
   "wavesaudioservice": {
     "source": "unknown",
@@ -741,7 +741,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:28.824018+00:00"
+    "fetched": "2026-03-18T22:57:27.634127+00:00"
   },
   "browserhost": {
     "source": "unknown",
@@ -749,7 +749,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:29.205869+00:00"
+    "fetched": "2026-03-18T22:57:29.163244+00:00"
   },
   "nvsphelper64": {
     "source": "unknown",
@@ -757,7 +757,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:30.591817+00:00"
+    "fetched": "2026-03-18T22:57:30.758947+00:00"
   },
   "wmiregistrationservice": {
     "source": "unknown",
@@ -765,7 +765,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:31.493083+00:00"
+    "fetched": "2026-03-18T22:57:32.203504+00:00"
   },
   "killeranalyticsservice": {
     "source": "unknown",
@@ -773,7 +773,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:32.383098+00:00"
+    "fetched": "2026-03-18T22:57:33.735678+00:00"
   },
   "migrationservice": {
     "source": "unknown",
@@ -781,7 +781,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:33.361027+00:00"
+    "fetched": "2026-03-18T22:57:35.203018+00:00"
   },
   "ctxsdps": {
     "source": "unknown",
@@ -789,7 +789,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:33.726503+00:00"
+    "fetched": "2026-03-18T22:57:36.541085+00:00"
   },
   "redirector": {
     "source": "unknown",
@@ -797,7 +797,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:34.126079+00:00"
+    "fetched": "2026-03-18T22:57:38.142764+00:00"
   },
   "apcsystray": {
     "source": "unknown",
@@ -805,7 +805,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:35.050947+00:00"
+    "fetched": "2026-03-18T22:57:39.911639+00:00"
   },
   "plexscripthost": {
     "source": "unknown",
@@ -813,7 +813,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:35.972345+00:00"
+    "fetched": "2026-03-18T22:57:41.341863+00:00"
   },
   "logioptionsplus_appbroker": {
     "source": "unknown",
@@ -821,7 +821,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:36.365975+00:00"
+    "fetched": "2026-03-18T22:57:42.671773+00:00"
   },
   "searchfilterhost": {
     "source": "unknown",
@@ -829,7 +829,7 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:37.380862+00:00"
+    "fetched": "2026-03-18T22:57:44.423934+00:00"
   },
   "smartscreen": {
     "source": "unknown",
@@ -837,286 +837,6 @@
     "publisher": "Unknown",
     "what": "No description found. Search the process name online to identify it.",
     "safe_kill": true,
-    "fetched": "2026-03-17T02:13:38.846792+00:00"
-  },
-  "securityhealthsystray": {
-    "source": "unknown",
-    "plain": "securityhealthsystray",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:39.838290+00:00"
-  },
-  "dtclientuser": {
-    "source": "unknown",
-    "plain": "dtclientuser",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:40.894272+00:00"
-  },
-  "wmiapsrv": {
-    "source": "unknown",
-    "plain": "wmiapsrv",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:42.261773+00:00"
-  },
-  "aggregatorhost": {
-    "source": "unknown",
-    "plain": "aggregatorhost",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:43.275843+00:00"
-  },
-  "cmd": {
-    "source": "unknown",
-    "plain": "cmd",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:43.630771+00:00"
-  },
-  "ipf_helper": {
-    "source": "unknown",
-    "plain": "ipf_helper",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:43.988138+00:00"
-  },
-  "analyticssrv": {
-    "source": "unknown",
-    "plain": "analyticssrv",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:44.330220+00:00"
-  },
-  "intel_pie_service": {
-    "source": "unknown",
-    "plain": "intel_pie_service",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:44.712060+00:00"
-  },
-  "presentmonservice": {
-    "source": "unknown",
-    "plain": "presentmonservice",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:45.082157+00:00"
-  },
-  "pet": {
-    "source": "unknown",
-    "plain": "pet",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:45.454549+00:00"
-  },
-  "plex relay": {
-    "source": "unknown",
-    "plain": "plex relay",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:45.800921+00:00"
-  },
-  "unsecapp": {
-    "source": "unknown",
-    "plain": "unsecapp",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:46.135779+00:00"
-  },
-  "plex update service": {
-    "source": "unknown",
-    "plain": "plex update service",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:46.535878+00:00"
-  },
-  "killerproviderdatahelperservice": {
-    "source": "unknown",
-    "plain": "killerproviderdatahelperservice",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:46.908759+00:00"
-  },
-  "useroobebroker": {
-    "source": "unknown",
-    "plain": "useroobebroker",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:47.250196+00:00"
-  },
-  "richvideo64": {
-    "source": "unknown",
-    "plain": "richvideo64",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:47.591778+00:00"
-  },
-  "bash": {
-    "source": "unknown",
-    "plain": "bash",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:47.955618+00:00"
-  },
-  "cptservice": {
-    "source": "unknown",
-    "plain": "cptservice",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:48.306827+00:00"
-  },
-  "jhi_service": {
-    "source": "unknown",
-    "plain": "jhi_service",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:48.676626+00:00"
-  },
-  "ipf_uf": {
-    "source": "unknown",
-    "plain": "ipf_uf",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:49.070716+00:00"
-  },
-  "crashpad_handler": {
-    "source": "unknown",
-    "plain": "crashpad_handler",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:49.427744+00:00"
-  },
-  "armsvc": {
-    "source": "unknown",
-    "plain": "armsvc",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:49.797769+00:00"
-  },
-  "intelcphdcpsvc": {
-    "source": "unknown",
-    "plain": "intelcphdcpsvc",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:50.146856+00:00"
-  },
-  "ipfsvc": {
-    "source": "unknown",
-    "plain": "ipfsvc",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:50.487152+00:00"
-  },
-  "onenotem": {
-    "source": "unknown",
-    "plain": "onenotem",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:50.846567+00:00"
-  },
-  "pdstyleagent": {
-    "source": "unknown",
-    "plain": "pdstyleagent",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:51.206547+00:00"
-  },
-  "acrobatnotificationclient": {
-    "source": "unknown",
-    "plain": "acrobatnotificationclient",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:53.488631+00:00"
-  },
-  "lsaiso": {
-    "source": "unknown",
-    "plain": "lsaiso",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:53.883503+00:00"
-  },
-  "ngciso": {
-    "source": "unknown",
-    "plain": "ngciso",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:54.217817+00:00"
-  },
-  "iscsiagent": {
-    "source": "unknown",
-    "plain": "iscsiagent",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:54.583427+00:00"
-  },
-  "spaceman": {
-    "source": "unknown",
-    "plain": "spaceman",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:54.913601+00:00"
-  },
-  "idle": {
-    "source": "unknown",
-    "plain": "idle",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:55.308847+00:00"
-  },
-  "tiworker": {
-    "source": "unknown",
-    "plain": "tiworker",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:55.690693+00:00"
-  },
-  "sppsvc": {
-    "source": "unknown",
-    "plain": "sppsvc",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:56.051576+00:00"
-  },
-  "trustedinstaller": {
-    "source": "unknown",
-    "plain": "trustedinstaller",
-    "publisher": "Unknown",
-    "what": "No description found. Search the process name online to identify it.",
-    "safe_kill": true,
-    "fetched": "2026-03-17T02:13:56.398557+00:00"
+    "fetched": "2026-03-18T22:57:46.081759+00:00"
   }
 }

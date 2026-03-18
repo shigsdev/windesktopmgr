@@ -640,3 +640,132 @@ Press CTRL+C to quit
 127.0.0.1 - - [16/Mar/2026 16:32:52] "POST /api/summary/memory HTTP/1.1" 200 -
 127.0.0.1 - - [16/Mar/2026 16:33:16] "GET /api/credentials/health HTTP/1.1" 200 -
 127.0.0.1 - - [16/Mar/2026 16:33:16] "POST /api/summary/credentials HTTP/1.1" 200 -
+[Wed 03/18/2026  6:28:47.75] Starting WinDesktopMgr with: C:\Users\higs7\AppData\Local\Python\pythoncore-3.14-64\python.exe 
+C:\Users\higs7\OneDrive\Coding\Windows Tools\windesktopmgr\windesktopmgr.py:4954: SyntaxWarning: "\ " is an invalid escape sequence. Such sequences will not work in the future. Did you mean "\\ "? A raw string is also an option.
+  + ", ".join(f"{d.get('Name','?')}:\ ({d.get('DisplayRoot','')})" for d in drives_down[:3]),
+C:\Users\higs7\OneDrive\Coding\Windows Tools\windesktopmgr\windesktopmgr.py:5548: SyntaxWarning: "\ " is an invalid escape sequence. Such sequences will not work in the future. Did you mean "\\ "? A raw string is also an option.
+  "detail": ", ".join(f"{d.get('Name','?')}:\ {d.get('DisplayRoot','')}" for d in drives_down[:3]),
+[EventCache] Loaded 13 cached event IDs
+[BSODCache] Loaded 5 cached stop codes
+[StartupCache] Loaded 54 cached items
+[ServicesCache] Loaded 299 cached services
+[ProcessCache] Loaded 140 cached processes
+[StartupCache] Re-queued 48 stale/unknown entries for refresh
+[ServicesCache] Re-queued 299 stale/unknown entries for refresh
+[ProcessCache] Re-queued 140 stale/unknown entries for refresh
+[EventCache] Worker started. 13 cached, 0 re-queued.
+[BSODCache]    Worker started. 5 cached, 0 re-queued.
+[StartupCache]  Worker started. 6 cached, 48 re-queued.
+[ServicesCache] Worker started. 0 cached, 299 re-queued.
+[ProcessCache]  Worker started. 0 cached, 140 re-queued.
+
+  WinDesktopMgr running at http://localhost:5000
+
+[StartupCache] Looking up: c
+[ServicesCache] Looking up: aarsvc_113ccd
+[ProcessCache] Looking up: memory compression
+ * Serving Flask app 'windesktopmgr'
+ * Debug mode: off
+WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+ * Running on http://127.0.0.1:5000
+Press CTRL+C to quit
+127.0.0.1 - - [18/Mar/2026 06:28:56] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:28:57] "GET /favicon.ico HTTP/1.1" 404 -
+127.0.0.1 - - [18/Mar/2026 06:28:57] "POST /api/scan/start HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:28:58] "GET /api/bsod/data HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:28:59] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:28:59] "POST /api/summary/bsod HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:28:59] "GET /api/bsod/cache HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:28:59] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:29:00] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:29:01] "POST /api/scan/start HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:29:01] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:29:01] "GET /api/bsod/data HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:29:02] "POST /api/summary/bsod HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:29:02] "GET /api/bsod/cache HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:29:03] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:29:03] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:29:04] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:29:05] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:29:05] "GET /api/dashboard/summary HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:29:06] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:29:07] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:29:07] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:29:08] "GET /api/dashboard/summary HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:29:08] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:29:09] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:29:09] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:29:10] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:29:11] "GET /api/scan/results HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:29:11] "POST /api/summary/drivers HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:23] "GET /api/bsod/data HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:23] "POST /api/summary/bsod HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:23] "GET /api/bsod/cache HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:30] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:30] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:30] "POST /api/scan/start HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:32] "POST /api/scan/start HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:32] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:32] "GET /api/bsod/data HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:33] "POST /api/summary/bsod HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:33] "GET /api/bsod/cache HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:33] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:33] "GET /api/bsod/data HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:34] "POST /api/summary/bsod HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:34] "GET /api/bsod/cache HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:34] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:34] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:35] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:35] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:36] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:36] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:37] "GET /api/dashboard/summary HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:37] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:37] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:38] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:38] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:39] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:39] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:40] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:40] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:41] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:41] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:42] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:42] "GET /api/dashboard/summary HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:42] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:43] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:43] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:43] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:44] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:45] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:45] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:45] "GET /api/scan/results HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:45] "GET /api/scan/results HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:45] "POST /api/summary/drivers HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 06:38:45] "POST /api/summary/drivers HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:20] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:20] "POST /api/scan/start HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:21] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:22] "GET /api/bsod/data HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:22] "POST /api/summary/bsod HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:22] "GET /api/bsod/cache HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:22] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:23] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:24] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:24] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:25] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:26] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:27] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:27] "GET /api/dashboard/summary HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:28] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:28] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:29] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:30] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:31] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:31] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:32] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:33] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:34] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:34] "GET /api/scan/status HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:35] "GET /api/scan/results HTTP/1.1" 200 -
+127.0.0.1 - - [18/Mar/2026 17:53:35] "POST /api/summary/drivers HTTP/1.1" 200 -
