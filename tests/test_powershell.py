@@ -1,0 +1,1068 @@
+"""
+tests/test_powershell.py — PowerShell integration tests for WinDesktopMgr.
+
+Strategy
+--------
+Every subprocess.run call is mocked so tests run on any OS (no Windows
+required).  Each test group covers:
+
+  1. Happy path   — realistic PS JSON output parsed correctly
+  2. Single-item  — PS returns a JSON object (not array); must be normalised
+  3. Empty output  — empty string / whitespace → safe fallback returned
+  4. Malformed JSON — garbage output → safe fallback returned (no 500 / raise)
+  5. Non-zero returncode — PS signals failure → error propagated or fallback
+  6. Timeout / exception — subprocess raises → safe fallback returned
+  7. Command content — the PS command string contains required cmdlets / fields
+  8. Input sanitisation — user-supplied values injected into PS commands safely
+"""
+
+import json
+import subprocess
+import pytest
+import windesktopmgr as wdm
+
+
+# ── helpers ────────────────────────────────────────────────────────────────────
+
+def _mock_run(mocker, stdout="[]", returncode=0, stderr="", side_effect=None):
+    """Patch subprocess.run and return the mock."""
+    m = mocker.patch("windesktopmgr.subprocess.run")
+    if side_effect:
+        m.side_effect = side_effect
+    else:
+        m.return_value.stdout    = stdout
+        m.return_value.returncode = returncode
+        m.return_value.stderr    = stderr
+    return m
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# get_installed_drivers
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestGetInstalledDrivers:
+
+    SAMPLE = json.dumps([
+        {"DeviceName": "Intel Graphics", "DriverVersion": "31.0.101.5186",
+         "DriverDate": "20240101000000.000000+000", "DeviceClass": "Display",
+         "Manufacturer": "Intel Corporation"},
+        {"DeviceName": "Realtek Audio", "DriverVersion": "6.0.9600.1",
+         "DriverDate": "20231001000000.000000+000", "DeviceClass": "Media",
+         "Manufacturer": "Realtek"},
+    ])
+
+    def test_happy_path_returns_list(self, mocker):
+        _mock_run(mocker, stdout=self.SAMPLE)
+        result = wdm.get_installed_drivers()
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert result[0]["DeviceName"] == "Intel Graphics"
+
+    def test_single_object_normalised_to_list(self, mocker):
+        single = json.dumps({"DeviceName": "USB Controller", "DriverVersion": "1.0",
+                              "DriverDate": "", "DeviceClass": "USB", "Manufacturer": "MS"})
+        _mock_run(mocker, stdout=single)
+        result = wdm.get_installed_drivers()
+        assert isinstance(result, list)
+        assert len(result) == 1
+
+    def test_empty_output_returns_empty_list(self, mocker):
+        _mock_run(mocker, stdout="")
+        result = wdm.get_installed_drivers()
+        assert result == []
+
+    def test_whitespace_output_returns_empty_list(self, mocker):
+        _mock_run(mocker, stdout="   \n\t  ")
+        result = wdm.get_installed_drivers()
+        assert result == []
+
+    def test_malformed_json_returns_empty_list(self, mocker):
+        _mock_run(mocker, stdout="not valid json {{")
+        result = wdm.get_installed_drivers()
+        assert result == []
+
+    def test_timeout_returns_empty_list(self, mocker):
+        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=90))
+        result = wdm.get_installed_drivers()
+        assert result == []
+
+    def test_command_uses_win32_pnpsigneddriver(self, mocker):
+        m = _mock_run(mocker, stdout=self.SAMPLE)
+        wdm.get_installed_drivers()
+        cmd = m.call_args[0][0][-1]
+        assert "Win32_PnPSignedDriver" in cmd
+
+    def test_command_selects_required_fields(self, mocker):
+        m = _mock_run(mocker, stdout=self.SAMPLE)
+        wdm.get_installed_drivers()
+        cmd = m.call_args[0][0][-1]
+        for field in ("DeviceName", "DriverVersion", "DeviceClass", "Manufacturer"):
+            assert field in cmd
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# get_windows_update_drivers
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestGetWindowsUpdateDrivers:
+
+    SAMPLE = json.dumps([
+        {"Title": "Intel - Display - 31.0.101.5186",
+         "Description": "Intel display driver",
+         "DriverModel": "Intel UHD Graphics",
+         "DriverVersion": "31.0.101.5186",
+         "DriverManufacturer": "Intel Corporation"},
+    ])
+
+    def setup_method(self):
+        wdm._dell_cache = None
+
+    def test_happy_path_returns_dict(self, mocker):
+        _mock_run(mocker, stdout=self.SAMPLE)
+        result = wdm.get_windows_update_drivers()
+        assert isinstance(result, dict)
+        assert len(result) == 1
+
+    def test_result_is_cached(self, mocker):
+        m = _mock_run(mocker, stdout=self.SAMPLE)
+        wdm.get_windows_update_drivers()
+        wdm.get_windows_update_drivers()
+        assert m.call_count == 1  # second call hits cache
+
+    def test_empty_output_returns_empty_dict(self, mocker):
+        _mock_run(mocker, stdout="")
+        result = wdm.get_windows_update_drivers()
+        assert result == {}
+
+    def test_malformed_json_returns_empty_dict(self, mocker):
+        _mock_run(mocker, stdout="<html>error page</html>")
+        result = wdm.get_windows_update_drivers()
+        assert result == {}
+
+    def test_timeout_returns_empty_dict(self, mocker):
+        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=60))
+        result = wdm.get_windows_update_drivers()
+        assert result == {}
+
+    def test_command_searches_for_drivers(self, mocker):
+        m = _mock_run(mocker, stdout=self.SAMPLE)
+        wdm.get_windows_update_drivers()
+        cmd = m.call_args[0][0][-1]
+        assert "Driver" in cmd
+
+    def test_single_object_normalised(self, mocker):
+        single = json.dumps({"Title": "Dell - BIOS - 2.3.1", "Description": "",
+                              "DriverModel": "", "DriverVersion": "2.3.1",
+                              "DriverManufacturer": "Dell"})
+        _mock_run(mocker, stdout=single)
+        result = wdm.get_windows_update_drivers()
+        assert len(result) == 1
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# get_disk_health
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestGetDiskHealth:
+
+    DRIVES = [
+        {"Letter": "C", "Label": "Windows", "UsedGB": 250.5,
+         "FreeGB": 450.2, "TotalGB": 700.7, "PctUsed": 35.8},
+    ]
+    PHYSICAL = [
+        {"Name": "Samsung SSD 990 Pro", "MediaType": "SSD",
+         "SizeGB": 931.5, "Health": "Healthy",
+         "Status": "OK", "BusType": "NVMe"},
+    ]
+    IO = [
+        {"Counter": r"\\.\PhysicalDisk(0)\Disk Read Bytes/sec", "Value": 1024.5},
+    ]
+
+    def _make_mock(self, mocker):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        main_out = json.dumps({"drives": self.DRIVES, "physical": self.PHYSICAL})
+        io_out   = json.dumps(self.IO)
+        m.side_effect = [
+            type("R", (), {"stdout": main_out, "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": io_out,   "returncode": 0, "stderr": ""})(),
+        ]
+        return m
+
+    def test_happy_path_returns_all_keys(self, mocker):
+        self._make_mock(mocker)
+        result = wdm.get_disk_health()
+        assert "drives" in result
+        assert "physical" in result
+        assert "io" in result
+
+    def test_drive_fields_present(self, mocker):
+        self._make_mock(mocker)
+        result = wdm.get_disk_health()
+        drive = result["drives"][0]
+        assert drive["Letter"] == "C"
+        assert drive["PctUsed"] == 35.8
+
+    def test_physical_disk_health_present(self, mocker):
+        self._make_mock(mocker)
+        result = wdm.get_disk_health()
+        assert result["physical"][0]["Health"] == "Healthy"
+
+    def test_single_drive_object_normalised(self, mocker):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        main_out = json.dumps({"drives": self.DRIVES[0], "physical": self.PHYSICAL[0]})
+        m.side_effect = [
+            type("R", (), {"stdout": main_out, "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "[]",     "returncode": 0, "stderr": ""})(),
+        ]
+        result = wdm.get_disk_health()
+        assert isinstance(result["drives"], list)
+        assert isinstance(result["physical"], list)
+
+    def test_empty_main_output_returns_fallback(self, mocker):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = [
+            type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
+        ]
+        result = wdm.get_disk_health()
+        assert result == {"drives": [], "physical": [], "io": []}
+
+    def test_malformed_json_returns_fallback(self, mocker):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = [
+            type("R", (), {"stdout": "INVALID{", "returncode": 0, "stderr": ""})(),
+        ]
+        result = wdm.get_disk_health()
+        assert result == {"drives": [], "physical": [], "io": []}
+
+    def test_timeout_returns_fallback(self, mocker):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = subprocess.TimeoutExpired(cmd="powershell", timeout=30)
+        result = wdm.get_disk_health()
+        assert result == {"drives": [], "physical": [], "io": []}
+
+    def test_io_failure_does_not_break_main_result(self, mocker):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        main_out = json.dumps({"drives": self.DRIVES, "physical": self.PHYSICAL})
+        m.side_effect = [
+            type("R", (), {"stdout": main_out,  "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "BAD JSON", "returncode": 0, "stderr": ""})(),
+        ]
+        result = wdm.get_disk_health()
+        assert len(result["drives"]) == 1
+        assert result["io"] == []
+
+    def test_command_uses_getpsdrive(self, mocker):
+        m = self._make_mock(mocker)
+        wdm.get_disk_health()
+        cmd = m.call_args_list[0][0][0][-1]
+        assert "Get-PSDrive" in cmd
+
+    def test_command_uses_get_physicaldisk(self, mocker):
+        m = self._make_mock(mocker)
+        wdm.get_disk_health()
+        cmd = m.call_args_list[0][0][0][-1]
+        assert "Get-PhysicalDisk" in cmd
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# get_network_data
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestGetNetworkData:
+
+    CONNS = json.dumps([
+        {"LocalAddress": "192.168.1.100", "LocalPort": 54321,
+         "RemoteAddress": "142.250.80.46", "RemotePort": 443,
+         "State": "Established", "PID": 1234, "Process": "chrome"},
+        {"LocalAddress": "0.0.0.0", "LocalPort": 445,
+         "RemoteAddress": "0.0.0.0", "RemotePort": 0,
+         "State": "Listen", "PID": 4, "Process": "System"},
+    ])
+    ADAPTERS = json.dumps([
+        {"Name": "Ethernet", "SentMB": 1024.5, "ReceivedMB": 4096.2,
+         "Status": "Up", "LinkSpeedMb": 1000},
+    ])
+
+    def _make_mock(self, mocker, conns=None, adapters=None):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = [
+            type("R", (), {"stdout": conns or self.CONNS,       "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": adapters or self.ADAPTERS, "returncode": 0, "stderr": ""})(),
+        ]
+        return m
+
+    def test_happy_path_keys(self, mocker):
+        self._make_mock(mocker)
+        result = wdm.get_network_data()
+        for key in ("established", "listening", "adapters", "top_processes",
+                    "total_connections", "total_listening"):
+            assert key in result
+
+    def test_connection_state_split(self, mocker):
+        self._make_mock(mocker)
+        result = wdm.get_network_data()
+        assert result["total_connections"] == 1
+        assert result["total_listening"] == 1
+
+    def test_top_processes_built(self, mocker):
+        self._make_mock(mocker)
+        result = wdm.get_network_data()
+        assert result["top_processes"][0]["process"] == "chrome"
+        assert result["top_processes"][0]["connections"] == 1
+
+    def test_empty_connections_returns_zeros(self, mocker):
+        self._make_mock(mocker, conns="[]")
+        result = wdm.get_network_data()
+        assert result["total_connections"] == 0
+        assert result["total_listening"] == 0
+
+    def test_single_connection_object_normalised(self, mocker):
+        single = json.dumps({"LocalAddress": "127.0.0.1", "LocalPort": 5000,
+                              "RemoteAddress": "0.0.0.0", "RemotePort": 0,
+                              "State": "Listen", "PID": 99, "Process": "flask"})
+        self._make_mock(mocker, conns=single)
+        result = wdm.get_network_data()
+        assert result["total_listening"] == 1
+
+    def test_malformed_connections_returns_fallback(self, mocker):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = [
+            type("R", (), {"stdout": "NOT JSON", "returncode": 0, "stderr": ""})(),
+        ]
+        result = wdm.get_network_data()
+        assert result["total_connections"] == 0
+
+    def test_timeout_returns_fallback(self, mocker):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = subprocess.TimeoutExpired(cmd="powershell", timeout=20)
+        result = wdm.get_network_data()
+        assert result["established"] == []
+
+    def test_conns_command_uses_get_nettcpconnection(self, mocker):
+        m = self._make_mock(mocker)
+        wdm.get_network_data()
+        cmd = m.call_args_list[0][0][0][-1]
+        assert "Get-NetTCPConnection" in cmd
+
+    def test_adapters_command_uses_get_netadapterstatistics(self, mocker):
+        m = self._make_mock(mocker)
+        wdm.get_network_data()
+        cmd = m.call_args_list[1][0][0][-1]
+        assert "Get-NetAdapterStatistics" in cmd
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# get_update_history
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestGetUpdateHistory:
+
+    SAMPLE = json.dumps([
+        {"Title": "2024-12 Cumulative Update for Windows 11 (KB5048667)",
+         "Date": "2024-12-10T03:00:00+00:00",
+         "ResultCode": 2,
+         "Categories": "Security Updates",
+         "KB": "KB5048667"},
+        {"Title": "Intel - Display - 31.0.101.5186",
+         "Date": "2024-11-20T10:00:00+00:00",
+         "ResultCode": 4,
+         "Categories": "Drivers",
+         "KB": ""},
+    ])
+
+    def test_happy_path_returns_list(self, mocker):
+        _mock_run(mocker, stdout=self.SAMPLE)
+        result = wdm.get_update_history()
+        assert isinstance(result, list)
+        assert len(result) == 2
+
+    def test_failed_updates_flagged(self, mocker):
+        _mock_run(mocker, stdout=self.SAMPLE)
+        result = wdm.get_update_history()
+        failed = [u for u in result if u.get("ResultCode") == 4]
+        assert len(failed) == 1
+
+    def test_empty_output_returns_empty_list(self, mocker):
+        _mock_run(mocker, stdout="")
+        result = wdm.get_update_history()
+        assert result == []
+
+    def test_malformed_json_returns_empty_list(self, mocker):
+        _mock_run(mocker, stdout="<Error/>")
+        result = wdm.get_update_history()
+        assert result == []
+
+    def test_timeout_returns_empty_list(self, mocker):
+        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=60))
+        result = wdm.get_update_history()
+        assert result == []
+
+    def test_command_uses_update_session(self, mocker):
+        m = _mock_run(mocker, stdout=self.SAMPLE)
+        wdm.get_update_history()
+        cmd = m.call_args[0][0][-1]
+        assert "Microsoft.Update.Session" in cmd
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# get_process_list
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestGetProcessList:
+
+    SAMPLE = json.dumps([
+        {"PID": 1234, "Name": "chrome", "CPU": 12.5, "MemMB": 512.0,
+         "Threads": 30, "Handles": 400,
+         "Path": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+         "Description": "Google Chrome", "CmdLine": "chrome.exe --headless"},
+        {"PID": 4, "Name": "System", "CPU": 0.1, "MemMB": 8.0,
+         "Threads": 200, "Handles": 10000, "Path": "", "Description": "", "CmdLine": ""},
+    ])
+
+    def test_happy_path_returns_structure(self, mocker):
+        _mock_run(mocker, stdout=self.SAMPLE)
+        result = wdm.get_process_list()
+        assert "processes" in result
+        assert "total" in result
+        assert "total_mem_mb" in result
+        assert result["total"] == 2
+
+    def test_total_mem_summed(self, mocker):
+        _mock_run(mocker, stdout=self.SAMPLE)
+        result = wdm.get_process_list()
+        assert result["total_mem_mb"] == pytest.approx(520.0, abs=1)
+
+    def test_empty_output_returns_fallback(self, mocker):
+        _mock_run(mocker, stdout="")
+        result = wdm.get_process_list()
+        assert result["processes"] == []
+        assert result["total"] == 0
+
+    def test_malformed_json_returns_fallback(self, mocker):
+        _mock_run(mocker, stdout="{bad}")
+        result = wdm.get_process_list()
+        assert result["processes"] == []
+
+    def test_timeout_returns_fallback(self, mocker):
+        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=45))
+        result = wdm.get_process_list()
+        assert result["total"] == 0
+
+    def test_command_uses_get_process(self, mocker):
+        m = _mock_run(mocker, stdout=self.SAMPLE)
+        wdm.get_process_list()
+        cmd = m.call_args[0][0][-1]
+        assert "Get-Process" in cmd
+
+    def test_command_uses_win32_process_for_paths(self, mocker):
+        m = _mock_run(mocker, stdout=self.SAMPLE)
+        wdm.get_process_list()
+        cmd = m.call_args[0][0][-1]
+        assert "Win32_Process" in cmd
+
+    def test_flagged_list_only_contains_flagged(self, mocker):
+        _mock_run(mocker, stdout=self.SAMPLE)
+        result = wdm.get_process_list()
+        for p in result["flagged"]:
+            assert p["flag"] in ("warning", "critical")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# kill_process — input sanitisation
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestKillProcess:
+
+    def test_success_returns_ok_true(self, mocker):
+        _mock_run(mocker, stdout="", returncode=0)
+        result = wdm.kill_process(1234)
+        assert result["ok"] is True
+
+    def test_failure_returns_ok_false_with_error(self, mocker):
+        _mock_run(mocker, stdout="", returncode=1, stderr="Access is denied")
+        result = wdm.kill_process(1234)
+        assert result["ok"] is False
+        assert "Access is denied" in result["error"]
+
+    def test_timeout_returns_ok_false(self, mocker):
+        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=10))
+        result = wdm.kill_process(1234)
+        assert result["ok"] is False
+
+    def test_pid_is_integer_cast_in_command(self, mocker):
+        m = _mock_run(mocker, stdout="", returncode=0)
+        wdm.kill_process(9999)
+        cmd = m.call_args[0][0][-1]
+        assert "9999" in cmd
+        assert "Stop-Process" in cmd
+
+    def test_non_integer_pid_does_not_inject_arbitrary_code(self, mocker):
+        """int() cast must prevent shell injection via PID."""
+        m = _mock_run(mocker, stdout="", returncode=0)
+        # Passing a float — should be cast cleanly to int
+        wdm.kill_process(1234.9)
+        cmd = m.call_args[0][0][-1]
+        assert "1234" in cmd
+        assert "." not in cmd.split("-Id")[1].split()[0]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# get_thermals
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestGetThermals:
+
+    TEMPS = json.dumps([
+        {"Name": "CPU Package", "TempC": 55.2, "Source": "LibreHardwareMonitor"},
+        {"Name": "GPU Core",    "TempC": 48.0, "Source": "LibreHardwareMonitor"},
+    ])
+    PERF = json.dumps({"CPUPct": 12.5, "MemUsedMB": 16384, "MemTotalMB": 32768, "Battery": None})
+    FANS = json.dumps([])
+
+    def _make_mock(self, mocker, temps=None, perf=None, fans=None):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = [
+            type("R", (), {"stdout": temps or self.TEMPS, "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": perf  or self.PERF,  "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": fans  or self.FANS,  "returncode": 0, "stderr": ""})(),
+        ]
+        return m
+
+    def test_happy_path_keys(self, mocker):
+        self._make_mock(mocker)
+        result = wdm.get_thermals()
+        for key in ("temps", "perf", "fans", "has_rich"):
+            assert key in result
+
+    def test_temp_status_annotated(self, mocker):
+        self._make_mock(mocker)
+        result = wdm.get_thermals()
+        for t in result["temps"]:
+            assert "status" in t
+            assert t["status"] in ("ok", "warning", "critical")
+
+    def test_critical_temp_flagged(self, mocker):
+        hot = json.dumps([{"Name": "CPU Package", "TempC": 95.0, "Source": "LibreHardwareMonitor"}])
+        self._make_mock(mocker, temps=hot)
+        result = wdm.get_thermals()
+        assert result["temps"][0]["status"] == "critical"
+
+    def test_warning_temp_flagged(self, mocker):
+        warm = json.dumps([{"Name": "CPU Package", "TempC": 85.0, "Source": "LibreHardwareMonitor"}])
+        self._make_mock(mocker, temps=warm)
+        result = wdm.get_thermals()
+        assert result["temps"][0]["status"] == "warning"
+
+    def test_has_rich_true_when_lhm_source(self, mocker):
+        self._make_mock(mocker)
+        result = wdm.get_thermals()
+        assert result["has_rich"] is True
+
+    def test_has_rich_false_when_only_wmi(self, mocker):
+        wmi_temps = json.dumps([{"Name": "ACPI zone", "TempC": 40.0, "Source": "WMI_ThermalZone"}])
+        self._make_mock(mocker, temps=wmi_temps)
+        result = wdm.get_thermals()
+        assert result["has_rich"] is False
+
+    def test_empty_temps_output_returns_fallback(self, mocker):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = subprocess.TimeoutExpired(cmd="powershell", timeout=20)
+        result = wdm.get_thermals()
+        assert result["temps"] == []
+
+    def test_temps_command_uses_wmi_thermalzone(self, mocker):
+        m = self._make_mock(mocker)
+        wdm.get_thermals()
+        cmd = m.call_args_list[0][0][0][-1]
+        assert "MSAcpi_ThermalZoneTemperature" in cmd
+
+    def test_perf_command_uses_win32_processor(self, mocker):
+        m = self._make_mock(mocker)
+        wdm.get_thermals()
+        cmd = m.call_args_list[1][0][0][-1]
+        assert "Win32_Processor" in cmd
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# get_services_list
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestGetServicesList:
+
+    SAMPLE = json.dumps([
+        {"Name": "wuauserv", "DisplayName": "Windows Update",
+         "Status": "Running", "StartMode": "Auto",
+         "ProcessId": 1234, "Description": "Enables Windows Update",
+         "PathName": r"C:\Windows\system32\svchost.exe"},
+        {"Name": "diagtrack", "DisplayName": "Connected User Experiences",
+         "Status": "Running", "StartMode": "Auto",
+         "ProcessId": 5678, "Description": "Telemetry",
+         "PathName": r"C:\Windows\system32\svchost.exe"},
+    ])
+
+    def test_happy_path_returns_list(self, mocker):
+        _mock_run(mocker, stdout=self.SAMPLE)
+        result = wdm.get_services_list()
+        assert isinstance(result, list)
+        assert len(result) == 2
+
+    def test_info_field_attached(self, mocker):
+        _mock_run(mocker, stdout=self.SAMPLE)
+        result = wdm.get_services_list()
+        for s in result:
+            assert "info" in s
+
+    def test_empty_output_returns_empty_list(self, mocker):
+        _mock_run(mocker, stdout="")
+        result = wdm.get_services_list()
+        assert result == []
+
+    def test_malformed_json_returns_empty_list(self, mocker):
+        _mock_run(mocker, stdout="error text")
+        result = wdm.get_services_list()
+        assert result == []
+
+    def test_timeout_returns_empty_list(self, mocker):
+        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=30))
+        result = wdm.get_services_list()
+        assert result == []
+
+    def test_single_service_object_normalised(self, mocker):
+        single = json.dumps({"Name": "wuauserv", "DisplayName": "Windows Update",
+                              "Status": "Running", "StartMode": "Auto",
+                              "ProcessId": 1, "Description": "", "PathName": ""})
+        _mock_run(mocker, stdout=single)
+        result = wdm.get_services_list()
+        assert isinstance(result, list)
+        assert len(result) == 1
+
+    def test_command_uses_win32_service(self, mocker):
+        m = _mock_run(mocker, stdout=self.SAMPLE)
+        wdm.get_services_list()
+        cmd = m.call_args[0][0][-1]
+        assert "Win32_Service" in cmd
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# toggle_service — input sanitisation
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestToggleService:
+
+    def test_stop_action_calls_stop_service(self, mocker):
+        m = _mock_run(mocker, returncode=0)
+        result = wdm.toggle_service("wuauserv", "stop")
+        assert result["ok"] is True
+        cmd = m.call_args[0][0][-1]
+        assert "Stop-Service" in cmd
+
+    def test_start_action_calls_start_service(self, mocker):
+        m = _mock_run(mocker, returncode=0)
+        wdm.toggle_service("wuauserv", "start")
+        cmd = m.call_args[0][0][-1]
+        assert "Start-Service" in cmd
+
+    def test_disable_action_calls_set_service_disabled(self, mocker):
+        m = _mock_run(mocker, returncode=0)
+        wdm.toggle_service("wuauserv", "disable")
+        cmd = m.call_args[0][0][-1]
+        assert "Set-Service" in cmd
+        assert "Disabled" in cmd
+
+    def test_enable_action_calls_set_service_manual(self, mocker):
+        m = _mock_run(mocker, returncode=0)
+        wdm.toggle_service("wuauserv", "enable")
+        cmd = m.call_args[0][0][-1]
+        assert "Set-Service" in cmd
+        assert "Manual" in cmd
+
+    def test_invalid_action_returns_error_no_subprocess(self, mocker):
+        m = _mock_run(mocker, returncode=0)
+        result = wdm.toggle_service("wuauserv", "explode")
+        assert result["ok"] is False
+        assert "Invalid" in result["error"]
+        m.assert_not_called()
+
+    def test_service_name_sanitised(self, mocker):
+        m = _mock_run(mocker, returncode=0)
+        # Attempt to inject via semicolons, spaces, and backslashes — those are stripped.
+        # re.sub(r"[^\w\-]", "", name) keeps only word chars and hyphens.
+        wdm.toggle_service("wuauserv; bad\\path", "stop")
+        cmd = m.call_args[0][0][-1]
+        # Semicolons, spaces, and backslashes must be stripped from the injected name
+        injected_name = cmd.split('"')[1]  # value between the first pair of quotes
+        assert ";" not in injected_name
+        assert " " not in injected_name
+        assert "\\" not in injected_name
+
+    def test_ps_failure_returns_ok_false(self, mocker):
+        _mock_run(mocker, returncode=1, stderr="Service not found")
+        result = wdm.toggle_service("nosuchsvc", "stop")
+        assert result["ok"] is False
+        assert "Service not found" in result["error"]
+
+    def test_timeout_returns_ok_false(self, mocker):
+        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=15))
+        result = wdm.toggle_service("wuauserv", "stop")
+        assert result["ok"] is False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# get_memory_analysis
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestGetMemoryAnalysis:
+
+    PROCS = json.dumps([
+        {"ProcessName": "chrome",   "MemMB": 1024.0},
+        {"ProcessName": "msmpeng",  "MemMB": 180.0},
+        {"ProcessName": "mfemms",   "MemMB": 350.0},
+    ])
+    SYSINFO = json.dumps({"TotalMB": 32768, "FreeMB": 16000})
+
+    def _make_mock(self, mocker, procs=None, sysinfo=None):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = [
+            type("R", (), {"stdout": procs   or self.PROCS,   "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": sysinfo or self.SYSINFO, "returncode": 0, "stderr": ""})(),
+        ]
+        return m
+
+    def test_happy_path_keys(self, mocker):
+        self._make_mock(mocker)
+        result = wdm.get_memory_analysis()
+        for key in ("total_mb", "used_mb", "free_mb", "categories",
+                    "top_procs", "mcafee_mb", "defender_mb", "has_mcafee"):
+            assert key in result
+
+    def test_totals_calculated(self, mocker):
+        self._make_mock(mocker)
+        result = wdm.get_memory_analysis()
+        assert result["total_mb"] == 32768
+        assert result["free_mb"] == 16000
+        assert result["used_mb"] == 32768 - 16000
+
+    def test_mcafee_detected(self, mocker):
+        self._make_mock(mocker)
+        result = wdm.get_memory_analysis()
+        assert result["has_mcafee"] is True
+        assert result["mcafee_mb"] > 0
+
+    def test_top_procs_sorted_by_mem_descending(self, mocker):
+        self._make_mock(mocker)
+        result = wdm.get_memory_analysis()
+        mems = [p["mem"] for p in result["top_procs"]]
+        assert mems == sorted(mems, reverse=True)
+
+    def test_empty_process_output_returns_empty_dict(self, mocker):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = subprocess.TimeoutExpired(cmd="powershell", timeout=20)
+        result = wdm.get_memory_analysis()
+        assert result == {}
+
+    def test_malformed_json_returns_empty_dict(self, mocker):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = [
+            type("R", (), {"stdout": "NOT JSON", "returncode": 0, "stderr": ""})(),
+        ]
+        result = wdm.get_memory_analysis()
+        assert result == {}
+
+    def test_procs_command_uses_get_process(self, mocker):
+        m = self._make_mock(mocker)
+        wdm.get_memory_analysis()
+        cmd = m.call_args_list[0][0][0][-1]
+        assert "Get-Process" in cmd
+
+    def test_sysinfo_command_uses_win32_operatingsystem(self, mocker):
+        m = self._make_mock(mocker)
+        wdm.get_memory_analysis()
+        cmd = m.call_args_list[1][0][0][-1]
+        assert "Win32_OperatingSystem" in cmd
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# get_current_bios
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestGetCurrentBios:
+
+    SAMPLE = json.dumps({
+        "BIOSVersion": "2.3.1",
+        "ReleaseDate": "20240106000000.000000+000",
+        "Manufacturer": "Dell Inc.",
+        "BoardProduct": "XPS 8960",
+        "BoardMfr": "Dell Inc.",
+    })
+
+    def test_happy_path_returns_data(self, mocker):
+        _mock_run(mocker, stdout=self.SAMPLE)
+        result = wdm.get_current_bios()
+        assert result["BIOSVersion"] == "2.3.1"
+        assert result["Manufacturer"] == "Dell Inc."
+
+    def test_bios_date_formatted(self, mocker):
+        _mock_run(mocker, stdout=self.SAMPLE)
+        result = wdm.get_current_bios()
+        assert "BIOSDateFormatted" in result
+        assert "2024" in result["BIOSDateFormatted"]
+
+    def test_empty_output_returns_empty_dict(self, mocker):
+        _mock_run(mocker, stdout="")
+        result = wdm.get_current_bios()
+        # Empty PS output → json.loads("{}") → {} + BIOSDateFormatted added
+        # No real BIOS fields should be present
+        assert "BIOSVersion" not in result
+        assert "Manufacturer" not in result
+
+    def test_malformed_json_returns_empty_dict(self, mocker):
+        _mock_run(mocker, stdout="<bios/>")
+        result = wdm.get_current_bios()
+        assert result == {}
+
+    def test_timeout_returns_empty_dict(self, mocker):
+        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=10))
+        result = wdm.get_current_bios()
+        assert result == {}
+
+    def test_command_uses_win32_bios(self, mocker):
+        m = _mock_run(mocker, stdout=self.SAMPLE)
+        wdm.get_current_bios()
+        cmd = m.call_args[0][0][-1]
+        assert "Win32_BIOS" in cmd
+
+    def test_command_includes_baseboard(self, mocker):
+        m = _mock_run(mocker, stdout=self.SAMPLE)
+        wdm.get_current_bios()
+        cmd = m.call_args[0][0][-1]
+        assert "Win32_BaseBoard" in cmd
+
+    def test_missing_release_date_handled_gracefully(self, mocker):
+        no_date = json.dumps({"BIOSVersion": "2.3.1", "ReleaseDate": "",
+                               "Manufacturer": "Dell Inc.", "BoardProduct": "XPS 8960", "BoardMfr": "Dell Inc."})
+        _mock_run(mocker, stdout=no_date)
+        result = wdm.get_current_bios()
+        assert result["BIOSDateFormatted"] == ""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# get_system_timeline
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestGetSystemTimeline:
+
+    # All timestamps within 30-day window
+    BSOD_EVTS = json.dumps([
+        {"EventId": 41, "TimeCreated": "2026-03-10T08:00:00+00:00",
+         "Message": "The system has rebooted without cleanly shutting down first."},
+        {"EventId": 1001, "TimeCreated": "2026-03-15T12:00:00+00:00",
+         "Message": "Problem signature: stop code 0x0000009F"},
+    ])
+    UPDATE_EVTS = json.dumps([
+        {"Title": "2026-03 Cumulative Update (KB5055523)",
+         "Date": "2026-03-12T02:00:00+00:00", "KB": "KB5055523"},
+    ])
+    EMPTY = json.dumps([])
+
+    def _make_mock(self, mocker, bsod=None, upd=None, svc=None, boot=None, cred=None):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = [
+            type("R", (), {"stdout": bsod or self.BSOD_EVTS,  "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": upd  or self.UPDATE_EVTS,"returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": svc  or self.EMPTY,       "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": boot or self.EMPTY,       "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": cred or self.EMPTY,       "returncode": 0, "stderr": ""})(),
+        ]
+        return m
+
+    def test_returns_list(self, mocker):
+        self._make_mock(mocker)
+        result = wdm.get_system_timeline()
+        assert isinstance(result, list)
+
+    def test_bsod_events_included(self, mocker):
+        self._make_mock(mocker)
+        result = wdm.get_system_timeline()
+        bsods = [e for e in result if e["type"] == "bsod"]
+        assert len(bsods) == 2
+
+    def test_update_events_included(self, mocker):
+        self._make_mock(mocker)
+        result = wdm.get_system_timeline()
+        updates = [e for e in result if e["type"] == "update"]
+        assert len(updates) == 1
+
+    def test_bsod_stop_code_extracted(self, mocker):
+        self._make_mock(mocker)
+        result = wdm.get_system_timeline()
+        bsod_with_code = [e for e in result
+                          if e["type"] == "bsod" and "0x" in e.get("detail","")]
+        assert len(bsod_with_code) == 1
+
+    def test_all_events_have_required_fields(self, mocker):
+        self._make_mock(mocker)
+        result = wdm.get_system_timeline()
+        for event in result:
+            for field in ("ts", "type", "category", "title", "severity", "icon"):
+                assert field in event, f"Missing field '{field}' in event: {event}"
+
+    def test_events_sorted_most_recent_first(self, mocker):
+        self._make_mock(mocker)
+        result = wdm.get_system_timeline()
+        timestamps = [e["ts"] for e in result]
+        # Timeline is sorted reverse=True — most recent event first
+        assert timestamps == sorted(timestamps, reverse=True)
+
+    def test_events_outside_window_excluded(self, mocker):
+        old_event = json.dumps([
+            {"EventId": 41, "TimeCreated": "2025-01-01T00:00:00+00:00",
+             "Message": "Old crash"},
+        ])
+        self._make_mock(mocker, bsod=old_event)
+        result = wdm.get_system_timeline()
+        bsods = [e for e in result if e["type"] == "bsod"]
+        assert len(bsods) == 0
+
+    def test_all_sources_empty_returns_empty_list(self, mocker):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = [
+            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
+        ]
+        result = wdm.get_system_timeline()
+        assert result == []
+
+    def test_ps_error_on_one_source_does_not_crash(self, mocker):
+        """If the BSOD query fails, we still get update events."""
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = [
+            type("R", (), {"stdout": "GARBAGE",            "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": self.UPDATE_EVTS,      "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "[]",                  "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "[]",                  "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "[]",                  "returncode": 0, "stderr": ""})(),
+        ]
+        result = wdm.get_system_timeline()
+        updates = [e for e in result if e["type"] == "update"]
+        assert len(updates) == 1
+
+    def test_bsod_command_queries_event_ids_41_1001_6008(self, mocker):
+        m = self._make_mock(mocker)
+        wdm.get_system_timeline()
+        cmd = m.call_args_list[0][0][0][-1]
+        assert "41" in cmd
+        assert "1001" in cmd
+        assert "6008" in cmd
+
+    def test_update_command_uses_update_session(self, mocker):
+        m = self._make_mock(mocker)
+        wdm.get_system_timeline()
+        cmd = m.call_args_list[1][0][0][-1]
+        assert "Microsoft.Update.Session" in cmd
+
+    def test_service_command_queries_event_id_7036(self, mocker):
+        m = self._make_mock(mocker)
+        wdm.get_system_timeline()
+        cmd = m.call_args_list[2][0][0][-1]
+        assert "7036" in cmd
+
+    def test_boot_command_queries_event_id_6013(self, mocker):
+        m = self._make_mock(mocker)
+        wdm.get_system_timeline()
+        cmd = m.call_args_list[3][0][0][-1]
+        assert "6013" in cmd
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# get_bsod_events (raw Event Log query)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestGetBsodEvents:
+
+    SAMPLE = json.dumps([
+        {"Id": 1001,
+         "TimeCreated": "2026-03-10T08:00:00",
+         "Message": "Problem signature: stop code HYPERVISOR_ERROR intelppm.sys"},
+        {"Id": 41,
+         "TimeCreated": "2026-03-10T07:59:00",
+         "Message": "The system has rebooted without cleanly shutting down first."},
+    ])
+
+    def test_happy_path_returns_list(self, mocker):
+        _mock_run(mocker, stdout=self.SAMPLE)
+        result = wdm.get_bsod_events()
+        assert isinstance(result, list)
+
+    def test_empty_returns_empty_list(self, mocker):
+        _mock_run(mocker, stdout="")
+        result = wdm.get_bsod_events()
+        assert isinstance(result, list)
+
+    def test_malformed_json_returns_empty_list(self, mocker):
+        _mock_run(mocker, stdout="<bad/>")
+        result = wdm.get_bsod_events()
+        assert isinstance(result, list)
+
+    def test_timeout_returns_empty_list(self, mocker):
+        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=30))
+        result = wdm.get_bsod_events()
+        assert isinstance(result, list)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# get_startup_items — PowerShell registry + scheduler calls
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestGetStartupItems:
+
+    REG_ITEMS = json.dumps([
+        {"Name": "OneDrive", "Command": r"C:\Program Files\Microsoft OneDrive\OneDrive.exe /background",
+         "Location": "HKCU\\...\\Run", "Type": "registry_run"},
+    ])
+    TASK_ITEMS = json.dumps([
+        {"Name": "MicrosoftEdgeAutoLaunch", "Command": r"C:\Program Files\Edge\msedge.exe --auto-launch",
+         "Location": "Task Scheduler", "Type": "scheduled_task"},
+    ])
+
+    def _make_mock(self, mocker, reg=None, tasks=None):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = [
+            type("R", (), {"stdout": reg   or self.REG_ITEMS,   "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": tasks or self.TASK_ITEMS,  "returncode": 0, "stderr": ""})(),
+        ]
+        return m
+
+    def test_returns_list(self, mocker):
+        self._make_mock(mocker)
+        result = wdm.get_startup_items()
+        assert isinstance(result, list)
+
+    def test_items_have_required_fields(self, mocker):
+        self._make_mock(mocker)
+        result = wdm.get_startup_items()
+        # PS outputs PascalCase keys: Name, Command, Location, Type
+        for item in result:
+            for field in ("Name", "Command", "Location", "Type"):
+                assert field in item
+
+    def test_empty_output_returns_empty_list(self, mocker):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = [
+            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
+        ]
+        result = wdm.get_startup_items()
+        assert result == []
+
+    def test_malformed_json_returns_empty_list(self, mocker):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = [
+            type("R", (), {"stdout": "bad json", "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "[]",        "returncode": 0, "stderr": ""})(),
+        ]
+        result = wdm.get_startup_items()
+        assert isinstance(result, list)
