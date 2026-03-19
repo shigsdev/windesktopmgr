@@ -21,9 +21,20 @@ Write-Host "  Python : $PyExe"
 
 Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
 
+$LogDir  = Join-Path $ScriptDir "Logs"
+
+# Use PowerShell as the wrapper so stdout+stderr are captured to a timestamped
+# log file.  Old logs beyond the last 7 are pruned automatically.
+$WrapperArg = "-NonInteractive -ExecutionPolicy Bypass -Command " +
+    "`$log = '$LogDir\SystemHealthDiag_' + (Get-Date -f 'yyyy-MM-dd_HH-mm-ss') + '.log'; " +
+    "New-Item -ItemType Directory -Force -Path '$LogDir' | Out-Null; " +
+    "& '$PyExe' '$Script' 2>&1 | Tee-Object -FilePath `$log; " +
+    "Get-ChildItem '$LogDir\SystemHealthDiag_*.log' | " +
+    "Sort-Object LastWriteTime -Descending | Select-Object -Skip 7 | Remove-Item -Force"
+
 $Action = New-ScheduledTaskAction `
-    -Execute $PyExe `
-    -Argument "-ExecutionPolicy Bypass `"$Script`"" `
+    -Execute "powershell.exe" `
+    -Argument $WrapperArg `
     -WorkingDirectory $ScriptDir
 
 $TriggerDaily = New-ScheduledTaskTrigger -Daily -At "07:00"
@@ -62,7 +73,11 @@ if ($task) {
     Write-Host "StartWhenAvailable is ON - if the machine was off at 7AM," -ForegroundColor Yellow
     Write-Host "the diagnostic runs automatically at next login." -ForegroundColor Yellow
     Write-Host ""
+    Write-Host "Logs saved to: $LogDir\SystemHealthDiag_<timestamp>.log" -ForegroundColor Yellow
+    Write-Host "Last 7 logs are kept automatically." -ForegroundColor Yellow
+    Write-Host ""
     Write-Host "Test now: Start-ScheduledTask -TaskName '$TaskName'" -ForegroundColor Cyan
+    Write-Host "Then check: Get-Content (Get-ChildItem '$LogDir\*.log' | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName" -ForegroundColor Cyan
 } else {
     Write-Host "ERROR: Task registration failed." -ForegroundColor Red
 }
