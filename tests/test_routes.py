@@ -2,11 +2,25 @@
 test_routes.py
 Flask route integration tests using the test client.
 All subprocess / PowerShell calls are mocked — no Windows dependency.
+
+Coverage: ALL 38 Flask routes defined in windesktopmgr.py
 """
 
 import json
+import os
 import pytest
 import windesktopmgr as wdm
+
+
+# ── helpers ────────────────────────────────────────────────────────────────────
+
+def _mock_ps(mocker, stdout="[]", returncode=0, stderr=""):
+    """Shorthand: mock subprocess.run globally."""
+    m = mocker.patch("windesktopmgr.subprocess.run")
+    m.return_value.stdout    = stdout
+    m.return_value.returncode = returncode
+    m.return_value.stderr    = stderr
+    return m
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -21,6 +35,10 @@ class TestIndexRoute:
     def test_returns_html(self, client):
         resp = client.get("/")
         assert b"<!DOCTYPE html>" in resp.data or b"<html" in resp.data
+
+    def test_no_cache_headers(self, client):
+        resp = client.get("/")
+        assert resp.headers.get("Cache-Control") == "no-store, no-cache, must-revalidate"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -52,7 +70,6 @@ class TestScanResultsRoute:
         resp = client.get("/api/scan/results")
         assert resp.status_code == 200
         data = resp.get_json()
-        # Must be a list (not null/None) so the frontend can iterate safely
         assert isinstance(data, list)
         assert data == []
 
@@ -77,6 +94,34 @@ class TestScanStartRoute:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# GET  /api/bsod/data
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestBsodDataRoute:
+    def test_returns_200_with_structure(self, client, mocker):
+        mocker.patch("windesktopmgr.build_bsod_analysis", return_value={
+            "crashes": [],
+            "summary": {"total_crashes": 0, "this_month": 0,
+                        "most_common_error": "None", "avg_uptime_hours": 0},
+            "timeline": [],
+            "recommendations": [],
+            "error_breakdown": [],
+            "driver_breakdown": [],
+        })
+        resp = client.get("/api/bsod/data")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "crashes" in data
+        assert "summary" in data
+        assert "recommendations" in data
+
+    def test_returns_json_content_type(self, client, mocker):
+        mocker.patch("windesktopmgr.build_bsod_analysis", return_value={})
+        resp = client.get("/api/bsod/data")
+        assert resp.content_type.startswith("application/json")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # GET  /api/bsod/cache
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -93,6 +138,11 @@ class TestBsodCacheRoute:
     def test_empty_cache_total_is_zero(self, client):
         resp = client.get("/api/bsod/cache")
         assert resp.get_json()["total_cached"] == 0
+
+    def test_populated_cache_reflected(self, client):
+        wdm._bsod_cache["0x00020001"] = {"title": "HYPERVISOR_ERROR"}
+        resp = client.get("/api/bsod/cache")
+        assert resp.get_json()["total_cached"] == 1
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -127,6 +177,223 @@ class TestBsodCacheDeleteRoute:
         data = resp.get_json()
         assert data["ok"] is True
         assert data["removed"] is False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET  /api/startup/list
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestStartupListRoute:
+    def test_returns_200_with_list(self, client, mocker):
+        mocker.patch("windesktopmgr.get_startup_items", return_value=[
+            {"Name": "OneDrive", "Command": "onedrive.exe", "Location": "HKCU Run",
+             "Type": "registry_hkcu", "Enabled": True, "info": None, "suspicious": False},
+        ])
+        resp = client.get("/api/startup/list")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert isinstance(data, list)
+        assert len(data) == 1
+
+    def test_empty_list_returns_200(self, client, mocker):
+        mocker.patch("windesktopmgr.get_startup_items", return_value=[])
+        resp = client.get("/api/startup/list")
+        assert resp.status_code == 200
+        assert resp.get_json() == []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# POST /api/startup/lookup-unknowns
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestStartupLookupUnknownsRoute:
+    def test_returns_ok_and_queued(self, client):
+        resp = client.post("/api/startup/lookup-unknowns",
+                           json={"items": [{"Name": "WeirdApp", "Command": "weird.exe"}]})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert "queued" in data
+
+    def test_empty_items_returns_zero_queued(self, client):
+        resp = client.post("/api/startup/lookup-unknowns", json={"items": []})
+        data = resp.get_json()
+        assert data["queued"] == 0
+
+    def test_no_body_returns_400(self, client):
+        """Empty body with JSON content type is rejected by Flask."""
+        resp = client.post("/api/startup/lookup-unknowns",
+                           data="", content_type="application/json")
+        assert resp.status_code == 400
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET  /api/startup/lookup-status
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestStartupLookupStatusRoute:
+    def test_returns_pending_count(self, client):
+        resp = client.get("/api/startup/lookup-status")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "queue_pending" in data
+        assert isinstance(data["queue_pending"], int)
+
+    def test_returns_in_flight_count(self, client):
+        resp = client.get("/api/startup/lookup-status")
+        data = resp.get_json()
+        assert "in_flight" in data
+
+    def test_returns_cached_count(self, client):
+        resp = client.get("/api/startup/lookup-status")
+        data = resp.get_json()
+        assert "cached" in data
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET  /api/startup/cache
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestStartupCacheRoute:
+    def test_returns_200_with_structure(self, client):
+        resp = client.get("/api/startup/cache")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "total_cached" in data
+        assert "queue_pending" in data
+        assert "in_flight" in data
+
+    def test_empty_cache_zero(self, client):
+        resp = client.get("/api/startup/cache")
+        assert resp.get_json()["total_cached"] == 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# POST /api/startup/toggle — input validation
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestStartupToggleRoute:
+    def test_unsupported_type_returns_error(self, client):
+        resp = client.post(
+            "/api/startup/toggle",
+            json={"name": "SomeApp", "type": "folder", "enable": True},
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert "error" in data
+
+    def test_registry_hklm_enable_calls_subprocess(self, client, mocker):
+        mock_run = _mock_ps(mocker)
+        resp = client.post(
+            "/api/startup/toggle",
+            json={"name": "MyApp", "type": "registry_hklm", "enable": True},
+        )
+        assert resp.status_code == 200
+        assert mock_run.called
+
+    def test_task_disable_calls_subprocess(self, client, mocker):
+        mock_run = _mock_ps(mocker)
+        resp = client.post(
+            "/api/startup/toggle",
+            json={"name": "MyTask", "type": "task", "enable": False},
+        )
+        assert resp.status_code == 200
+        assert mock_run.called
+        cmd = mock_run.call_args[0][0][-1]
+        assert "Disable-ScheduledTask" in cmd or "Disable" in cmd
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET  /api/disk/data
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestDiskDataRoute:
+    def test_returns_200_with_keys(self, client, mocker):
+        mocker.patch("windesktopmgr.get_disk_health",
+                     return_value={"drives": [], "physical": [], "io": []})
+        resp = client.get("/api/disk/data")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "drives" in data
+        assert "physical" in data
+        assert "io" in data
+
+    def test_returns_json(self, client, mocker):
+        mocker.patch("windesktopmgr.get_disk_health",
+                     return_value={"drives": [], "physical": [], "io": []})
+        resp = client.get("/api/disk/data")
+        assert resp.content_type.startswith("application/json")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET  /api/network/data
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestNetworkDataRoute:
+    def test_returns_200_with_keys(self, client, mocker):
+        mocker.patch("windesktopmgr.get_network_data", return_value={
+            "established": [], "listening": [], "adapters": [],
+            "top_processes": [], "total_connections": 0, "total_listening": 0,
+        })
+        resp = client.get("/api/network/data")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "established" in data
+        assert "total_connections" in data
+
+    def test_returns_json(self, client, mocker):
+        mocker.patch("windesktopmgr.get_network_data", return_value={
+            "established": [], "listening": [], "adapters": [],
+            "top_processes": [], "total_connections": 0, "total_listening": 0,
+        })
+        resp = client.get("/api/network/data")
+        assert resp.content_type.startswith("application/json")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET  /api/updates/history
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestUpdatesHistoryRoute:
+    def test_returns_200_with_list(self, client, mocker):
+        mocker.patch("windesktopmgr.get_update_history", return_value=[
+            {"Title": "KB5048667", "Date": "2024-12-10", "ResultCode": 2,
+             "Categories": "Security", "KB": "KB5048667"},
+        ])
+        resp = client.get("/api/updates/history")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert isinstance(data, list)
+        assert len(data) == 1
+
+    def test_empty_history_returns_empty_list(self, client, mocker):
+        mocker.patch("windesktopmgr.get_update_history", return_value=[])
+        resp = client.get("/api/updates/history")
+        assert resp.get_json() == []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# POST /api/events/query
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestEventsQueryRoute:
+    def test_returns_list(self, client, mocker):
+        _mock_ps(mocker, stdout="[]")
+        resp = client.post("/api/events/query", json={"log": "System", "level": "Error"})
+        assert resp.status_code == 200
+        assert isinstance(resp.get_json(), list)
+
+    def test_max_events_capped(self, client, mocker):
+        mock_run = _mock_ps(mocker, stdout="[]")
+        client.post("/api/events/query", json={"log": "System", "max": 9999})
+        cmd = mock_run.call_args[0][0][-1]
+        assert "9999" not in cmd
+
+    def test_returns_json(self, client, mocker):
+        _mock_ps(mocker, stdout="[]")
+        resp = client.post("/api/events/query", json={"log": "Application"})
+        assert resp.content_type.startswith("application/json")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -170,22 +437,52 @@ class TestEventsCacheDeleteRoute:
     def test_missing_event_ok_false_or_removed_false(self, client):
         resp = client.delete("/api/events/cache/delete/99999")
         data = resp.get_json()
-        # Either ok=True with removed=False, or some graceful response
         assert data.get("ok") is True
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# GET  /api/startup/lookup-status
+# GET  /api/processes/list
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestStartupLookupStatusRoute:
-    def test_returns_pending_count(self, client):
-        resp = client.get("/api/startup/lookup-status")
+class TestProcessListRoute:
+    def test_returns_200_with_structure(self, client, mocker):
+        mocker.patch("windesktopmgr.get_process_list", return_value={
+            "processes": [], "total": 0, "total_mem_mb": 0,
+            "flagged": [], "flag_notes": [],
+        })
+        resp = client.get("/api/processes/list")
         assert resp.status_code == 200
         data = resp.get_json()
-        # Route returns queue_pending + in_flight + cached
-        assert "queue_pending" in data
-        assert isinstance(data["queue_pending"], int)
+        assert "processes" in data
+        assert "total" in data
+        assert "total_mem_mb" in data
+
+    def test_returns_json(self, client, mocker):
+        mocker.patch("windesktopmgr.get_process_list", return_value={
+            "processes": [], "total": 0, "total_mem_mb": 0,
+            "flagged": [], "flag_notes": [],
+        })
+        resp = client.get("/api/processes/list")
+        assert resp.content_type.startswith("application/json")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# POST /api/processes/lookup-unknowns
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestProcessLookupUnknownsRoute:
+    def test_returns_ok_and_queued(self, client):
+        resp = client.post("/api/processes/lookup-unknowns",
+                           json={"processes": [{"Name": "weird.exe", "Path": ""}]})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert "queued" in data
+
+    def test_empty_list_returns_zero_queued(self, client):
+        resp = client.post("/api/processes/lookup-unknowns", json={"processes": []})
+        data = resp.get_json()
+        assert data["queued"] == 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -202,43 +499,79 @@ class TestProcessLookupStatusRoute:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# POST /api/startup/toggle — input validation
+# POST /api/processes/kill — safety critical
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestStartupToggleRoute:
-    def test_unsupported_type_returns_error(self, client):
-        resp = client.post(
-            "/api/startup/toggle",
-            json={"name": "SomeApp", "type": "folder", "enable": True},
-        )
+class TestProcessKillRoute:
+    def test_kill_calls_subprocess_with_pid(self, client, mocker):
+        mock_run = _mock_ps(mocker)
+        resp = client.post("/api/processes/kill", json={"pid": 1234})
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+        cmd = mock_run.call_args[0][0][-1]
+        assert "1234" in cmd
+
+    def test_kill_subprocess_failure_returns_error(self, client, mocker):
+        _mock_ps(mocker, returncode=1, stderr="Access denied")
+        resp = client.post("/api/processes/kill", json={"pid": 999})
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["ok"] is False
-        assert "error" in data
 
-    def test_registry_hklm_enable_calls_subprocess(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-        resp = client.post(
-            "/api/startup/toggle",
-            json={"name": "MyApp", "type": "registry_hklm", "enable": True},
-        )
+    def test_missing_pid_defaults_to_zero(self, client, mocker):
+        mock_run = _mock_ps(mocker)
+        resp = client.post("/api/processes/kill", json={})
         assert resp.status_code == 200
-        assert mock_run.called
-
-    def test_task_disable_calls_subprocess(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-        resp = client.post(
-            "/api/startup/toggle",
-            json={"name": "MyTask", "type": "task", "enable": False},
-        )
-        assert resp.status_code == 200
-        assert mock_run.called
+        # Should have called with PID 0 (from default)
         cmd = mock_run.call_args[0][0][-1]
-        assert "Disable-ScheduledTask" in cmd or "Disable" in cmd
+        assert "0" in cmd
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET  /api/thermals/data
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestThermalsDataRoute:
+    def test_returns_200_with_keys(self, client, mocker):
+        mocker.patch("windesktopmgr.get_thermals", return_value={
+            "temps": [], "perf": {}, "fans": [], "has_rich": False, "note": "",
+        })
+        resp = client.get("/api/thermals/data")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "temps" in data
+        assert "perf" in data
+        assert "fans" in data
+
+    def test_returns_json(self, client, mocker):
+        mocker.patch("windesktopmgr.get_thermals", return_value={
+            "temps": [], "perf": {}, "fans": [], "has_rich": False, "note": "",
+        })
+        resp = client.get("/api/thermals/data")
+        assert resp.content_type.startswith("application/json")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET  /api/services/list
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestServicesListRoute:
+    def test_returns_200_with_list(self, client, mocker):
+        mocker.patch("windesktopmgr.get_services_list", return_value=[
+            {"Name": "wuauserv", "DisplayName": "Windows Update",
+             "Status": "Running", "StartMode": "Auto", "info": None},
+        ])
+        resp = client.get("/api/services/list")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert isinstance(data, list)
+        assert len(data) == 1
+
+    def test_empty_list_returns_200(self, client, mocker):
+        mocker.patch("windesktopmgr.get_services_list", return_value=[])
+        resp = client.get("/api/services/list")
+        assert resp.status_code == 200
+        assert resp.get_json() == []
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -247,7 +580,7 @@ class TestStartupToggleRoute:
 
 class TestServicesToggleRoute:
     def test_invalid_action_returns_error_no_subprocess(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run = _mock_ps(mocker)
         resp = client.post(
             "/api/services/toggle",
             json={"name": "spooler", "action": "explode"},
@@ -255,13 +588,10 @@ class TestServicesToggleRoute:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["ok"] is False
-        # subprocess must NOT have been called for invalid actions
         mock_run.assert_not_called()
 
     def test_stop_action_calls_subprocess(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
+        mock_run = _mock_ps(mocker)
         resp = client.post(
             "/api/services/toggle",
             json={"name": "spooler", "action": "stop"},
@@ -271,10 +601,18 @@ class TestServicesToggleRoute:
         cmd = mock_run.call_args[0][0][-1]
         assert "Stop-Service" in cmd
 
+    def test_start_action_calls_subprocess(self, client, mocker):
+        mock_run = _mock_ps(mocker)
+        resp = client.post(
+            "/api/services/toggle",
+            json={"name": "spooler", "action": "start"},
+        )
+        assert resp.status_code == 200
+        cmd = mock_run.call_args[0][0][-1]
+        assert "Start-Service" in cmd
+
     def test_disable_action_calls_subprocess(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
+        mock_run = _mock_ps(mocker)
         resp = client.post(
             "/api/services/toggle",
             json={"name": "spooler", "action": "disable"},
@@ -282,63 +620,422 @@ class TestServicesToggleRoute:
         assert resp.status_code == 200
         assert mock_run.called
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# POST /api/processes/kill — safety critical
-# ══════════════════════════════════════════════════════════════════════════════
-
-class TestProcessKillRoute:
-    def test_kill_calls_subprocess_with_pid(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-        resp = client.post("/api/processes/kill", json={"pid": 1234})
+    def test_enable_action_calls_subprocess(self, client, mocker):
+        mock_run = _mock_ps(mocker)
+        resp = client.post(
+            "/api/services/toggle",
+            json={"name": "spooler", "action": "enable"},
+        )
         assert resp.status_code == 200
-        assert resp.get_json()["ok"] is True
         cmd = mock_run.call_args[0][0][-1]
-        assert "1234" in cmd
+        assert "Manual" in cmd
 
-    def test_kill_subprocess_failure_returns_error(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.returncode = 1
-        mock_run.return_value.stderr = "Access denied"
-        resp = client.post("/api/processes/kill", json={"pid": 999})
+    def test_missing_name_handled_gracefully(self, client, mocker):
+        _mock_ps(mocker)
+        resp = client.post("/api/services/toggle", json={"action": "stop"})
         assert resp.status_code == 200
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# POST /api/services/lookup-unknowns
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestServicesLookupUnknownsRoute:
+    def test_returns_ok_and_queued(self, client):
+        resp = client.post("/api/services/lookup-unknowns",
+                           json={"services": [{"Name": "WeirdSvc", "DisplayName": "Weird Service"}]})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert "queued" in data
+
+    def test_empty_list_returns_zero_queued(self, client):
+        resp = client.post("/api/services/lookup-unknowns", json={"services": []})
+        data = resp.get_json()
+        assert data["queued"] == 0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET  /api/services/lookup-status
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestServicesLookupStatusRoute:
+    def test_returns_200_with_queue_info(self, client):
+        resp = client.get("/api/services/lookup-status")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "queue_pending" in data
+        assert "in_flight" in data
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET  /api/health-history/data
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestHealthHistoryDataRoute:
+    def test_returns_200(self, client, mocker):
+        mocker.patch("windesktopmgr.get_health_report_history", return_value={
+            "reports": [], "weekly": [], "latest_score": None,
+        })
+        resp = client.get("/api/health-history/data")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert isinstance(data, dict)
+
+    def test_returns_json(self, client, mocker):
+        mocker.patch("windesktopmgr.get_health_report_history", return_value={})
+        resp = client.get("/api/health-history/data")
+        assert resp.content_type.startswith("application/json")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET  /api/timeline/data
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestTimelineDataRoute:
+    def test_returns_200_with_structure(self, client, mocker):
+        mocker.patch("windesktopmgr.get_system_timeline", return_value=[])
+        resp = client.get("/api/timeline/data")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "events" in data
+        assert "days" in data
+        assert "total" in data
+
+    def test_default_days_30(self, client, mocker):
+        mock_fn = mocker.patch("windesktopmgr.get_system_timeline", return_value=[])
+        client.get("/api/timeline/data")
+        mock_fn.assert_called_with(30)
+
+    def test_custom_days_parameter(self, client, mocker):
+        mock_fn = mocker.patch("windesktopmgr.get_system_timeline", return_value=[])
+        client.get("/api/timeline/data?days=7")
+        mock_fn.assert_called_with(7)
+
+    def test_total_matches_events_length(self, client, mocker):
+        mocker.patch("windesktopmgr.get_system_timeline", return_value=[
+            {"ts": "2026-03-10", "type": "bsod", "category": "crash",
+             "title": "Crash", "severity": "critical", "icon": "💀"},
+        ])
+        resp = client.get("/api/timeline/data")
+        data = resp.get_json()
+        assert data["total"] == len(data["events"])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET  /api/memory/data
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestMemoryDataRoute:
+    def test_returns_200(self, client, mocker):
+        mocker.patch("windesktopmgr.get_memory_analysis", return_value={
+            "total_mb": 32768, "used_mb": 16000, "free_mb": 16768,
+            "categories": {}, "top_procs": [],
+            "mcafee_mb": 0, "defender_mb": 0, "defender_baseline": 150,
+            "mcafee_saving_mb": 0, "has_mcafee": False,
+        })
+        resp = client.get("/api/memory/data")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "total_mb" in data
+        assert "used_mb" in data
+
+    def test_returns_json(self, client, mocker):
+        mocker.patch("windesktopmgr.get_memory_analysis", return_value={})
+        resp = client.get("/api/memory/data")
+        assert resp.content_type.startswith("application/json")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET  /api/credentials/health
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestCredentialsHealthRoute:
+    def test_returns_200(self, client, mocker):
+        mocker.patch("windesktopmgr.get_credentials_network_health", return_value={
+            "onedrive_suspended": False, "fast_startup": False,
+            "drives_down": [], "msal_token_stale": False,
+        })
+        resp = client.get("/api/credentials/health")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert isinstance(data, dict)
+
+    def test_returns_json(self, client, mocker):
+        mocker.patch("windesktopmgr.get_credentials_network_health", return_value={})
+        resp = client.get("/api/credentials/health")
+        assert resp.content_type.startswith("application/json")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# POST /api/credentials/resume-onedrive
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestResumeOneDriveRoute:
+    def test_success_returns_ok(self, client, mocker):
+        _mock_ps(mocker, stdout=json.dumps(
+            [{"Name": "OneDrive", "PID": 1234, "Resumed": 5, "Status": "OK"}]))
+        resp = client.post("/api/credentials/resume-onedrive")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["fixed"] == 1
+
+    def test_not_found_returns_ok_false(self, client, mocker):
+        _mock_ps(mocker, stdout=json.dumps(
+            [{"Name": "OneDrive", "PID": 0, "Resumed": 0, "Status": "NotFound"}]))
+        resp = client.post("/api/credentials/resume-onedrive")
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert data["fixed"] == 0
+
+    def test_timeout_returns_error(self, client, mocker):
+        import subprocess
+        mocker.patch("windesktopmgr.subprocess.run",
+                     side_effect=subprocess.TimeoutExpired(cmd="ps", timeout=15))
+        resp = client.post("/api/credentials/resume-onedrive")
         data = resp.get_json()
         assert data["ok"] is False
 
+    def test_response_has_message(self, client, mocker):
+        _mock_ps(mocker, stdout=json.dumps(
+            [{"Name": "OneDrive", "PID": 1234, "Resumed": 5, "Status": "OK"}]))
+        resp = client.post("/api/credentials/resume-onedrive")
+        data = resp.get_json()
+        assert "message" in data
+
 
 # ══════════════════════════════════════════════════════════════════════════════
-# POST /api/events/query — max_events cap
+# POST /api/credentials/resume-brokers
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestEventsQueryRoute:
-    def test_returns_list(self, client, mocker):
-        mocker.patch("windesktopmgr.subprocess.run").return_value.stdout = "[]"
-        mocker.patch("windesktopmgr.subprocess.run").return_value.returncode = 0
-        resp = client.post("/api/events/query", json={"log": "System", "level": "Error"})
+class TestResumeBrokersRoute:
+    def test_success_returns_ok(self, client, mocker):
+        _mock_ps(mocker, stdout=json.dumps(
+            [{"Name": "backgroundTaskHost", "PID": 5678, "Resumed": 3, "Status": "OK"}]))
+        resp = client.post("/api/credentials/resume-brokers")
         assert resp.status_code == 200
-        assert isinstance(resp.get_json(), list)
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["fixed"] == 1
 
-    def test_max_events_capped(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = "[]"
-        mock_run.return_value.returncode = 0
-        # Request more than 500 events
-        client.post("/api/events/query", json={"log": "System", "max": 9999})
-        cmd = mock_run.call_args[0][0][-1]
-        # The PowerShell command must not allow more than 500
-        assert "9999" not in cmd
+    def test_no_brokers_found_returns_ok_false(self, client, mocker):
+        _mock_ps(mocker, stdout=json.dumps(
+            [{"Name": "No broker processes found", "PID": 0, "Resumed": 0, "Status": "NotFound"}]))
+        resp = client.post("/api/credentials/resume-brokers")
+        data = resp.get_json()
+        assert data["ok"] is False
+
+    def test_timeout_returns_error(self, client, mocker):
+        import subprocess
+        mocker.patch("windesktopmgr.subprocess.run",
+                     side_effect=subprocess.TimeoutExpired(cmd="ps", timeout=15))
+        resp = client.post("/api/credentials/resume-brokers")
+        data = resp.get_json()
+        assert data["ok"] is False
+
+    def test_response_has_results_and_message(self, client, mocker):
+        _mock_ps(mocker, stdout=json.dumps([]))
+        resp = client.post("/api/credentials/resume-brokers")
+        data = resp.get_json()
+        assert "results" in data
+        assert "message" in data
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# POST /api/summary/<tab>
+# POST /api/credentials/fix-fast-startup
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestFixFastStartupRoute:
+    def test_disable_fast_startup_returns_ok(self, client, mocker):
+        _mock_ps(mocker, stdout="OK:disabled")
+        resp = client.post("/api/credentials/fix-fast-startup",
+                           json={"enable": False})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["enabled"] is False
+
+    def test_enable_fast_startup_returns_ok(self, client, mocker):
+        _mock_ps(mocker, stdout="OK:enabled")
+        resp = client.post("/api/credentials/fix-fast-startup",
+                           json={"enable": True})
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["enabled"] is True
+
+    def test_ps_failure_returns_ok_false(self, client, mocker):
+        _mock_ps(mocker, stdout="ERROR: Access denied")
+        resp = client.post("/api/credentials/fix-fast-startup",
+                           json={"enable": False})
+        data = resp.get_json()
+        assert data["ok"] is False
+
+    def test_timeout_returns_ok_false(self, client, mocker):
+        import subprocess
+        mocker.patch("windesktopmgr.subprocess.run",
+                     side_effect=subprocess.TimeoutExpired(cmd="ps", timeout=10))
+        resp = client.post("/api/credentials/fix-fast-startup",
+                           json={"enable": False})
+        data = resp.get_json()
+        assert data["ok"] is False
+
+    def test_no_body_returns_400(self, client, mocker):
+        """Empty body with JSON content type is rejected by Flask."""
+        _mock_ps(mocker, stdout="OK:disabled")
+        resp = client.post("/api/credentials/fix-fast-startup",
+                           data="", content_type="application/json")
+        assert resp.status_code == 400
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET  /api/bios/status
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestBiosStatusRoute:
+    def test_returns_200(self, client, mocker):
+        mocker.patch("windesktopmgr.get_bios_status", return_value={
+            "current": {"BIOSVersion": "2.3.1"}, "update": {},
+        })
+        resp = client.get("/api/bios/status")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert isinstance(data, dict)
+
+    def test_returns_json(self, client, mocker):
+        mocker.patch("windesktopmgr.get_bios_status", return_value={})
+        resp = client.get("/api/bios/status")
+        assert resp.content_type.startswith("application/json")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# POST /api/bios/cache/clear
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestBiosCacheClearRoute:
+    def test_returns_ok(self, client, mocker):
+        # Ensure the cache file doesn't actually exist for the test
+        mocker.patch("os.path.exists", return_value=False)
+        resp = client.post("/api/bios/cache/clear")
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+
+    def test_removes_existing_cache_file(self, client, mocker):
+        mocker.patch("os.path.exists", return_value=True)
+        mock_remove = mocker.patch("os.remove")
+        resp = client.post("/api/bios/cache/clear")
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+        mock_remove.assert_called_once()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET  /api/dashboard/summary
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestDashboardSummaryRoute:
+    def test_returns_200_with_structure(self, client, mocker):
+        mocker.patch("windesktopmgr.get_thermals", return_value={
+            "temps": [], "perf": {}, "fans": [], "has_rich": False, "note": "",
+        })
+        mocker.patch("windesktopmgr.get_memory_analysis", return_value={
+            "total_mb": 32768, "used_mb": 16000, "free_mb": 16768,
+            "categories": {}, "top_procs": [],
+            "mcafee_mb": 0, "defender_mb": 0, "defender_baseline": 150,
+            "mcafee_saving_mb": 0, "has_mcafee": False,
+        })
+        mocker.patch("windesktopmgr.get_bios_status", return_value={
+            "current": {}, "update": {},
+        })
+        mocker.patch("windesktopmgr.get_credentials_network_health", return_value={
+            "onedrive_suspended": False, "fast_startup": False,
+            "drives_down": [], "msal_token_stale": False,
+        })
+        resp = client.get("/api/dashboard/summary")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "concerns" in data
+        assert "total" in data
+        assert "critical" in data
+        assert "warnings" in data
+        assert "overall" in data
+        assert "checked_at" in data
+
+    def test_overall_ok_when_no_concerns(self, client, mocker):
+        mocker.patch("windesktopmgr.get_thermals", return_value={
+            "temps": [], "perf": {}, "fans": [], "has_rich": False, "note": "",
+        })
+        mocker.patch("windesktopmgr.get_memory_analysis", return_value={
+            "total_mb": 32768, "used_mb": 8000, "free_mb": 24768,
+            "categories": {}, "top_procs": [],
+            "mcafee_mb": 0, "defender_mb": 0, "defender_baseline": 150,
+            "mcafee_saving_mb": 0, "has_mcafee": False,
+        })
+        mocker.patch("windesktopmgr.get_bios_status", return_value={
+            "current": {}, "update": {},
+        })
+        mocker.patch("windesktopmgr.get_credentials_network_health", return_value={
+            "onedrive_suspended": False, "fast_startup": False,
+            "drives_down": [], "msal_token_stale": False,
+        })
+        resp = client.get("/api/dashboard/summary")
+        data = resp.get_json()
+        assert data["overall"] == "ok"
+        assert data["total"] == 0
+
+    def test_critical_concern_raises_overall_to_critical(self, client, mocker):
+        mocker.patch("windesktopmgr.get_thermals", return_value={
+            "temps": [{"TempC": 95, "Name": "CPU", "Source": "LHM", "status": "critical"}],
+            "perf": {"CPUPct": 10}, "fans": [], "has_rich": True, "note": "",
+        })
+        mocker.patch("windesktopmgr.get_memory_analysis", return_value={
+            "total_mb": 32768, "used_mb": 8000, "free_mb": 24768,
+            "categories": {}, "top_procs": [],
+            "mcafee_mb": 0, "defender_mb": 0, "defender_baseline": 150,
+            "mcafee_saving_mb": 0, "has_mcafee": False,
+        })
+        mocker.patch("windesktopmgr.get_bios_status", return_value={
+            "current": {}, "update": {},
+        })
+        mocker.patch("windesktopmgr.get_credentials_network_health", return_value={
+            "onedrive_suspended": False, "fast_startup": False,
+            "drives_down": [], "msal_token_stale": False,
+        })
+        resp = client.get("/api/dashboard/summary")
+        data = resp.get_json()
+        assert data["overall"] == "critical"
+        assert data["critical"] >= 1
+
+    def test_mcafee_detected_raises_warning(self, client, mocker):
+        mocker.patch("windesktopmgr.get_thermals", return_value={
+            "temps": [], "perf": {}, "fans": [], "has_rich": False, "note": "",
+        })
+        mocker.patch("windesktopmgr.get_memory_analysis", return_value={
+            "total_mb": 32768, "used_mb": 16000, "free_mb": 16768,
+            "categories": {}, "top_procs": [],
+            "mcafee_mb": 500, "defender_mb": 150, "defender_baseline": 150,
+            "mcafee_saving_mb": 350, "has_mcafee": True,
+        })
+        mocker.patch("windesktopmgr.get_bios_status", return_value={
+            "current": {}, "update": {},
+        })
+        mocker.patch("windesktopmgr.get_credentials_network_health", return_value={
+            "onedrive_suspended": False, "fast_startup": False,
+            "drives_down": [], "msal_token_stale": False,
+        })
+        resp = client.get("/api/dashboard/summary")
+        data = resp.get_json()
+        assert data["warnings"] >= 1
+        mcafee_concerns = [c for c in data["concerns"] if "McAfee" in c["title"]]
+        assert len(mcafee_concerns) >= 1
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# POST /api/summary/<tab> — all remaining tabs
 # ══════════════════════════════════════════════════════════════════════════════
 
 class TestSummaryRoute:
-    # /api/summary/<tab> uses request.get_json() — must send content_type=application/json
-
-    def test_unknown_tab_returns_error(self, client):
+    def test_unknown_tab_returns_404(self, client):
         resp = client.post("/api/summary/nonexistent_tab", json={})
         assert resp.status_code in (200, 404)
         if resp.status_code == 200:
@@ -349,8 +1046,7 @@ class TestSummaryRoute:
         wdm._scan_results = []
         resp = client.post("/api/summary/drivers", json={})
         assert resp.status_code == 200
-        data = resp.get_json()
-        assert "status" in data
+        assert "status" in resp.get_json()
 
     def test_bsod_tab_returns_status(self, client, mocker):
         mocker.patch("windesktopmgr.build_bsod_analysis", return_value={
@@ -364,8 +1060,7 @@ class TestSummaryRoute:
         })
         resp = client.post("/api/summary/bsod", json={})
         assert resp.status_code == 200
-        data = resp.get_json()
-        assert "status" in data
+        assert "status" in resp.get_json()
 
     def test_startup_tab_returns_status(self, client, mocker):
         mocker.patch("windesktopmgr.get_startup_items", return_value=[])
@@ -377,5 +1072,79 @@ class TestSummaryRoute:
         mocker.patch("windesktopmgr.get_disk_health",
                      return_value={"drives": [], "physical": [], "io": []})
         resp = client.post("/api/summary/disk", json={})
+        assert resp.status_code == 200
+        assert "status" in resp.get_json()
+
+    def test_network_tab_returns_status(self, client):
+        resp = client.post("/api/summary/network", json={
+            "established": [], "listening": [], "adapters": [],
+            "top_processes": [], "total_connections": 0, "total_listening": 0,
+        })
+        assert resp.status_code == 200
+        assert "status" in resp.get_json()
+
+    def test_updates_tab_returns_status(self, client):
+        resp = client.post("/api/summary/updates", json={"items": []})
+        assert resp.status_code == 200
+        assert "status" in resp.get_json()
+
+    def test_events_tab_returns_status(self, client):
+        resp = client.post("/api/summary/events", json={"events": []})
+        assert resp.status_code == 200
+        assert "status" in resp.get_json()
+
+    def test_processes_tab_returns_status(self, client):
+        resp = client.post("/api/summary/processes", json={
+            "processes": [], "total": 0, "total_mem_mb": 0,
+            "flagged": [], "flag_notes": [],
+        })
+        assert resp.status_code == 200
+        assert "status" in resp.get_json()
+
+    def test_thermals_tab_returns_status(self, client):
+        resp = client.post("/api/summary/thermals", json={
+            "temps": [], "perf": {}, "fans": [],
+        })
+        assert resp.status_code == 200
+        assert "status" in resp.get_json()
+
+    def test_services_tab_returns_status(self, client):
+        resp = client.post("/api/summary/services", json={"services": []})
+        assert resp.status_code == 200
+        assert "status" in resp.get_json()
+
+    def test_health_history_tab_returns_status(self, client):
+        resp = client.post("/api/summary/health-history", json={
+            "reports": [], "weekly": [],
+        })
+        assert resp.status_code == 200
+        assert "status" in resp.get_json()
+
+    def test_timeline_tab_returns_status(self, client):
+        resp = client.post("/api/summary/timeline", json={"events": []})
+        assert resp.status_code == 200
+        assert "status" in resp.get_json()
+
+    def test_memory_tab_returns_status(self, client):
+        resp = client.post("/api/summary/memory", json={
+            "total_mb": 32768, "used_mb": 16000, "free_mb": 16768,
+            "categories": {}, "has_mcafee": False, "mcafee_mb": 0,
+            "mcafee_saving_mb": 0,
+        })
+        assert resp.status_code == 200
+        assert "status" in resp.get_json()
+
+    def test_bios_tab_returns_status(self, client):
+        resp = client.post("/api/summary/bios", json={
+            "current": {"BIOSVersion": "2.3.1"}, "update": {},
+        })
+        assert resp.status_code == 200
+        assert "status" in resp.get_json()
+
+    def test_credentials_tab_returns_status(self, client):
+        resp = client.post("/api/summary/credentials", json={
+            "onedrive_suspended": False, "fast_startup": False,
+            "drives_down": [],
+        })
         assert resp.status_code == 200
         assert "status" in resp.get_json()
