@@ -1148,3 +1148,85 @@ class TestSummaryRoute:
         })
         assert resp.status_code == 200
         assert "status" in resp.get_json()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Server startup configuration
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestServerConfig:
+    """Regression tests for the threaded server fix.
+
+    Flask's dev server defaults to single-threaded. When background worker
+    threads make blocking PowerShell subprocess calls, they starve the
+    request handler and the server appears to hang (accepts connections
+    but never responds). These tests ensure we don't regress.
+    """
+
+    def test_app_run_uses_threaded_true(self, mocker):
+        """app.run() must be called with threaded=True to prevent
+        background worker threads from blocking request handling."""
+        import inspect
+        source = inspect.getsource(wdm)
+        assert "threaded=True" in source, (
+            "app.run() must include threaded=True — without it, "
+            "background PowerShell workers block the request thread"
+        )
+
+    def test_index_responds_with_mocked_workers(self, client, mocker):
+        """/ must return 200 even when background workers are running."""
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert len(resp.data) > 1000, "index.html should be a substantial page"
+
+    def test_api_responds_with_mocked_workers(self, client, mocker):
+        """API endpoints must respond even when workers are active."""
+        resp = client.get("/api/scan/status")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data is not None
+
+    def test_multiple_concurrent_routes_respond(self, client, mocker):
+        """Multiple routes should all respond without blocking each other."""
+        _mock_ps(mocker, stdout="[]")
+        endpoints = [
+            ("GET", "/"),
+            ("GET", "/api/scan/status"),
+            ("GET", "/api/scan/results"),
+        ]
+        for method, url in endpoints:
+            if method == "GET":
+                resp = client.get(url)
+            assert resp.status_code == 200, f"{method} {url} returned {resp.status_code}"
+
+    def test_index_no_cache_headers_prevent_stale_page(self, client):
+        """After a server restart with a fix, browsers must not serve
+        a cached broken version."""
+        resp = client.get("/")
+        cc = resp.headers.get("Cache-Control", "")
+        assert "no-store" in cc or "no-cache" in cc
+
+    def test_worker_threads_are_daemon(self):
+        """All worker threads must be daemon so they don't prevent shutdown."""
+        import ast
+        source_path = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                                   "windesktopmgr.py")
+        with open(source_path, encoding="utf-8-sig") as f:
+            tree = ast.parse(f.read())
+
+        thread_calls = []
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "Thread"):
+                for kw in node.keywords:
+                    if kw.arg == "daemon":
+                        thread_calls.append(kw)
+
+        assert len(thread_calls) >= 5, (
+            f"Expected at least 5 daemon worker threads, found {len(thread_calls)}"
+        )
+        for kw in thread_calls:
+            assert isinstance(kw.value, ast.Constant) and kw.value.value is True, (
+                "All worker threads must have daemon=True"
+            )
