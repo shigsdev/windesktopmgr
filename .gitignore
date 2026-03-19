@@ -38,6 +38,8 @@ bios_cache.json
 gmail_credentials.json
 gmail_token.json
 *.token
+# Email config (contains SMTP credentials)
+diag_email_config.xml
 
 # Any generated reports
 System Health Reports/
