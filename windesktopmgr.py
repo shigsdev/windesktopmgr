@@ -5765,5 +5765,5 @@ if __name__ == "__main__":
     print(f"[ProcessCache]  Worker started. {len(_process_cache)} cached, {process_requeued} re-queued.")
 
     print("\n  WinDesktopMgr running at http://localhost:5000\n")
-    app.run(debug=False, port=5000, use_reloader=False)
+    app.run(debug=False, port=5000, use_reloader=False, threaded=True)
 
