@@ -25,15 +25,16 @@ import windesktopmgr as wdm
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
+
 def _mock_run(mocker, stdout="[]", returncode=0, stderr="", side_effect=None):
     """Patch subprocess.run and return the mock."""
     m = mocker.patch("windesktopmgr.subprocess.run")
     if side_effect:
         m.side_effect = side_effect
     else:
-        m.return_value.stdout    = stdout
+        m.return_value.stdout = stdout
         m.return_value.returncode = returncode
-        m.return_value.stderr    = stderr
+        m.return_value.stderr = stderr
     return m
 
 
@@ -41,16 +42,26 @@ def _mock_run(mocker, stdout="[]", returncode=0, stderr="", side_effect=None):
 # get_installed_drivers
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestGetInstalledDrivers:
 
-    SAMPLE = json.dumps([
-        {"DeviceName": "Intel Graphics", "DriverVersion": "31.0.101.5186",
-         "DriverDate": "20240101000000.000000+000", "DeviceClass": "Display",
-         "Manufacturer": "Intel Corporation"},
-        {"DeviceName": "Realtek Audio", "DriverVersion": "6.0.9600.1",
-         "DriverDate": "20231001000000.000000+000", "DeviceClass": "Media",
-         "Manufacturer": "Realtek"},
-    ])
+class TestGetInstalledDrivers:
+    SAMPLE = json.dumps(
+        [
+            {
+                "DeviceName": "Intel Graphics",
+                "DriverVersion": "31.0.101.5186",
+                "DriverDate": "20240101000000.000000+000",
+                "DeviceClass": "Display",
+                "Manufacturer": "Intel Corporation",
+            },
+            {
+                "DeviceName": "Realtek Audio",
+                "DriverVersion": "6.0.9600.1",
+                "DriverDate": "20231001000000.000000+000",
+                "DeviceClass": "Media",
+                "Manufacturer": "Realtek",
+            },
+        ]
+    )
 
     def test_happy_path_returns_list(self, mocker):
         _mock_run(mocker, stdout=self.SAMPLE)
@@ -60,8 +71,15 @@ class TestGetInstalledDrivers:
         assert result[0]["DeviceName"] == "Intel Graphics"
 
     def test_single_object_normalised_to_list(self, mocker):
-        single = json.dumps({"DeviceName": "USB Controller", "DriverVersion": "1.0",
-                              "DriverDate": "", "DeviceClass": "USB", "Manufacturer": "MS"})
+        single = json.dumps(
+            {
+                "DeviceName": "USB Controller",
+                "DriverVersion": "1.0",
+                "DriverDate": "",
+                "DeviceClass": "USB",
+                "Manufacturer": "MS",
+            }
+        )
         _mock_run(mocker, stdout=single)
         result = wdm.get_installed_drivers()
         assert isinstance(result, list)
@@ -105,15 +123,19 @@ class TestGetInstalledDrivers:
 # get_windows_update_drivers
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestGetWindowsUpdateDrivers:
 
-    SAMPLE = json.dumps([
-        {"Title": "Intel - Display - 31.0.101.5186",
-         "Description": "Intel display driver",
-         "DriverModel": "Intel UHD Graphics",
-         "DriverVersion": "31.0.101.5186",
-         "DriverManufacturer": "Intel Corporation"},
-    ])
+class TestGetWindowsUpdateDrivers:
+    SAMPLE = json.dumps(
+        [
+            {
+                "Title": "Intel - Display - 31.0.101.5186",
+                "Description": "Intel display driver",
+                "DriverModel": "Intel UHD Graphics",
+                "DriverVersion": "31.0.101.5186",
+                "DriverManufacturer": "Intel Corporation",
+            },
+        ]
+    )
 
     def setup_method(self):
         wdm._dell_cache = None
@@ -152,9 +174,15 @@ class TestGetWindowsUpdateDrivers:
         assert "Driver" in cmd
 
     def test_single_object_normalised(self, mocker):
-        single = json.dumps({"Title": "Dell - BIOS - 2.3.1", "Description": "",
-                              "DriverModel": "", "DriverVersion": "2.3.1",
-                              "DriverManufacturer": "Dell"})
+        single = json.dumps(
+            {
+                "Title": "Dell - BIOS - 2.3.1",
+                "Description": "",
+                "DriverModel": "",
+                "DriverVersion": "2.3.1",
+                "DriverManufacturer": "Dell",
+            }
+        )
         _mock_run(mocker, stdout=single)
         result = wdm.get_windows_update_drivers()
         assert len(result) == 1
@@ -164,16 +192,20 @@ class TestGetWindowsUpdateDrivers:
 # get_disk_health
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestGetDiskHealth:
 
+class TestGetDiskHealth:
     DRIVES = [
-        {"Letter": "C", "Label": "Windows", "UsedGB": 250.5,
-         "FreeGB": 450.2, "TotalGB": 700.7, "PctUsed": 35.8},
+        {"Letter": "C", "Label": "Windows", "UsedGB": 250.5, "FreeGB": 450.2, "TotalGB": 700.7, "PctUsed": 35.8},
     ]
     PHYSICAL = [
-        {"Name": "Samsung SSD 990 Pro", "MediaType": "SSD",
-         "SizeGB": 931.5, "Health": "Healthy",
-         "Status": "OK", "BusType": "NVMe"},
+        {
+            "Name": "Samsung SSD 990 Pro",
+            "MediaType": "SSD",
+            "SizeGB": 931.5,
+            "Health": "Healthy",
+            "Status": "OK",
+            "BusType": "NVMe",
+        },
     ]
     IO = [
         {"Counter": r"\\.\PhysicalDisk(0)\Disk Read Bytes/sec", "Value": 1024.5},
@@ -182,10 +214,10 @@ class TestGetDiskHealth:
     def _make_mock(self, mocker):
         m = mocker.patch("windesktopmgr.subprocess.run")
         main_out = json.dumps({"drives": self.DRIVES, "physical": self.PHYSICAL})
-        io_out   = json.dumps(self.IO)
+        io_out = json.dumps(self.IO)
         m.side_effect = [
             type("R", (), {"stdout": main_out, "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": io_out,   "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": io_out, "returncode": 0, "stderr": ""})(),
         ]
         return m
 
@@ -213,7 +245,7 @@ class TestGetDiskHealth:
         main_out = json.dumps({"drives": self.DRIVES[0], "physical": self.PHYSICAL[0]})
         m.side_effect = [
             type("R", (), {"stdout": main_out, "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": "[]",     "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
         ]
         result = wdm.get_disk_health()
         assert isinstance(result["drives"], list)
@@ -246,7 +278,7 @@ class TestGetDiskHealth:
         m = mocker.patch("windesktopmgr.subprocess.run")
         main_out = json.dumps({"drives": self.DRIVES, "physical": self.PHYSICAL})
         m.side_effect = [
-            type("R", (), {"stdout": main_out,  "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": main_out, "returncode": 0, "stderr": ""})(),
             type("R", (), {"stdout": "BAD JSON", "returncode": 0, "stderr": ""})(),
         ]
         result = wdm.get_disk_health()
@@ -270,25 +302,40 @@ class TestGetDiskHealth:
 # get_network_data
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestGetNetworkData:
 
-    CONNS = json.dumps([
-        {"LocalAddress": "192.168.1.100", "LocalPort": 54321,
-         "RemoteAddress": "142.250.80.46", "RemotePort": 443,
-         "State": "Established", "PID": 1234, "Process": "chrome"},
-        {"LocalAddress": "0.0.0.0", "LocalPort": 445,
-         "RemoteAddress": "0.0.0.0", "RemotePort": 0,
-         "State": "Listen", "PID": 4, "Process": "System"},
-    ])
-    ADAPTERS = json.dumps([
-        {"Name": "Ethernet", "SentMB": 1024.5, "ReceivedMB": 4096.2,
-         "Status": "Up", "LinkSpeedMb": 1000},
-    ])
+class TestGetNetworkData:
+    CONNS = json.dumps(
+        [
+            {
+                "LocalAddress": "192.168.1.100",
+                "LocalPort": 54321,
+                "RemoteAddress": "142.250.80.46",
+                "RemotePort": 443,
+                "State": "Established",
+                "PID": 1234,
+                "Process": "chrome",
+            },
+            {
+                "LocalAddress": "0.0.0.0",
+                "LocalPort": 445,
+                "RemoteAddress": "0.0.0.0",
+                "RemotePort": 0,
+                "State": "Listen",
+                "PID": 4,
+                "Process": "System",
+            },
+        ]
+    )
+    ADAPTERS = json.dumps(
+        [
+            {"Name": "Ethernet", "SentMB": 1024.5, "ReceivedMB": 4096.2, "Status": "Up", "LinkSpeedMb": 1000},
+        ]
+    )
 
     def _make_mock(self, mocker, conns=None, adapters=None):
         m = mocker.patch("windesktopmgr.subprocess.run")
         m.side_effect = [
-            type("R", (), {"stdout": conns or self.CONNS,       "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": conns or self.CONNS, "returncode": 0, "stderr": ""})(),
             type("R", (), {"stdout": adapters or self.ADAPTERS, "returncode": 0, "stderr": ""})(),
         ]
         return m
@@ -296,8 +343,7 @@ class TestGetNetworkData:
     def test_happy_path_keys(self, mocker):
         self._make_mock(mocker)
         result = wdm.get_network_data()
-        for key in ("established", "listening", "adapters", "top_processes",
-                    "total_connections", "total_listening"):
+        for key in ("established", "listening", "adapters", "top_processes", "total_connections", "total_listening"):
             assert key in result
 
     def test_connection_state_split(self, mocker):
@@ -319,9 +365,17 @@ class TestGetNetworkData:
         assert result["total_listening"] == 0
 
     def test_single_connection_object_normalised(self, mocker):
-        single = json.dumps({"LocalAddress": "127.0.0.1", "LocalPort": 5000,
-                              "RemoteAddress": "0.0.0.0", "RemotePort": 0,
-                              "State": "Listen", "PID": 99, "Process": "flask"})
+        single = json.dumps(
+            {
+                "LocalAddress": "127.0.0.1",
+                "LocalPort": 5000,
+                "RemoteAddress": "0.0.0.0",
+                "RemotePort": 0,
+                "State": "Listen",
+                "PID": 99,
+                "Process": "flask",
+            }
+        )
         self._make_mock(mocker, conns=single)
         result = wdm.get_network_data()
         assert result["total_listening"] == 1
@@ -357,20 +411,26 @@ class TestGetNetworkData:
 # get_update_history
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestGetUpdateHistory:
 
-    SAMPLE = json.dumps([
-        {"Title": "2024-12 Cumulative Update for Windows 11 (KB5048667)",
-         "Date": "2024-12-10T03:00:00+00:00",
-         "ResultCode": 2,
-         "Categories": "Security Updates",
-         "KB": "KB5048667"},
-        {"Title": "Intel - Display - 31.0.101.5186",
-         "Date": "2024-11-20T10:00:00+00:00",
-         "ResultCode": 4,
-         "Categories": "Drivers",
-         "KB": ""},
-    ])
+class TestGetUpdateHistory:
+    SAMPLE = json.dumps(
+        [
+            {
+                "Title": "2024-12 Cumulative Update for Windows 11 (KB5048667)",
+                "Date": "2024-12-10T03:00:00+00:00",
+                "ResultCode": 2,
+                "Categories": "Security Updates",
+                "KB": "KB5048667",
+            },
+            {
+                "Title": "Intel - Display - 31.0.101.5186",
+                "Date": "2024-11-20T10:00:00+00:00",
+                "ResultCode": 4,
+                "Categories": "Drivers",
+                "KB": "",
+            },
+        ]
+    )
 
     def test_happy_path_returns_list(self, mocker):
         _mock_run(mocker, stdout=self.SAMPLE)
@@ -410,16 +470,34 @@ class TestGetUpdateHistory:
 # get_process_list
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestGetProcessList:
 
-    SAMPLE = json.dumps([
-        {"PID": 1234, "Name": "chrome", "CPU": 12.5, "MemMB": 512.0,
-         "Threads": 30, "Handles": 400,
-         "Path": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-         "Description": "Google Chrome", "CmdLine": "chrome.exe --headless"},
-        {"PID": 4, "Name": "System", "CPU": 0.1, "MemMB": 8.0,
-         "Threads": 200, "Handles": 10000, "Path": "", "Description": "", "CmdLine": ""},
-    ])
+class TestGetProcessList:
+    SAMPLE = json.dumps(
+        [
+            {
+                "PID": 1234,
+                "Name": "chrome",
+                "CPU": 12.5,
+                "MemMB": 512.0,
+                "Threads": 30,
+                "Handles": 400,
+                "Path": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                "Description": "Google Chrome",
+                "CmdLine": "chrome.exe --headless",
+            },
+            {
+                "PID": 4,
+                "Name": "System",
+                "CPU": 0.1,
+                "MemMB": 8.0,
+                "Threads": 200,
+                "Handles": 10000,
+                "Path": "",
+                "Description": "",
+                "CmdLine": "",
+            },
+        ]
+    )
 
     def test_happy_path_returns_structure(self, mocker):
         _mock_run(mocker, stdout=self.SAMPLE)
@@ -473,8 +551,8 @@ class TestGetProcessList:
 # kill_process — input sanitisation
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestKillProcess:
 
+class TestKillProcess:
     def test_success_returns_ok_true(self, mocker):
         _mock_run(mocker, stdout="", returncode=0)
         result = wdm.kill_process(1234)
@@ -512,12 +590,14 @@ class TestKillProcess:
 # get_thermals
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestGetThermals:
 
-    TEMPS = json.dumps([
-        {"Name": "CPU Package", "TempC": 55.2, "Source": "LibreHardwareMonitor"},
-        {"Name": "GPU Core",    "TempC": 48.0, "Source": "LibreHardwareMonitor"},
-    ])
+class TestGetThermals:
+    TEMPS = json.dumps(
+        [
+            {"Name": "CPU Package", "TempC": 55.2, "Source": "LibreHardwareMonitor"},
+            {"Name": "GPU Core", "TempC": 48.0, "Source": "LibreHardwareMonitor"},
+        ]
+    )
     PERF = json.dumps({"CPUPct": 12.5, "MemUsedMB": 16384, "MemTotalMB": 32768, "Battery": None})
     FANS = json.dumps([])
 
@@ -525,8 +605,8 @@ class TestGetThermals:
         m = mocker.patch("windesktopmgr.subprocess.run")
         m.side_effect = [
             type("R", (), {"stdout": temps or self.TEMPS, "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": perf  or self.PERF,  "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": fans  or self.FANS,  "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": perf or self.PERF, "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": fans or self.FANS, "returncode": 0, "stderr": ""})(),
         ]
         return m
 
@@ -589,18 +669,30 @@ class TestGetThermals:
 # get_services_list
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestGetServicesList:
 
-    SAMPLE = json.dumps([
-        {"Name": "wuauserv", "DisplayName": "Windows Update",
-         "Status": "Running", "StartMode": "Auto",
-         "ProcessId": 1234, "Description": "Enables Windows Update",
-         "PathName": r"C:\Windows\system32\svchost.exe"},
-        {"Name": "diagtrack", "DisplayName": "Connected User Experiences",
-         "Status": "Running", "StartMode": "Auto",
-         "ProcessId": 5678, "Description": "Telemetry",
-         "PathName": r"C:\Windows\system32\svchost.exe"},
-    ])
+class TestGetServicesList:
+    SAMPLE = json.dumps(
+        [
+            {
+                "Name": "wuauserv",
+                "DisplayName": "Windows Update",
+                "Status": "Running",
+                "StartMode": "Auto",
+                "ProcessId": 1234,
+                "Description": "Enables Windows Update",
+                "PathName": r"C:\Windows\system32\svchost.exe",
+            },
+            {
+                "Name": "diagtrack",
+                "DisplayName": "Connected User Experiences",
+                "Status": "Running",
+                "StartMode": "Auto",
+                "ProcessId": 5678,
+                "Description": "Telemetry",
+                "PathName": r"C:\Windows\system32\svchost.exe",
+            },
+        ]
+    )
 
     def test_happy_path_returns_list(self, mocker):
         _mock_run(mocker, stdout=self.SAMPLE)
@@ -630,9 +722,17 @@ class TestGetServicesList:
         assert result == []
 
     def test_single_service_object_normalised(self, mocker):
-        single = json.dumps({"Name": "wuauserv", "DisplayName": "Windows Update",
-                              "Status": "Running", "StartMode": "Auto",
-                              "ProcessId": 1, "Description": "", "PathName": ""})
+        single = json.dumps(
+            {
+                "Name": "wuauserv",
+                "DisplayName": "Windows Update",
+                "Status": "Running",
+                "StartMode": "Auto",
+                "ProcessId": 1,
+                "Description": "",
+                "PathName": "",
+            }
+        )
         _mock_run(mocker, stdout=single)
         result = wdm.get_services_list()
         assert isinstance(result, list)
@@ -649,8 +749,8 @@ class TestGetServicesList:
 # toggle_service — input sanitisation
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestToggleService:
 
+class TestToggleService:
     def test_stop_action_calls_stop_service(self, mocker):
         m = _mock_run(mocker, returncode=0)
         result = wdm.toggle_service("wuauserv", "stop")
@@ -734,8 +834,8 @@ class TestToggleService:
 # toggle_startup_item — input sanitisation
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestToggleStartupItem:
 
+class TestToggleStartupItem:
     def test_backtick_stripped(self, mocker):
         m = _mock_run(mocker, returncode=0)
         wdm.toggle_startup_item("MyApp`; malicious", "task", True)
@@ -767,19 +867,21 @@ class TestToggleStartupItem:
 # get_memory_analysis
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestGetMemoryAnalysis:
 
-    PROCS = json.dumps([
-        {"ProcessName": "chrome",   "MemMB": 1024.0},
-        {"ProcessName": "msmpeng",  "MemMB": 180.0},
-        {"ProcessName": "mfemms",   "MemMB": 350.0},
-    ])
+class TestGetMemoryAnalysis:
+    PROCS = json.dumps(
+        [
+            {"ProcessName": "chrome", "MemMB": 1024.0},
+            {"ProcessName": "msmpeng", "MemMB": 180.0},
+            {"ProcessName": "mfemms", "MemMB": 350.0},
+        ]
+    )
     SYSINFO = json.dumps({"TotalMB": 32768, "FreeMB": 16000})
 
     def _make_mock(self, mocker, procs=None, sysinfo=None):
         m = mocker.patch("windesktopmgr.subprocess.run")
         m.side_effect = [
-            type("R", (), {"stdout": procs   or self.PROCS,   "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": procs or self.PROCS, "returncode": 0, "stderr": ""})(),
             type("R", (), {"stdout": sysinfo or self.SYSINFO, "returncode": 0, "stderr": ""})(),
         ]
         return m
@@ -787,8 +889,16 @@ class TestGetMemoryAnalysis:
     def test_happy_path_keys(self, mocker):
         self._make_mock(mocker)
         result = wdm.get_memory_analysis()
-        for key in ("total_mb", "used_mb", "free_mb", "categories",
-                    "top_procs", "mcafee_mb", "defender_mb", "has_mcafee"):
+        for key in (
+            "total_mb",
+            "used_mb",
+            "free_mb",
+            "categories",
+            "top_procs",
+            "mcafee_mb",
+            "defender_mb",
+            "has_mcafee",
+        ):
             assert key in result
 
     def test_totals_calculated(self, mocker):
@@ -841,15 +951,17 @@ class TestGetMemoryAnalysis:
 # get_current_bios
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestGetCurrentBios:
 
-    SAMPLE = json.dumps({
-        "BIOSVersion": "2.3.1",
-        "ReleaseDate": "20240106000000.000000+000",
-        "Manufacturer": "Dell Inc.",
-        "BoardProduct": "XPS 8960",
-        "BoardMfr": "Dell Inc.",
-    })
+class TestGetCurrentBios:
+    SAMPLE = json.dumps(
+        {
+            "BIOSVersion": "2.3.1",
+            "ReleaseDate": "20240106000000.000000+000",
+            "Manufacturer": "Dell Inc.",
+            "BoardProduct": "XPS 8960",
+            "BoardMfr": "Dell Inc.",
+        }
+    )
 
     def test_happy_path_returns_data(self, mocker):
         _mock_run(mocker, stdout=self.SAMPLE)
@@ -894,8 +1006,15 @@ class TestGetCurrentBios:
         assert "Win32_BaseBoard" in cmd
 
     def test_missing_release_date_handled_gracefully(self, mocker):
-        no_date = json.dumps({"BIOSVersion": "2.3.1", "ReleaseDate": "",
-                               "Manufacturer": "Dell Inc.", "BoardProduct": "XPS 8960", "BoardMfr": "Dell Inc."})
+        no_date = json.dumps(
+            {
+                "BIOSVersion": "2.3.1",
+                "ReleaseDate": "",
+                "Manufacturer": "Dell Inc.",
+                "BoardProduct": "XPS 8960",
+                "BoardMfr": "Dell Inc.",
+            }
+        )
         _mock_run(mocker, stdout=no_date)
         result = wdm.get_current_bios()
         assert result["BIOSDateFormatted"] == ""
@@ -905,29 +1024,38 @@ class TestGetCurrentBios:
 # get_system_timeline
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestGetSystemTimeline:
 
+class TestGetSystemTimeline:
     # All timestamps within 30-day window
-    BSOD_EVTS = json.dumps([
-        {"EventId": 41, "TimeCreated": "2026-03-10T08:00:00+00:00",
-         "Message": "The system has rebooted without cleanly shutting down first."},
-        {"EventId": 1001, "TimeCreated": "2026-03-15T12:00:00+00:00",
-         "Message": "Problem signature: stop code 0x0000009F"},
-    ])
-    UPDATE_EVTS = json.dumps([
-        {"Title": "2026-03 Cumulative Update (KB5055523)",
-         "Date": "2026-03-12T02:00:00+00:00", "KB": "KB5055523"},
-    ])
+    BSOD_EVTS = json.dumps(
+        [
+            {
+                "EventId": 41,
+                "TimeCreated": "2026-03-10T08:00:00+00:00",
+                "Message": "The system has rebooted without cleanly shutting down first.",
+            },
+            {
+                "EventId": 1001,
+                "TimeCreated": "2026-03-15T12:00:00+00:00",
+                "Message": "Problem signature: stop code 0x0000009F",
+            },
+        ]
+    )
+    UPDATE_EVTS = json.dumps(
+        [
+            {"Title": "2026-03 Cumulative Update (KB5055523)", "Date": "2026-03-12T02:00:00+00:00", "KB": "KB5055523"},
+        ]
+    )
     EMPTY = json.dumps([])
 
     def _make_mock(self, mocker, bsod=None, upd=None, svc=None, boot=None, cred=None):
         m = mocker.patch("windesktopmgr.subprocess.run")
         m.side_effect = [
-            type("R", (), {"stdout": bsod or self.BSOD_EVTS,  "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": upd  or self.UPDATE_EVTS,"returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": svc  or self.EMPTY,       "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": boot or self.EMPTY,       "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": cred or self.EMPTY,       "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": bsod or self.BSOD_EVTS, "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": upd or self.UPDATE_EVTS, "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": svc or self.EMPTY, "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": boot or self.EMPTY, "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": cred or self.EMPTY, "returncode": 0, "stderr": ""})(),
         ]
         return m
 
@@ -951,8 +1079,7 @@ class TestGetSystemTimeline:
     def test_bsod_stop_code_extracted(self, mocker):
         self._make_mock(mocker)
         result = wdm.get_system_timeline()
-        bsod_with_code = [e for e in result
-                          if e["type"] == "bsod" and "0x" in e.get("detail","")]
+        bsod_with_code = [e for e in result if e["type"] == "bsod" and "0x" in e.get("detail", "")]
         assert len(bsod_with_code) == 1
 
     def test_all_events_have_required_fields(self, mocker):
@@ -970,10 +1097,11 @@ class TestGetSystemTimeline:
         assert timestamps == sorted(timestamps, reverse=True)
 
     def test_events_outside_window_excluded(self, mocker):
-        old_event = json.dumps([
-            {"EventId": 41, "TimeCreated": "2025-01-01T00:00:00+00:00",
-             "Message": "Old crash"},
-        ])
+        old_event = json.dumps(
+            [
+                {"EventId": 41, "TimeCreated": "2025-01-01T00:00:00+00:00", "Message": "Old crash"},
+            ]
+        )
         self._make_mock(mocker, bsod=old_event)
         result = wdm.get_system_timeline()
         bsods = [e for e in result if e["type"] == "bsod"]
@@ -995,11 +1123,11 @@ class TestGetSystemTimeline:
         """If the BSOD query fails, we still get update events."""
         m = mocker.patch("windesktopmgr.subprocess.run")
         m.side_effect = [
-            type("R", (), {"stdout": "GARBAGE",            "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": self.UPDATE_EVTS,      "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": "[]",                  "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": "[]",                  "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": "[]",                  "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "GARBAGE", "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": self.UPDATE_EVTS, "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
         ]
         result = wdm.get_system_timeline()
         updates = [e for e in result if e["type"] == "update"]
@@ -1036,16 +1164,22 @@ class TestGetSystemTimeline:
 # get_bsod_events (raw Event Log query)
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestGetBsodEvents:
 
-    SAMPLE = json.dumps([
-        {"Id": 1001,
-         "TimeCreated": "2026-03-10T08:00:00",
-         "Message": "Problem signature: stop code HYPERVISOR_ERROR intelppm.sys"},
-        {"Id": 41,
-         "TimeCreated": "2026-03-10T07:59:00",
-         "Message": "The system has rebooted without cleanly shutting down first."},
-    ])
+class TestGetBsodEvents:
+    SAMPLE = json.dumps(
+        [
+            {
+                "Id": 1001,
+                "TimeCreated": "2026-03-10T08:00:00",
+                "Message": "Problem signature: stop code HYPERVISOR_ERROR intelppm.sys",
+            },
+            {
+                "Id": 41,
+                "TimeCreated": "2026-03-10T07:59:00",
+                "Message": "The system has rebooted without cleanly shutting down first.",
+            },
+        ]
+    )
 
     def test_happy_path_returns_list(self, mocker):
         _mock_run(mocker, stdout=self.SAMPLE)
@@ -1072,22 +1206,34 @@ class TestGetBsodEvents:
 # get_startup_items — PowerShell registry + scheduler calls
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestGetStartupItems:
 
-    REG_ITEMS = json.dumps([
-        {"Name": "OneDrive", "Command": r"C:\Program Files\Microsoft OneDrive\OneDrive.exe /background",
-         "Location": "HKCU\\...\\Run", "Type": "registry_run"},
-    ])
-    TASK_ITEMS = json.dumps([
-        {"Name": "MicrosoftEdgeAutoLaunch", "Command": r"C:\Program Files\Edge\msedge.exe --auto-launch",
-         "Location": "Task Scheduler", "Type": "scheduled_task"},
-    ])
+class TestGetStartupItems:
+    REG_ITEMS = json.dumps(
+        [
+            {
+                "Name": "OneDrive",
+                "Command": r"C:\Program Files\Microsoft OneDrive\OneDrive.exe /background",
+                "Location": "HKCU\\...\\Run",
+                "Type": "registry_run",
+            },
+        ]
+    )
+    TASK_ITEMS = json.dumps(
+        [
+            {
+                "Name": "MicrosoftEdgeAutoLaunch",
+                "Command": r"C:\Program Files\Edge\msedge.exe --auto-launch",
+                "Location": "Task Scheduler",
+                "Type": "scheduled_task",
+            },
+        ]
+    )
 
     def _make_mock(self, mocker, reg=None, tasks=None):
         m = mocker.patch("windesktopmgr.subprocess.run")
         m.side_effect = [
-            type("R", (), {"stdout": reg   or self.REG_ITEMS,   "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": tasks or self.TASK_ITEMS,  "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": reg or self.REG_ITEMS, "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": tasks or self.TASK_ITEMS, "returncode": 0, "stderr": ""})(),
         ]
         return m
 
@@ -1117,7 +1263,7 @@ class TestGetStartupItems:
         m = mocker.patch("windesktopmgr.subprocess.run")
         m.side_effect = [
             type("R", (), {"stdout": "bad json", "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": "[]",        "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
         ]
         result = wdm.get_startup_items()
         assert isinstance(result, list)
@@ -1126,6 +1272,7 @@ class TestGetStartupItems:
 # ══════════════════════════════════════════════════════════════════════════════
 # get_credentials_network_health — PS command content
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestCredentialsNetworkPSCommands:
     """Verify the PowerShell scripts in get_credentials_network_health."""
@@ -1137,18 +1284,25 @@ class TestCredentialsNetworkPSCommands:
         wdm.get_credentials_network_health()
         return [call[0][0][-1] for call in m.call_args_list]
 
+    def _find_smb_script(self, commands):
+        """Find the SMB/network shares script (contains PSDrive) regardless of order."""
+        for cmd in commands:
+            if "PSDrive" in cmd or "$portNum" in cmd:
+                return cmd
+        return ""
+
     def test_smb_fallback_defines_portnum(self, mocker):
         """PSDrive fallback block must initialise $portNum (was undefined before fix)."""
         commands = self._capture_ps_commands(mocker)
-        # ps_smb is the second script (index 1): creds, smb, onedrive, fast, events, fw
-        ps_smb = commands[1]
-        # The fallback PSDrive block must define $portNum before using it
+        ps_smb = self._find_smb_script(commands)
+        assert ps_smb, "Could not find SMB script among captured PS commands"
         assert "$portNum   = if" in ps_smb or "$portNum = if" in ps_smb
 
     def test_smb_fallback_has_no_dialect2_typo(self, mocker):
         """PSDrive fallback block must not reference $dialect2 (was a typo)."""
         commands = self._capture_ps_commands(mocker)
-        ps_smb = commands[1]
+        ps_smb = self._find_smb_script(commands)
+        assert ps_smb, "Could not find SMB script among captured PS commands"
         assert "$dialect2" not in ps_smb
 
 
@@ -1156,11 +1310,13 @@ class TestCredentialsNetworkPSCommands:
 # Worker task_done safety — must not call task_done after queue.Empty
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestWorkerTaskDoneSafety:
     """Verify workers do NOT call task_done() when queue.Empty is raised."""
 
     def test_startup_worker_no_task_done_on_empty(self, mocker):
         import queue as q
+
         mock_queue = mocker.patch("windesktopmgr._startup_queue")
         mock_queue.get.side_effect = [q.Empty, KeyboardInterrupt]
         try:
@@ -1171,6 +1327,7 @@ class TestWorkerTaskDoneSafety:
 
     def test_bsod_worker_no_task_done_on_empty(self, mocker):
         import queue as q
+
         mock_queue = mocker.patch("windesktopmgr._bsod_queue")
         mock_queue.get.side_effect = [q.Empty, KeyboardInterrupt]
         try:
@@ -1181,6 +1338,7 @@ class TestWorkerTaskDoneSafety:
 
     def test_event_worker_no_task_done_on_empty(self, mocker):
         import queue as q
+
         mock_queue = mocker.patch("windesktopmgr._lookup_queue")
         mock_queue.get.side_effect = [q.Empty, KeyboardInterrupt]
         try:
@@ -1191,6 +1349,7 @@ class TestWorkerTaskDoneSafety:
 
     def test_process_worker_no_task_done_on_empty(self, mocker):
         import queue as q
+
         mock_queue = mocker.patch("windesktopmgr._process_queue")
         mock_queue.get.side_effect = [q.Empty, KeyboardInterrupt]
         try:
@@ -1201,6 +1360,7 @@ class TestWorkerTaskDoneSafety:
 
     def test_services_worker_no_task_done_on_empty(self, mocker):
         import queue as q
+
         mock_queue = mocker.patch("windesktopmgr._services_queue")
         mock_queue.get.side_effect = [q.Empty, KeyboardInterrupt]
         try:
@@ -1214,38 +1374,49 @@ class TestWorkerTaskDoneSafety:
 # check_dell_bios_update
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestCheckDellBiosUpdate:
     """Tests for check_dell_bios_update with all subprocess calls mocked."""
 
     def _mock_run(self, mocker, side_effects):
         """Mock subprocess.run with a list of (stdout, returncode) tuples."""
         m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = [
-            type("R", (), {"stdout": out, "returncode": rc, "stderr": ""})()
-            for out, rc in side_effects
-        ]
+        m.side_effect = [type("R", (), {"stdout": out, "returncode": rc, "stderr": ""})() for out, rc in side_effects]
         return m
 
     def test_returns_required_keys(self, mocker, tmp_path):
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
-        self._mock_run(mocker, [
-            ("9T46D14", 0),      # service tag
-            ("DCU_NOT_FOUND", 0),  # method 1
-            ("", 0),               # method 2 catalog
-            ("NO_BIOS_IN_WU", 0),  # method 3 WU
-        ])
+        self._mock_run(
+            mocker,
+            [
+                ("9T46D14", 0),  # service tag
+                ("DCU_NOT_FOUND", 0),  # method 1
+                ("", 0),  # method 2 catalog
+                ("NO_BIOS_IN_WU", 0),  # method 3 WU
+            ],
+        )
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
-        for key in ("checked_at", "current_version", "latest_version",
-                     "update_available", "service_tag", "source", "error"):
+        for key in (
+            "checked_at",
+            "current_version",
+            "latest_version",
+            "update_available",
+            "service_tag",
+            "source",
+            "error",
+        ):
             assert key in result
 
     def test_dcu_found_sets_version(self, mocker, tmp_path):
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
         dcu_out = json.dumps({"Version": "2.23.0", "Source": "dcu_cli", "Notes": ""})
-        self._mock_run(mocker, [
-            ("9T46D14", 0),   # service tag
-            (dcu_out, 0),     # method 1 DCU
-        ])
+        self._mock_run(
+            mocker,
+            [
+                ("9T46D14", 0),  # service tag
+                (dcu_out, 0),  # method 1 DCU
+            ],
+        )
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["latest_version"] == "2.23.0"
         assert result["source"] == "dell_command_update"
@@ -1254,24 +1425,34 @@ class TestCheckDellBiosUpdate:
     def test_dcu_same_version_no_update(self, mocker, tmp_path):
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
         dcu_out = json.dumps({"Version": "2.22.0", "Source": "dcu_cli", "Notes": ""})
-        self._mock_run(mocker, [
-            ("9T46D14", 0),
-            (dcu_out, 0),
-        ])
+        self._mock_run(
+            mocker,
+            [
+                ("9T46D14", 0),
+                (dcu_out, 0),
+            ],
+        )
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["update_available"] is False
 
     def test_catalog_fallback(self, mocker, tmp_path):
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
-        catalog_out = json.dumps({
-            "Version": "2.23.0", "ReleaseDate": "2026-01-15",
-            "Name": "XPS 8960 BIOS Update", "Path": "https://downloads.dell.com/bios.exe"
-        })
-        self._mock_run(mocker, [
-            ("9T46D14", 0),      # service tag
-            ("DCU_NOT_FOUND", 0),  # method 1 no DCU
-            (catalog_out, 0),      # method 2 catalog
-        ])
+        catalog_out = json.dumps(
+            {
+                "Version": "2.23.0",
+                "ReleaseDate": "2026-01-15",
+                "Name": "XPS 8960 BIOS Update",
+                "Path": "https://downloads.dell.com/bios.exe",
+            }
+        )
+        self._mock_run(
+            mocker,
+            [
+                ("9T46D14", 0),  # service tag
+                ("DCU_NOT_FOUND", 0),  # method 1 no DCU
+                (catalog_out, 0),  # method 2 catalog
+            ],
+        )
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["source"] == "dell_catalog"
         assert result["latest_version"] == "2.23.0"
@@ -1279,49 +1460,61 @@ class TestCheckDellBiosUpdate:
     def test_wu_fallback(self, mocker, tmp_path):
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
         wu_out = json.dumps({"Title": "Dell BIOS Update 2.24.0", "Version": "2.24.0"})
-        self._mock_run(mocker, [
-            ("9T46D14", 0),       # service tag
-            ("DCU_NOT_FOUND", 0),  # no DCU
-            ("", 0),               # no catalog
-            (wu_out, 0),           # WU found
-        ])
+        self._mock_run(
+            mocker,
+            [
+                ("9T46D14", 0),  # service tag
+                ("DCU_NOT_FOUND", 0),  # no DCU
+                ("", 0),  # no catalog
+                (wu_out, 0),  # WU found
+            ],
+        )
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["source"] == "windows_update"
         assert result["update_available"] is True
 
     def test_all_methods_fail_returns_unknown(self, mocker, tmp_path):
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
-        self._mock_run(mocker, [
-            ("9T46D14", 0),
-            ("DCU_NOT_FOUND", 0),
-            ("", 0),
-            ("NO_BIOS_IN_WU", 0),
-        ])
+        self._mock_run(
+            mocker,
+            [
+                ("9T46D14", 0),
+                ("DCU_NOT_FOUND", 0),
+                ("", 0),
+                ("NO_BIOS_IN_WU", 0),
+            ],
+        )
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["source"] == "unknown"
         assert result["latest_version"] is None
 
     def test_service_tag_populated(self, mocker, tmp_path):
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
-        self._mock_run(mocker, [
-            ("ABC1234", 0),
-            ("DCU_NOT_FOUND", 0),
-            ("", 0),
-            ("NO_BIOS_IN_WU", 0),
-        ])
+        self._mock_run(
+            mocker,
+            [
+                ("ABC1234", 0),
+                ("DCU_NOT_FOUND", 0),
+                ("", 0),
+                ("NO_BIOS_IN_WU", 0),
+            ],
+        )
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["service_tag"] == "ABC1234"
         assert "ABC1234" in result["download_url"]
 
     def test_service_tag_empty_fallback_url(self, mocker, tmp_path):
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
-        self._mock_run(mocker, [
-            ("", 0),  # empty service tag
-            ("DCU_NOT_FOUND", 0),
-            ("", 0),
-            ("NO_BIOS_IN_WU", 0),
-            ("", 0),  # retry service tag also empty
-        ])
+        self._mock_run(
+            mocker,
+            [
+                ("", 0),  # empty service tag
+                ("DCU_NOT_FOUND", 0),
+                ("", 0),
+                ("NO_BIOS_IN_WU", 0),
+                ("", 0),  # retry service tag also empty
+            ],
+        )
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert "dell.com" in result["download_url"]
 
@@ -1329,10 +1522,15 @@ class TestCheckDellBiosUpdate:
         cache_file = tmp_path / "bios.json"
         cached = {
             "checked_at": wdm.datetime.now(wdm.timezone.utc).isoformat(),
-            "current_version": "2.22.0", "latest_version": "2.22.0",
-            "update_available": False, "source": "dell_catalog",
-            "service_tag": "9T46D14", "download_url": "", "error": None,
-            "latest_date": None, "release_notes": "",
+            "current_version": "2.22.0",
+            "latest_version": "2.22.0",
+            "update_available": False,
+            "source": "dell_catalog",
+            "service_tag": "9T46D14",
+            "download_url": "",
+            "error": None,
+            "latest_date": None,
+            "release_notes": "",
         }
         cache_file.write_text(json.dumps(cached))
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(cache_file))
