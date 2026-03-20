@@ -125,14 +125,17 @@
   .legend-item { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
   .legend-line { width: 24px; height: 2px; }
 
-  /* SVG arrow overlay */
-  .arch-container { position: relative; }
-  .arch-container svg.arrows {
-    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-    pointer-events: none; z-index: 10;
+  /* SVG arrow overlay — component-to-component connections */
+  svg path[marker-end] {
+    transition: opacity 0.3s;
   }
-  .arch-container svg.arrows line, .arch-container svg.arrows path {
-    stroke-width: 1.5; fill: none;
+
+  /* Highlight arrows when hovering on components that have IDs */
+  [id^="tab-"]:hover ~ svg path,
+  [id^="rt-"]:hover ~ svg path,
+  [id^="wk-"]:hover ~ svg path,
+  [id^="wmi-"]:hover ~ svg path {
+    opacity: 0.1 !important;
   }
 
   /* Diagram wrapper */
@@ -199,26 +202,26 @@
   <div class="row row-browser" id="layer-browser">
     <div class="row-label">🌐 Frontend — Browser (index.html · Single Page App · Chart.js 4.4)</div>
     <div style="display:grid;grid-template-columns:repeat(9,1fr);gap:6px;margin-bottom:6px">
-      <div class="tab-chip"><span class="tab-icon">🏠</span>Dashboard</div>
-      <div class="tab-chip"><span class="tab-icon">⟳</span>Driver Mgr</div>
-      <div class="tab-chip"><span class="tab-icon">⚠</span>BSOD</div>
-      <div class="tab-chip"><span class="tab-icon">🚀</span>Startup</div>
-      <div class="tab-chip"><span class="tab-icon">💾</span>Disk</div>
-      <div class="tab-chip"><span class="tab-icon">🌐</span>Network</div>
-      <div class="tab-chip"><span class="tab-icon">🔄</span>Updates</div>
-      <div class="tab-chip"><span class="tab-icon">📋</span>Event Log</div>
-      <div class="tab-chip"><span class="tab-icon">⚡</span>Processes</div>
+      <div class="tab-chip" id="tab-dashboard"><span class="tab-icon">🏠</span>Dashboard</div>
+      <div class="tab-chip" id="tab-drivers"><span class="tab-icon">⟳</span>Driver Mgr</div>
+      <div class="tab-chip" id="tab-bsod"><span class="tab-icon">⚠</span>BSOD</div>
+      <div class="tab-chip" id="tab-startup"><span class="tab-icon">🚀</span>Startup</div>
+      <div class="tab-chip" id="tab-disk"><span class="tab-icon">💾</span>Disk</div>
+      <div class="tab-chip" id="tab-network"><span class="tab-icon">🌐</span>Network</div>
+      <div class="tab-chip" id="tab-updates"><span class="tab-icon">🔄</span>Updates</div>
+      <div class="tab-chip" id="tab-events"><span class="tab-icon">📋</span>Event Log</div>
+      <div class="tab-chip" id="tab-processes"><span class="tab-icon">⚡</span>Processes</div>
     </div>
     <div style="display:grid;grid-template-columns:repeat(9,1fr);gap:6px">
-      <div class="tab-chip"><span class="tab-icon">🌡</span>Thermals</div>
-      <div class="tab-chip"><span class="tab-icon">⚙</span>Services</div>
-      <div class="tab-chip"><span class="tab-icon">📈</span>Health Hist</div>
-      <div class="tab-chip"><span class="tab-icon">⏱</span>Timeline</div>
-      <div class="tab-chip"><span class="tab-icon">🧠</span>Memory</div>
-      <div class="tab-chip"><span class="tab-icon">🔩</span>BIOS</div>
-      <div class="tab-chip"><span class="tab-icon">🔐</span>Credentials</div>
-      <div class="tab-chip" style="border-color:#00e67644;background:#00e6760d"><span class="tab-icon">🖥</span>System Info</div>
-      <div class="tab-chip" style="border-color:#ffd74044;background:#ffd7400d"><span class="tab-icon">🛡</span>Warranty</div>
+      <div class="tab-chip" id="tab-thermals"><span class="tab-icon">🌡</span>Thermals</div>
+      <div class="tab-chip" id="tab-services"><span class="tab-icon">⚙</span>Services</div>
+      <div class="tab-chip" id="tab-health"><span class="tab-icon">📈</span>Health Hist</div>
+      <div class="tab-chip" id="tab-timeline"><span class="tab-icon">⏱</span>Timeline</div>
+      <div class="tab-chip" id="tab-memory"><span class="tab-icon">🧠</span>Memory</div>
+      <div class="tab-chip" id="tab-bios"><span class="tab-icon">🔩</span>BIOS</div>
+      <div class="tab-chip" id="tab-creds"><span class="tab-icon">🔐</span>Credentials</div>
+      <div class="tab-chip" id="tab-sysinfo" style="border-color:#00e67644;background:#00e6760d"><span class="tab-icon">🖥</span>System Info</div>
+      <div class="tab-chip" id="tab-warranty" style="border-color:#ffd74044;background:#ffd7400d"><span class="tab-icon">🛡</span>Warranty</div>
     </div>
   </div>
 
@@ -238,48 +241,48 @@
     <div style="margin-bottom:10px">
       <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes (45 endpoints)</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
-        <div class="route-chip"><span class="method">GET</span>/</div>
-        <div class="route-chip"><span class="method">POST</span>/api/scan/start</div>
+        <div class="route-chip" id="rt-index"><span class="method">GET</span>/</div>
+        <div class="route-chip" id="rt-scan"><span class="method">POST</span>/api/scan/start</div>
         <div class="route-chip"><span class="method">GET</span>/api/scan/status</div>
         <div class="route-chip"><span class="method">GET</span>/api/scan/results</div>
-        <div class="route-chip"><span class="method">GET</span>/api/bsod/data</div>
+        <div class="route-chip" id="rt-bsod"><span class="method">GET</span>/api/bsod/data</div>
         <div class="route-chip"><span class="method">GET</span>/api/bsod/cache</div>
         <div class="route-chip"><span class="method">DELETE</span>/api/bsod/cache/delete</div>
         <div class="route-chip"><span class="method">POST</span>/api/bsod/cache/clear</div>
-        <div class="route-chip"><span class="method">GET</span>/api/startup/list</div>
+        <div class="route-chip" id="rt-startup"><span class="method">GET</span>/api/startup/list</div>
         <div class="route-chip"><span class="method">POST</span>/api/startup/lookup-unknowns</div>
         <div class="route-chip"><span class="method">GET</span>/api/startup/lookup-status</div>
         <div class="route-chip"><span class="method">GET</span>/api/startup/cache</div>
         <div class="route-chip"><span class="method">POST</span>/api/startup/toggle</div>
-        <div class="route-chip"><span class="method">GET</span>/api/disk/data</div>
-        <div class="route-chip"><span class="method">GET</span>/api/network/data</div>
-        <div class="route-chip"><span class="method">GET</span>/api/updates/history</div>
-        <div class="route-chip"><span class="method">POST</span>/api/events/query</div>
+        <div class="route-chip" id="rt-disk"><span class="method">GET</span>/api/disk/data</div>
+        <div class="route-chip" id="rt-network"><span class="method">GET</span>/api/network/data</div>
+        <div class="route-chip" id="rt-updates"><span class="method">GET</span>/api/updates/history</div>
+        <div class="route-chip" id="rt-events"><span class="method">POST</span>/api/events/query</div>
         <div class="route-chip"><span class="method">GET</span>/api/events/cache</div>
         <div class="route-chip"><span class="method">DELETE</span>/api/events/cache/delete</div>
         <div class="route-chip"><span class="method">POST</span>/api/events/cache/clear</div>
-        <div class="route-chip"><span class="method">GET</span>/api/processes/list</div>
+        <div class="route-chip" id="rt-processes"><span class="method">GET</span>/api/processes/list</div>
         <div class="route-chip"><span class="method">POST</span>/api/processes/lookup-unknowns</div>
         <div class="route-chip"><span class="method">GET</span>/api/processes/lookup-status</div>
         <div class="route-chip"><span class="method">POST</span>/api/processes/kill</div>
-        <div class="route-chip"><span class="method">GET</span>/api/thermals/data</div>
-        <div class="route-chip"><span class="method">GET</span>/api/services/list</div>
+        <div class="route-chip" id="rt-thermals"><span class="method">GET</span>/api/thermals/data</div>
+        <div class="route-chip" id="rt-services"><span class="method">GET</span>/api/services/list</div>
         <div class="route-chip"><span class="method">POST</span>/api/services/toggle</div>
         <div class="route-chip"><span class="method">POST</span>/api/services/lookup-unknowns</div>
         <div class="route-chip"><span class="method">GET</span>/api/services/lookup-status</div>
-        <div class="route-chip"><span class="method">GET</span>/api/health-history/data</div>
-        <div class="route-chip"><span class="method">GET</span>/api/timeline/data</div>
-        <div class="route-chip"><span class="method">GET</span>/api/memory/data</div>
-        <div class="route-chip"><span class="method">GET</span>/api/bios/status</div>
+        <div class="route-chip" id="rt-health"><span class="method">GET</span>/api/health-history/data</div>
+        <div class="route-chip" id="rt-timeline"><span class="method">GET</span>/api/timeline/data</div>
+        <div class="route-chip" id="rt-memory"><span class="method">GET</span>/api/memory/data</div>
+        <div class="route-chip" id="rt-bios"><span class="method">GET</span>/api/bios/status</div>
         <div class="route-chip"><span class="method">POST</span>/api/bios/cache/clear</div>
-        <div class="route-chip"><span class="method">GET</span>/api/credentials/health</div>
+        <div class="route-chip" id="rt-creds"><span class="method">GET</span>/api/credentials/health</div>
         <div class="route-chip"><span class="method">POST</span>/api/credentials/resume-onedrive</div>
         <div class="route-chip"><span class="method">POST</span>/api/credentials/resume-brokers</div>
         <div class="route-chip"><span class="method">POST</span>/api/credentials/fix-fast-startup</div>
-        <div class="route-chip"><span class="method">GET</span>/api/warranty/data</div>
-        <div class="route-chip"><span class="method">GET</span>/api/sysinfo/data</div>
-        <div class="route-chip"><span class="method">POST</span>/api/summary/&lt;tab&gt;</div>
-        <div class="route-chip"><span class="method">GET</span>/api/dashboard/summary</div>
+        <div class="route-chip" id="rt-warranty"><span class="method">GET</span>/api/warranty/data</div>
+        <div class="route-chip" id="rt-sysinfo"><span class="method">GET</span>/api/sysinfo/data</div>
+        <div class="route-chip" id="rt-summary"><span class="method">POST</span>/api/summary/&lt;tab&gt;</div>
+        <div class="route-chip" id="rt-dashsum"><span class="method">GET</span>/api/dashboard/summary</div>
       </div>
     </div>
     <div>
@@ -321,35 +324,35 @@
   <div class="row row-workers" id="layer-workers">
     <div class="row-label">🔄 Background Worker Threads — daemon=True · self-learning knowledge enrichment · thread-safe queues</div>
     <div style="display:flex;gap:10px;flex-wrap:wrap">
-      <div class="worker-chip">
+      <div class="worker-chip" id="wk-event">
         <div class="worker-dot"></div>
         <div>
           <div>EventLookupWorker</div>
           <span class="worker-sub">Event IDs → WMI provider → MS Learn</span>
         </div>
       </div>
-      <div class="worker-chip">
+      <div class="worker-chip" id="wk-bsod">
         <div class="worker-dot"></div>
         <div>
           <div>BSODLookupWorker</div>
           <span class="worker-sub">Stop codes → bugcheck table → MS Learn</span>
         </div>
       </div>
-      <div class="worker-chip">
+      <div class="worker-chip" id="wk-startup">
         <div class="worker-dot"></div>
         <div>
           <div>StartupLookupWorker</div>
           <span class="worker-sub">Exe names → file version info → web</span>
         </div>
       </div>
-      <div class="worker-chip">
+      <div class="worker-chip" id="wk-services">
         <div class="worker-dot"></div>
         <div>
           <div>ServicesLookupWorker</div>
           <span class="worker-sub">Service names → MS Learn API</span>
         </div>
       </div>
-      <div class="worker-chip">
+      <div class="worker-chip" id="wk-process">
         <div class="worker-dot"></div>
         <div>
           <div>ProcessLookupWorker</div>
@@ -360,12 +363,12 @@
     <div style="margin-top:12px">
       <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">Knowledge Cache Files (JSON · 24h stale refresh · unknown retry on startup)</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <div class="cache-chip">event_id_cache.json</div>
-        <div class="cache-chip">bsod_code_cache.json</div>
-        <div class="cache-chip">startup_item_cache.json</div>
-        <div class="cache-chip">services_item_cache.json</div>
-        <div class="cache-chip">process_cache.json</div>
-        <div class="cache-chip">bios_cache.json</div>
+        <div class="cache-chip" id="ch-event">event_id_cache.json</div>
+        <div class="cache-chip" id="ch-bsod">bsod_code_cache.json</div>
+        <div class="cache-chip" id="ch-startup">startup_item_cache.json</div>
+        <div class="cache-chip" id="ch-services">services_item_cache.json</div>
+        <div class="cache-chip" id="ch-process">process_cache.json</div>
+        <div class="cache-chip" id="ch-bios">bios_cache.json</div>
       </div>
     </div>
   </div>
@@ -388,83 +391,83 @@
   <div class="row row-data" id="layer-data">
     <div class="row-label">🖥 Windows Data Sources — PowerShell / WMI / CIM / COM / Registry</div>
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
-      <div class="wmi-chip">
+      <div class="wmi-chip" id="wmi-driver">
         <div class="wmi-title">Win32_PnPSignedDriver</div>
         <div class="wmi-sub">Installed drivers · version · date · class</div>
       </div>
-      <div class="wmi-chip">
+      <div class="wmi-chip" id="wmi-cpu">
         <div class="wmi-title">Win32_Processor</div>
         <div class="wmi-sub">CPU model · cores · speed · serial · ProcessorId</div>
       </div>
-      <div class="wmi-chip">
+      <div class="wmi-chip" id="wmi-os">
         <div class="wmi-title">Win32_OperatingSystem</div>
         <div class="wmi-sub">RAM · uptime · OS version · install date · build</div>
       </div>
-      <div class="wmi-chip">
+      <div class="wmi-chip" id="wmi-cs">
         <div class="wmi-title">Win32_ComputerSystem</div>
         <div class="wmi-sub">Manufacturer · model · domain · system type</div>
       </div>
-      <div class="wmi-chip">
+      <div class="wmi-chip" id="wmi-bios">
         <div class="wmi-title">Win32_BIOS + BaseBoard</div>
         <div class="wmi-sub">BIOS version · date · service tag · board model</div>
       </div>
-      <div class="wmi-chip">
+      <div class="wmi-chip" id="wmi-gpu">
         <div class="wmi-title">Win32_VideoController</div>
         <div class="wmi-sub">GPU name · manufacturer · driver · VRAM · PNP ID</div>
       </div>
-      <div class="wmi-chip">
+      <div class="wmi-chip" id="wmi-ram">
         <div class="wmi-title">Win32_PhysicalMemory</div>
         <div class="wmi-sub">DIMM slots · speed · manufacturer · DDR type · form factor · locator</div>
       </div>
-      <div class="wmi-chip">
+      <div class="wmi-chip" id="wmi-disk">
         <div class="wmi-title">Win32_DiskDrive</div>
         <div class="wmi-sub">Disk model · size · interface · media type · serial</div>
       </div>
-      <div class="wmi-chip">
+      <div class="wmi-chip" id="wmi-nic">
         <div class="wmi-title">Win32_NetworkAdapter</div>
         <div class="wmi-sub">NIC manufacturer · product · speed · type · MAC</div>
       </div>
-      <div class="wmi-chip">
+      <div class="wmi-chip" id="wmi-sound">
         <div class="wmi-title">Win32_SoundDevice</div>
         <div class="wmi-sub">Audio device name · manufacturer · status</div>
       </div>
-      <div class="wmi-chip">
+      <div class="wmi-chip" id="wmi-usb">
         <div class="wmi-title">Win32_USBController</div>
         <div class="wmi-sub">USB host controllers · manufacturer · status</div>
       </div>
-      <div class="wmi-chip">
+      <div class="wmi-chip" id="wmi-slot">
         <div class="wmi-title">Win32_SystemSlot</div>
         <div class="wmi-sub">PCIe slot designation · usage · status</div>
       </div>
-      <div class="wmi-chip">
+      <div class="wmi-chip" id="wmi-event">
         <div class="wmi-title">Get-WinEvent</div>
         <div class="wmi-sub">System/App/Security log · IDs 41, 1001, 6008, 17, 19</div>
       </div>
-      <div class="wmi-chip">
+      <div class="wmi-chip" id="wmi-process">
         <div class="wmi-title">Get-Process + Win32_Process</div>
         <div class="wmi-sub">Running processes · RAM · CPU · path · description</div>
       </div>
-      <div class="wmi-chip">
+      <div class="wmi-chip" id="wmi-tcp">
         <div class="wmi-title">Get-NetTCPConnection</div>
         <div class="wmi-sub">TCP connections · ports · owning process</div>
       </div>
-      <div class="wmi-chip">
+      <div class="wmi-chip" id="wmi-thermal">
         <div class="wmi-title">MSAcpi_ThermalZone</div>
         <div class="wmi-sub">CPU thermal zones · OpenHardwareMonitor WMI</div>
       </div>
-      <div class="wmi-chip">
+      <div class="wmi-chip" id="wmi-service">
         <div class="wmi-title">Win32_Service</div>
         <div class="wmi-sub">All services · state · start mode · PID · path</div>
       </div>
-      <div class="wmi-chip">
+      <div class="wmi-chip" id="wmi-psdrive">
         <div class="wmi-title">Get-PSDrive + PhysicalDisk</div>
         <div class="wmi-sub">Drive usage · free space · health · bus type</div>
       </div>
-      <div class="wmi-chip">
+      <div class="wmi-chip" id="wmi-registry">
         <div class="wmi-title">Registry Run Keys</div>
         <div class="wmi-sub">HKLM/HKCU startup entries · enabled/disabled</div>
       </div>
-      <div class="wmi-chip">
+      <div class="wmi-chip" id="wmi-creds">
         <div class="wmi-title">cmdkey + Get-SmbConnection</div>
         <div class="wmi-sub">Credential Manager · SMB drives · NAS health</div>
       </div>
@@ -483,7 +486,7 @@
   <div class="row row-external" id="layer-external">
     <div class="row-label">☁ External Services — internet fallback · results cached locally</div>
     <div style="display:flex;gap:10px;flex-wrap:wrap">
-      <div class="ext-chip">
+      <div class="ext-chip" id="ext-mslearn">
         <div class="ext-title">Microsoft Learn API</div>
         <div class="ext-sub">learn.microsoft.com/api/search<br>Event IDs · stop codes · process/service descriptions</div>
         <span class="ext-badge">fallback</span>
@@ -933,6 +936,149 @@
   <span>github.com/shigsdev/windesktopmgr · Updated 2026-03-20</span>
 </div>
 
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SVG ARROW OVERLAY — Draws component-to-component connection lines
+═══════════════════════════════════════════════════════════════════════ -->
+<script>
+(function() {
+  const diagram = document.querySelector('.diagram');
+  if (!diagram) return;
+
+  // Wrap in relative container
+  const wrap = document.createElement('div');
+  wrap.style.position = 'relative';
+  diagram.parentNode.insertBefore(wrap, diagram);
+  wrap.appendChild(diagram);
+
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:15;overflow:visible';
+  wrap.appendChild(svg);
+
+  // Arrow markers
+  const defs = document.createElementNS(NS, 'defs');
+  const C = {cyan:'#00d4ff', purple:'#b388ff', orange:'#ff7043', green:'#00e676', yellow:'#ffd740', blue:'#448aff', pink:'#ff80ab', red:'#ff4560'};
+  for (const [n, c] of Object.entries(C)) {
+    const m = document.createElementNS(NS, 'marker');
+    m.setAttribute('id', 'ah-'+n); m.setAttribute('markerWidth','7'); m.setAttribute('markerHeight','5');
+    m.setAttribute('refX','7'); m.setAttribute('refY','2.5'); m.setAttribute('orient','auto');
+    const p = document.createElementNS(NS, 'polygon');
+    p.setAttribute('points','0 0, 7 2.5, 0 5'); p.setAttribute('fill', c);
+    m.appendChild(p); defs.appendChild(m);
+  }
+  svg.appendChild(defs);
+
+  function getPos(el, side) {
+    const cr = wrap.getBoundingClientRect();
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width/2 - cr.left;
+    const top = r.top - cr.top;
+    const bot = r.bottom - cr.top;
+    const left = r.left - cr.left;
+    const right = r.right - cr.left;
+    if (side === 'bottom') return {x: cx, y: bot};
+    if (side === 'top') return {x: cx, y: top};
+    if (side === 'left') return {x: left, y: top + r.height/2};
+    if (side === 'right') return {x: right, y: top + r.height/2};
+    return {x: cx, y: bot};
+  }
+
+  function arrow(fromId, toId, color, opts={}) {
+    const from = document.getElementById(fromId);
+    const to = document.getElementById(toId);
+    if (!from || !to) return;
+
+    const fSide = opts.fromSide || 'bottom';
+    const tSide = opts.toSide || 'top';
+    const f = getPos(from, fSide);
+    const t = getPos(to, tSide);
+
+    const path = document.createElementNS(NS, 'path');
+    const dy = t.y - f.y;
+    const dx = t.x - f.x;
+
+    // Use cubic bezier for smooth curves
+    let d;
+    if (fSide === 'bottom' && tSide === 'top') {
+      // Vertical flow — curve gently through midpoint
+      const my = f.y + dy * 0.4;
+      d = `M${f.x},${f.y} C${f.x},${my} ${t.x},${f.y + dy*0.6} ${t.x},${t.y}`;
+    } else if (fSide === 'right' && tSide === 'left') {
+      // Horizontal flow
+      const mx = f.x + dx * 0.5;
+      d = `M${f.x},${f.y} C${mx},${f.y} ${mx},${t.y} ${t.x},${t.y}`;
+    } else {
+      // Generic
+      d = `M${f.x},${f.y} C${f.x},${f.y+dy*0.5} ${t.x},${t.y-dy*0.5} ${t.x},${t.y}`;
+    }
+
+    path.setAttribute('d', d);
+    path.setAttribute('stroke', color);
+    path.setAttribute('stroke-width', opts.width || '1.2');
+    path.setAttribute('fill', 'none');
+    path.setAttribute('opacity', opts.opacity || '0.35');
+    if (opts.dash) path.setAttribute('stroke-dasharray', opts.dash);
+    const cn = Object.entries(C).find(([,v])=>v===color)?.[0]||'cyan';
+    path.setAttribute('marker-end', `url(#ah-${cn})`);
+    svg.appendChild(path);
+  }
+
+  function drawAll() {
+    // Clear previous (keep defs)
+    while (svg.children.length > 1) svg.removeChild(svg.lastChild);
+
+    // ── LAYER 1→2: Tabs → Routes (cyan) ──
+    const tabRoutes = [
+      ['tab-dashboard','rt-dashsum'], ['tab-drivers','rt-scan'], ['tab-bsod','rt-bsod'],
+      ['tab-startup','rt-startup'],   ['tab-disk','rt-disk'],    ['tab-network','rt-network'],
+      ['tab-updates','rt-updates'],   ['tab-events','rt-events'],['tab-processes','rt-processes'],
+      ['tab-thermals','rt-thermals'], ['tab-services','rt-services'], ['tab-health','rt-health'],
+      ['tab-timeline','rt-timeline'], ['tab-memory','rt-memory'],['tab-bios','rt-bios'],
+      ['tab-creds','rt-creds'],       ['tab-sysinfo','rt-sysinfo'],['tab-warranty','rt-warranty'],
+    ];
+    tabRoutes.forEach(([f,t]) => arrow(f, t, C.cyan, {opacity:'0.2', width:'1'}));
+
+    // ── LAYER 2→4: Routes → WMI sources (green) ──
+    const routeWmi = [
+      ['rt-scan','wmi-driver'],    ['rt-bsod','wmi-event'],     ['rt-startup','wmi-registry'],
+      ['rt-disk','wmi-disk'],      ['rt-disk','wmi-psdrive'],   ['rt-network','wmi-tcp'],
+      ['rt-network','wmi-nic'],    ['rt-events','wmi-event'],   ['rt-processes','wmi-process'],
+      ['rt-thermals','wmi-thermal'],['rt-services','wmi-service'],['rt-memory','wmi-ram'],
+      ['rt-bios','wmi-bios'],      ['rt-creds','wmi-creds'],    ['rt-sysinfo','wmi-os'],
+      ['rt-sysinfo','wmi-cpu'],    ['rt-sysinfo','wmi-gpu'],    ['rt-sysinfo','wmi-ram'],
+      ['rt-sysinfo','wmi-nic'],    ['rt-sysinfo','wmi-sound'],  ['rt-sysinfo','wmi-usb'],
+      ['rt-sysinfo','wmi-slot'],   ['rt-sysinfo','wmi-disk'],   ['rt-warranty','wmi-cpu'],
+      ['rt-warranty','wmi-bios'],
+    ];
+    routeWmi.forEach(([f,t]) => arrow(f, t, C.green, {opacity:'0.18', width:'1'}));
+
+    // ── Workers → Cache files (yellow) ──
+    const workerCache = [
+      ['wk-event','ch-event'],     ['wk-bsod','ch-bsod'],
+      ['wk-startup','ch-startup'], ['wk-services','ch-services'],
+      ['wk-process','ch-process'],
+    ];
+    workerCache.forEach(([f,t]) => arrow(f, t, C.yellow, {opacity:'0.4', width:'1.2'}));
+
+    // ── Workers → External (orange, dashed) ──
+    arrow('wk-event', 'ext-mslearn', C.orange, {opacity:'0.3', dash:'5,3', width:'1'});
+    arrow('wk-bsod', 'ext-mslearn', C.orange, {opacity:'0.3', dash:'5,3', width:'1'});
+    arrow('wk-startup', 'ext-mslearn', C.orange, {opacity:'0.3', dash:'5,3', width:'1'});
+    arrow('wk-services', 'ext-mslearn', C.orange, {opacity:'0.3', dash:'5,3', width:'1'});
+    arrow('wk-process', 'ext-mslearn', C.orange, {opacity:'0.3', dash:'5,3', width:'1'});
+  }
+
+  // Redraw on load, resize, and font load
+  const raf = () => requestAnimationFrame(drawAll);
+  window.addEventListener('load', raf);
+  window.addEventListener('resize', raf);
+  if (document.fonts) document.fonts.ready.then(raf);
+  // Also draw after a short delay for layout settle
+  setTimeout(raf, 300);
+  setTimeout(raf, 1000);
+})();
+</script>
 
 </body>
 </html>
