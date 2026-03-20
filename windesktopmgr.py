@@ -1369,7 +1369,7 @@ $items | ConvertTo-Json -Depth 2
 
 
 def toggle_startup_item(name: str, item_type: str, enable: bool) -> dict:
-    safe_name = re.sub(r"[^\w\s\-\.]", "", name)
+    safe_name = re.sub(r"[^a-zA-Z0-9\-_. ]", "", name).strip()
     if item_type in ("registry_hklm", "registry_hkcu"):
         hive = "HKLM" if item_type == "registry_hklm" else "HKCU"
         src  = f"{hive}:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run"
@@ -3518,7 +3518,7 @@ Get-WmiObject Win32_Service | ForEach-Object {
 
 
 def toggle_service(name: str, action: str) -> dict:
-    safe_name = re.sub(r"[^\w\-]", "", name)
+    safe_name = re.sub(r"[^a-zA-Z0-9\-_]", "", name).strip()
     if action == "stop":
         cmd = f'Stop-Service -Name "{safe_name}" -Force -ErrorAction Stop'
     elif action == "start":

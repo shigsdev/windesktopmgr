@@ -707,6 +707,60 @@ class TestToggleService:
         result = wdm.toggle_service("wuauserv", "stop")
         assert result["ok"] is False
 
+    def test_backtick_stripped_from_service_name(self, mocker):
+        """Backtick is PowerShell's escape char — must be stripped."""
+        m = _mock_run(mocker, returncode=0)
+        wdm.toggle_service("wuauserv`Stop-Service -Name windefend", "stop")
+        cmd = m.call_args[0][0][-1]
+        assert "`" not in cmd.split('"')[1]
+
+    def test_newline_stripped_from_service_name(self, mocker):
+        """Newlines are PS statement separators — must be stripped."""
+        m = _mock_run(mocker, returncode=0)
+        wdm.toggle_service("wuauserv\nStop-Service -Name windefend", "stop")
+        cmd = m.call_args[0][0][-1]
+        assert "\n" not in cmd.split('"')[1]
+
+    def test_dollar_stripped_from_service_name(self, mocker):
+        """Dollar sign is PS variable prefix — must be stripped."""
+        m = _mock_run(mocker, returncode=0)
+        wdm.toggle_service("wuauserv$env:USERNAME", "stop")
+        cmd = m.call_args[0][0][-1]
+        assert "$" not in cmd.split('"')[1]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# toggle_startup_item — input sanitisation
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestToggleStartupItem:
+
+    def test_backtick_stripped(self, mocker):
+        m = _mock_run(mocker, returncode=0)
+        wdm.toggle_startup_item("MyApp`; malicious", "task", True)
+        cmd = m.call_args[0][0][-1]
+        assert "`" not in cmd
+        assert ";" not in cmd
+
+    def test_newline_stripped(self, mocker):
+        m = _mock_run(mocker, returncode=0)
+        wdm.toggle_startup_item("MyApp\nRemove-Item C:\\", "task", False)
+        cmd = m.call_args[0][0][-1]
+        assert "\n" not in cmd
+
+    def test_spaces_preserved_in_startup_name(self, mocker):
+        """Startup items can have spaces in their names."""
+        m = _mock_run(mocker, returncode=0)
+        wdm.toggle_startup_item("My Cool App", "task", True)
+        cmd = m.call_args[0][0][-1]
+        assert "My Cool App" in cmd
+
+    def test_registry_toggle_uses_correct_hive(self, mocker):
+        m = _mock_run(mocker, returncode=0)
+        wdm.toggle_startup_item("TestApp", "registry_hkcu", False)
+        cmd = m.call_args[0][0][-1]
+        assert "HKCU:" in cmd
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # get_memory_analysis
