@@ -1207,3 +1207,142 @@ class TestWorkerTaskDoneSafety:
         except KeyboardInterrupt:
             pass
         mock_queue.task_done.assert_not_called()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# check_dell_bios_update
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestCheckDellBiosUpdate:
+    """Tests for check_dell_bios_update with all subprocess calls mocked."""
+
+    def _mock_run(self, mocker, side_effects):
+        """Mock subprocess.run with a list of (stdout, returncode) tuples."""
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = [
+            type("R", (), {"stdout": out, "returncode": rc, "stderr": ""})()
+            for out, rc in side_effects
+        ]
+        return m
+
+    def test_returns_required_keys(self, mocker, tmp_path):
+        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
+        self._mock_run(mocker, [
+            ("9T46D14", 0),      # service tag
+            ("DCU_NOT_FOUND", 0),  # method 1
+            ("", 0),               # method 2 catalog
+            ("NO_BIOS_IN_WU", 0),  # method 3 WU
+        ])
+        result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
+        for key in ("checked_at", "current_version", "latest_version",
+                     "update_available", "service_tag", "source", "error"):
+            assert key in result
+
+    def test_dcu_found_sets_version(self, mocker, tmp_path):
+        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
+        dcu_out = json.dumps({"Version": "2.23.0", "Source": "dcu_cli", "Notes": ""})
+        self._mock_run(mocker, [
+            ("9T46D14", 0),   # service tag
+            (dcu_out, 0),     # method 1 DCU
+        ])
+        result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
+        assert result["latest_version"] == "2.23.0"
+        assert result["source"] == "dell_command_update"
+        assert result["update_available"] is True
+
+    def test_dcu_same_version_no_update(self, mocker, tmp_path):
+        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
+        dcu_out = json.dumps({"Version": "2.22.0", "Source": "dcu_cli", "Notes": ""})
+        self._mock_run(mocker, [
+            ("9T46D14", 0),
+            (dcu_out, 0),
+        ])
+        result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
+        assert result["update_available"] is False
+
+    def test_catalog_fallback(self, mocker, tmp_path):
+        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
+        catalog_out = json.dumps({
+            "Version": "2.23.0", "ReleaseDate": "2026-01-15",
+            "Name": "XPS 8960 BIOS Update", "Path": "https://downloads.dell.com/bios.exe"
+        })
+        self._mock_run(mocker, [
+            ("9T46D14", 0),      # service tag
+            ("DCU_NOT_FOUND", 0),  # method 1 no DCU
+            (catalog_out, 0),      # method 2 catalog
+        ])
+        result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
+        assert result["source"] == "dell_catalog"
+        assert result["latest_version"] == "2.23.0"
+
+    def test_wu_fallback(self, mocker, tmp_path):
+        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
+        wu_out = json.dumps({"Title": "Dell BIOS Update 2.24.0", "Version": "2.24.0"})
+        self._mock_run(mocker, [
+            ("9T46D14", 0),       # service tag
+            ("DCU_NOT_FOUND", 0),  # no DCU
+            ("", 0),               # no catalog
+            (wu_out, 0),           # WU found
+        ])
+        result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
+        assert result["source"] == "windows_update"
+        assert result["update_available"] is True
+
+    def test_all_methods_fail_returns_unknown(self, mocker, tmp_path):
+        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
+        self._mock_run(mocker, [
+            ("9T46D14", 0),
+            ("DCU_NOT_FOUND", 0),
+            ("", 0),
+            ("NO_BIOS_IN_WU", 0),
+        ])
+        result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
+        assert result["source"] == "unknown"
+        assert result["latest_version"] is None
+
+    def test_service_tag_populated(self, mocker, tmp_path):
+        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
+        self._mock_run(mocker, [
+            ("ABC1234", 0),
+            ("DCU_NOT_FOUND", 0),
+            ("", 0),
+            ("NO_BIOS_IN_WU", 0),
+        ])
+        result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
+        assert result["service_tag"] == "ABC1234"
+        assert "ABC1234" in result["download_url"]
+
+    def test_service_tag_empty_fallback_url(self, mocker, tmp_path):
+        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
+        self._mock_run(mocker, [
+            ("", 0),  # empty service tag
+            ("DCU_NOT_FOUND", 0),
+            ("", 0),
+            ("NO_BIOS_IN_WU", 0),
+            ("", 0),  # retry service tag also empty
+        ])
+        result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
+        assert "dell.com" in result["download_url"]
+
+    def test_cache_returns_without_subprocess(self, mocker, tmp_path):
+        cache_file = tmp_path / "bios.json"
+        cached = {
+            "checked_at": wdm.datetime.now(wdm.timezone.utc).isoformat(),
+            "current_version": "2.22.0", "latest_version": "2.22.0",
+            "update_available": False, "source": "dell_catalog",
+            "service_tag": "9T46D14", "download_url": "", "error": None,
+            "latest_date": None, "release_notes": "",
+        }
+        cache_file.write_text(json.dumps(cached))
+        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(cache_file))
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
+        m.assert_not_called()
+        assert result["source"] == "dell_catalog"
+
+    def test_subprocess_timeout_handled(self, mocker, tmp_path):
+        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = subprocess.TimeoutExpired("powershell", 60)
+        result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
+        assert result["source"] == "unknown"

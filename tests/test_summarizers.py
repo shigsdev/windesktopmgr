@@ -647,3 +647,147 @@ class TestSummarizeSysinfo:
         result = wdm.summarize_sysinfo(self._data(nic_hw=nic))
         texts = " ".join(i["text"] for i in result["insights"])
         assert "network" in texts.lower()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# summarize_credentials_network
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestSummarizeCredentialsNetwork:
+
+    def _data(self, **overrides):
+        base = {
+            "drives": [], "drives_down": [],
+            "email_creds": [{"Target": "MicrosoftOffice16_Data:live:user@example.com"}],
+            "fast_startup": False, "cred_failures": [], "fw_blocking": [],
+            "smb_config": None, "nfs_drives": [],
+            "msal_token_stale": False, "msal_token_age_h": None,
+            "onedrive_running": True, "onedrive_connected": True,
+            "onedrive_account": "user@example.com", "office_errors": [],
+            "onedrive_suspended": False, "onedrive_priority": "",
+            "suspended_auth_procs": [], "total_creds": 5,
+        }
+        base.update(overrides)
+        return base
+
+    def test_healthy_returns_ok(self):
+        result = wdm.summarize_credentials_network(self._data())
+        assert result["status"] == "ok"
+
+    def test_fast_startup_enabled_warning(self):
+        result = wdm.summarize_credentials_network(self._data(fast_startup=True))
+        assert result["status"] == "warning"
+        assert "Fast Startup" in result["headline"]
+
+    def test_fast_startup_disabled_ok(self):
+        result = wdm.summarize_credentials_network(self._data(fast_startup=False))
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "disabled" in texts.lower()
+
+    def test_fast_startup_none_info(self):
+        result = wdm.summarize_credentials_network(self._data(fast_startup=None))
+        levels = [i["level"] for i in result["insights"]]
+        assert "info" in levels
+
+    def test_drives_down_critical(self):
+        down = [{"Name": "Z:", "DisplayRoot": "\\\\nas\\share"}]
+        result = wdm.summarize_credentials_network(self._data(drives_down=down))
+        assert result["status"] == "critical"
+        assert "unreachable" in result["headline"]
+
+    def test_all_drives_reachable_ok(self):
+        drives = [{"Name": "Z:", "DisplayRoot": "\\\\nas\\share"}]
+        result = wdm.summarize_credentials_network(self._data(drives=drives))
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "reachable" in texts.lower()
+
+    def test_onedrive_suspended_critical(self):
+        result = wdm.summarize_credentials_network(self._data(onedrive_suspended=True))
+        assert result["status"] == "critical"
+        assert "SUSPENDED" in result["headline"]
+
+    def test_suspended_auth_procs_warning(self):
+        procs = [{"Name": "AADBrokerPlugin"}]
+        result = wdm.summarize_credentials_network(self._data(suspended_auth_procs=procs))
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "auth-related" in texts.lower()
+
+    def test_token_stale_critical(self):
+        result = wdm.summarize_credentials_network(self._data(
+            msal_token_stale=True, msal_token_age_h=48.0))
+        assert result["status"] == "critical"
+        assert "token expired" in result["headline"].lower()
+
+    def test_token_stale_not_shown_when_suspended(self):
+        """When OneDrive is suspended, the suspension insight takes priority."""
+        result = wdm.summarize_credentials_network(self._data(
+            onedrive_suspended=True, msal_token_stale=True, msal_token_age_h=48.0))
+        assert "SUSPENDED" in result["headline"]
+
+    def test_onedrive_not_connected_warning(self):
+        result = wdm.summarize_credentials_network(self._data(onedrive_connected=False))
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "not connected" in texts.lower()
+
+    def test_onedrive_not_running_warning(self):
+        result = wdm.summarize_credentials_network(self._data(
+            onedrive_running=False, onedrive_connected=True))
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "not running" in texts.lower()
+
+    def test_onedrive_connected_ok(self):
+        result = wdm.summarize_credentials_network(self._data(
+            onedrive_connected=True, onedrive_running=True, msal_token_age_h=2.0))
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "connected" in texts.lower()
+
+    def test_office_errors_warning(self):
+        result = wdm.summarize_credentials_network(self._data(
+            office_errors=[{"Id": 1}]))
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "error event" in texts.lower()
+
+    def test_nfs_drives_all_reachable(self):
+        nfs = [{"Name": "Y:", "DisplayRoot": "//nas/nfs", "Reachable": True}]
+        result = wdm.summarize_credentials_network(self._data(nfs_drives=nfs))
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "NFS" in texts and "reachable" in texts.lower()
+
+    def test_nfs_drives_some_down(self):
+        nfs = [{"Name": "Y:", "DisplayRoot": "//nas/nfs", "Reachable": False}]
+        result = wdm.summarize_credentials_network(self._data(nfs_drives=nfs))
+        levels = [i["level"] for i in result["insights"]]
+        assert "critical" in levels
+
+    def test_email_creds_present(self):
+        creds = [{"Target": "MicrosoftOffice16_Data:live:user@example.com"}]
+        result = wdm.summarize_credentials_network(self._data(email_creds=creds))
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "email credential" in texts.lower()
+
+    def test_no_email_creds_warning(self):
+        result = wdm.summarize_credentials_network(self._data(email_creds=[]))
+        assert result["status"] == "warning"
+
+    def test_cred_failures_warning(self):
+        failures = [{"Id": 4625}]
+        result = wdm.summarize_credentials_network(self._data(cred_failures=failures))
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "credential failure" in texts.lower()
+
+    def test_fw_blocking_warning(self):
+        rules = [{"DisplayName": "File and Printer Sharing (SMB-In)"}]
+        result = wdm.summarize_credentials_network(self._data(fw_blocking=rules))
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "Block" in texts or "firewall" in texts.lower()
+
+    def test_smb_signing_required_info(self):
+        result = wdm.summarize_credentials_network(self._data(
+            smb_config={"RequireSecuritySignature": True}))
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "SMB" in texts and "signing" in texts.lower()
+
+    def test_empty_data_does_not_crash(self):
+        result = wdm.summarize_credentials_network({})
+        assert "status" in result
+        assert "insights" in result
