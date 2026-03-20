@@ -4961,39 +4961,6 @@ def summarize_credentials_network(data: dict) -> dict:
             f"All {len(data['drives'])} mapped SMB drive(s) are reachable."))
 
     # OneDrive / M365 token status
-    token_stale = data.get("msal_token_stale", False)
-    token_age   = data.get("msal_token_age_h")
-    od_running  = data.get("onedrive_running", False)
-    od_connected= data.get("onedrive_connected", False)
-    office_errs = data.get("office_errors", [])
-    if token_stale:
-        insights.append(_insight("critical",
-            f"OneDrive / Microsoft 365 authentication token is {token_age:.0f} hours old. "
-            "This is the direct cause of the 'Sign in Required — cached credentials have expired' "
-            "error you see in Word and Outlook.",
-            "Fix: Open OneDrive in the system tray, click Sign in. Or open Word/Outlook and "
-            "click the Sign In prompt. After signing in, tokens are refreshed for all Office apps."))
-        actions.append("Re-sign into OneDrive to refresh Office 365 token")
-    elif not od_connected:
-        insights.append(_insight("warning",
-            "OneDrive does not appear to be connected to an account. "
-            "Office apps will show sign-in prompts until OneDrive is authenticated.",
-            "Click the OneDrive cloud icon in the system tray and sign in."))
-    elif not od_running:
-        insights.append(_insight("warning",
-            "OneDrive process is not running. Office credential sync is paused.",
-            "Launch OneDrive from Start menu or restart it."))
-    else:
-        age_str = f" (refreshed {token_age:.0f}h ago)" if token_age is not None else ""
-        insights.append(_insight("ok",
-            f"OneDrive connected{age_str} — Microsoft 365 tokens appear current."))
-
-    if office_errs:
-        insights.append(_insight("warning",
-            f"{len(office_errs)} recent Office/OneDrive error event(s) in Application log.",
-            "Check Event Viewer > Application log for OneDrive and Microsoft Office errors."))
-
-    # OneDrive / M365 token status
     token_stale  = data.get("msal_token_stale", False)
     token_age    = data.get("msal_token_age_h")
     od_running   = data.get("onedrive_running", False)
