@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=$(jq -r '.tool_input.file_path // empty'); if [ -n \"$FILE\" ] && echo \"$FILE\" | grep -qv 'architecture.html'; then echo '{\"hookSpecificOutput\": {\"hookEventName\": \"PostToolUse\", \"additionalContext\": \"ARCHITECTURE REMINDER: You just modified a source file. Check if this change affects the architecture diagram (architecture.html). If it adds/removes/changes routes, functions, components, data flows, or connections — update architecture.html to reflect the current state.\"}}'; fi",
+            "statusMessage": "Checking architecture diagram..."
+          }
+        ]
+      }
+    ]
+  }
+}
