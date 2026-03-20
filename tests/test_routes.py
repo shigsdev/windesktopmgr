@@ -1479,3 +1479,27 @@ class TestSysinfoRoute:
         d = r.get_json()
         assert "status" in d
         assert "headline" in d
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET /architecture.html
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestArchitectureRoute:
+    """Tests for /architecture.html — serves the architecture diagram."""
+
+    def test_returns_200(self, client):
+        r = client.get("/architecture.html")
+        assert r.status_code == 200
+
+    def test_returns_html_content_type(self, client):
+        r = client.get("/architecture.html")
+        assert "text/html" in r.content_type
+
+    def test_contains_windesktopmgr_title(self, client):
+        r = client.get("/architecture.html")
+        assert b"WinDesktopMgr" in r.data
+
+    def test_contains_architecture_keyword(self, client):
+        r = client.get("/architecture.html")
+        assert b"Architecture" in r.data

@@ -4,7 +4,7 @@ Flask backend — driver update checker + BSOD trend dashboard.
 Reads from Windows Event Log and existing SystemHealthDiag HTML reports.
 """
 
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, send_from_directory
 import subprocess, json, threading, re, os, glob, queue, urllib.request, urllib.parse
 from datetime import datetime, timedelta, timezone
 from collections import Counter, defaultdict
@@ -5559,6 +5559,12 @@ $kp41 = @(Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Microso
         return jsonify({"status": "ok", "warranty": warranty})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
+
+
+@app.route("/architecture.html")
+def architecture_diagram():
+    """Serve the architecture diagram HTML file."""
+    return send_from_directory(app.root_path, "architecture.html")
 
 
 @app.route("/api/sysinfo/data")

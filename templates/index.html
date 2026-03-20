@@ -544,6 +544,7 @@
       <button class="page-tab" data-page="bios">🔩 BIOS &amp; Firmware</button>
       <button class="page-tab" data-page="credentials">🔐 Credentials &amp; Network</button>
       <button class="page-tab" data-page="sysinfo">🖥 System Info</button>
+      <button class="page-tab" data-page="architecture">🏗 Architecture</button>
     </div>
   </nav>
 
@@ -836,7 +837,7 @@ document.querySelectorAll(".page-tab").forEach(btn => {
     document.querySelectorAll(".page-tab").forEach(t => t.classList.remove("active"));
     btn.classList.add("active");
     const page = btn.dataset.page;
-    ["dashboard","drivers","bsod","startup","disk","network","updates","events","processes","thermals","services","health-history","timeline","memory","bios","credentials","sysinfo"].forEach(function(p) {
+    ["dashboard","drivers","bsod","startup","disk","network","updates","events","processes","thermals","services","health-history","timeline","memory","bios","credentials","sysinfo","architecture"].forEach(function(p) {
       var el = document.getElementById("page-" + p);
       if (el) el.style.display = (p === page) ? "" : "none";
     });
@@ -872,6 +873,8 @@ document.querySelectorAll(".page-tab").forEach(btn => {
       if (!_tabLoaded["credentials"])    { _tabLoaded["credentials"]    = true; loadCredentials(); }
     } else if (page === "sysinfo") {
       if (!_tabLoaded["sysinfo"])        { _tabLoaded["sysinfo"]        = true; loadSystemInfo(); }
+    } else if (page === "architecture") {
+      if (!_tabLoaded["architecture"])   { _tabLoaded["architecture"]   = true; loadArchitecture(); }
     }
   });
 });
@@ -2940,6 +2943,20 @@ document.addEventListener("DOMContentLoaded", () => {
 // ══════════════════════════════════════════════════════════════════════════
 // SYSTEM INFO TAB
 // ══════════════════════════════════════════════════════════════════════════
+function loadArchitecture() {
+  const iframe = document.getElementById("arch-iframe");
+  iframe.src = "/architecture.html";
+  // Auto-resize iframe to fit content
+  iframe.onload = function() {
+    try {
+      const h = iframe.contentDocument.documentElement.scrollHeight;
+      iframe.style.height = (h + 40) + "px";
+    } catch(e) {
+      iframe.style.height = "2400px";
+    }
+  };
+}
+
 async function loadSystemInfo() {
   document.getElementById("si-loading").style.display = "block";
   document.getElementById("si-content").style.display = "none";
@@ -3887,6 +3904,17 @@ function renderSystemInfo(d) {
       </div>
 
     </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       PAGE: ARCHITECTURE DIAGRAM
+  ══════════════════════════════════════════ -->
+  <div id="page-architecture" style="display:none">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <h2 style="font-size:18px;font-weight:700">Architecture Diagram</h2>
+      <a href="/architecture.html" target="_blank" style="color:var(--cyan);font-size:13px;text-decoration:none">Open in new tab ↗</a>
+    </div>
+    <iframe id="arch-iframe" style="width:100%;border:1px solid var(--border);border-radius:12px;background:#07090f;min-height:800px" frameborder="0"></iframe>
   </div>
 
 </body>
