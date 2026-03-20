@@ -125,18 +125,12 @@
   .legend-item { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
   .legend-line { width: 24px; height: 2px; }
 
-  /* SVG arrow overlay — component-to-component connections */
-  svg path[marker-end] {
-    transition: opacity 0.3s;
-  }
-
-  /* Highlight arrows when hovering on components that have IDs */
-  [id^="tab-"]:hover ~ svg path,
-  [id^="rt-"]:hover ~ svg path,
-  [id^="wk-"]:hover ~ svg path,
-  [id^="wmi-"]:hover ~ svg path {
-    opacity: 0.1 !important;
-  }
+  /* View modes */
+  .svg-arrows { transition: opacity 0.3s; }
+  body.view-simple .svg-arrows { opacity: 0 !important; pointer-events: none; }
+  body.view-detail .svg-arrows { opacity: 1; }
+  body.view-detail .inline-connector { opacity: 0.3; }
+  body.view-simple .inline-connector { opacity: 1; }
 
   /* Diagram wrapper */
   .diagram {
@@ -186,7 +180,11 @@
     <div class="subtitle">Software Architecture Diagram</div>
   </div>
   <div style="display:flex;gap:12px;align-items:flex-end">
-    <div class="badge" style="color:var(--green);border-color:#00e67633">528 tests passing</div>
+    <div id="view-toggle" style="display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;cursor:pointer">
+      <div id="btn-simple" onclick="setView('simple')" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:var(--cyan);color:var(--bg);font-weight:700">Simple</div>
+      <div id="btn-detail" onclick="setView('detail')" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);color:var(--muted)">Detailed</div>
+    </div>
+    <div class="badge" style="color:var(--green);border-color:#00e67633">532 tests passing</div>
     <div class="badge">
       <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
     </div>
@@ -226,7 +224,7 @@
   </div>
 
   <!-- ▼ ARROW: Browser → Flask ──────────────────────────── -->
-  <div style="display:flex;align-items:center;justify-content:center;padding:4px 0;background:linear-gradient(180deg,#00d4ff04,#b388ff04)">
+  <div class="inline-connector" style="display:flex;align-items:center;justify-content:center;padding:4px 0;background:linear-gradient(180deg,#00d4ff04,#b388ff04)">
     <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
       <svg width="12" height="20"><line x1="6" y1="0" x2="6" y2="14" stroke="var(--cyan)" stroke-width="2"/><polygon points="1,14 6,20 11,14" fill="var(--cyan)"/></svg>
       <span style="font-size:9px;color:var(--cyan);font-weight:700;letter-spacing:.08em">FETCH / POST</span>
@@ -305,7 +303,7 @@
   </div>
 
   <!-- ▼ ARROW: Flask ↔ Workers & Data ──────────────────── -->
-  <div style="display:flex;align-items:center;justify-content:space-around;padding:4px 24px;background:linear-gradient(180deg,#b388ff04,#ff704304)">
+  <div class="inline-connector" style="display:flex;align-items:center;justify-content:space-around;padding:4px 24px;background:linear-gradient(180deg,#b388ff04,#ff704304)">
     <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
       <svg width="12" height="20"><line x1="6" y1="0" x2="6" y2="14" stroke="var(--purple)" stroke-width="2"/><polygon points="1,14 6,20 11,14" fill="var(--purple)"/></svg>
       <span style="font-size:9px;color:var(--orange);font-weight:700;letter-spacing:.08em">QUEUE UNKNOWNS</span>
@@ -374,7 +372,7 @@
   </div>
 
   <!-- ▼ ARROW: Workers → External ──────────────────────── -->
-  <div style="display:flex;align-items:center;justify-content:center;padding:4px 0;background:linear-gradient(180deg,#ff704304,#00e67604)">
+  <div class="inline-connector" style="display:flex;align-items:center;justify-content:center;padding:4px 0;background:linear-gradient(180deg,#ff704304,#00e67604)">
     <div style="display:flex;align-items:center;gap:16px">
       <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
         <svg width="12" height="20"><line x1="6" y1="0" x2="6" y2="14" stroke="var(--orange)" stroke-width="2" stroke-dasharray="4,3"/><polygon points="1,14 6,20 11,14" fill="var(--orange)"/></svg>
@@ -475,7 +473,7 @@
   </div>
 
   <!-- ▼ ARROW: Data ↔ External ──────────────────────────── -->
-  <div style="display:flex;align-items:center;justify-content:center;padding:4px 0;background:linear-gradient(180deg,#00e67604,#ffd74004)">
+  <div class="inline-connector" style="display:flex;align-items:center;justify-content:center;padding:4px 0;background:linear-gradient(180deg,#00e67604,#ffd74004)">
     <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
       <svg width="12" height="20"><line x1="6" y1="0" x2="6" y2="14" stroke="var(--yellow)" stroke-width="2" stroke-dasharray="4,3"/><polygon points="1,14 6,20 11,14" fill="var(--yellow)"/></svg>
       <span style="font-size:9px;color:var(--yellow);font-weight:700;letter-spacing:.08em">EXTERNAL API CALLS (cached results)</span>
@@ -953,8 +951,12 @@
 
   const NS = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(NS, 'svg');
+  svg.classList.add('svg-arrows');
   svg.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:15;overflow:visible';
   wrap.appendChild(svg);
+
+  // Default to simple view
+  document.body.classList.add('view-simple');
 
   // Arrow markers
   const defs = document.createElementNS(NS, 'defs');
@@ -1074,9 +1076,24 @@
   window.addEventListener('load', raf);
   window.addEventListener('resize', raf);
   if (document.fonts) document.fonts.ready.then(raf);
-  // Also draw after a short delay for layout settle
   setTimeout(raf, 300);
   setTimeout(raf, 1000);
+
+  // View toggle
+  window.setView = function(mode) {
+    document.body.classList.remove('view-simple', 'view-detail');
+    document.body.classList.add('view-' + mode);
+    const bs = document.getElementById('btn-simple');
+    const bd = document.getElementById('btn-detail');
+    if (mode === 'simple') {
+      bs.style.background = 'var(--cyan)'; bs.style.color = 'var(--bg)'; bs.style.fontWeight = '700';
+      bd.style.background = ''; bd.style.color = 'var(--muted)'; bd.style.fontWeight = '';
+    } else {
+      bd.style.background = 'var(--cyan)'; bd.style.color = 'var(--bg)'; bd.style.fontWeight = '700';
+      bs.style.background = ''; bs.style.color = 'var(--muted)'; bs.style.fontWeight = '';
+      raf(); // redraw arrows when switching to detail
+    }
+  };
 })();
 </script>
 
