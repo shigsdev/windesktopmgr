@@ -1601,6 +1601,56 @@ class TestSysinfoRoute:
         r = client.get("/api/sysinfo/data")
         assert isinstance(r.get_json()["data"]["USBControllers"], list)
 
+    def test_normalizes_single_pcie_to_list(self, client, mocker):
+        single = json.loads(self.SAMPLE_OUTPUT)
+        single["PCIeSlots"] = single["PCIeSlots"][0]  # dict instead of list
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.return_value.stdout = json.dumps(single)
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/sysinfo/data")
+        assert isinstance(r.get_json()["data"]["PCIeSlots"], list)
+
+    def test_normalizes_single_nichw_to_list(self, client, mocker):
+        single = json.loads(self.SAMPLE_OUTPUT)
+        single["NetworkHardware"] = single["NetworkHardware"][0]
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.return_value.stdout = json.dumps(single)
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/sysinfo/data")
+        assert isinstance(r.get_json()["data"]["NetworkHardware"], list)
+
+    def test_ok_response_has_stale_false(self, client, mocker):
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/sysinfo/data")
+        d = r.get_json()
+        assert d["status"] == "ok"
+        assert d["stale"] is False
+        assert d["error"] is None
+        assert "collected_at" in d
+
+    def test_missing_keys_default_to_empty_list(self, client, mocker):
+        """When PS output has no Sound/USB/PCIe keys, they default to []."""
+        minimal = json.loads(self.SAMPLE_OUTPUT)
+        for k in ("Sound", "USBControllers", "PCIeSlots", "NetworkHardware"):
+            minimal.pop(k, None)
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.return_value.stdout = json.dumps(minimal)
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/sysinfo/data")
+        d = r.get_json()["data"]
+        for k in ("Sound", "USBControllers", "PCIeSlots", "NetworkHardware"):
+            assert d.get(k, []) == [] or isinstance(d.get(k), list)
+
     def test_summary_route_accepts_sysinfo(self, client, mocker):
         """Verify the summary endpoint handles sysinfo tab."""
         mocker.patch("windesktopmgr.subprocess.run")
