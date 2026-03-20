@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Deep System Health Diagnostic Tool for Windows 11
 Designed for Dell XPS 8960 / Intel i9-14900K
@@ -20,44 +20,55 @@ from email import encoders
 from xml.etree import ElementTree
 
 # ============================================================
-# ADMIN CHECK
+# CONSTANTS
+# ============================================================
+REPORT_FOLDER = r"C:\shigsapps\windesktopmgr\System Health Reports"
+SCRIPT_DIR = r"C:\shigsapps\windesktopmgr"
+CRED_FILE = os.path.join(SCRIPT_DIR, "diag_email_config.xml")
+
+BUGCHECK_LOOKUP = {
+    "0x0000009C": "MACHINE_CHECK_EXCEPTION - Hardware failure detected by CPU. Common with degraded Intel 13th/14th gen CPUs.",
+    "0x00000124": "WHEA_UNCORRECTABLE_ERROR - Hardware error (often CPU or memory). Strongly associated with Intel voltage degradation.",
+    "0x0000003B": "SYSTEM_SERVICE_EXCEPTION - Kernel-mode driver or service fault. Check recently updated drivers.",
+    "0x0000000A": "IRQL_NOT_LESS_OR_EQUAL - Driver using improper memory address. Often GPU or network driver.",
+    "0x0000001E": "KMODE_EXCEPTION_NOT_HANDLED - Kernel-mode program generated an exception. Check drivers.",
+    "0x00000050": "PAGE_FAULT_IN_NONPAGED_AREA - Invalid memory referenced. Can be RAM, driver, or disk issue.",
+    "0x0000001A": "MEMORY_MANAGEMENT - Serious memory management error. Run memtest86.",
+    "0x000000D1": "DRIVER_IRQL_NOT_LESS_OR_EQUAL - Driver accessed pageable memory at wrong IRQL.",
+    "0x00000116": "VIDEO_TDR_TIMEOUT_DETECTED - GPU driver took too long. Update or rollback GPU driver.",
+    "0x00000119": "VIDEO_SCHEDULER_INTERNAL_ERROR - GPU scheduling failure. GPU driver or hardware issue.",
+    "0x0000007E": "SYSTEM_THREAD_EXCEPTION_NOT_HANDLED - System thread threw unhandled exception.",
+    "0x000000EF": "CRITICAL_PROCESS_DIED - Critical system process terminated. Possible file corruption or driver conflict.",
+    "0x000000C5": "DRIVER_CORRUPTED_EXPOOL - Driver corrupted pool memory. Faulty driver identified.",
+    "0x0000009F": "DRIVER_POWER_STATE_FAILURE - Driver in inconsistent power state. Common during sleep/wake.",
+    "0x00000133": "DPC_WATCHDOG_VIOLATION - DPC routine ran too long. Driver performance issue.",
+    "0x00000139": "KERNEL_SECURITY_CHECK_FAILURE - Kernel detected data corruption. Can be driver or hardware.",
+    "0x00000019": "BAD_POOL_HEADER - Pool header corrupted. Memory or driver issue.",
+    "0x000000FC": "ATTEMPTED_EXECUTE_OF_NOEXECUTE_MEMORY - Code tried to execute from non-executable memory.",
+    "0x00000101": "CLOCK_WATCHDOG_TIMEOUT - Processor not processing interrupts. Common with Intel 13/14th gen issue.",
+    "0x00000154": "UNEXPECTED_STORE_EXCEPTION - Store component threw unexpected exception. Possible disk or memory.",
+}
+HW_CODES = {"0x0000009C", "0x00000124", "0x00000101", "0x0000001A", "0x00000050"}
+
+
+# ============================================================
+# HELPER FUNCTIONS
 # ============================================================
 def is_admin():
+    """Check if the current process has admin privileges."""
     try:
         return ctypes.windll.shell32.IsUserAnAdmin()
     except:
         return False
 
-if not is_admin():
-    print("\n  ERROR: This script must be run as Administrator.")
-    print("  Right-click your terminal -> Run as Administrator\n")
-    sys.exit(1)
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
-REPORT_FOLDER = r"C:\shigsapps\windesktopmgr\System Health Reports"
-SCRIPT_DIR = r"C:\shigsapps\windesktopmgr"
-CRED_FILE = os.path.join(SCRIPT_DIR, "diag_email_config.xml")
-TIMESTAMP = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-
-os.makedirs(REPORT_FOLDER, exist_ok=True)
-REPORT_PATH = os.path.join(REPORT_FOLDER, f"SystemHealthReport_{TIMESTAMP}.html")
-PDF_PATH = REPORT_PATH.replace(".html", ".pdf")
-
-# Findings lists
-critical = []
-warnings = []
-info = []
-
-# ============================================================
-# HELPER FUNCTIONS
-# ============================================================
 def safe_truncate(text, max_len=300):
+    """Truncate text to max_len, replacing newlines with spaces."""
     if not text:
         return ""
     clean = text.replace("\r\n", " ").replace("\n", " ")
     return clean[:max_len] if len(clean) > max_len else clean
+
 
 def ps(cmd, as_json=False):
     """Run a PowerShell command and return output."""
@@ -71,6 +82,7 @@ def ps(cmd, as_json=False):
     except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception) as e:
         return [] if as_json else ""
 
+
 def ps_events(log_name, provider=None, event_id=None, level=None, max_events=20):
     """Query Windows Event Log via PowerShell and return list of dicts."""
     filters = [f"LogName='{log_name}'"]
@@ -80,8 +92,6 @@ def ps_events(log_name, provider=None, event_id=None, level=None, max_events=20)
         filters.append(f"Id={event_id}")
     if level is not None:
         filters.append(f"Level={level}")
-    filter_str = "; ".join(f"'{k.split('=')[0]}'={k.split('=')[1]}" for k in filters)
-    # Build hashtable string
     ht = "@{" + "; ".join(filters) + "}"
     cmd = (
         f"Get-WinEvent -FilterHashtable {ht} -MaxEvents {max_events} -ErrorAction SilentlyContinue | "
@@ -99,26 +109,28 @@ def ps_events(log_name, provider=None, event_id=None, level=None, max_events=20)
         return [result]
     return result if isinstance(result, list) else []
 
+
 def cprint(msg, color="cyan"):
+    """Print colored console output."""
     colors = {"cyan": "\033[96m", "yellow": "\033[93m", "green": "\033[92m", "red": "\033[91m", "gray": "\033[90m", "reset": "\033[0m"}
     print(f"{colors.get(color, '')}{msg}{colors['reset']}")
 
-# ============================================================
-print()
-cprint("========================================================", "cyan")
-cprint("  DEEP SYSTEM HEALTH DIAGNOSTIC TOOL (Python)", "cyan")
-cprint(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", "cyan")
-cprint("========================================================", "cyan")
-print()
-cprint(f"Report will be saved to: {REPORT_PATH}", "gray")
-print()
+
+def normalize_list(data, key):
+    """Normalize PS output: wrap single dict in list, default to empty list."""
+    val = data.get(key, []) or []
+    if isinstance(val, dict):
+        return [val]
+    return val
+
 
 # ============================================================
-# SECTION 1: SYSTEM INFORMATION
+# DATA COLLECTION FUNCTIONS (Sections 1-10)
 # ============================================================
-cprint("[1/10] Collecting System Information...", "yellow")
-
-sys_info_cmd = """
+def collect_system_info():
+    """Section 1: Collect system information via WMI."""
+    cprint("[1/10] Collecting System Information...", "yellow")
+    sys_info_cmd = """
 $OS = Get-CimInstance Win32_OperatingSystem
 $CS = Get-CimInstance Win32_ComputerSystem
 $CPU = Get-CimInstance Win32_Processor
@@ -145,156 +157,169 @@ $BB = Get-CimInstance Win32_BaseBoard
     TotalRAM_GB = [math]::Round($CS.TotalPhysicalMemory / 1GB, 1)
 } | ConvertTo-Json
 """
-sys_info = ps(sys_info_cmd, as_json=True) or {}
+    return ps(sys_info_cmd, as_json=True) or {}
 
-# ============================================================
-# SECTION 2: INTEL 13TH/14TH GEN CHECK
-# ============================================================
-cprint("[2/10] Checking Intel CPU Microcode & Known Issues...", "yellow")
 
-intel_check = {
-    "IsAffectedCPU": False, "CPUFamily": "Unknown", "MicrocodeVersion": "Unknown",
-    "Recommendation": "", "Details": "", "BIOSDate": sys_info.get("BIOSDate", "")
-}
+def check_intel_cpu(sys_info):
+    """Section 2: Check Intel 13th/14th Gen CPU microcode and known issues.
 
-cpu_name = sys_info.get("CPUName", "")
-if re.search(r"i[579]-1[34]\d{3}", cpu_name):
-    intel_check["IsAffectedCPU"] = True
-    if "i9-14900" in cpu_name:
-        intel_check["CPUFamily"] = "Intel 14th Gen Core i9 (Raptor Lake Refresh)"
-    elif "i7-14700" in cpu_name:
-        intel_check["CPUFamily"] = "Intel 14th Gen Core i7 (Raptor Lake Refresh)"
-    elif "i9-13900" in cpu_name:
-        intel_check["CPUFamily"] = "Intel 13th Gen Core i9 (Raptor Lake)"
-    else:
-        intel_check["CPUFamily"] = "Intel 13th/14th Gen (Potentially Affected)"
+    Returns:
+        tuple: (intel_check dict, critical list, warnings list, info list)
+    """
+    cprint("[2/10] Checking Intel CPU Microcode & Known Issues...", "yellow")
 
-    # Read microcode from registry
-    try:
-        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
-        mcu_raw, _ = winreg.QueryValueEx(key, "Update Revision")
-        winreg.CloseKey(key)
-        if isinstance(mcu_raw, bytes):
-            intel_check["MicrocodeVersion"] = "0x" + mcu_raw.hex().upper()
+    critical = []
+    warnings = []
+    info = []
+
+    intel_check = {
+        "IsAffectedCPU": False, "CPUFamily": "Unknown", "MicrocodeVersion": "Unknown",
+        "Recommendation": "", "Details": "", "BIOSDate": sys_info.get("BIOSDate", "")
+    }
+
+    cpu_name = sys_info.get("CPUName", "")
+    if re.search(r"i[579]-1[34]\d{3}", cpu_name):
+        intel_check["IsAffectedCPU"] = True
+        if "i9-14900" in cpu_name:
+            intel_check["CPUFamily"] = "Intel 14th Gen Core i9 (Raptor Lake Refresh)"
+        elif "i7-14700" in cpu_name:
+            intel_check["CPUFamily"] = "Intel 14th Gen Core i7 (Raptor Lake Refresh)"
+        elif "i9-13900" in cpu_name:
+            intel_check["CPUFamily"] = "Intel 13th Gen Core i9 (Raptor Lake)"
         else:
-            intel_check["MicrocodeVersion"] = str(mcu_raw)
-    except Exception:
-        intel_check["MicrocodeVersion"] = "Unable to read"
+            intel_check["CPUFamily"] = "Intel 13th/14th Gen (Potentially Affected)"
 
-    bios_date_str = sys_info.get("BIOSDate", "2020-01-01")
-    try:
-        bios_date = datetime.strptime(bios_date_str, "%Y-%m-%d")
-    except:
-        bios_date = datetime(2020, 1, 1)
+        # Read microcode from registry
+        try:
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
+            mcu_raw, _ = winreg.QueryValueEx(key, "Update Revision")
+            winreg.CloseKey(key)
+            if isinstance(mcu_raw, bytes):
+                intel_check["MicrocodeVersion"] = "0x" + mcu_raw.hex().upper()
+            else:
+                intel_check["MicrocodeVersion"] = str(mcu_raw)
+        except Exception:
+            intel_check["MicrocodeVersion"] = "Unable to read"
 
-    if bios_date < datetime(2024, 8, 1):
-        critical.append(f"INTEL CPU VULNERABILITY: Your BIOS date ({bios_date_str}) predates the Intel microcode fix (August 2024). Your i9-14900K may be experiencing eTVB/SVID voltage instability causing BSODs and potential permanent CPU degradation. IMMEDIATE BIOS UPDATE REQUIRED.")
-        intel_check["Recommendation"] = "CRITICAL: Update BIOS immediately to get Intel microcode 0x129 or later. Check Dell support for XPS 8960 BIOS updates."
-    elif bios_date < datetime(2024, 12, 1):
-        warnings.append("INTEL CPU: BIOS has been updated since initial Intel fix but may not have the latest microcode. Verify you have the newest Dell BIOS for XPS 8960.")
-        intel_check["Recommendation"] = "Check for latest Dell BIOS update for XPS 8960 to ensure newest Intel microcode."
+        bios_date_str = sys_info.get("BIOSDate", "2020-01-01")
+        try:
+            bios_date = datetime.strptime(bios_date_str, "%Y-%m-%d")
+        except:
+            bios_date = datetime(2020, 1, 1)
+
+        if bios_date < datetime(2024, 8, 1):
+            critical.append(f"INTEL CPU VULNERABILITY: Your BIOS date ({bios_date_str}) predates the Intel microcode fix (August 2024). Your i9-14900K may be experiencing eTVB/SVID voltage instability causing BSODs and potential permanent CPU degradation. IMMEDIATE BIOS UPDATE REQUIRED.")
+            intel_check["Recommendation"] = "CRITICAL: Update BIOS immediately to get Intel microcode 0x129 or later. Check Dell support for XPS 8960 BIOS updates."
+        elif bios_date < datetime(2024, 12, 1):
+            warnings.append("INTEL CPU: BIOS has been updated since initial Intel fix but may not have the latest microcode. Verify you have the newest Dell BIOS for XPS 8960.")
+            intel_check["Recommendation"] = "Check for latest Dell BIOS update for XPS 8960 to ensure newest Intel microcode."
+        else:
+            info.append(f"INTEL CPU: BIOS date ({bios_date_str}) is recent and likely includes the Intel microcode fix. However, if the CPU was already degraded before the fix, damage may be irreversible.")
+            intel_check["Recommendation"] = "BIOS appears up to date. If BSODs persist, the CPU may have already sustained degradation. Intel extended their warranty by 2 years for affected 13th/14th Gen CPUs. Visit warranty.intel.com to check status and submit a replacement claim."
+
+        intel_check["Details"] = "Intel acknowledged that 13th/14th Gen desktop processors (i5/i7/i9) had an elevated operating voltage issue causing instability and permanent degradation. Root causes: eTVB (Enhanced Thermal Velocity Boost) and SVID (Serial VID) algorithms requesting excessive voltage. Intel released microcode 0x129 in August 2024 to mitigate this. CPUs already damaged may need replacement under Intel extended warranty."
     else:
-        info.append(f"INTEL CPU: BIOS date ({bios_date_str}) is recent and likely includes the Intel microcode fix. However, if the CPU was already degraded before the fix, damage may be irreversible.")
-        intel_check["Recommendation"] = "BIOS appears up to date. If BSODs persist, the CPU may have already sustained degradation. Intel extended their warranty by 2 years for affected 13th/14th Gen CPUs. Visit warranty.intel.com to check status and submit a replacement claim."
+        intel_check["Details"] = "CPU does not appear to be in the affected Intel 13th/14th Gen desktop family."
+        info.append("CPU is not in the known affected Intel 13th/14th Gen range.")
 
-    intel_check["Details"] = "Intel acknowledged that 13th/14th Gen desktop processors (i5/i7/i9) had an elevated operating voltage issue causing instability and permanent degradation. Root causes: eTVB (Enhanced Thermal Velocity Boost) and SVID (Serial VID) algorithms requesting excessive voltage. Intel released microcode 0x129 in August 2024 to mitigate this. CPUs already damaged may need replacement under Intel extended warranty."
-else:
-    intel_check["Details"] = "CPU does not appear to be in the affected Intel 13th/14th Gen desktop family."
-    info.append("CPU is not in the known affected Intel 13th/14th Gen range.")
+    return intel_check, critical, warnings, info
 
-# ============================================================
-# SECTION 3: BSOD / MINIDUMP ANALYSIS
-# ============================================================
-cprint("[3/10] Analyzing BSOD Minidump Files...", "yellow")
 
-minidump_path = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Minidump")
-bsod_data = {"MinidumpFiles": [], "BugCheckCodes": [], "RecentCrashes": 0, "CrashSummary": [],
-             "UnexpectedShutdowns": 0, "UnexpectedShutdownDetails": []}
+def analyze_bsod():
+    """Section 3: Analyze BSOD minidump files.
 
-if os.path.isdir(minidump_path):
-    dmp_files = sorted(Path(minidump_path).glob("*.dmp"), key=lambda f: f.stat().st_mtime, reverse=True)[:20]
-    thirty_days_ago = datetime.now() - timedelta(days=30)
-    for f in dmp_files:
-        mtime = datetime.fromtimestamp(f.stat().st_mtime)
-        bsod_data["MinidumpFiles"].append({
-            "FileName": f.name, "Date": mtime.strftime("%Y-%m-%d %H:%M:%S"),
-            "SizeKB": round(f.stat().st_size / 1024, 1)
-        })
-        if mtime > thirty_days_ago:
-            bsod_data["RecentCrashes"] += 1
+    Returns:
+        tuple: (bsod_data dict, critical list, warnings list, info list)
+    """
+    cprint("[3/10] Analyzing BSOD Minidump Files...", "yellow")
 
-    if bsod_data["RecentCrashes"] > 5:
-        critical.append(f"HIGH CRASH FREQUENCY: {bsod_data['RecentCrashes']} BSOD minidumps in the last 30 days. This indicates a serious ongoing issue.")
-    elif bsod_data["RecentCrashes"] > 0:
-        warnings.append(f"{bsod_data['RecentCrashes']} BSOD minidump(s) found in the last 30 days.")
-else:
-    info.append("No minidump directory found. Minidumps may be disabled or cleared.")
+    critical = []
+    warnings = []
+    info = []
 
-# BugCheck events (WER)
-wer_events = ps_events("System", provider="Microsoft-Windows-WER-SystemErrorReporting", event_id=1001, max_events=20)
-for ev in wer_events:
-    msg = safe_truncate(ev.get("Message", ""), 300)
-    bc_match = re.search(r"bug check.*?(0x[0-9A-Fa-f]+)", msg, re.IGNORECASE)
-    code = bc_match.group(1) if bc_match else ""
-    bsod_data["CrashSummary"].append({"Date": ev.get("Date", ""), "BugCheckCode": code, "Message": msg})
-    if code and code not in bsod_data["BugCheckCodes"]:
-        bsod_data["BugCheckCodes"].append(code)
+    minidump_path = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Minidump")
+    bsod_data = {"MinidumpFiles": [], "BugCheckCodes": [], "RecentCrashes": 0, "CrashSummary": [],
+                 "UnexpectedShutdowns": 0, "UnexpectedShutdownDetails": []}
 
-# Kernel-Power unexpected shutdowns
-kp_events = ps_events("System", provider="Microsoft-Windows-Kernel-Power", event_id=41, max_events=20)
-bsod_data["UnexpectedShutdowns"] = len(kp_events)
-bsod_data["UnexpectedShutdownDetails"] = [{"Date": e.get("Date", ""), "Message": safe_truncate(e.get("Message", ""), 300)} for e in kp_events[:10]]
+    if os.path.isdir(minidump_path):
+        dmp_files = sorted(Path(minidump_path).glob("*.dmp"), key=lambda f: f.stat().st_mtime, reverse=True)[:20]
+        thirty_days_ago = datetime.now() - timedelta(days=30)
+        for f in dmp_files:
+            mtime = datetime.fromtimestamp(f.stat().st_mtime)
+            bsod_data["MinidumpFiles"].append({
+                "FileName": f.name, "Date": mtime.strftime("%Y-%m-%d %H:%M:%S"),
+                "SizeKB": round(f.stat().st_size / 1024, 1)
+            })
+            if mtime > thirty_days_ago:
+                bsod_data["RecentCrashes"] += 1
 
-if bsod_data["UnexpectedShutdowns"] > 5:
-    critical.append(f"{bsod_data['UnexpectedShutdowns']} unexpected shutdowns (Kernel-Power 41) detected. Combined with BSODs, this points to a hardware or power delivery issue.")
+        if bsod_data["RecentCrashes"] > 5:
+            critical.append(f"HIGH CRASH FREQUENCY: {bsod_data['RecentCrashes']} BSOD minidumps in the last 30 days. This indicates a serious ongoing issue.")
+        elif bsod_data["RecentCrashes"] > 0:
+            warnings.append(f"{bsod_data['RecentCrashes']} BSOD minidump(s) found in the last 30 days.")
+    else:
+        info.append("No minidump directory found. Minidumps may be disabled or cleared.")
 
-# BugCheck lookup
-BUGCHECK_LOOKUP = {
-    "0x0000009C": "MACHINE_CHECK_EXCEPTION - Hardware failure detected by CPU. Common with degraded Intel 13th/14th gen CPUs.",
-    "0x00000124": "WHEA_UNCORRECTABLE_ERROR - Hardware error (often CPU or memory). Strongly associated with Intel voltage degradation.",
-    "0x0000003B": "SYSTEM_SERVICE_EXCEPTION - Kernel-mode driver or service fault. Check recently updated drivers.",
-    "0x0000000A": "IRQL_NOT_LESS_OR_EQUAL - Driver using improper memory address. Often GPU or network driver.",
-    "0x0000001E": "KMODE_EXCEPTION_NOT_HANDLED - Kernel-mode program generated an exception. Check drivers.",
-    "0x00000050": "PAGE_FAULT_IN_NONPAGED_AREA - Invalid memory referenced. Can be RAM, driver, or disk issue.",
-    "0x0000001A": "MEMORY_MANAGEMENT - Serious memory management error. Run memtest86.",
-    "0x000000D1": "DRIVER_IRQL_NOT_LESS_OR_EQUAL - Driver accessed pageable memory at wrong IRQL.",
-    "0x00000116": "VIDEO_TDR_TIMEOUT_DETECTED - GPU driver took too long. Update or rollback GPU driver.",
-    "0x00000119": "VIDEO_SCHEDULER_INTERNAL_ERROR - GPU scheduling failure. GPU driver or hardware issue.",
-    "0x0000007E": "SYSTEM_THREAD_EXCEPTION_NOT_HANDLED - System thread threw unhandled exception.",
-    "0x000000EF": "CRITICAL_PROCESS_DIED - Critical system process terminated. Possible file corruption or driver conflict.",
-    "0x000000C5": "DRIVER_CORRUPTED_EXPOOL - Driver corrupted pool memory. Faulty driver identified.",
-    "0x0000009F": "DRIVER_POWER_STATE_FAILURE - Driver in inconsistent power state. Common during sleep/wake.",
-    "0x00000133": "DPC_WATCHDOG_VIOLATION - DPC routine ran too long. Driver performance issue.",
-    "0x00000139": "KERNEL_SECURITY_CHECK_FAILURE - Kernel detected data corruption. Can be driver or hardware.",
-    "0x00000019": "BAD_POOL_HEADER - Pool header corrupted. Memory or driver issue.",
-    "0x000000FC": "ATTEMPTED_EXECUTE_OF_NOEXECUTE_MEMORY - Code tried to execute from non-executable memory.",
-    "0x00000101": "CLOCK_WATCHDOG_TIMEOUT - Processor not processing interrupts. Common with Intel 13/14th gen issue.",
-    "0x00000154": "UNEXPECTED_STORE_EXCEPTION - Store component threw unexpected exception. Possible disk or memory.",
-}
-HW_CODES = {"0x0000009C", "0x00000124", "0x00000101", "0x0000001A", "0x00000050"}
+    # BugCheck events (WER)
+    wer_events = ps_events("System", provider="Microsoft-Windows-WER-SystemErrorReporting", event_id=1001, max_events=20)
+    for ev in wer_events:
+        msg = safe_truncate(ev.get("Message", ""), 300)
+        bc_match = re.search(r"bug check.*?(0x[0-9A-Fa-f]+)", msg, re.IGNORECASE)
+        code = bc_match.group(1) if bc_match else ""
+        bsod_data["CrashSummary"].append({"Date": ev.get("Date", ""), "BugCheckCode": code, "Message": msg})
+        if code and code not in bsod_data["BugCheckCodes"]:
+            bsod_data["BugCheckCodes"].append(code)
 
-# ============================================================
-# SECTION 4: EVENT LOG ANALYSIS
-# ============================================================
-cprint("[4/10] Scanning Windows Event Logs...", "yellow")
+    # Kernel-Power unexpected shutdowns
+    kp_events = ps_events("System", provider="Microsoft-Windows-Kernel-Power", event_id=41, max_events=20)
+    bsod_data["UnexpectedShutdowns"] = len(kp_events)
+    bsod_data["UnexpectedShutdownDetails"] = [{"Date": e.get("Date", ""), "Message": safe_truncate(e.get("Message", ""), 300)} for e in kp_events[:10]]
 
-event_data = {"SystemCritical": [], "SystemErrors": [], "WHEAErrors": []}
-event_data["SystemCritical"] = ps_events("System", level=1, max_events=30)
-event_data["SystemErrors"] = ps_events("System", level=2, max_events=50)
+    if bsod_data["UnexpectedShutdowns"] > 5:
+        critical.append(f"{bsod_data['UnexpectedShutdowns']} unexpected shutdowns (Kernel-Power 41) detected. Combined with BSODs, this points to a hardware or power delivery issue.")
 
-# WHEA
-whea_events = ps_events("System", provider="Microsoft-Windows-WHEA-Logger", max_events=50)
-event_data["WHEAErrors"] = whea_events
+    return bsod_data, critical, warnings, info
 
-if len(whea_events) > 0:
-    critical.append(f"{len(whea_events)} WHEA (hardware error) events found. This strongly indicates a hardware problem - likely CPU, RAM, or motherboard. With an i9-14900K, this is a hallmark of the Intel voltage degradation issue.")
 
-# ============================================================
-# SECTION 5: DRIVER ANALYSIS
-# ============================================================
-cprint("[5/10] Analyzing Installed Drivers...", "yellow")
+def scan_event_logs():
+    """Section 4: Scan Windows Event Logs.
 
-driver_cmd = """
+    Returns:
+        tuple: (event_data dict, critical list, warnings list, info list)
+    """
+    cprint("[4/10] Scanning Windows Event Logs...", "yellow")
+
+    critical = []
+    warnings = []
+    info = []
+
+    event_data = {"SystemCritical": [], "SystemErrors": [], "WHEAErrors": []}
+    event_data["SystemCritical"] = ps_events("System", level=1, max_events=30)
+    event_data["SystemErrors"] = ps_events("System", level=2, max_events=50)
+
+    # WHEA
+    whea_events = ps_events("System", provider="Microsoft-Windows-WHEA-Logger", max_events=50)
+    event_data["WHEAErrors"] = whea_events
+
+    if len(whea_events) > 0:
+        critical.append(f"{len(whea_events)} WHEA (hardware error) events found. This strongly indicates a hardware problem - likely CPU, RAM, or motherboard. With an i9-14900K, this is a hallmark of the Intel voltage degradation issue.")
+
+    return event_data, critical, warnings, info
+
+
+def analyze_drivers():
+    """Section 5: Analyze installed drivers.
+
+    Returns:
+        tuple: (driver_data dict, critical list, warnings list, info list)
+    """
+    cprint("[5/10] Analyzing Installed Drivers...", "yellow")
+
+    critical = []
+    warnings = []
+    info = []
+
+    driver_cmd = """
 $ms = @('Microsoft','Microsoft Windows','Microsoft Corporation')
 $all = Get-CimInstance Win32_PnPSignedDriver | Where-Object { $_.DriverVersion }
 $tp = @(); $old = @()
@@ -312,29 +337,35 @@ $prob = @(Get-CimInstance Win32_PnPEntity | Where-Object { $_.ConfigManagerError
 })
 @{Total=$all.Count;ThirdParty=$tp;Old=$old;Problematic=$prob} | ConvertTo-Json -Depth 4
 """
-driver_data_raw = ps(driver_cmd, as_json=True) or {}
-driver_data = {
-    "TotalDrivers": driver_data_raw.get("Total", 0),
-    "ThirdPartyDrivers": driver_data_raw.get("ThirdParty", []) or [],
-    "OldDrivers": driver_data_raw.get("Old", []) or [],
-    "ProblematicDrivers": driver_data_raw.get("Problematic", []) or []
-}
-# Normalize single-item results
-for key in ["ThirdPartyDrivers", "OldDrivers", "ProblematicDrivers"]:
-    if isinstance(driver_data[key], dict):
-        driver_data[key] = [driver_data[key]]
+    driver_data_raw = ps(driver_cmd, as_json=True) or {}
+    driver_data = {
+        "TotalDrivers": driver_data_raw.get("Total", 0),
+        "ThirdPartyDrivers": normalize_list(driver_data_raw, "ThirdParty"),
+        "OldDrivers": normalize_list(driver_data_raw, "Old"),
+        "ProblematicDrivers": normalize_list(driver_data_raw, "Problematic"),
+    }
 
-if len(driver_data["ProblematicDrivers"]) > 0:
-    warnings.append(f"{len(driver_data['ProblematicDrivers'])} device(s) reporting driver errors. These could contribute to system instability.")
-if len(driver_data["OldDrivers"]) > 3:
-    warnings.append(f"{len(driver_data['OldDrivers'])} third-party drivers are over 2 years old. Outdated drivers can cause BSODs.")
+    if len(driver_data["ProblematicDrivers"]) > 0:
+        warnings.append(f"{len(driver_data['ProblematicDrivers'])} device(s) reporting driver errors. These could contribute to system instability.")
+    if len(driver_data["OldDrivers"]) > 3:
+        warnings.append(f"{len(driver_data['OldDrivers'])} third-party drivers are over 2 years old. Outdated drivers can cause BSODs.")
 
-# ============================================================
-# SECTION 6: DISK HEALTH
-# ============================================================
-cprint("[6/10] Checking Disk Health...", "yellow")
+    return driver_data, critical, warnings, info
 
-disk_cmd = """
+
+def check_disk_health():
+    """Section 6: Check disk health.
+
+    Returns:
+        tuple: (disk_data dict, critical list, warnings list, info list)
+    """
+    cprint("[6/10] Checking Disk Health...", "yellow")
+
+    critical = []
+    warnings = []
+    info = []
+
+    disk_cmd = """
 $disks = @(); $vols = @()
 foreach ($pd in Get-PhysicalDisk -EA SilentlyContinue) {
     $r = $null; try { $r = Get-PhysicalDisk -UniqueId $pd.UniqueId | Get-StorageReliabilityCounter -EA Stop } catch {}
@@ -354,28 +385,38 @@ foreach ($v in Get-Volume | Where-Object { $_.DriveLetter -and $_.DriveType -eq 
 }
 @{Disks=$disks;Volumes=$vols} | ConvertTo-Json -Depth 4
 """
-disk_raw = ps(disk_cmd, as_json=True) or {}
-disk_data = {"Disks": disk_raw.get("Disks", []) or [], "Volumes": disk_raw.get("Volumes", []) or []}
-for key in ["Disks", "Volumes"]:
-    if isinstance(disk_data[key], dict):
-        disk_data[key] = [disk_data[key]]
+    disk_raw = ps(disk_cmd, as_json=True) or {}
+    disk_data = {
+        "Disks": normalize_list(disk_raw, "Disks"),
+        "Volumes": normalize_list(disk_raw, "Volumes"),
+    }
 
-for d in disk_data["Disks"]:
-    if d.get("HealthStatus") != "Healthy":
-        critical.append(f"DISK UNHEALTHY: {d.get('FriendlyName')} reports status '{d.get('HealthStatus')}'. Data loss risk - back up immediately.")
-    if d.get("ReadErrors", 0) > 0 or d.get("WriteErrors", 0) > 0:
-        warnings.append(f"Disk '{d.get('FriendlyName')}' has read/write errors (Read: {d.get('ReadErrors')}, Write: {d.get('WriteErrors')}).")
+    for d in disk_data["Disks"]:
+        if d.get("HealthStatus") != "Healthy":
+            critical.append(f"DISK UNHEALTHY: {d.get('FriendlyName')} reports status '{d.get('HealthStatus')}'. Data loss risk - back up immediately.")
+        if d.get("ReadErrors", 0) > 0 or d.get("WriteErrors", 0) > 0:
+            warnings.append(f"Disk '{d.get('FriendlyName')}' has read/write errors (Read: {d.get('ReadErrors')}, Write: {d.get('WriteErrors')}).")
 
-for v in disk_data["Volumes"]:
-    if str(v.get("DriveLetter", "")).startswith("C") and v.get("PercentFree", 100) < 10:
-        warnings.append(f"C: drive is critically low on space ({v.get('PercentFree')}% free).")
+    for v in disk_data["Volumes"]:
+        if str(v.get("DriveLetter", "")).startswith("C") and v.get("PercentFree", 100) < 10:
+            warnings.append(f"C: drive is critically low on space ({v.get('PercentFree')}% free).")
 
-# ============================================================
-# SECTION 7: MEMORY (RAM)
-# ============================================================
-cprint("[7/10] Analyzing Memory Configuration...", "yellow")
+    return disk_data, critical, warnings, info
 
-mem_cmd = """
+
+def analyze_memory():
+    """Section 7: Analyze memory (RAM) configuration.
+
+    Returns:
+        tuple: (mem_data dict, critical list, warnings list, info list)
+    """
+    cprint("[7/10] Analyzing Memory Configuration...", "yellow")
+
+    critical = []
+    warnings = []
+    info = []
+
+    mem_cmd = """
 $sticks = @(); $speeds = @(); $sizes = @()
 foreach ($s in Get-CimInstance Win32_PhysicalMemory) {
     $sticks += @{DeviceLocator="$($s.DeviceLocator)";Capacity_GB=[math]::Round($s.Capacity/1GB,1);Speed_MHz=$s.ConfiguredClockSpeed;Manufacturer="$($s.Manufacturer)";PartNumber=("$($s.PartNumber)" -replace '\\s+',' ').Trim()}
@@ -384,37 +425,45 @@ foreach ($s in Get-CimInstance Win32_PhysicalMemory) {
 $cs = Get-CimInstance Win32_ComputerSystem
 @{Sticks=$sticks;TotalGB=[math]::Round($cs.TotalPhysicalMemory/1GB,1);Speeds=$speeds;Sizes=$sizes} | ConvertTo-Json -Depth 4
 """
-mem_raw = ps(mem_cmd, as_json=True) or {}
-mem_data = {
-    "Sticks": mem_raw.get("Sticks", []) or [],
-    "TotalGB": mem_raw.get("TotalGB", 0),
-    "XMPWarning": False, "MismatchWarning": False
-}
-if isinstance(mem_data["Sticks"], dict):
-    mem_data["Sticks"] = [mem_data["Sticks"]]
+    mem_raw = ps(mem_cmd, as_json=True) or {}
+    mem_data = {
+        "Sticks": normalize_list(mem_raw, "Sticks"),
+        "TotalGB": mem_raw.get("TotalGB", 0),
+        "XMPWarning": False, "MismatchWarning": False
+    }
 
-speeds = mem_raw.get("Speeds", []) or []
-if isinstance(speeds, (int, float)):
-    speeds = [speeds]
-sizes = mem_raw.get("Sizes", []) or []
-if isinstance(sizes, (int, float)):
-    sizes = [sizes]
+    speeds = mem_raw.get("Speeds", []) or []
+    if isinstance(speeds, (int, float)):
+        speeds = [speeds]
+    sizes = mem_raw.get("Sizes", []) or []
+    if isinstance(sizes, (int, float)):
+        sizes = [sizes]
 
-if len(set(speeds)) > 1:
-    mem_data["MismatchWarning"] = True
-    warnings.append(f"RAM sticks are running at different speeds: {', '.join(str(s) for s in speeds)} MHz.")
-if len(set(sizes)) > 1:
-    warnings.append("RAM sticks have different capacities. Mismatched RAM can reduce stability.")
-if speeds and speeds[0] > 5600:
-    mem_data["XMPWarning"] = True
-    warnings.append(f"RAM speed ({speeds[0]} MHz) exceeds Intel official spec for 14th Gen (5600 MHz DDR5). Try disabling XMP in BIOS.")
+    if len(set(speeds)) > 1:
+        mem_data["MismatchWarning"] = True
+        warnings.append(f"RAM sticks are running at different speeds: {', '.join(str(s) for s in speeds)} MHz.")
+    if len(set(sizes)) > 1:
+        warnings.append("RAM sticks have different capacities. Mismatched RAM can reduce stability.")
+    if speeds and speeds[0] > 5600:
+        mem_data["XMPWarning"] = True
+        warnings.append(f"RAM speed ({speeds[0]} MHz) exceeds Intel official spec for 14th Gen (5600 MHz DDR5). Try disabling XMP in BIOS.")
 
-# ============================================================
-# SECTION 8: THERMAL & POWER
-# ============================================================
-cprint("[8/10] Checking Thermal & Power Status...", "yellow")
+    return mem_data, critical, warnings, info
 
-thermal_cmd = """
+
+def check_thermals():
+    """Section 8: Check thermal and power status.
+
+    Returns:
+        tuple: (thermal_data dict, critical list, warnings list, info list)
+    """
+    cprint("[8/10] Checking Thermal & Power Status...", "yellow")
+
+    critical = []
+    warnings = []
+    info = []
+
+    thermal_cmd = """
 $pp = powercfg /getactivescheme 2>$null
 $plan = if ($pp) { ($pp -replace 'Power Scheme GUID:\\s*\\S+\\s*\\(', '' -replace '\\)$', '').Trim() } else { 'Unknown' }
 $perf = 'N/A'; $throttle = $false
@@ -426,27 +475,37 @@ try { foreach ($tz in Get-CimInstance -Namespace root\\WMI -ClassName MSAcpi_The
 }} catch { $temps += @{Zone='N/A';TempC='WMI unavailable';TempF='Install HWiNFO64'} }
 @{PowerPlan=$plan;CPUPerformancePct=$perf;CPUThrottling=$throttle;Temperatures=$temps} | ConvertTo-Json -Depth 3
 """
-thermal_data = ps(thermal_cmd, as_json=True) or {}
-if not isinstance(thermal_data.get("Temperatures"), list):
-    thermal_data["Temperatures"] = [thermal_data.get("Temperatures", {})] if thermal_data.get("Temperatures") else []
+    thermal_data = ps(thermal_cmd, as_json=True) or {}
+    if not isinstance(thermal_data.get("Temperatures"), list):
+        thermal_data["Temperatures"] = [thermal_data.get("Temperatures", {})] if thermal_data.get("Temperatures") else []
 
-for t in thermal_data.get("Temperatures", []):
-    tc = t.get("TempC", 0)
-    if isinstance(tc, (int, float)):
-        if tc > 90:
-            critical.append(f"CPU temperature at {tc}C - CRITICALLY HIGH. Check CPU cooler.")
-        elif tc > 80:
-            warnings.append(f"CPU temperature at {tc}C - elevated. Monitor cooling performance.")
+    for t in thermal_data.get("Temperatures", []):
+        tc = t.get("TempC", 0)
+        if isinstance(tc, (int, float)):
+            if tc > 90:
+                critical.append(f"CPU temperature at {tc}C - CRITICALLY HIGH. Check CPU cooler.")
+            elif tc > 80:
+                warnings.append(f"CPU temperature at {tc}C - elevated. Monitor cooling performance.")
 
-if thermal_data.get("CPUThrottling"):
-    warnings.append(f"CPU performance counter at {thermal_data.get('CPUPerformancePct')}%. CPU may be thermal throttling.")
+    if thermal_data.get("CPUThrottling"):
+        warnings.append(f"CPU performance counter at {thermal_data.get('CPUPerformancePct')}%. CPU may be thermal throttling.")
 
-# ============================================================
-# SECTION 9: WINDOWS UPDATES
-# ============================================================
-cprint("[9/10] Checking System Integrity & Updates...", "yellow")
+    return thermal_data, critical, warnings, info
 
-update_cmd = """
+
+def check_updates():
+    """Section 9: Check system integrity and updates.
+
+    Returns:
+        tuple: (update_history list, critical list, warnings list, info list)
+    """
+    cprint("[9/10] Checking System Integrity & Updates...", "yellow")
+
+    critical = []
+    warnings = []
+    info = []
+
+    update_cmd = """
 try {
     $s = New-Object -ComObject Microsoft.Update.Session
     $sr = $s.CreateUpdateSearcher()
@@ -459,44 +518,58 @@ try {
     $results | ConvertTo-Json -Depth 3
 } catch { '[]' }
 """
-update_history = ps(update_cmd, as_json=True) or []
-if isinstance(update_history, dict):
-    update_history = [update_history]
+    update_history = ps(update_cmd, as_json=True) or []
+    if isinstance(update_history, dict):
+        update_history = [update_history]
 
-failed_updates = [u for u in update_history if u.get("Result") == "Failed"]
-if len(failed_updates) > 0:
-    warnings.append(f"{len(failed_updates)} Windows Updates have failed recently.")
+    failed_updates = [u for u in update_history if u.get("Result") == "Failed"]
+    if len(failed_updates) > 0:
+        warnings.append(f"{len(failed_updates)} Windows Updates have failed recently.")
+
+    return update_history, critical, warnings, info
+
+
+def collect_reliability():
+    """Section 10: Collect reliability data (app crashes and hangs).
+
+    Returns:
+        tuple: (app_crashes list, app_hangs list)
+    """
+    cprint("[10/10] Collecting Reliability Data...", "yellow")
+    app_crashes = ps_events("Application", provider="Application Error", event_id=1000, max_events=20)
+    app_hangs = ps_events("Application", provider="Application Hang", event_id=1002, max_events=20)
+    return app_crashes, app_hangs
+
 
 # ============================================================
-# SECTION 10: RELIABILITY DATA
+# SCORE CALCULATION
 # ============================================================
-cprint("[10/10] Collecting Reliability Data...", "yellow")
+def calculate_score(critical, warnings):
+    """Calculate health score from findings.
 
-app_crashes = ps_events("Application", provider="Application Error", event_id=1000, max_events=20)
-app_hangs = ps_events("Application", provider="Application Hang", event_id=1002, max_events=20)
+    Returns:
+        tuple: (score int, score_label str, score_color str)
+    """
+    score = max(0, min(100, 100 - len(critical) * 20 - len(warnings) * 5))
+    score_label = "Good" if score >= 80 else "Fair" if score >= 60 else "Poor" if score >= 40 else "Critical"
+    score_color = "#22c55e" if score >= 80 else "#eab308" if score >= 60 else "#f97316" if score >= 40 else "#ef4444"
+    return score, score_label, score_color
+
 
 # ============================================================
-# SEVERITY SCORE
+# HTML REPORT BUILDERS
 # ============================================================
-score = max(0, min(100, 100 - len(critical) * 20 - len(warnings) * 5))
-score_label = "Good" if score >= 80 else "Fair" if score >= 60 else "Poor" if score >= 40 else "Critical"
-score_color = "#22c55e" if score >= 80 else "#eab308" if score >= 60 else "#f97316" if score >= 40 else "#ef4444"
-
-# ============================================================
-# BUILD HTML REPORT
-# ============================================================
-print()
-cprint("Generating HTML Report...", "cyan")
-
 def build_table(headers, rows, row_class_fn=None):
+    """Build an HTML table from headers and rows."""
     h = "<thead><tr>" + "".join(f"<th>{he(h)}</th>" for h in headers) + "</tr></thead><tbody>"
     for r in rows:
         cls = row_class_fn(r) if row_class_fn else ""
         h += f'<tr{cls}>' + "".join(f"<td>{he(str(c))}</td>" for c in r) + "</tr>"
     return h + "</tbody>"
 
-# Dynamic sections
-def build_findings():
+
+def build_findings(critical, warnings, info):
+    """Build the Key Findings HTML section."""
     html = ""
     for label, items, css in [("Critical Issues", critical, "findings-critical"), ("Warnings", warnings, "findings-warning"), ("Informational", info, "findings-info")]:
         if items:
@@ -507,7 +580,9 @@ def build_findings():
             html += "</div>"
     return html
 
-def build_bugcheck_section():
+
+def build_bugcheck_section(bsod_data):
+    """Build the Bug Check Codes HTML section."""
     if not bsod_data["BugCheckCodes"]:
         return ""
     html = '<div class="subsection"><h3>Bug Check Codes Found</h3><div class="code-grid">'
@@ -517,7 +592,9 @@ def build_bugcheck_section():
         html += f'<div class="code-card"><div class="code-header"><span class="bc-code">{code}</span><span class="badge {badge[0]}">{badge[1]}</span></div><p>{he(desc)}</p></div>'
     return html + "</div></div>"
 
+
 def build_event_table(events, max_items=15, err_class=False):
+    """Build an event log HTML table."""
     if not events:
         return ""
     html = '<div class="table-wrap"><table><thead><tr><th>Date</th><th>Source</th><th>ID</th><th>Message</th></tr></thead><tbody>'
@@ -526,7 +603,9 @@ def build_event_table(events, max_items=15, err_class=False):
         html += f'<tr{cls}><td class="nowrap">{he(str(e.get("Date","")))}</td><td>{he(str(e.get("Source","")))}</td><td>{he(str(e.get("EventID","")))}</td><td class="msg-cell">{he(safe_truncate(str(e.get("Message","")), 400))}</td></tr>'
     return html + "</tbody></table></div>"
 
-def build_intel_section():
+
+def build_intel_section(intel_check, critical):
+    """Build the Intel CPU Stability Analysis HTML section."""
     if not intel_check["IsAffectedCPU"]:
         return ""
     border = "intel-critical" if any("INTEL CPU VULNERABILITY" in c for c in critical) else "intel-warn"
@@ -551,7 +630,9 @@ def build_intel_section():
     html += "</ol></div></div></div></div>"
     return html
 
-def build_disk_cards():
+
+def build_disk_cards(disk_data):
+    """Build disk health card HTML."""
     html = '<div class="disk-cards">'
     for d in disk_data["Disks"]:
         sc = "status-ok" if d.get("HealthStatus") == "Healthy" else "status-bad"
@@ -561,12 +642,18 @@ def build_disk_cards():
         html += "</div></div>"
     return html + "</div>"
 
-# Assemble the full report
-report_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-svg_dash = round(326.7 * score / 100, 1)
-si = sys_info  # shorthand
 
-# Read the CSS from the PowerShell version (it's the same)
+def sys_grid(items):
+    """Build a system info grid HTML component."""
+    html = '<div class="sys-grid">'
+    for lbl, val in items:
+        html += f'<div class="sys-item"><span class="stat-label">{lbl}</span><span class="stat-val">{he(str(val))}</span></div>'
+    return html + "</div>"
+
+
+# ============================================================
+# CSS (same dark theme as before)
+# ============================================================
 CSS = """
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=DM+Sans:wght@400;500;600;700&display=swap');
 :root{--bg:#0a0a0f;--bg-card:#12121a;--bg-card-alt:#181825;--border:#2a2a3a;--border-light:#3a3a4f;--text:#e4e4ef;--text-dim:#8888a0;--text-bright:#fff;--accent:#6c8aff;--accent-glow:rgba(108,138,255,.15);--red:#ff4d6a;--red-bg:rgba(255,77,106,.08);--red-border:rgba(255,77,106,.25);--orange:#ff9f43;--orange-bg:rgba(255,159,67,.08);--orange-border:rgba(255,159,67,.25);--green:#22c55e;--green-bg:rgba(34,197,94,.08);--green-border:rgba(34,197,94,.25);--blue-bg:rgba(108,138,255,.08);--blue-border:rgba(108,138,255,.25);--font:'DM Sans',-apple-system,sans-serif;--mono:'JetBrains Mono',monospace}
@@ -582,110 +669,116 @@ details{margin-top:.5rem}summary{cursor:pointer;font-size:.85rem;color:var(--acc
 @media print{body{background:#fff;color:#111}.section{border:1px solid #ccc;break-inside:avoid}}@media(max-width:600px){.container{padding:1rem}.score-section{flex-direction:column;text-align:center}.sys-grid{grid-template-columns:1fr}.actions-grid{grid-template-columns:1fr}}
 """
 
-def sys_grid(items):
-    html = '<div class="sys-grid">'
-    for lbl, val in items:
-        html += f'<div class="sys-item"><span class="stat-label">{lbl}</span><span class="stat-val">{he(str(val))}</span></div>'
-    return html + "</div>"
 
-# Crash table
-crash_html = ""
-if bsod_data["CrashSummary"]:
-    crash_html = '<div class="subsection"><h3>Recent BSOD Events</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Bug Check</th><th>Details</th></tr></thead><tbody>'
-    for c in bsod_data["CrashSummary"][:15]:
-        crash_html += f'<tr><td class="nowrap">{he(c["Date"])}</td><td><code>{he(c["BugCheckCode"])}</code></td><td class="msg-cell">{he(c["Message"])}</td></tr>'
-    crash_html += "</tbody></table></div></div>"
+def build_html_report(sys_info, intel_check, bsod_data, event_data, driver_data,
+                      disk_data, mem_data, thermal_data, update_history,
+                      app_crashes, app_hangs, critical, warnings, info,
+                      score, score_label, score_color):
+    """Assemble the full HTML diagnostic report.
 
-# Minidump table
-minidump_html = ""
-if bsod_data["MinidumpFiles"]:
-    minidump_html = '<div class="subsection"><h3>Minidump Files</h3><p class="help-text">Analyze with <strong>WinDbg</strong> (Microsoft Store): <code>.symfix; .reload; !analyze -v</code></p><div class="table-wrap"><table><thead><tr><th>File</th><th>Date</th><th>Size</th></tr></thead><tbody>'
-    for m in bsod_data["MinidumpFiles"]:
-        minidump_html += f'<tr><td><code>{he(m["FileName"])}</code></td><td class="nowrap">{he(m["Date"])}</td><td>{m["SizeKB"]} KB</td></tr>'
-    minidump_html += "</tbody></table></div></div>"
+    Returns:
+        str: Complete HTML document.
+    """
+    report_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    svg_dash = round(326.7 * score / 100, 1)
+    si = sys_info  # shorthand
 
-# Kernel-Power
-kp_html = ""
-if bsod_data["UnexpectedShutdowns"] > 0:
-    kp_html = f'<div class="subsection"><h3>Unexpected Shutdowns - Kernel-Power 41</h3><p>{bsod_data["UnexpectedShutdowns"]} events found -- system lost power or crashed without clean shutdown.</p><div class="table-wrap"><table><thead><tr><th>Date</th><th>Details</th></tr></thead><tbody>'
-    for kp in bsod_data["UnexpectedShutdownDetails"]:
-        kp_html += f'<tr><td class="nowrap">{he(kp["Date"])}</td><td class="msg-cell">{he(kp["Message"])}</td></tr>'
-    kp_html += "</tbody></table></div></div>"
+    # Crash table
+    crash_html = ""
+    if bsod_data["CrashSummary"]:
+        crash_html = '<div class="subsection"><h3>Recent BSOD Events</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Bug Check</th><th>Details</th></tr></thead><tbody>'
+        for c in bsod_data["CrashSummary"][:15]:
+            crash_html += f'<tr><td class="nowrap">{he(c["Date"])}</td><td><code>{he(c["BugCheckCode"])}</code></td><td class="msg-cell">{he(c["Message"])}</td></tr>'
+        crash_html += "</tbody></table></div></div>"
 
-# WHEA
-whea_html = ""
-if event_data["WHEAErrors"]:
-    whea_html = '<div class="subsection"><h3>WHEA Hardware Errors</h3><p class="alert-inline"><strong>WHEA errors are strong indicators of hardware failure.</strong> With an Intel 13th/14th Gen CPU, these often signal voltage-induced CPU degradation.</p>' + build_event_table(event_data["WHEAErrors"], 20, True) + "</div>"
+    # Minidump table
+    minidump_html = ""
+    if bsod_data["MinidumpFiles"]:
+        minidump_html = '<div class="subsection"><h3>Minidump Files</h3><p class="help-text">Analyze with <strong>WinDbg</strong> (Microsoft Store): <code>.symfix; .reload; !analyze -v</code></p><div class="table-wrap"><table><thead><tr><th>File</th><th>Date</th><th>Size</th></tr></thead><tbody>'
+        for m in bsod_data["MinidumpFiles"]:
+            minidump_html += f'<tr><td><code>{he(m["FileName"])}</code></td><td class="nowrap">{he(m["Date"])}</td><td>{m["SizeKB"]} KB</td></tr>'
+        minidump_html += "</tbody></table></div></div>"
 
-# System critical
-sys_crit_html = f'<div class="subsection"><h3>System Critical Events</h3>{build_event_table(event_data["SystemCritical"], 15, True)}</div>' if event_data["SystemCritical"] else ""
+    # Kernel-Power
+    kp_html = ""
+    if bsod_data["UnexpectedShutdowns"] > 0:
+        kp_html = f'<div class="subsection"><h3>Unexpected Shutdowns - Kernel-Power 41</h3><p>{bsod_data["UnexpectedShutdowns"]} events found -- system lost power or crashed without clean shutdown.</p><div class="table-wrap"><table><thead><tr><th>Date</th><th>Details</th></tr></thead><tbody>'
+        for kp in bsod_data["UnexpectedShutdownDetails"]:
+            kp_html += f'<tr><td class="nowrap">{he(kp["Date"])}</td><td class="msg-cell">{he(kp["Message"])}</td></tr>'
+        kp_html += "</tbody></table></div></div>"
 
-# System errors (collapsible)
-sys_err_html = ""
-if event_data["SystemErrors"]:
-    cnt = len(event_data["SystemErrors"])
-    sys_err_html = f'<div class="subsection"><h3>System Errors - Last 50</h3><details><summary>Click to expand - {cnt} events</summary>{build_event_table(event_data["SystemErrors"])}</details></div>'
+    # WHEA
+    whea_html = ""
+    if event_data["WHEAErrors"]:
+        whea_html = '<div class="subsection"><h3>WHEA Hardware Errors</h3><p class="alert-inline"><strong>WHEA errors are strong indicators of hardware failure.</strong> With an Intel 13th/14th Gen CPU, these often signal voltage-induced CPU degradation.</p>' + build_event_table(event_data["WHEAErrors"], 20, True) + "</div>"
 
-# Driver tables
-drv_prob_html = ""
-if driver_data["ProblematicDrivers"]:
-    drv_prob_html = '<div class="subsection"><h3>Devices with Errors</h3><div class="table-wrap"><table><thead><tr><th>Device</th><th>Error Code</th><th>Status</th></tr></thead><tbody>'
-    for d in driver_data["ProblematicDrivers"]:
-        drv_prob_html += f'<tr class="err-row"><td>{he(str(d.get("DeviceName","")))}</td><td>{he(str(d.get("ErrorCode","")))}</td><td>{he(str(d.get("Status","")))}</td></tr>'
-    drv_prob_html += "</tbody></table></div></div>"
+    # System critical
+    sys_crit_html = f'<div class="subsection"><h3>System Critical Events</h3>{build_event_table(event_data["SystemCritical"], 15, True)}</div>' if event_data["SystemCritical"] else ""
 
-drv_3p_html = ""
-if driver_data["ThirdPartyDrivers"]:
-    cnt = len(driver_data["ThirdPartyDrivers"])
-    drv_3p_html = f'<div class="subsection"><h3>Third-Party Drivers - {cnt}</h3><details><summary>Click to expand</summary><div class="table-wrap"><table><thead><tr><th>Device</th><th>Provider</th><th>Version</th><th>Date</th><th>Signed</th></tr></thead><tbody>'
-    for d in sorted(driver_data["ThirdPartyDrivers"], key=lambda x: str(x.get("Date", "")), reverse=True):
-        sbadge = '<span class="badge badge-ok">Yes</span>' if d.get("IsSigned") else '<span class="badge badge-crit">NO</span>'
-        drv_3p_html += f'<tr><td>{he(str(d.get("DeviceName","")))}</td><td>{he(str(d.get("Provider","")))}</td><td><code>{he(str(d.get("Version","")))}</code></td><td>{he(str(d.get("Date","")))}</td><td>{sbadge}</td></tr>'
-    drv_3p_html += "</tbody></table></div></details></div>"
+    # System errors (collapsible)
+    sys_err_html = ""
+    if event_data["SystemErrors"]:
+        cnt = len(event_data["SystemErrors"])
+        sys_err_html = f'<div class="subsection"><h3>System Errors - Last 50</h3><details><summary>Click to expand - {cnt} events</summary>{build_event_table(event_data["SystemErrors"])}</details></div>'
 
-# Volume table
-vol_html = '<div class="table-wrap"><table><thead><tr><th>Drive</th><th>Label</th><th>FS</th><th>Size</th><th>Free</th><th>% Free</th><th>Health</th></tr></thead><tbody>'
-for v in disk_data["Volumes"]:
-    pf = v.get("PercentFree", 100)
-    cls = ' class="err-row"' if pf < 10 else (' class="warn-row"' if pf < 20 else "")
-    vol_html += f'<tr{cls}><td><strong>{he(str(v.get("DriveLetter","")))}</strong></td><td>{he(str(v.get("Label","")))}</td><td>{he(str(v.get("FileSystem","")))}</td><td>{v.get("Size_GB",0)} GB</td><td>{v.get("Free_GB",0)} GB</td><td>{pf}%</td><td>{he(str(v.get("Health","")))}</td></tr>'
-vol_html += "</tbody></table></div>"
+    # Driver tables
+    drv_prob_html = ""
+    if driver_data["ProblematicDrivers"]:
+        drv_prob_html = '<div class="subsection"><h3>Devices with Errors</h3><div class="table-wrap"><table><thead><tr><th>Device</th><th>Error Code</th><th>Status</th></tr></thead><tbody>'
+        for d in driver_data["ProblematicDrivers"]:
+            drv_prob_html += f'<tr class="err-row"><td>{he(str(d.get("DeviceName","")))}</td><td>{he(str(d.get("ErrorCode","")))}</td><td>{he(str(d.get("Status","")))}</td></tr>'
+        drv_prob_html += "</tbody></table></div></div>"
 
-# Memory table
-mem_html = '<div class="table-wrap"><table><thead><tr><th>Slot</th><th>Size</th><th>Speed</th><th>Manufacturer</th><th>Part Number</th></tr></thead><tbody>'
-for s in mem_data["Sticks"]:
-    mem_html += f'<tr><td>{he(str(s.get("DeviceLocator","")))}</td><td>{s.get("Capacity_GB",0)} GB</td><td>{s.get("Speed_MHz",0)} MHz</td><td>{he(str(s.get("Manufacturer","")))}</td><td><code>{he(str(s.get("PartNumber","")))}</code></td></tr>'
-mem_html += "</tbody></table></div>"
+    drv_3p_html = ""
+    if driver_data["ThirdPartyDrivers"]:
+        cnt = len(driver_data["ThirdPartyDrivers"])
+        drv_3p_html = f'<div class="subsection"><h3>Third-Party Drivers - {cnt}</h3><details><summary>Click to expand</summary><div class="table-wrap"><table><thead><tr><th>Device</th><th>Provider</th><th>Version</th><th>Date</th><th>Signed</th></tr></thead><tbody>'
+        for d in sorted(driver_data["ThirdPartyDrivers"], key=lambda x: str(x.get("Date", "")), reverse=True):
+            sbadge = '<span class="badge badge-ok">Yes</span>' if d.get("IsSigned") else '<span class="badge badge-crit">NO</span>'
+            drv_3p_html += f'<tr><td>{he(str(d.get("DeviceName","")))}</td><td>{he(str(d.get("Provider","")))}</td><td><code>{he(str(d.get("Version","")))}</code></td><td>{he(str(d.get("Date","")))}</td><td>{sbadge}</td></tr>'
+        drv_3p_html += "</tbody></table></div></details></div>"
 
-# Thermal
-thermal_html = '<div class="thermal-grid">'
-thermal_html += f'<div class="thermal-card"><span class="stat-label">Power Plan</span><span class="stat-val">{he(str(thermal_data.get("PowerPlan","")))}</span></div>'
-thermal_html += f'<div class="thermal-card"><span class="stat-label">CPU Performance</span><span class="stat-val">{he(str(thermal_data.get("CPUPerformancePct","N/A")))}%</span></div>'
-for t in thermal_data.get("Temperatures", []):
-    thermal_html += f'<div class="thermal-card"><span class="stat-label">{he(str(t.get("Zone","")))}</span><span class="stat-val">{t.get("TempC","")}C / {t.get("TempF","")}F</span></div>'
-thermal_html += "</div>"
+    # Volume table
+    vol_html = '<div class="table-wrap"><table><thead><tr><th>Drive</th><th>Label</th><th>FS</th><th>Size</th><th>Free</th><th>% Free</th><th>Health</th></tr></thead><tbody>'
+    for v in disk_data["Volumes"]:
+        pf = v.get("PercentFree", 100)
+        cls = ' class="err-row"' if pf < 10 else (' class="warn-row"' if pf < 20 else "")
+        vol_html += f'<tr{cls}><td><strong>{he(str(v.get("DriveLetter","")))}</strong></td><td>{he(str(v.get("Label","")))}</td><td>{he(str(v.get("FileSystem","")))}</td><td>{v.get("Size_GB",0)} GB</td><td>{v.get("Free_GB",0)} GB</td><td>{pf}%</td><td>{he(str(v.get("Health","")))}</td></tr>'
+    vol_html += "</tbody></table></div>"
 
-# Updates table
-update_html = ""
-if update_history:
-    update_html = '<div class="subsection"><h3>Recent Windows Updates</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Result</th><th>Update</th></tr></thead><tbody>'
-    for u in update_history:
-        cls = ' class="err-row"' if u.get("Result") == "Failed" else ""
-        update_html += f'<tr{cls}><td class="nowrap">{he(str(u.get("Date","")))}</td><td>{he(str(u.get("Result","")))}</td><td>{he(str(u.get("Title","")))}</td></tr>'
-    update_html += "</tbody></table></div></div>"
+    # Memory table
+    mem_html = '<div class="table-wrap"><table><thead><tr><th>Slot</th><th>Size</th><th>Speed</th><th>Manufacturer</th><th>Part Number</th></tr></thead><tbody>'
+    for s in mem_data["Sticks"]:
+        mem_html += f'<tr><td>{he(str(s.get("DeviceLocator","")))}</td><td>{s.get("Capacity_GB",0)} GB</td><td>{s.get("Speed_MHz",0)} MHz</td><td>{he(str(s.get("Manufacturer","")))}</td><td><code>{he(str(s.get("PartNumber","")))}</code></td></tr>'
+    mem_html += "</tbody></table></div>"
 
-# App crashes
-app_crash_html = ""
-if app_crashes:
-    app_crash_html = f'<div class="subsection"><h3>Application Crashes - {len(app_crashes)}</h3><details><summary>Click to expand</summary><div class="table-wrap"><table><thead><tr><th>Date</th><th>Details</th></tr></thead><tbody>'
-    for ac in app_crashes:
-        app_crash_html += f'<tr><td class="nowrap">{he(str(ac.get("Date","")))}</td><td class="msg-cell">{he(safe_truncate(str(ac.get("Message","")), 400))}</td></tr>'
-    app_crash_html += "</tbody></table></div></details></div>"
+    # Thermal
+    thermal_html = '<div class="thermal-grid">'
+    thermal_html += f'<div class="thermal-card"><span class="stat-label">Power Plan</span><span class="stat-val">{he(str(thermal_data.get("PowerPlan","")))}</span></div>'
+    thermal_html += f'<div class="thermal-card"><span class="stat-label">CPU Performance</span><span class="stat-val">{he(str(thermal_data.get("CPUPerformancePct","N/A")))}%</span></div>'
+    for t in thermal_data.get("Temperatures", []):
+        thermal_html += f'<div class="thermal-card"><span class="stat-label">{he(str(t.get("Zone","")))}</span><span class="stat-val">{t.get("TempC","")}C / {t.get("TempF","")}F</span></div>'
+    thermal_html += "</div>"
 
-# ============================================================
-# FINAL HTML ASSEMBLY
-# ============================================================
-html = f"""<!DOCTYPE html>
+    # Updates table
+    update_html = ""
+    if update_history:
+        update_html = '<div class="subsection"><h3>Recent Windows Updates</h3><div class="table-wrap"><table><thead><tr><th>Date</th><th>Result</th><th>Update</th></tr></thead><tbody>'
+        for u in update_history:
+            cls = ' class="err-row"' if u.get("Result") == "Failed" else ""
+            update_html += f'<tr{cls}><td class="nowrap">{he(str(u.get("Date","")))}</td><td>{he(str(u.get("Result","")))}</td><td>{he(str(u.get("Title","")))}</td></tr>'
+        update_html += "</tbody></table></div></div>"
+
+    # App crashes
+    app_crash_html = ""
+    if app_crashes:
+        app_crash_html = f'<div class="subsection"><h3>Application Crashes - {len(app_crashes)}</h3><details><summary>Click to expand</summary><div class="table-wrap"><table><thead><tr><th>Date</th><th>Details</th></tr></thead><tbody>'
+        for ac in app_crashes:
+            app_crash_html += f'<tr><td class="nowrap">{he(str(ac.get("Date","")))}</td><td class="msg-cell">{he(safe_truncate(str(ac.get("Message","")), 400))}</td></tr>'
+        app_crash_html += "</tbody></table></div></details></div>"
+
+    # Assemble final HTML
+    html = f"""<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>System Health Report</title>
 <style>{CSS}</style></head>
@@ -716,13 +809,13 @@ html = f"""<!DOCTYPE html>
         </div>
     </div>
 
-    <div class="section"><div class="section-header"><div class="section-icon">&#x1F50D;</div><h2>Key Findings</h2></div><div class="section-body">{build_findings()}</div></div>
+    <div class="section"><div class="section-header"><div class="section-icon">&#x1F50D;</div><h2>Key Findings</h2></div><div class="section-body">{build_findings(critical, warnings, info)}</div></div>
 
-    {build_intel_section()}
+    {build_intel_section(intel_check, critical)}
 
     <div class="section"><div class="section-header"><div class="section-icon">&#x1F4A5;</div><h2>BSOD / Crash Analysis</h2></div><div class="section-body">
         <div class="subsection">{sys_grid([("Minidump Files", len(bsod_data["MinidumpFiles"])), ("Crashes - 30 days", bsod_data["RecentCrashes"]), ("Unexpected Shutdowns", bsod_data["UnexpectedShutdowns"]), ("Bug Check Codes", f"{len(bsod_data['BugCheckCodes'])} unique")])}</div>
-        {build_bugcheck_section()}{crash_html}{kp_html}{minidump_html}
+        {build_bugcheck_section(bsod_data)}{crash_html}{kp_html}{minidump_html}
     </div></div>
 
     <div class="section"><div class="section-header"><div class="section-icon">&#x1F4CB;</div><h2>Event Log Analysis</h2></div><div class="section-body">{whea_html}{sys_crit_html}{sys_err_html}</div></div>
@@ -732,7 +825,7 @@ html = f"""<!DOCTYPE html>
         {drv_prob_html}{drv_3p_html}
     </div></div>
 
-    <div class="section"><div class="section-header"><div class="section-icon">&#x1F4BE;</div><h2>Disk Health</h2></div><div class="section-body">{build_disk_cards()}<div class="subsection"><h3>Volumes</h3>{vol_html}</div></div></div>
+    <div class="section"><div class="section-header"><div class="section-icon">&#x1F4BE;</div><h2>Disk Health</h2></div><div class="section-body">{build_disk_cards(disk_data)}<div class="subsection"><h3>Volumes</h3>{vol_html}</div></div></div>
 
     <div class="section"><div class="section-header"><div class="section-icon">&#x1F9E0;</div><h2>Memory - RAM</h2></div><div class="section-body">
         <div class="subsection">{sys_grid([("Total RAM", f"{mem_data['TotalGB']} GB"), ("Sticks Installed", len(mem_data["Sticks"])), ("Speed Mismatch", "YES" if mem_data["MismatchWarning"] else "No"), ("XMP Concern", "YES - High Speed" if mem_data["XMPWarning"] else "No")])}</div>
@@ -778,53 +871,51 @@ html = f"""<!DOCTYPE html>
     <div class="footer">System Health Diagnostic Tool (Python) | {report_date} | {he(si.get("ComputerName",""))}</div>
 </div></body></html>"""
 
-# Write HTML
-with open(REPORT_PATH, "w", encoding="utf-8") as f:
-    f.write(html)
+    return html
 
-print()
-cprint("========================================================", "green")
-cprint("  HTML REPORT SAVED", "green")
-cprint(f"  {REPORT_PATH}", "green")
-cprint("========================================================", "green")
 
 # ============================================================
-# PDF CONVERSION (Edge headless)
+# PDF CONVERSION
 # ============================================================
-edge_paths = [
-    os.path.join(os.environ.get("ProgramFiles(x86)", ""), "Microsoft", "Edge", "Application", "msedge.exe"),
-    os.path.join(os.environ.get("ProgramFiles", ""), "Microsoft", "Edge", "Application", "msedge.exe"),
-    os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "Edge", "Application", "msedge.exe"),
-]
-edge_path = next((p for p in edge_paths if os.path.isfile(p)), None)
+def convert_to_pdf(report_path):
+    """Convert HTML report to PDF using Edge headless.
 
-pdf_ok = False
-if edge_path:
-    print()
+    Returns:
+        str or None: Path to PDF file, or None if conversion failed.
+    """
+    pdf_path = report_path.replace(".html", ".pdf")
+
+    edge_paths = [
+        os.path.join(os.environ.get("ProgramFiles(x86)", ""), "Microsoft", "Edge", "Application", "msedge.exe"),
+        os.path.join(os.environ.get("ProgramFiles", ""), "Microsoft", "Edge", "Application", "msedge.exe"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "Edge", "Application", "msedge.exe"),
+    ]
+    edge_path = next((p for p in edge_paths if os.path.isfile(p)), None)
+
+    if not edge_path:
+        cprint("Microsoft Edge not found -- skipping PDF conversion", "yellow")
+        return None
+
     cprint("Converting report to PDF...", "cyan")
     cprint(f"  Edge: {edge_path}", "gray")
 
-    # URL-encode spaces in the file URI path
     from urllib.parse import quote
-    file_uri = "file:///" + quote(REPORT_PATH.replace("\\", "/"), safe=":/")
-
+    file_uri = "file:///" + quote(report_path.replace("\\", "/"), safe=":/")
     cprint(f"  URI: {file_uri}", "gray")
 
-    # Try multiple Edge headless approaches (newer Edge uses --headless=new)
     attempts = [
         [edge_path, "--headless=new", "--disable-gpu",
-         f"--print-to-pdf={PDF_PATH}", "--print-to-pdf-no-header",
+         f"--print-to-pdf={pdf_path}", "--print-to-pdf-no-header",
          "--run-all-compositor-stages-before-draw", "--virtual-time-budget=5000",
          file_uri],
         [edge_path, "--headless", "--disable-gpu", "--no-sandbox",
-         f"--print-to-pdf={PDF_PATH}", "--print-to-pdf-no-header",
+         f"--print-to-pdf={pdf_path}", "--print-to-pdf-no-header",
          file_uri],
     ]
 
     for i, cmd_args in enumerate(attempts):
-        # Remove any leftover PDF from a previous failed attempt
-        if os.path.isfile(PDF_PATH):
-            try: os.remove(PDF_PATH)
+        if os.path.isfile(pdf_path):
+            try: os.remove(pdf_path)
             except: pass
 
         try:
@@ -838,33 +929,46 @@ if edge_path:
             cprint(f"  Attempt {i+1} error: {e}", "gray")
             continue
 
-        # Give Edge a moment to finish writing
         time.sleep(2)
 
-        if os.path.isfile(PDF_PATH) and os.path.getsize(PDF_PATH) > 0:
-            pdf_size = round(os.path.getsize(PDF_PATH) / 1024)
-            cprint(f"  PDF created: {PDF_PATH} ({pdf_size} KB)", "green")
-            pdf_ok = True
-            break
+        if os.path.isfile(pdf_path) and os.path.getsize(pdf_path) > 0:
+            pdf_size = round(os.path.getsize(pdf_path) / 1024)
+            cprint(f"  PDF created: {pdf_path} ({pdf_size} KB)", "green")
+            return pdf_path
         else:
             cprint(f"  Attempt {i+1} did not produce a PDF", "gray")
 
-    if not pdf_ok:
-        cprint("  PDF conversion failed -- HTML report is still available", "yellow")
-        cprint("  You can manually print to PDF from your browser (Ctrl+P)", "gray")
-else:
-    cprint("Microsoft Edge not found -- skipping PDF conversion", "yellow")
+    cprint("  PDF conversion failed -- HTML report is still available", "yellow")
+    cprint("  You can manually print to PDF from your browser (Ctrl+P)", "gray")
+    return None
+
 
 # ============================================================
 # EMAIL REPORT
 # ============================================================
-if os.path.isfile(CRED_FILE):
-    print()
+def email_list_html(items, color):
+    """Build an HTML list of findings for the email body."""
+    if not items:
+        return f'<li style="color:#388e3c;">None found</li>'
+    return "".join(f'<li style="margin-bottom:6px;color:{color};">{he(i)}</li>' for i in items)
+
+
+def send_email_report(report_path, pdf_path, sys_info, bsod_data, event_data,
+                      driver_data, critical, warnings, score, score_label,
+                      timestamp):
+    """Send the diagnostic report via email.
+
+    Returns:
+        bool: True if email sent successfully, False otherwise.
+    """
+    if not os.path.isfile(CRED_FILE):
+        cprint("No email configuration found -- skipping email.", "gray")
+        cprint("Run Setup-DiagSchedule.ps1 to configure daily email reports.", "gray")
+        return False
+
     cprint("Sending report via email...", "cyan")
 
     try:
-        # Parse the PowerShell Export-Clixml credential file
-        # We need to read it and decrypt via PowerShell (DPAPI encrypted)
         email_cmd = f"""
 $cfg = Import-Clixml -Path '{CRED_FILE}'
 @{{
@@ -874,32 +978,29 @@ $cfg = Import-Clixml -Path '{CRED_FILE}'
 }} | ConvertTo-Json
 """
         email_cfg = ps(email_cmd, as_json=True)
-        if email_cfg:
-            from_email = email_cfg["FromEmail"]
-            to_email = email_cfg["ToEmail"]
-            password = email_cfg["Password"]
+        if not email_cfg:
+            cprint("  Failed to read email config", "red")
+            return False
 
-            # Build score tag
-            score_tag = "[OK]" if score >= 80 else "[WARN]" if score >= 60 else "[POOR]" if score >= 40 else "[CRITICAL]"
+        from_email = email_cfg["FromEmail"]
+        to_email = email_cfg["ToEmail"]
+        password = email_cfg["Password"]
 
-            # Build HTML email body (same rich format as PS version)
-            score_bar_color = "#4caf50" if score >= 80 else "#ff9800" if score >= 60 else "#ff5722" if score >= 40 else "#f44336"
+        score_tag = "[OK]" if score >= 80 else "[WARN]" if score >= 60 else "[POOR]" if score >= 40 else "[CRITICAL]"
+        score_bar_color = "#4caf50" if score >= 80 else "#ff9800" if score >= 60 else "#ff5722" if score >= 40 else "#f44336"
 
-            # Critical/warning lists for email
-            def email_list(items, color):
-                if not items:
-                    return f'<li style="color:#388e3c;">None found</li>'
-                return "".join(f'<li style="margin-bottom:6px;color:{color};">{he(i)}</li>' for i in items)
+        si = sys_info
+        report_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            bc_email = ""
-            if bsod_data["BugCheckCodes"]:
-                bc_email = '<tr><td colspan="2" style="padding:12px 16px;background:#fff3f3;"><strong style="color:#d32f2f;">Bug Check Codes:</strong><ul style="margin:8px 0 0;padding-left:20px;">'
-                for code in bsod_data["BugCheckCodes"]:
-                    desc = BUGCHECK_LOOKUP.get(code, "Unknown")
-                    bc_email += f'<li style="margin-bottom:4px;"><strong>{code}</strong> -- {he(desc)}</li>'
-                bc_email += '</ul></td></tr>'
+        bc_email = ""
+        if bsod_data["BugCheckCodes"]:
+            bc_email = '<tr><td colspan="2" style="padding:12px 16px;background:#fff3f3;"><strong style="color:#d32f2f;">Bug Check Codes:</strong><ul style="margin:8px 0 0;padding-left:20px;">'
+            for code in bsod_data["BugCheckCodes"]:
+                desc = BUGCHECK_LOOKUP.get(code, "Unknown")
+                bc_email += f'<li style="margin-bottom:4px;"><strong>{code}</strong> -- {he(desc)}</li>'
+            bc_email += '</ul></td></tr>'
 
-            email_body = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+        email_body = f"""<!DOCTYPE html><html><head><meta charset="UTF-8"></head>
 <body style="margin:0;padding:0;background:#f4f4f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
 <div style="max-width:640px;margin:20px auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.1);">
     <div style="background:#1a1a2e;padding:24px;text-align:center;">
@@ -917,59 +1018,157 @@ $cfg = Import-Clixml -Path '{CRED_FILE}'
         <tr style="background:#fafafa;"><td style="padding:10px 16px;border-bottom:1px solid #eee;font-size:13px;"><span style="color:#999;">WHEA Errors</span><br><strong style="font-size:18px;color:#d32f2f;">{len(event_data["WHEAErrors"])}</strong></td><td style="padding:10px 16px;border-bottom:1px solid #eee;font-size:13px;"><span style="color:#999;">Problem Drivers</span><br><strong style="font-size:18px;color:#e65100;">{len(driver_data["ProblematicDrivers"])}</strong></td></tr>
         {bc_email}
     </table>
-    <div style="padding:16px 24px;border-bottom:1px solid #eee;"><h2 style="margin:0 0 10px;font-size:15px;color:#d32f2f;">&#9888; Critical Issues</h2><ul style="margin:0;padding-left:20px;font-size:13px;line-height:1.6;">{email_list(critical, "#d32f2f")}</ul></div>
-    <div style="padding:16px 24px;border-bottom:1px solid #eee;"><h2 style="margin:0 0 10px;font-size:15px;color:#e65100;">&#9888; Warnings</h2><ul style="margin:0;padding-left:20px;font-size:13px;line-height:1.6;">{email_list(warnings, "#e65100")}</ul></div>
+    <div style="padding:16px 24px;border-bottom:1px solid #eee;"><h2 style="margin:0 0 10px;font-size:15px;color:#d32f2f;">&#9888; Critical Issues</h2><ul style="margin:0;padding-left:20px;font-size:13px;line-height:1.6;">{email_list_html(critical, "#d32f2f")}</ul></div>
+    <div style="padding:16px 24px;border-bottom:1px solid #eee;"><h2 style="margin:0 0 10px;font-size:15px;color:#e65100;">&#9888; Warnings</h2><ul style="margin:0;padding-left:20px;font-size:13px;line-height:1.6;">{email_list_html(warnings, "#e65100")}</ul></div>
     <div style="padding:16px 24px;background:#fafafa;text-align:center;">
         <p style="margin:0;font-size:12px;color:#999;">Full HTML and PDF reports attached.</p>
         <p style="margin:6px 0 0;font-size:11px;color:#bbb;">System Health Diagnostic Tool | {he(si.get('ComputerName',''))}</p>
     </div>
 </div></body></html>"""
 
-            # Build email
-            msg = MIMEMultipart()
-            msg["From"] = from_email
-            msg["To"] = to_email
-            msg["Subject"] = f"{score_tag} System Health: {score}/100 ({score_label}) - {TIMESTAMP}"
-            msg.attach(MIMEText(email_body, "html"))
+        msg = MIMEMultipart()
+        msg["From"] = from_email
+        msg["To"] = to_email
+        msg["Subject"] = f"{score_tag} System Health: {score}/100 ({score_label}) - {timestamp}"
+        msg.attach(MIMEText(email_body, "html"))
 
-            # Attach files
-            for filepath in [PDF_PATH, REPORT_PATH]:
-                if os.path.isfile(filepath):
-                    with open(filepath, "rb") as af:
-                        part = MIMEBase("application", "octet-stream")
-                        part.set_payload(af.read())
-                        encoders.encode_base64(part)
-                        part.add_header("Content-Disposition", f"attachment; filename={os.path.basename(filepath)}")
-                        msg.attach(part)
+        for filepath in [pdf_path, report_path]:
+            if filepath and os.path.isfile(filepath):
+                with open(filepath, "rb") as af:
+                    part = MIMEBase("application", "octet-stream")
+                    part.set_payload(af.read())
+                    encoders.encode_base64(part)
+                    part.add_header("Content-Disposition", f"attachment; filename={os.path.basename(filepath)}")
+                    msg.attach(part)
 
-            # Send
-            context = ssl.create_default_context()
-            with smtplib.SMTP("smtp.gmail.com", 587) as server:
-                server.starttls(context=context)
-                server.login(from_email, password)
-                server.send_message(msg)
+        context = ssl.create_default_context()
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls(context=context)
+            server.login(from_email, password)
+            server.send_message(msg)
 
-            cprint(f"  Email sent successfully to {to_email}", "green")
+        cprint(f"  Email sent successfully to {to_email}", "green")
+        return True
     except Exception as e:
         cprint(f"  EMAIL FAILED: {e}", "red")
-else:
+        return False
+
+
+# ============================================================
+# MAIN ENTRY POINT
+# ============================================================
+def main():
+    """Run the full diagnostic and generate report."""
+    # Admin check
+    if not is_admin():
+        print("\n  ERROR: This script must be run as Administrator.")
+        print("  Right-click your terminal -> Run as Administrator\n")
+        sys.exit(1)
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    os.makedirs(REPORT_FOLDER, exist_ok=True)
+    report_path = os.path.join(REPORT_FOLDER, f"SystemHealthReport_{timestamp}.html")
+
+    # Aggregated findings
+    all_critical = []
+    all_warnings = []
+    all_info = []
+
     print()
-    cprint("No email configuration found -- skipping email.", "gray")
-    cprint("Run Setup-DiagSchedule.ps1 to configure daily email reports.", "gray")
+    cprint("========================================================", "cyan")
+    cprint("  DEEP SYSTEM HEALTH DIAGNOSTIC TOOL (Python)", "cyan")
+    cprint(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", "cyan")
+    cprint("========================================================", "cyan")
+    print()
+    cprint(f"Report will be saved to: {report_path}", "gray")
+    print()
 
-# ============================================================
-# OPEN REPORT (interactive)
-# ============================================================
-try:
-    os.startfile(REPORT_PATH)
-except:
-    pass
+    # Section 1: System Info
+    sys_info = collect_system_info()
 
-print()
-cprint("QUICK SUMMARY:", "yellow")
-cprint(f"  Health Score: {score} / 100 ({score_label})", "green" if score >= 60 else "red")
-cprint(f"  Critical Issues: {len(critical)}", "red" if critical else "green")
-cprint(f"  Warnings: {len(warnings)}", "yellow" if warnings else "green")
-cprint(f"  BSOD Minidumps (30d): {bsod_data['RecentCrashes']}", "red" if bsod_data['RecentCrashes'] > 0 else "green")
-print()
+    # Section 2: Intel CPU Check
+    intel_check, crit, warn, inf = check_intel_cpu(sys_info)
+    all_critical.extend(crit); all_warnings.extend(warn); all_info.extend(inf)
 
+    # Section 3: BSOD Analysis
+    bsod_data, crit, warn, inf = analyze_bsod()
+    all_critical.extend(crit); all_warnings.extend(warn); all_info.extend(inf)
+
+    # Section 4: Event Logs
+    event_data, crit, warn, inf = scan_event_logs()
+    all_critical.extend(crit); all_warnings.extend(warn); all_info.extend(inf)
+
+    # Section 5: Drivers
+    driver_data, crit, warn, inf = analyze_drivers()
+    all_critical.extend(crit); all_warnings.extend(warn); all_info.extend(inf)
+
+    # Section 6: Disk Health
+    disk_data, crit, warn, inf = check_disk_health()
+    all_critical.extend(crit); all_warnings.extend(warn); all_info.extend(inf)
+
+    # Section 7: Memory
+    mem_data, crit, warn, inf = analyze_memory()
+    all_critical.extend(crit); all_warnings.extend(warn); all_info.extend(inf)
+
+    # Section 8: Thermals
+    thermal_data, crit, warn, inf = check_thermals()
+    all_critical.extend(crit); all_warnings.extend(warn); all_info.extend(inf)
+
+    # Section 9: Updates
+    update_history, crit, warn, inf = check_updates()
+    all_critical.extend(crit); all_warnings.extend(warn); all_info.extend(inf)
+
+    # Section 10: Reliability
+    app_crashes, app_hangs = collect_reliability()
+
+    # Score
+    score, score_label, score_color = calculate_score(all_critical, all_warnings)
+
+    # Build HTML report
+    print()
+    cprint("Generating HTML Report...", "cyan")
+    html = build_html_report(
+        sys_info, intel_check, bsod_data, event_data, driver_data,
+        disk_data, mem_data, thermal_data, update_history,
+        app_crashes, app_hangs, all_critical, all_warnings, all_info,
+        score, score_label, score_color
+    )
+
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(html)
+
+    print()
+    cprint("========================================================", "green")
+    cprint("  HTML REPORT SAVED", "green")
+    cprint(f"  {report_path}", "green")
+    cprint("========================================================", "green")
+
+    # PDF conversion
+    print()
+    pdf_path = convert_to_pdf(report_path)
+
+    # Email
+    print()
+    send_email_report(
+        report_path, pdf_path, sys_info, bsod_data, event_data,
+        driver_data, all_critical, all_warnings, score, score_label, timestamp
+    )
+
+    # Open report
+    try:
+        os.startfile(report_path)
+    except:
+        pass
+
+    # Summary
+    print()
+    cprint("QUICK SUMMARY:", "yellow")
+    cprint(f"  Health Score: {score} / 100 ({score_label})", "green" if score >= 60 else "red")
+    cprint(f"  Critical Issues: {len(all_critical)}", "red" if all_critical else "green")
+    cprint(f"  Warnings: {len(all_warnings)}", "yellow" if all_warnings else "green")
+    cprint(f"  BSOD Minidumps (30d): {bsod_data['RecentCrashes']}", "red" if bsod_data['RecentCrashes'] > 0 else "green")
+    print()
+
+
+if __name__ == "__main__":
+    main()
