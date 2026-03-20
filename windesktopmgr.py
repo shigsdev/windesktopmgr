@@ -4830,17 +4830,33 @@ try {
 } catch { "[]" }
 """
 
-    results = {}
-    for name, ps in [("creds", ps_creds), ("smb", ps_smb), ("onedrive", ps_onedrive),
-                     ("fast", ps_fast), ("events", ps_events), ("fw", ps_fw)]:
+    import concurrent.futures
+
+    list_keys = {"creds", "events", "fw"}
+
+    def _run_ps(name, ps):
         try:
             r = subprocess.run(["powershell", "-NonInteractive", "-Command", ps],
                                capture_output=True, text=True, timeout=25)
             raw = r.stdout.strip()
-            results[name] = json.loads(raw) if raw and raw not in ("", "[]", "{}") else ([] if name in ("creds","events","fw") else {})
+            return name, json.loads(raw) if raw and raw not in ("", "[]", "{}") else ([] if name in list_keys else {})
         except Exception as e:
             print(f"[CredNet] {name} error: {e}")
-            results[name] = [] if name in ("creds","events","fw") else {}
+            return name, [] if name in list_keys else {}
+
+    results = {}
+    scripts = [("creds", ps_creds), ("smb", ps_smb), ("onedrive", ps_onedrive),
+               ("fast", ps_fast), ("events", ps_events), ("fw", ps_fw)]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        futures = {pool.submit(_run_ps, n, ps): n for n, ps in scripts}
+        for fut in concurrent.futures.as_completed(futures, timeout=30):
+            try:
+                name, data = fut.result()
+                results[name] = data
+            except Exception as e:
+                fallback_name = futures[fut]
+                print(f"[CredNet] {fallback_name} error: {e}")
+                results[fallback_name] = [] if fallback_name in list_keys else {}
 
     creds    = results.get("creds", [])
     smb      = results.get("smb", {})
