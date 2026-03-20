@@ -16,3 +16,11 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [pre-commit]
+
+      - id: pytest-integration
+        name: pytest-integration (real PowerShell)
+        entry: python -m pytest -m integration -x -q --no-header --no-cov
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

@@ -1388,6 +1388,37 @@ $cfg = Import-Clixml -Path '{CRED_FILE}'
 # ============================================================
 # MAIN ENTRY POINT
 # ============================================================
+def run_windesktopmgr_tests():
+    """Run WinDesktopMgr integration tests and return results."""
+    project_dir = os.path.dirname(os.path.abspath(__file__))
+    try:
+        r = subprocess.run(
+            [sys.executable, "-m", "pytest", "-m", "integration", "-q", "--no-header", "--no-cov", "--tb=line"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=project_dir,
+        )
+        output = r.stdout + r.stderr
+        # Parse "X passed" and "Y failed" from pytest output
+        import re as _re
+
+        passed_m = _re.search(r"(\d+) passed", output)
+        failed_m = _re.search(r"(\d+) failed", output)
+        passed_count = int(passed_m.group(1)) if passed_m else 0
+        failed_count = int(failed_m.group(1)) if failed_m else 0
+        return {
+            "passed": r.returncode == 0,
+            "total": passed_count + failed_count,
+            "failed": failed_count,
+            "output": output,
+        }
+    except subprocess.TimeoutExpired:
+        return {"passed": False, "total": 0, "failed": 0, "output": "Integration tests timed out after 120s"}
+    except Exception as e:
+        return {"passed": False, "total": 0, "failed": 0, "output": str(e)}
+
+
 def main():
     """Run the full diagnostic and generate report."""
     # Admin check
@@ -1532,6 +1563,19 @@ def main():
         os.startfile(report_path)
     except:
         pass
+
+    # Section 11: WinDesktopMgr Integration Tests
+    print()
+    cprint("Running WinDesktopMgr integration tests...", "cyan")
+    test_result = run_windesktopmgr_tests()
+    if test_result["passed"]:
+        cprint(f"  ✓ All {test_result['total']} integration tests passed", "green")
+    else:
+        cprint(f"  ✗ {test_result['failed']} of {test_result['total']} tests failed", "red")
+        all_warnings.append(f"WinDesktopMgr integration tests: {test_result['failed']} failure(s)")
+        for line in test_result["output"].splitlines()[-10:]:
+            if "FAILED" in line or "ERROR" in line:
+                cprint(f"    {line.strip()}", "red")
 
     # Summary
     print()
