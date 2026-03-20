@@ -26,6 +26,10 @@ addopts = [
     "--cov-report=term-missing:skip-covered",
     "--cov-fail-under=80",
     "-q",
+    "-m", "not integration",
+]
+markers = [
+    "integration: real PowerShell/Windows tests (run with: pytest -m integration)",
 ]
 
 # ── ruff ──────────────────────────────────────────────────────────────────────
