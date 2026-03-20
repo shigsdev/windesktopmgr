@@ -33,7 +33,6 @@ addopts = [
 [tool.ruff]
 target-version = "py312"
 line-length = 120
-exclude = ["SystemHealthDiag.py", "windowsdrivermgr.py"]
 
 [tool.ruff.lint]
 select = [
@@ -74,6 +73,15 @@ ignore = [
     "S106",   # allow hardcoded passwords in test data
     "E402",   # allow imports after sys.path setup in conftest
     "B017",   # allow assertRaises(Exception)
+]
+"SystemHealthDiag.py" = [
+    "E702",   # semicolons — compact extend(crit); extend(warn); extend(inf) pattern
+    "E722",   # bare except — intentional safety wrappers
+    "S606",   # os.startfile — Windows-only, intentional
+    "SIM112", # mixed-case env vars — Windows convention (ProgramFiles, SystemRoot)
+]
+"windowsdrivermgr.py" = [
+    "E722",   # bare except — intentional safety wrappers
 ]
 
 # ── coverage ──────────────────────────────────────────────────────────────────

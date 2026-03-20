@@ -4,37 +4,50 @@ Flask backend — driver update checker + BSOD trend dashboard.
 Reads from Windows Event Log and existing SystemHealthDiag HTML reports.
 """
 
-from flask import Flask, render_template, jsonify
-import subprocess, json, threading, re, os, glob
+import glob
+import json
+import os
+import re
+import subprocess
+import threading
+from collections import Counter
 from datetime import datetime, timedelta, timezone
-from collections import Counter, defaultdict
+
+from flask import Flask, jsonify, render_template
 
 app = Flask(__name__)
 
 # ─── Driver checker state ─────────────────────────────────────────────────────
-_dell_cache   = None
+_dell_cache = None
 _scan_results = None
-_scan_status  = {"status": "idle", "progress": 0, "message": "Ready to scan"}
+_scan_status = {"status": "idle", "progress": 0, "message": "Ready to scan"}
 
 # ─── Driver category keywords ─────────────────────────────────────────────────
 CATEGORIES = {
-    "Display": ["display", "video", "graphics", "gpu", "nvidia", "amd radeon",
-                "intel uhd", "intel arc", "vga"],
-    "Audio":   ["audio", "sound", "realtek", "speaker", "microphone", "hdmi audio",
-                "nahimic", "waves"],
-    "Network": ["network", "ethernet", "wi-fi", "wifi", "wireless", "bluetooth",
-                "lan", "killer", "intel(r) wi"],
-    "Chipset": ["chipset", "management engine", "serial io", "sata", "nvme",
-                "rapid storage", "pci", "smbus", "usb", "thunderbolt",
-                "intel(r) core", "platform"],
+    "Display": ["display", "video", "graphics", "gpu", "nvidia", "amd radeon", "intel uhd", "intel arc", "vga"],
+    "Audio": ["audio", "sound", "realtek", "speaker", "microphone", "hdmi audio", "nahimic", "waves"],
+    "Network": ["network", "ethernet", "wi-fi", "wifi", "wireless", "bluetooth", "lan", "killer", "intel(r) wi"],
+    "Chipset": [
+        "chipset",
+        "management engine",
+        "serial io",
+        "sata",
+        "nvme",
+        "rapid storage",
+        "pci",
+        "smbus",
+        "usb",
+        "thunderbolt",
+        "intel(r) core",
+        "platform",
+    ],
 }
 
 DELL_API = "https://www.dell.com/support/driver/en-us/ips/api/driverlist/fetchdriversbyproduct"
 
 # ─── BSOD constants ───────────────────────────────────────────────────────────
 REPORT_DIR = os.path.join(
-    os.environ.get("USERPROFILE", "C:\\Users\\higs7"),
-    "OneDrive", "Coding", "Windows Tools", "System Health Reports"
+    os.environ.get("USERPROFILE", "C:\\Users\\higs7"), "OneDrive", "Coding", "Windows Tools", "System Health Reports"
 )
 
 BUGCHECK_CODES = {
@@ -66,41 +79,41 @@ RECOMMENDATIONS_DB = {
             "Core Isolation, (2) Enter BIOS (run: shutdown /r /fw /t 0) > Advanced > "
             "Power Management and disable C-States, "
             "(3) Update Dell BIOS to the latest available version."
-        )
+        ),
     },
     "DRIVER_POWER_STATE_FAILURE": {
         "priority": "high",
         "title": "Driver Power State Failure",
         "detail": "A driver failed to transition correctly during a system power state change. "
-                  "Check for driver updates in the Driver Manager tab, and disable "
-                  "Windows Fast Startup under Power Options > Choose what the power button does."
+        "Check for driver updates in the Driver Manager tab, and disable "
+        "Windows Fast Startup under Power Options > Choose what the power button does.",
     },
     "KERNEL_SECURITY_CHECK_FAILURE": {
         "priority": "high",
         "title": "Kernel Security Check Failed",
         "detail": "A kernel data structure failed a security integrity check. This often points "
-                  "to memory corruption or a faulty driver. Run Windows Memory Diagnostic "
-                  "(mdsched.exe) and check for driver updates."
+        "to memory corruption or a faulty driver. Run Windows Memory Diagnostic "
+        "(mdsched.exe) and check for driver updates.",
     },
     "PAGE_FAULT_IN_NONPAGED_AREA": {
         "priority": "high",
         "title": "Page Fault in Non-Paged Area",
         "detail": "A process attempted to access paged memory that was unavailable. "
-                  "Can be caused by faulty drivers, failing RAM, or corrupt system files. "
-                  "Run: sfc /scannow in an admin PowerShell."
+        "Can be caused by faulty drivers, failing RAM, or corrupt system files. "
+        "Run: sfc /scannow in an admin PowerShell.",
     },
     "VIDEO_TDR_FAILURE": {
         "priority": "medium",
         "title": "GPU Driver Timeout / Recovery Failure",
         "detail": "The GPU driver stopped responding and Windows could not recover it. "
-                  "Update or roll back your display driver. "
-                  "Check GPU temperatures under load with HWiNFO64."
+        "Update or roll back your display driver. "
+        "Check GPU temperatures under load with HWiNFO64.",
     },
     "SYSTEM_SERVICE_EXCEPTION": {
         "priority": "high",
         "title": "System Service Exception",
         "detail": "A system service generated an exception the error handler did not catch. "
-                  "Check the faulty driver listed in crash details and update or remove it."
+        "Check the faulty driver listed in crash details and update or remove it.",
     },
 }
 
@@ -108,6 +121,7 @@ RECOMMENDATIONS_DB = {
 # ══════════════════════════════════════════════════════════════════════════════
 # DRIVER CHECKER HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 def categorize(name: str, device_class: str) -> str:
     text = f"{name} {device_class}".lower()
@@ -119,8 +133,10 @@ def categorize(name: str, device_class: str) -> str:
 
 def version_newer(installed: str, latest: str) -> bool:
     try:
+
         def parse(v):
             return [int(x) for x in re.split(r"[.\-]", str(v)) if x.isdigit()]
+
         return parse(latest) > parse(installed)
     except Exception:
         return False
@@ -135,8 +151,7 @@ def get_installed_drivers() -> list:
     )
     try:
         r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps],
-            capture_output=True, text=True, timeout=90
+            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=90
         )
         data = json.loads(r.stdout or "[]")
         return data if isinstance(data, list) else [data]
@@ -176,8 +191,7 @@ try {
 """
     try:
         r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps],
-            capture_output=True, text=True, timeout=60
+            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=60
         )
         raw = r.stdout.strip()
         data = json.loads(raw or "[]")
@@ -199,7 +213,23 @@ try {
 def find_wu_match(name: str, wu_updates: dict) -> dict | None:
     """Fuzzy-match an installed driver name against Windows Update results."""
     name_clean = re.sub(r"[®™()\[\]]", "", name).lower()
-    name_words = set(name_clean.split()) - {"the","a","an","for","with","and","or","of","driver","device","controller","adapter","interface","port","bus"}
+    name_words = set(name_clean.split()) - {
+        "the",
+        "a",
+        "an",
+        "for",
+        "with",
+        "and",
+        "or",
+        "of",
+        "driver",
+        "device",
+        "controller",
+        "adapter",
+        "interface",
+        "port",
+        "bus",
+    }
     if not name_words:
         return None
     best, best_score = None, 0
@@ -215,56 +245,70 @@ def find_wu_match(name: str, wu_updates: dict) -> dict | None:
 def run_scan():
     global _scan_results, _scan_status, _dell_cache
     _dell_cache = None
-    _scan_status = {"status": "scanning", "progress": 10,
-                    "message": "Enumerating installed drivers via WMI…"}
+    _scan_status = {"status": "scanning", "progress": 10, "message": "Enumerating installed drivers via WMI…"}
     installed = get_installed_drivers()
-    _scan_status = {"status": "scanning", "progress": 40,
-                    "message": f"Found {len(installed)} drivers — checking Windows Update for driver updates…"}
+    _scan_status = {
+        "status": "scanning",
+        "progress": 40,
+        "message": f"Found {len(installed)} drivers — checking Windows Update for driver updates…",
+    }
     wu_updates = get_windows_update_drivers()
-    _scan_status = {"status": "scanning", "progress": 70,
-                    "message": f"Found {len(wu_updates)} WU driver update(s) — comparing…"}
+    _scan_status = {
+        "status": "scanning",
+        "progress": 70,
+        "message": f"Found {len(wu_updates)} WU driver update(s) — comparing…",
+    }
     results = []
     for drv in installed:
-        name      = drv.get("DeviceName", "Unknown Device")
-        version   = drv.get("DriverVersion", "")
-        drv_date  = drv.get("DriverDate", "")
+        name = drv.get("DeviceName", "Unknown Device")
+        version = drv.get("DriverVersion", "")
+        drv_date = drv.get("DriverDate", "")
         dev_class = drv.get("DeviceClass", "")
-        mfr       = drv.get("Manufacturer", "")
-        category  = categorize(name, dev_class)
+        mfr = drv.get("Manufacturer", "")
+        category = categorize(name, dev_class)
 
-        match        = find_wu_match(name, wu_updates)
-        status       = "up_to_date"   # default: assume current if WU has no update
-        latest_ver   = None
-        latest_date  = None
+        match = find_wu_match(name, wu_updates)
+        status = "up_to_date"  # default: assume current if WU has no update
+        latest_ver = None
+        latest_date = None
         download_url = "ms-settings:windowsupdate"
 
         if match:
-            status     = "update_available"
+            status = "update_available"
             latest_ver = match.get("DriverVersion") or match.get("Title", "")
         elif not wu_updates:
             # WU query failed entirely — fall back to unknown
             status = "unknown"
 
-        results.append({
-            "name": name, "version": version, "date": drv_date,
-            "category": category, "manufacturer": mfr, "status": status,
-            "latest_version": latest_ver, "latest_date": latest_date,
-            "download_url": download_url,
-        })
+        results.append(
+            {
+                "name": name,
+                "version": version,
+                "date": drv_date,
+                "category": category,
+                "manufacturer": mfr,
+                "status": status,
+                "latest_version": latest_ver,
+                "latest_date": latest_date,
+                "download_url": download_url,
+            }
+        )
 
     order = {"update_available": 0, "unknown": 1, "up_to_date": 2}
     results.sort(key=lambda x: (order.get(x["status"], 3), x["name"].lower()))
     _scan_results = results
     updates = sum(1 for r in results if r["status"] == "update_available")
     _scan_status = {
-        "status": "complete", "progress": 100,
-        "message": f"Done — {len(results)} drivers scanned, {updates} update(s) via Windows Update"
+        "status": "complete",
+        "progress": 100,
+        "message": f"Done — {len(results)} drivers scanned, {updates} update(s) via Windows Update",
     }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # BSOD ANALYSIS HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 def get_bsod_events() -> list:
     """Query Windows Event Log for crash-related events (IDs 1001, 41, 6008)."""
@@ -288,8 +332,7 @@ $results | ConvertTo-Json -Depth 2
 """
     try:
         r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps],
-            capture_output=True, text=True, timeout=30
+            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=30
         )
         data = json.loads(r.stdout or "[]")
         return data if isinstance(data, list) else [data]
@@ -302,7 +345,7 @@ def parse_event(evt: dict):
     """Parse a raw Windows event into a structured crash record."""
     msg = evt.get("Message", "") or ""
     eid = evt.get("EventId", 0)
-    ts  = evt.get("TimeCreated", "")
+    ts = evt.get("TimeCreated", "")
 
     if eid == 1001:
         m = re.search(r"bugcheck was:\s*(0x[0-9a-fA-F]+)", msg, re.IGNORECASE)
@@ -317,17 +360,23 @@ def parse_event(evt: dict):
         dm = re.search(r"(\w+\.sys)", msg, re.IGNORECASE)
         faulty_driver = dm.group(1) if dm else None
         return {
-            "timestamp": ts, "error_code": error_name,
-            "stop_code": normalized, "faulty_driver": faulty_driver,
-            "source": "event_log", "event_id": eid,
+            "timestamp": ts,
+            "error_code": error_name,
+            "stop_code": normalized,
+            "faulty_driver": faulty_driver,
+            "source": "event_log",
+            "event_id": eid,
         }
 
     if eid in (41, 6008):
         label = "KERNEL_POWER_LOSS" if eid == 41 else "UNEXPECTED_SHUTDOWN"
         return {
-            "timestamp": ts, "error_code": label,
-            "stop_code": None, "faulty_driver": None,
-            "source": "event_log", "event_id": eid,
+            "timestamp": ts,
+            "error_code": label,
+            "stop_code": None,
+            "faulty_driver": None,
+            "source": "event_log",
+            "event_id": eid,
         }
     return None
 
@@ -336,7 +385,7 @@ def parse_report_crashes(report_path: str) -> list:
     """Extract BSOD data from a SystemHealthDiag HTML report file."""
     crashes = []
     try:
-        with open(report_path, "r", encoding="utf-8", errors="ignore") as f:
+        with open(report_path, encoding="utf-8", errors="ignore") as f:
             content = f.read()
 
         fname = os.path.basename(report_path)
@@ -344,9 +393,7 @@ def parse_report_crashes(report_path: str) -> list:
         report_ts = None
         if dm:
             try:
-                report_ts = datetime.strptime(
-                    f"{dm.group(1)}_{dm.group(2)}", "%Y%m%d_%H%M%S"
-                ).isoformat()
+                report_ts = datetime.strptime(f"{dm.group(1)}_{dm.group(2)}", "%Y%m%d_%H%M%S").isoformat()
             except Exception:
                 pass
 
@@ -357,7 +404,8 @@ def parse_report_crashes(report_path: str) -> list:
             r"|SYSTEM_SERVICE_EXCEPTION|UNEXPECTED_KERNEL_MODE_TRAP"
             r"|IRQL_NOT_LESS_OR_EQUAL|CRITICAL_PROCESS_DIED"
             r"|DPC_WATCHDOG_VIOLATION|DRIVER_IRQL_NOT_LESS_OR_EQUAL)",
-            content, re.IGNORECASE
+            content,
+            re.IGNORECASE,
         )
         drivers_found = re.findall(r"\b(\w+\.sys)\b", content, re.IGNORECASE)
         driver_counts = Counter(d.lower() for d in drivers_found)
@@ -374,14 +422,16 @@ def parse_report_crashes(report_path: str) -> list:
 
         if codes_found and report_ts:
             for code in dict.fromkeys(c.upper() for c in codes_found):
-                crashes.append({
-                    "timestamp": report_ts,
-                    "error_code": code,
-                    "stop_code": stop_code,
-                    "faulty_driver": top_driver,
-                    "source": "health_report",
-                    "report_file": fname,
-                })
+                crashes.append(
+                    {
+                        "timestamp": report_ts,
+                        "error_code": code,
+                        "stop_code": stop_code,
+                        "faulty_driver": top_driver,
+                        "source": "health_report",
+                        "report_file": fname,
+                    }
+                )
     except Exception as e:
         print(f"[Report parse error] {report_path}: {e}")
     return crashes
@@ -399,35 +449,46 @@ def build_recommendations(crashes: list) -> list:
 
     total = len(crashes)
     if total == 0:
-        recs.append({
-            "priority": "info", "count": 0,
-            "title": "System appears stable",
-            "detail": "No BSOD events found in the Event Log or health reports. "
-                      "Keep drivers up to date and run periodic health scans."
-        })
+        recs.append(
+            {
+                "priority": "info",
+                "count": 0,
+                "title": "System appears stable",
+                "detail": "No BSOD events found in the Event Log or health reports. "
+                "Keep drivers up to date and run periodic health scans.",
+            }
+        )
     elif total > 10:
-        recs.append({
-            "priority": "critical", "count": total,
-            "title": f"High crash frequency — {total} crashes detected",
-            "detail": "This level of instability warrants immediate attention. "
-                      "Run Dell SupportAssist diagnostics and consider hardware testing (memtest86)."
-        })
+        recs.append(
+            {
+                "priority": "critical",
+                "count": total,
+                "title": f"High crash frequency — {total} crashes detected",
+                "detail": "This level of instability warrants immediate attention. "
+                "Run Dell SupportAssist diagnostics and consider hardware testing (memtest86).",
+            }
+        )
     elif total >= 3:
-        recs.append({
-            "priority": "high", "count": total,
-            "title": f"Recurring crashes — {total} events found",
-            "detail": "Review the faulty drivers below and check the Driver Manager tab "
-                      "for pending updates."
-        })
+        recs.append(
+            {
+                "priority": "high",
+                "count": total,
+                "title": f"Recurring crashes — {total} events found",
+                "detail": "Review the faulty drivers below and check the Driver Manager tab for pending updates.",
+            }
+        )
 
     if "HYPERVISOR_ERROR" in error_counts:
-        recs.append({
-            "priority": "high", "count": error_counts["HYPERVISOR_ERROR"],
-            "title": "Verify BIOS Version for i9-14900K Stability",
-            "detail": "BIOS updates for the XPS 8960 include CPU microcode patches that address "
-                      "Raptor Lake stability issues. Current BIOS: 2.22.0 (Jan 2026). "
-                      "Check Dell Support for newer releases."
-        })
+        recs.append(
+            {
+                "priority": "high",
+                "count": error_counts["HYPERVISOR_ERROR"],
+                "title": "Verify BIOS Version for i9-14900K Stability",
+                "detail": "BIOS updates for the XPS 8960 include CPU microcode patches that address "
+                "Raptor Lake stability issues. Current BIOS: 2.22.0 (Jan 2026). "
+                "Check Dell Support for newer releases.",
+            }
+        )
 
     seen, unique = set(), []
     for r in recs:
@@ -503,51 +564,47 @@ def build_bsod_analysis() -> dict:
     timeline = [{"label": k, "count": v} for k, v in week_buckets.items()]
 
     # Error code breakdown
-    error_counts  = Counter(c["error_code"] for c in unique_crashes)
+    error_counts = Counter(c["error_code"] for c in unique_crashes)
     error_breakdown = [{"code": k, "count": v} for k, v in error_counts.most_common(8)]
 
     # Faulty driver breakdown
-    driver_counts = Counter(
-        c["faulty_driver"] for c in unique_crashes if c.get("faulty_driver")
-    )
+    driver_counts = Counter(c["faulty_driver"] for c in unique_crashes if c.get("faulty_driver"))
     driver_breakdown = [{"driver": k, "count": v} for k, v in driver_counts.most_common(8)]
 
     # Uptime between crashes
     sorted_asc = sorted(
-        [c for c in unique_crashes if c.get("timestamp")],
-        key=lambda c: _parse_ts(c.get("timestamp", ""))
+        [c for c in unique_crashes if c.get("timestamp")], key=lambda c: _parse_ts(c.get("timestamp", ""))
     )
     uptime_periods = []
     for i in range(1, len(sorted_asc)):
-        t1 = _parse_ts(sorted_asc[i-1]["timestamp"])
+        t1 = _parse_ts(sorted_asc[i - 1]["timestamp"])
         t2 = _parse_ts(sorted_asc[i]["timestamp"])
         if t1 != datetime.min and t2 != datetime.min:
             hours = round((t2 - t1).total_seconds() / 3600, 1)
-            uptime_periods.append({
-                "start": sorted_asc[i-1]["timestamp"],
-                "end":   sorted_asc[i]["timestamp"],
-                "hours": hours,
-            })
+            uptime_periods.append(
+                {
+                    "start": sorted_asc[i - 1]["timestamp"],
+                    "end": sorted_asc[i]["timestamp"],
+                    "hours": hours,
+                }
+            )
 
-    avg_uptime  = (
-        round(sum(p["hours"] for p in uptime_periods) / len(uptime_periods), 1)
-        if uptime_periods else 0
-    )
-    this_month  = sum(1 for c in unique_crashes if _is_this_month(c.get("timestamp", "")))
+    avg_uptime = round(sum(p["hours"] for p in uptime_periods) / len(uptime_periods), 1) if uptime_periods else 0
+    this_month = sum(1 for c in unique_crashes if _is_this_month(c.get("timestamp", "")))
     most_common = error_counts.most_common(1)[0][0] if error_counts else "None"
 
     return {
         "summary": {
-            "total_crashes":     len(unique_crashes),
-            "this_month":        this_month,
+            "total_crashes": len(unique_crashes),
+            "this_month": this_month,
             "most_common_error": most_common,
-            "avg_uptime_hours":  avg_uptime,
+            "avg_uptime_hours": avg_uptime,
         },
-        "crashes":         unique_crashes[:60],
-        "timeline":        timeline,
-        "error_codes":     error_breakdown,
-        "faulty_drivers":  driver_breakdown,
-        "uptime_periods":  uptime_periods[-12:],
+        "crashes": unique_crashes[:60],
+        "timeline": timeline,
+        "error_codes": error_breakdown,
+        "faulty_drivers": driver_breakdown,
+        "uptime_periods": uptime_periods[-12:],
         "recommendations": build_recommendations(unique_crashes),
     }
 
@@ -555,6 +612,7 @@ def build_bsod_analysis() -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 # FLASK ROUTES
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 @app.route("/")
 def index():
@@ -565,7 +623,7 @@ def index():
 def start_scan():
     global _scan_results, _scan_status
     _scan_results = None
-    _scan_status  = {"status": "starting", "progress": 0, "message": "Initializing…"}
+    _scan_status = {"status": "starting", "progress": 0, "message": "Initializing…"}
     threading.Thread(target=run_scan, daemon=True).start()
     return jsonify({"ok": True})
 
