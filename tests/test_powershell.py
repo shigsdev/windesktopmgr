@@ -1149,3 +1149,61 @@ class TestCredentialsNetworkPSCommands:
         commands = self._capture_ps_commands(mocker)
         ps_smb = commands[1]
         assert "$dialect2" not in ps_smb
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Worker task_done safety — must not call task_done after queue.Empty
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestWorkerTaskDoneSafety:
+    """Verify workers do NOT call task_done() when queue.Empty is raised."""
+
+    def test_startup_worker_no_task_done_on_empty(self, mocker):
+        import queue as q
+        mock_queue = mocker.patch("windesktopmgr._startup_queue")
+        mock_queue.get.side_effect = [q.Empty, KeyboardInterrupt]
+        try:
+            wdm._startup_lookup_worker()
+        except KeyboardInterrupt:
+            pass
+        mock_queue.task_done.assert_not_called()
+
+    def test_bsod_worker_no_task_done_on_empty(self, mocker):
+        import queue as q
+        mock_queue = mocker.patch("windesktopmgr._bsod_queue")
+        mock_queue.get.side_effect = [q.Empty, KeyboardInterrupt]
+        try:
+            wdm._bsod_lookup_worker()
+        except KeyboardInterrupt:
+            pass
+        mock_queue.task_done.assert_not_called()
+
+    def test_event_worker_no_task_done_on_empty(self, mocker):
+        import queue as q
+        mock_queue = mocker.patch("windesktopmgr._lookup_queue")
+        mock_queue.get.side_effect = [q.Empty, KeyboardInterrupt]
+        try:
+            wdm._lookup_worker()
+        except KeyboardInterrupt:
+            pass
+        mock_queue.task_done.assert_not_called()
+
+    def test_process_worker_no_task_done_on_empty(self, mocker):
+        import queue as q
+        mock_queue = mocker.patch("windesktopmgr._process_queue")
+        mock_queue.get.side_effect = [q.Empty, KeyboardInterrupt]
+        try:
+            wdm._process_lookup_worker()
+        except KeyboardInterrupt:
+            pass
+        mock_queue.task_done.assert_not_called()
+
+    def test_services_worker_no_task_done_on_empty(self, mocker):
+        import queue as q
+        mock_queue = mocker.patch("windesktopmgr._services_queue")
+        mock_queue.get.side_effect = [q.Empty, KeyboardInterrupt]
+        try:
+            wdm._services_lookup_worker()
+        except KeyboardInterrupt:
+            pass
+        mock_queue.task_done.assert_not_called()

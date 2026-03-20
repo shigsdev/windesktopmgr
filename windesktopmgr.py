@@ -1244,7 +1244,7 @@ def _startup_lookup_worker():
             try:
                 if item_key:
                     _startup_in_flight.discard(item_key)
-                _startup_queue.task_done()
+                    _startup_queue.task_done()
             except Exception:
                 pass
 
@@ -2290,7 +2290,7 @@ def _bsod_lookup_worker():
             try:
                 if code_norm:
                     _bsod_in_flight.discard(code_norm)
-                _bsod_queue.task_done()
+                    _bsod_queue.task_done()
             except Exception:
                 pass
 
@@ -2522,8 +2522,10 @@ def _lookup_worker():
     updates cache. Runs forever as a daemon thread.
     """
     while True:
+        got_item = False
         try:
             event_id, source = _lookup_queue.get(timeout=5)
+            got_item = True
             cache_key = str(event_id)
 
             with _event_cache_lock:
@@ -2563,8 +2565,9 @@ def _lookup_worker():
             print(f"[LookupWorker] error: {e}")
         finally:
             try:
-                _lookup_in_flight.discard(event_id if 'event_id' in dir() else -1)
-                _lookup_queue.task_done()
+                if got_item:
+                    _lookup_in_flight.discard(event_id)
+                    _lookup_queue.task_done()
             except Exception:
                 pass
 
@@ -2954,7 +2957,7 @@ def _process_lookup_worker():
             try:
                 if key:
                     _process_in_flight.discard(key)
-                _process_queue.task_done()
+                    _process_queue.task_done()
             except Exception:
                 pass
 
@@ -3470,7 +3473,7 @@ def _services_lookup_worker():
             try:
                 if svc_key:
                     _services_in_flight.discard(svc_key)
-                _services_queue.task_done()
+                    _services_queue.task_done()
             except Exception:
                 pass
 
