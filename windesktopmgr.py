@@ -187,15 +187,6 @@ def categorize(name: str, device_class: str) -> str:
     return "Other"
 
 
-def version_newer(installed: str, latest: str) -> bool:
-    try:
-        def parse(v):
-            return [int(x) for x in re.split(r"[.\-]", str(v)) if x.isdigit()]
-        return parse(latest) > parse(installed)
-    except Exception:
-        return False
-
-
 def get_installed_drivers() -> list:
     ps = (
         "Get-WmiObject Win32_PnPSignedDriver | "

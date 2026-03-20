@@ -55,42 +55,6 @@ class TestCategorize:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# version_newer(installed, latest)
-# ══════════════════════════════════════════════════════════════════════════════
-
-class TestVersionNewer:
-    def test_newer_last_segment(self):
-        assert wdm.version_newer("1.0.0.0", "1.0.0.1") is True
-
-    def test_newer_major(self):
-        assert wdm.version_newer("1.0.0.0", "2.0.0.0") is True
-
-    def test_equal_versions(self):
-        assert wdm.version_newer("1.2.3.4", "1.2.3.4") is False
-
-    def test_installed_newer(self):
-        assert wdm.version_newer("2.0.0.0", "1.9.9.9") is False
-
-    def test_malformed_installed(self):
-        # Must not raise an exception — return value is a bool (behavior: empty
-        # parse list is treated as "less than" any valid version)
-        result = wdm.version_newer("not.a.version", "1.0.0.0")
-        assert isinstance(result, bool)
-
-    def test_malformed_latest(self):
-        assert wdm.version_newer("1.0.0.0", "not.a.version") is False
-
-    def test_both_malformed(self):
-        assert wdm.version_newer("bad", "also_bad") is False
-
-    def test_single_segment(self):
-        assert wdm.version_newer("1", "2") is True
-
-    def test_empty_strings(self):
-        assert wdm.version_newer("", "") is False
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # find_wu_match(name, wu_updates)
 # ══════════════════════════════════════════════════════════════════════════════
 
