@@ -1243,7 +1243,8 @@ def _startup_lookup_worker():
         finally:
             try:
                 if item_key:
-                    _startup_in_flight.discard(item_key)
+                    with _startup_cache_lock:
+                        _startup_in_flight.discard(item_key)
                     _startup_queue.task_done()
             except Exception:
                 pass
@@ -1279,9 +1280,10 @@ def get_startup_item_info(name: str, command: str) -> dict | None:
             return _startup_cache[cache_key]
 
     # 3. Queue background lookup
-    if cache_key and cache_key not in _startup_in_flight:
-        _startup_in_flight.add(cache_key)
-        _startup_queue.put((cache_key, command, name))
+    with _startup_cache_lock:
+        if cache_key and cache_key not in _startup_in_flight:
+            _startup_in_flight.add(cache_key)
+            _startup_queue.put((cache_key, command, name))
 
     return None
 
@@ -2289,7 +2291,8 @@ def _bsod_lookup_worker():
         finally:
             try:
                 if code_norm:
-                    _bsod_in_flight.discard(code_norm)
+                    with _bsod_cache_lock:
+                        _bsod_in_flight.discard(code_norm)
                     _bsod_queue.task_done()
             except Exception:
                 pass
@@ -2336,9 +2339,10 @@ def get_stop_code_info(raw_code: str, faulty_driver: str = "") -> dict | None:
             return cached
 
     # 3. Queue background lookup
-    if code_norm not in _bsod_in_flight:
-        _bsod_in_flight.add(code_norm)
-        _bsod_queue.put(code_norm)
+    with _bsod_cache_lock:
+        if code_norm not in _bsod_in_flight:
+            _bsod_in_flight.add(code_norm)
+            _bsod_queue.put(code_norm)
 
     return None   # Not ready yet
 
@@ -2566,7 +2570,8 @@ def _lookup_worker():
         finally:
             try:
                 if got_item:
-                    _lookup_in_flight.discard(event_id)
+                    with _event_cache_lock:
+                        _lookup_in_flight.discard(event_id)
                     _lookup_queue.task_done()
             except Exception:
                 pass
@@ -2589,9 +2594,10 @@ def get_event_info(event_id: int, source: str = "") -> dict | None:
             return _event_cache[cache_key]
 
     # 3. Queue for background lookup if not already in flight
-    if event_id not in _lookup_in_flight:
-        _lookup_in_flight.add(event_id)
-        _lookup_queue.put((event_id, source))
+    with _event_cache_lock:
+        if event_id not in _lookup_in_flight:
+            _lookup_in_flight.add(event_id)
+            _lookup_queue.put((event_id, source))
 
     return None   # Not ready yet — caller will show "looking up…" state
 
@@ -2956,7 +2962,8 @@ def _process_lookup_worker():
         finally:
             try:
                 if key:
-                    _process_in_flight.discard(key)
+                    with _process_cache_lock:
+                        _process_in_flight.discard(key)
                     _process_queue.task_done()
             except Exception:
                 pass
@@ -2980,9 +2987,10 @@ def get_process_info(proc_name: str, path: str = "") -> dict | None:
         if key in _process_cache:
             return _process_cache[key]
     # Queue background lookup
-    if key not in _process_in_flight:
-        _process_in_flight.add(key)
-        _process_queue.put((key, proc_name, path))
+    with _process_cache_lock:
+        if key not in _process_in_flight:
+            _process_in_flight.add(key)
+            _process_queue.put((key, proc_name, path))
     return None
 
 
@@ -3472,7 +3480,8 @@ def _services_lookup_worker():
         finally:
             try:
                 if svc_key:
-                    _services_in_flight.discard(svc_key)
+                    with _services_cache_lock:
+                        _services_in_flight.discard(svc_key)
                     _services_queue.task_done()
             except Exception:
                 pass
@@ -3487,9 +3496,10 @@ def get_services_item_info(svc_name: str, display_name: str) -> dict | None:
     with _services_cache_lock:
         if key in _services_cache:
             return _services_cache[key]
-    if key not in _services_in_flight:
-        _services_in_flight.add(key)
-        _services_queue.put((key, display_name))
+    with _services_cache_lock:
+        if key not in _services_in_flight:
+            _services_in_flight.add(key)
+            _services_queue.put((key, display_name))
     return None
 
 
@@ -5136,9 +5146,9 @@ def startup_lookup_unknowns():
         if src in ("unknown", "") or not existing:
             with _startup_cache_lock:
                 _startup_cache.pop(cache_key, None)   # clear so worker re-fetches
-            if cache_key not in _startup_in_flight:
-                _startup_in_flight.add(cache_key)
-                _startup_queue.put((cache_key, command, name))
+                if cache_key not in _startup_in_flight:
+                    _startup_in_flight.add(cache_key)
+                    _startup_queue.put((cache_key, command, name))
                 queued += 1
 
     return jsonify({"ok": True, "queued": queued,
@@ -5235,9 +5245,9 @@ def process_lookup_unknowns():
             continue
         with _process_cache_lock:
             _process_cache.pop(key, None)
-        if key not in _process_in_flight:
-            _process_in_flight.add(key)
-            _process_queue.put((key, p.get("Name",""), p.get("Path","")))
+            if key not in _process_in_flight:
+                _process_in_flight.add(key)
+                _process_queue.put((key, p.get("Name",""), p.get("Path","")))
             queued += 1
     return jsonify({"ok": True, "queued": queued})
 
@@ -5277,9 +5287,9 @@ def services_lookup_unknowns():
             continue
         with _services_cache_lock:
             _services_cache.pop(key, None)
-        if key not in _services_in_flight:
-            _services_in_flight.add(key)
-            _services_queue.put((key, s.get("DisplayName", key)))
+            if key not in _services_in_flight:
+                _services_in_flight.add(key)
+                _services_queue.put((key, s.get("DisplayName", key)))
             queued += 1
     return jsonify({"ok": True, "queued": queued})
 
@@ -5957,7 +5967,12 @@ def _requeue_stale_cache(cache: dict, queue_obj: queue.Queue,
     """
     cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
     requeued = 0
-    with _event_cache_lock if label == "Event" else _bsod_cache_lock:
+    _lock_map = {
+        "Event": _event_cache_lock, "BSOD": _bsod_cache_lock,
+        "Startup": _startup_cache_lock, "Services": _services_cache_lock,
+        "Process": _process_cache_lock,
+    }
+    with _lock_map[label]:
         for key, entry in list(cache.items()):
             source = entry.get("source", "")
             fetched_str = entry.get("fetched", "")
