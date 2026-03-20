@@ -3,9 +3,7 @@ test_summarizers.py
 Tests for all summarize_* functions — pure Python, no subprocess required.
 """
 
-import pytest
 import windesktopmgr as wdm
-
 
 # ── Helper builders ────────────────────────────────────────────────────────────
 

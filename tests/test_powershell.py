@@ -18,9 +18,10 @@ required).  Each test group covers:
 
 import json
 import subprocess
-import pytest
-import windesktopmgr as wdm
 
+import pytest
+
+import windesktopmgr as wdm
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 

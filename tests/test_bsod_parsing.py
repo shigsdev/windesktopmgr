@@ -3,10 +3,7 @@ test_bsod_parsing.py
 Tests for BSOD event parsing, health-report parsing, and recommendation building.
 """
 
-import os
-import pytest
 import windesktopmgr as wdm
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # parse_event(evt)

@@ -11,8 +11,8 @@ Key design decisions:
   between every test, preventing bleed-through.
 """
 
-import sys
 import os
+import sys
 
 # Make sure the project root is on sys.path so `import windesktopmgr` works
 # regardless of where pytest is invoked from.
@@ -21,8 +21,8 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 import pytest
-import windesktopmgr as wdm
 
+import windesktopmgr as wdm
 
 # ── App / client fixtures ──────────────────────────────────────────────────────
 

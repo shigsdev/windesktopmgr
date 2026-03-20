@@ -7,16 +7,10 @@ Now that SystemHealthDiag.py is refactored into proper functions with a
 All subprocess / PowerShell / winreg / ctypes calls are mocked — no Windows dependency.
 """
 
-import json
 import os
 import re
 import sys
-from datetime import datetime, timedelta
-from html import escape as he
-from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
 # Mock Windows-only modules before importing SystemHealthDiag

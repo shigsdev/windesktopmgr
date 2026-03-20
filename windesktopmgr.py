@@ -4,10 +4,19 @@ Flask backend — driver update checker + BSOD trend dashboard.
 Reads from Windows Event Log and existing SystemHealthDiag HTML reports.
 """
 
-from flask import Flask, render_template, jsonify, request, send_from_directory
-import subprocess, json, threading, re, os, glob, queue, urllib.request, urllib.parse
+import glob
+import json
+import os
+import queue
+import re
+import subprocess
+import threading
+import urllib.parse
+import urllib.request
+from collections import Counter
 from datetime import datetime, timedelta, timezone
-from collections import Counter, defaultdict
+
+from flask import Flask, jsonify, render_template, request, send_from_directory
 
 app = Flask(__name__)
 APP_DIR   = os.path.dirname(os.path.abspath(__file__))
@@ -405,7 +414,7 @@ def parse_report_crashes(report_path: str) -> list:
     """Extract BSOD data from a SystemHealthDiag HTML report file."""
     crashes = []
     try:
-        with open(report_path, "r", encoding="utf-8", errors="ignore") as f:
+        with open(report_path, encoding="utf-8", errors="ignore") as f:
             content = f.read()
 
         fname = os.path.basename(report_path)
@@ -1708,7 +1717,6 @@ def summarize_bsod(data: dict) -> dict:
     crashes  = data.get("crashes", [])
     total    = summary.get("total_crashes", 0)
     month    = summary.get("this_month", 0)
-    common   = summary.get("most_common_error", "None")
     avg_up   = summary.get("avg_uptime_hours", 0)
     timeline = data.get("timeline", [])
     insights = []
@@ -1798,7 +1806,6 @@ def summarize_startup(items: list) -> dict:
         return {"status": "ok", "headline": "No startup entries found.", "insights": [], "actions": []}
     suspicious = [i for i in items if i.get("suspicious")]
     enabled    = [i for i in items if i.get("Enabled")]
-    tasks      = [i for i in items if i.get("Type") == "task"]
     insights   = []
     actions    = []
     if suspicious:
@@ -2159,8 +2166,8 @@ def _lookup_stop_code_windows(code_norm: str) -> dict | None:
                           f"This is a Windows kernel bugcheck. "
                           f"Check the faulty driver in the crash details above for root cause.",
             "priority":   "high",
-            "action":     f"Minidump files are saved to C:\\Windows\\Minidump and are analysed automatically by the BSOD Dashboard tab. For manual deep analysis, WinDbg (Microsoft's free crash analyser, available from the Microsoft Store) can open these files directly. "
-                          f"Check Driver Manager tab for updates to the faulty driver.",
+            "action":     "Minidump files are saved to C:\\Windows\\Minidump and are analysed automatically by the BSOD Dashboard tab. For manual deep analysis, WinDbg (Microsoft's free crash analyser, available from the Microsoft Store) can open these files directly. "
+                          "Check Driver Manager tab for updates to the faulty driver.",
             "fetched":    datetime.now(timezone.utc).isoformat(),
         }
     return None
@@ -4107,7 +4114,6 @@ def summarize_memory(data: dict) -> dict:
             "and uses ~150 MB vs McAfee's current usage."))
         actions.append("Consider switching from McAfee to Windows Defender")
 
-    security_mb = cats.get("security", 0)
     browser_mb  = cats.get("browser", 0)
     comms_mb    = cats.get("comms", 0)
     if browser_mb > 2000:
@@ -4368,7 +4374,7 @@ try {
                     result["update_available"] = True  # WU only shows pending updates
                     result["error"]            = None
                     print(f"[BIOS] Windows Update found BIOS update: {title}")
-        except Exception as e3:
+        except Exception:
             pass
 
     # ── Method 4: Get service tag for a direct personalised Dell support URL ────
@@ -4438,14 +4444,11 @@ def summarize_bios(data: dict) -> dict:
         if update.get("release_notes"):
             insights.append(_insight("info", update["release_notes"]))
     else:
-        err = update.get("error","")
         insights.append(_insight("info",
             f"Could not auto-detect latest version from Dell. "
             f"Your current BIOS is {version}.",
             f"Check your personalised Dell page at: {tag_url}"))
     # Special note for i9-14900K HYPERVISOR_ERROR
-    # Build the BIOS reboot command as joined parts so it survives template rendering
-    bios_cmd = " ".join(["shutdown", "/r", "/fw", "/t", "0"])
     # Only show the Raptor Lake note — framed correctly given BIOS is current
     insights.append(_insight("info",
         "Your i9-14900K is affected by Intel Raptor Lake instability (intelppm.sys / HYPERVISOR_ERROR). "
@@ -4937,7 +4940,6 @@ def summarize_credentials_network(data: dict) -> dict:
     # Note: backgroundTaskHost suspensions are typically McAfee's idle UWP RulesEngine —
     # normal Windows behavior, not an auth issue. The real auth issue is OneDrive suspension.
     od_suspended  = data.get("onedrive_suspended", False)
-    od_priority   = data.get("onedrive_priority", "")
     susp_auth     = data.get("suspended_auth_procs", [])
 
     if od_suspended:
@@ -5011,7 +5013,7 @@ def summarize_credentials_network(data: dict) -> dict:
     # Firewall blocking
     if fw_blocking:
         insights.append(_insight("warning",
-            f"File and Printer Sharing firewall rule(s) set to Block: "
+            "File and Printer Sharing firewall rule(s) set to Block: "
             + ", ".join(f.get("DisplayName","") for f in fw_blocking[:2]),
             "McAfee may have modified these rules. Check McAfee Firewall settings."))
 
@@ -5312,7 +5314,7 @@ $results | ConvertTo-Json -Depth 2
             "ok":      len(fixed) > 0,
             "fixed":   len(fixed),
             "results": data,
-            "message": f"OneDrive resumed and set to AboveNormal priority. Word and Outlook should reconnect."
+            "message": "OneDrive resumed and set to AboveNormal priority. Word and Outlook should reconnect."
                        if fixed else "OneDrive process not found."
         })
     except Exception as e:
@@ -5504,7 +5506,8 @@ def architecture_diagram():
 @app.route("/api/sysinfo/data")
 def sysinfo_data():
     """Collect comprehensive system information for the System Info tab."""
-    from datetime import datetime, timezone as tz
+    from datetime import datetime
+    from datetime import timezone as tz
     collected_at = datetime.now(tz.utc).isoformat()
     stale = False
     error_detail = None
@@ -5842,7 +5845,7 @@ def dashboard_summary():
         concerns.append({
             "level": "critical", "tab": "bios", "icon": "🔩",
             "title": f"BIOS update available: {latest}",
-            "detail": f"Install to get latest microcode patches for your i9-14900K.",
+            "detail": "Install to get latest microcode patches for your i9-14900K.",
             "action": "View BIOS & Firmware",
             "action_fn": "switchTab('bios')",
         })

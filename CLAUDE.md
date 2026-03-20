@@ -1,13 +1,59 @@
 # WinDesktopMgr — Claude Code Guidelines
 
-## Testing Requirements (MANDATORY)
+## Quality Gates (MANDATORY)
 
-Every code change — new feature, bug fix, or refactor — **must** include tests.
-No exceptions. Tests live in `tests/` and are run with:
+Every code change — new feature, bug fix, or refactor — **must** pass all quality
+gates before committing. No exceptions.
+
+### 1. Tests with coverage
 
 ```bash
+# Run tests with coverage (configured in pyproject.toml)
 pytest tests/ -v
+
+# Coverage floor is 80% — builds fail below this
+# Coverage report shows uncovered lines so you know what to test
 ```
+
+### 2. Static analysis (ruff)
+
+```bash
+# Lint — catches dead code, undefined vars, security issues, hardcoded secrets
+ruff check .
+
+# Auto-fix safe issues
+ruff check --fix .
+```
+
+### 3. Pre-commit hooks
+
+Pre-commit runs ruff + pytest automatically on every `git commit`.
+If either fails, the commit is blocked until the issue is fixed.
+
+```bash
+# Install hooks (one-time setup)
+pre-commit install
+
+# Run manually on all files
+pre-commit run --all-files
+```
+
+### 4. What each tool catches
+
+| Tool | Catches |
+|------|---------|
+| **pytest-cov** | Untested code paths, missing branch coverage |
+| **ruff F** | Unused imports, undefined names, dead code |
+| **ruff S** | Hardcoded passwords/secrets, injection risks |
+| **ruff B** | Common bugs (mutable defaults, broad exceptions) |
+| **ruff SIM** | Unnecessary complexity, duplicate code patterns |
+| **ruff UP** | Python version upgrades (use modern syntax) |
+
+---
+
+## Testing Requirements (MANDATORY)
+
+Every code change **must** include tests covering all new/modified branches.
 
 ---
 

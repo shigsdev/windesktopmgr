@@ -8,9 +8,8 @@ Coverage: ALL 38 Flask routes defined in windesktopmgr.py
 
 import json
 import os
-import pytest
-import windesktopmgr as wdm
 
+import windesktopmgr as wdm
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 

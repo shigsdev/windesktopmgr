@@ -4,9 +4,8 @@ Tests for pure Python helper functions that require no Windows/subprocess calls.
 """
 
 from datetime import datetime, timezone
-import pytest
-import windesktopmgr as wdm
 
+import windesktopmgr as wdm
 
 # ══════════════════════════════════════════════════════════════════════════════
 # categorize(name, device_class)

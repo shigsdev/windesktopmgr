@@ -1,0 +1,93 @@
+[project]
+name = "windesktopmgr"
+version = "1.0.0"
+requires-python = ">=3.12"
+dependencies = [
+    "flask>=3.0.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-flask>=1.3",
+    "pytest-mock>=3.14",
+    "pytest-cov>=7.0",
+    "ruff>=0.15",
+    "pre-commit>=4.0",
+]
+
+# ── pytest ────────────────────────────────────────────────────────────────────
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = [
+    "--cov=windesktopmgr",
+    "--cov-report=term-missing:skip-covered",
+    "--cov-fail-under=65",
+    "-q",
+]
+
+# ── ruff ──────────────────────────────────────────────────────────────────────
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+exclude = ["SystemHealthDiag.py", "windowsdrivermgr.py"]
+
+[tool.ruff.lint]
+select = [
+    "F",      # pyflakes — unused imports, undefined names, dead code
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "I",      # isort — import ordering
+    "UP",     # pyupgrade — modernise syntax
+    "B",      # flake8-bugbear — common bugs
+    "SIM",    # flake8-simplify — unnecessary complexity
+    "T20",    # flake8-print — flag print() in production code
+    "S",      # flake8-bandit — security issues (hardcoded passwords, etc.)
+    "PIE",    # misc lints
+]
+ignore = [
+    "T201",   # allow print() — we use it for logging throughout
+    "S603",   # allow subprocess calls without shell=True check (we need PS)
+    "S607",   # allow partial executable paths (powershell)
+    "S605",   # allow starting process with shell
+    "E501",   # line length handled by formatter
+    "B904",   # allow raise without from in except blocks
+    "S110",   # allow try/except/pass (used intentionally in workers)
+    "S108",   # allow hardcoded /tmp paths (PS scripts use Windows temp)
+    "S602",   # allow subprocess with shell=True
+    "S310",   # allow urllib.request.urlopen (used for web lookups)
+    "S112",   # allow try/except/continue (used in worker loops)
+    "UP031",  # allow printf-style string formatting
+    "UP017",  # allow datetime.timezone.utc (used throughout, not worth churn)
+    "E701",   # allow multiple statements on one line (compact dict/cache patterns)
+    "SIM105", # allow manual try/except instead of contextlib.suppress
+    "SIM117", # allow nested with statements (clearer in lock patterns)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "S101",   # allow assert in tests
+    "S104",   # allow 0.0.0.0 in test data
+    "S106",   # allow hardcoded passwords in test data
+    "E402",   # allow imports after sys.path setup in conftest
+    "B017",   # allow assertRaises(Exception)
+]
+
+# ── coverage ──────────────────────────────────────────────────────────────────
+
+[tool.coverage.run]
+source = ["."]
+omit = [
+    "tests/*",
+    "SystemHealthDiag.py",
+    "windowsdrivermgr.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "if __name__",
+    "pragma: no cover",
+]
