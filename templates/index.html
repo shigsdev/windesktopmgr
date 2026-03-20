@@ -543,6 +543,7 @@
       <button class="page-tab" data-page="memory">🧠 Memory Analysis</button>
       <button class="page-tab" data-page="bios">🔩 BIOS &amp; Firmware</button>
       <button class="page-tab" data-page="credentials">🔐 Credentials &amp; Network</button>
+      <button class="page-tab" data-page="sysinfo">🖥 System Info</button>
     </div>
   </nav>
 
@@ -835,7 +836,7 @@ document.querySelectorAll(".page-tab").forEach(btn => {
     document.querySelectorAll(".page-tab").forEach(t => t.classList.remove("active"));
     btn.classList.add("active");
     const page = btn.dataset.page;
-    ["dashboard","drivers","bsod","startup","disk","network","updates","events","processes","thermals","services","health-history","timeline","memory","bios","credentials"].forEach(function(p) {
+    ["dashboard","drivers","bsod","startup","disk","network","updates","events","processes","thermals","services","health-history","timeline","memory","bios","credentials","sysinfo"].forEach(function(p) {
       var el = document.getElementById("page-" + p);
       if (el) el.style.display = (p === page) ? "" : "none";
     });
@@ -869,6 +870,8 @@ document.querySelectorAll(".page-tab").forEach(btn => {
       if (!_tabLoaded["bios"])           { _tabLoaded["bios"]           = true; loadBios(); }
     } else if (page === "credentials") {
       if (!_tabLoaded["credentials"])    { _tabLoaded["credentials"]    = true; loadCredentials(); }
+    } else if (page === "sysinfo") {
+      if (!_tabLoaded["sysinfo"])        { _tabLoaded["sysinfo"]        = true; loadSystemInfo(); }
     }
   });
 });
@@ -2934,6 +2937,128 @@ document.addEventListener("DOMContentLoaded", () => {
   setTimeout(loadDashboard, 400);
 });
 
+// ══════════════════════════════════════════════════════════════════════════
+// SYSTEM INFO TAB
+// ══════════════════════════════════════════════════════════════════════════
+async function loadSystemInfo() {
+  document.getElementById("si-loading").style.display = "block";
+  document.getElementById("si-content").style.display = "none";
+  try {
+    const r = await fetch("/api/sysinfo/data");
+    const j = await r.json();
+    if (j.status === "ok") {
+      renderSystemInfo(j.data);
+      fetchSummary("sysinfo", j.data, "summary-sysinfo");
+    } else {
+      document.getElementById("si-loading").textContent = "Error: " + (j.message || "Unknown");
+      return;
+    }
+  } catch(e) {
+    document.getElementById("si-loading").textContent = "Failed to load system info.";
+    return;
+  }
+  document.getElementById("si-loading").style.display = "none";
+  document.getElementById("si-content").style.display = "";
+}
+
+function renderSystemInfo(d) {
+  const comp = d.Computer || {};
+  const os = d.OS || {};
+  const cpu = d.CPU || {};
+  const bios = d.BIOS || {};
+  const bb = d.Baseboard || {};
+  const gpus = d.GPU || [];
+  const nics = d.Network || [];
+  const ram = d.Memory || [];
+  const disks = d.Disks || [];
+  const vols = d.Volumes || [];
+
+  // Stat cards
+  document.getElementById("si-hostname").textContent = comp.Name || "—";
+  document.getElementById("si-os").textContent = (os.Name || "—").replace("Microsoft ", "");
+  document.getElementById("si-cpu-short").textContent = (cpu.Name || "—").replace("Intel(R) Core(TM) ", "").replace(" Processor", "");
+  document.getElementById("si-ram").textContent = (comp.TotalRAM_GB || 0) + " GB";
+  document.getElementById("si-uptime").textContent = os.Uptime || "—";
+  document.getElementById("si-build").textContent = os.Build || "—";
+
+  // Computer section
+  const compRows = [
+    ["Computer Name", comp.Name], ["Domain / Workgroup", comp.Domain],
+    ["Manufacturer", comp.Manufacturer], ["Model", comp.Model],
+    ["System Type", comp.SystemType], ["Total RAM", comp.TotalRAM_GB + " GB"],
+  ].map(([k,v]) => `<tr><td style="color:var(--cyan);width:200px">${k}</td><td>${v||'—'}</td></tr>`).join("");
+  document.getElementById("si-comp-tbody").innerHTML = compRows;
+
+  // OS section
+  const osRows = [
+    ["OS Name", os.Name], ["Version", os.Version], ["Build", os.Build],
+    ["Architecture", os.Architecture], ["Install Date", os.InstallDate],
+    ["Last Boot", os.LastBoot], ["Uptime", os.Uptime],
+    ["Windows Directory", os.WindowsDir], ["System Drive", os.SystemDrive],
+    ["Locale", os.Locale], ["Time Zone", os.TimeZone],
+  ].map(([k,v]) => `<tr><td style="color:var(--cyan);width:200px">${k}</td><td>${v||'—'}</td></tr>`).join("");
+  document.getElementById("si-os-tbody").innerHTML = osRows;
+
+  // CPU section
+  const cpuRows = [
+    ["Processor", cpu.Name], ["Cores", cpu.Cores], ["Logical Processors", cpu.LogicalProcs],
+    ["Max Clock", cpu.MaxClockMHz + " MHz"], ["Current Clock", cpu.CurrentClockMHz + " MHz"],
+    ["Socket", cpu.SocketDesignation], ["L2 Cache", (cpu.L2CacheKB ? cpu.L2CacheKB + " KB" : "—")],
+    ["L3 Cache", (cpu.L3CacheKB ? Math.round(cpu.L3CacheKB/1024) + " MB" : "—")],
+    ["Architecture", cpu.Architecture], ["Processor ID", cpu.ProcessorId],
+  ].map(([k,v]) => `<tr><td style="color:var(--cyan);width:200px">${k}</td><td>${v||'—'}</td></tr>`).join("");
+  document.getElementById("si-cpu-tbody").innerHTML = cpuRows;
+
+  // BIOS + Baseboard section
+  const biosRows = [
+    ["BIOS Version", bios.Version], ["BIOS Date", bios.ReleaseDate],
+    ["BIOS Manufacturer", bios.Manufacturer], ["Serial Number (Service Tag)", bios.SerialNumber],
+    ["Baseboard", bb.Manufacturer + " " + bb.Product],
+    ["Baseboard Version", bb.Version], ["Baseboard Serial", bb.SerialNumber],
+  ].map(([k,v]) => `<tr><td style="color:var(--cyan);width:200px">${k}</td><td>${v||'—'}</td></tr>`).join("");
+  document.getElementById("si-bios-tbody").innerHTML = biosRows;
+
+  // GPU section
+  const gpuHtml = gpus.map(g => {
+    const vram = g.AdapterRAM ? Math.round(g.AdapterRAM / 1073741824) + " GB" : "—";
+    return [
+      ["GPU", g.Name], ["Driver Version", g.DriverVersion],
+      ["Video RAM", vram], ["Refresh Rate", (g.CurrentRefreshRate||"—") + " Hz"],
+      ["Resolution", g.VideoModeDescription],
+    ].map(([k,v]) => `<tr><td style="color:var(--cyan);width:200px">${k}</td><td>${v||'—'}</td></tr>`).join("");
+  }).join('<tr><td colspan="2" style="border-top:1px solid var(--border)"></td></tr>');
+  document.getElementById("si-gpu-tbody").innerHTML = gpuHtml || '<tr><td colspan="2" style="color:var(--muted)">No GPU detected</td></tr>';
+
+  // Memory modules
+  const ramHtml = ram.map(m => {
+    const gb = m.Capacity ? (m.Capacity / 1073741824).toFixed(0) + " GB" : "—";
+    return `<tr><td>${m.BankLabel||'—'}</td><td>${gb}</td><td>${m.Speed||'—'} MHz</td><td>${m.Manufacturer||'—'}</td><td><code>${(m.PartNumber||'').trim()}</code></td></tr>`;
+  }).join("");
+  document.getElementById("si-ram-tbody").innerHTML = ramHtml || '<tr><td colspan="5" style="color:var(--muted)">No data</td></tr>';
+
+  // Network adapters
+  const nicHtml = nics.map(n => {
+    const dns = Array.isArray(n.DNSServerSearchOrder) ? n.DNSServerSearchOrder.join(", ") : (n.DNSServerSearchOrder||"—");
+    return `<tr><td>${n.Description||'—'}</td><td><code>${n.MACAddress||'—'}</code></td><td>${n.IPAddress||'—'}</td><td>${n.DHCPEnabled ? 'Yes ('+n.DHCPServer+')' : 'Static'}</td><td style="font-size:11px">${dns}</td></tr>`;
+  }).join("");
+  document.getElementById("si-nic-tbody").innerHTML = nicHtml || '<tr><td colspan="5" style="color:var(--muted)">No active adapters</td></tr>';
+
+  // Disks
+  const diskHtml = disks.map(dk => {
+    const sizeGB = dk.Size ? (dk.Size / 1073741824).toFixed(1) + " GB" : "—";
+    return `<tr><td>${dk.Model||'—'}</td><td>${sizeGB}</td><td>${dk.InterfaceType||'—'}</td><td>${dk.MediaType||'—'}</td><td>${dk.Partitions||'—'}</td><td style="font-size:10px"><code>${(dk.SerialNumber||'').trim()}</code></td></tr>`;
+  }).join("");
+  document.getElementById("si-disk-tbody").innerHTML = diskHtml || '<tr><td colspan="6" style="color:var(--muted)">No disks</td></tr>';
+
+  // Volumes
+  const volHtml = vols.map(v => {
+    const pctFree = v.SizeGB ? ((v.FreeGB / v.SizeGB) * 100).toFixed(1) : 0;
+    const col = pctFree < 10 ? "var(--red)" : pctFree < 20 ? "var(--orange)" : "var(--green)";
+    return `<tr><td><strong>${v.DeviceID||'—'}</strong></td><td>${v.VolumeName||''}</td><td>${v.FileSystem||'—'}</td><td>${v.SizeGB||'—'} GB</td><td>${v.FreeGB||'—'} GB</td><td style="color:${col};font-weight:600">${pctFree}%</td></tr>`;
+  }).join("");
+  document.getElementById("si-vol-tbody").innerHTML = volHtml || '<tr><td colspan="6" style="color:var(--muted)">No volumes</td></tr>';
+}
+
 </script>
 
   <!-- ══════════════════════════════════════════
@@ -3667,6 +3792,98 @@ document.addEventListener("DOMContentLoaded", () => {
             <div style="color:var(--muted);line-height:1.5">McAfee can reset firewall rules for SMB (port 445) on reboot. Open McAfee > Firewall settings and verify File and Printer Sharing rules are set to Allow.</div>
           </div>
         </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       PAGE: SYSTEM INFO
+  ══════════════════════════════════════════ -->
+  <div id="page-sysinfo" style="display:none">
+    <div id="summary-sysinfo" class="summary-banner"></div>
+
+    <div class="stats">
+      <div class="stat-card s-cyan">  <div class="label">Hostname</div>       <div class="value" id="si-hostname" style="font-size:13px">—</div></div>
+      <div class="stat-card s-green"> <div class="label">OS</div>             <div class="value" id="si-os" style="font-size:12px">—</div></div>
+      <div class="stat-card s-orange"><div class="label">CPU</div>            <div class="value" id="si-cpu-short" style="font-size:12px">—</div></div>
+      <div class="stat-card s-cyan">  <div class="label">RAM</div>            <div class="value" id="si-ram">—</div></div>
+      <div class="stat-card s-green"> <div class="label">Uptime</div>         <div class="value" id="si-uptime" style="font-size:13px">—</div></div>
+      <div class="stat-card s-orange"><div class="label">Build</div>          <div class="value" id="si-build">—</div></div>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:10px;margin:20px 0 16px">
+      <h2 style="margin:0">System Information</h2>
+      <button class="btn-action" onclick="loadSystemInfo()" style="padding:6px 16px;font-size:12px">↺ Refresh</button>
+    </div>
+
+    <div id="si-loading" style="text-align:center;padding:40px;color:var(--muted)">Collecting system information…</div>
+    <div id="si-content" style="display:none">
+
+      <!-- Computer -->
+      <div style="margin-bottom:20px">
+        <h3 style="color:var(--cyan);margin-bottom:8px">🖥 Computer</h3>
+        <table class="styled-table"><tbody id="si-comp-tbody"></tbody></table>
+      </div>
+
+      <!-- Operating System -->
+      <div style="margin-bottom:20px">
+        <h3 style="color:var(--cyan);margin-bottom:8px">💿 Operating System</h3>
+        <table class="styled-table"><tbody id="si-os-tbody"></tbody></table>
+      </div>
+
+      <!-- CPU -->
+      <div style="margin-bottom:20px">
+        <h3 style="color:var(--cyan);margin-bottom:8px">⚡ Processor</h3>
+        <table class="styled-table"><tbody id="si-cpu-tbody"></tbody></table>
+      </div>
+
+      <!-- BIOS / Baseboard -->
+      <div style="margin-bottom:20px">
+        <h3 style="color:var(--cyan);margin-bottom:8px">🔩 BIOS &amp; Baseboard</h3>
+        <table class="styled-table"><tbody id="si-bios-tbody"></tbody></table>
+      </div>
+
+      <!-- GPU -->
+      <div style="margin-bottom:20px">
+        <h3 style="color:var(--cyan);margin-bottom:8px">🎮 Graphics</h3>
+        <table class="styled-table"><tbody id="si-gpu-tbody"></tbody></table>
+      </div>
+
+      <!-- Memory Modules -->
+      <div style="margin-bottom:20px">
+        <h3 style="color:var(--cyan);margin-bottom:8px">🧠 Memory Modules</h3>
+        <table class="styled-table">
+          <thead><tr><th>Slot</th><th>Size</th><th>Speed</th><th>Manufacturer</th><th>Part Number</th></tr></thead>
+          <tbody id="si-ram-tbody"></tbody>
+        </table>
+      </div>
+
+      <!-- Network Adapters -->
+      <div style="margin-bottom:20px">
+        <h3 style="color:var(--cyan);margin-bottom:8px">🌐 Network Adapters</h3>
+        <table class="styled-table">
+          <thead><tr><th>Adapter</th><th>MAC</th><th>IP Address</th><th>DHCP</th><th>DNS Servers</th></tr></thead>
+          <tbody id="si-nic-tbody"></tbody>
+        </table>
+      </div>
+
+      <!-- Physical Disks -->
+      <div style="margin-bottom:20px">
+        <h3 style="color:var(--cyan);margin-bottom:8px">💾 Physical Disks</h3>
+        <table class="styled-table">
+          <thead><tr><th>Model</th><th>Size</th><th>Interface</th><th>Media</th><th>Partitions</th><th>Serial</th></tr></thead>
+          <tbody id="si-disk-tbody"></tbody>
+        </table>
+      </div>
+
+      <!-- Volumes -->
+      <div style="margin-bottom:20px">
+        <h3 style="color:var(--cyan);margin-bottom:8px">📁 Volumes</h3>
+        <table class="styled-table">
+          <thead><tr><th>Drive</th><th>Label</th><th>FS</th><th>Size</th><th>Free</th><th>% Free</th></tr></thead>
+          <tbody id="si-vol-tbody"></tbody>
+        </table>
       </div>
 
     </div>

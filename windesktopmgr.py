@@ -5242,6 +5242,7 @@ def get_summary(tab: str):
         "memory":         lambda: summarize_memory(data),
         "bios":           lambda: summarize_bios(data),
         "credentials":    lambda: summarize_credentials_network(data),
+        "sysinfo":        lambda: summarize_sysinfo(data),
     }
     fn = fn_map.get(tab)
     if not fn:
@@ -5557,6 +5558,145 @@ $kp41 = @(Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Microso
         return jsonify({"status": "ok", "warranty": warranty})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
+
+
+@app.route("/api/sysinfo/data")
+def sysinfo_data():
+    """Collect comprehensive system information for the System Info tab."""
+    try:
+        cmd = r"""
+$OS   = Get-CimInstance Win32_OperatingSystem
+$CS   = Get-CimInstance Win32_ComputerSystem
+$CPU  = Get-CimInstance Win32_Processor
+$BIOS = Get-CimInstance Win32_BIOS
+$BB   = Get-CimInstance Win32_BaseBoard
+$GPU  = Get-CimInstance Win32_VideoController | Select-Object Name, DriverVersion, DriverDate, AdapterRAM, VideoProcessor, CurrentRefreshRate, VideoModeDescription
+$NIC  = Get-CimInstance Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled } | Select-Object Description, MACAddress, @{N='IPAddress';E={$_.IPAddress -join ', '}}, DHCPEnabled, DHCPServer, DNSServerSearchOrder
+$RAM  = Get-CimInstance Win32_PhysicalMemory | Select-Object BankLabel, Capacity, Speed, Manufacturer, PartNumber
+$Disk = Get-CimInstance Win32_DiskDrive | Select-Object Model, Size, InterfaceType, MediaType, SerialNumber, Partitions
+$Vol  = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | Select-Object DeviceID, VolumeName, FileSystem, @{N='SizeGB';E={[math]::Round($_.Size/1GB,1)}}, @{N='FreeGB';E={[math]::Round($_.FreeSpace/1GB,1)}}
+$TZ   = Get-TimeZone
+
+@{
+    Computer = @{
+        Name           = $CS.Name
+        Domain          = $CS.Domain
+        Manufacturer   = $CS.Manufacturer
+        Model          = $CS.Model
+        SystemType     = $CS.SystemType
+        TotalRAM_GB    = [math]::Round($CS.TotalPhysicalMemory / 1GB, 1)
+    }
+    OS = @{
+        Name           = $OS.Caption
+        Version        = $OS.Version
+        Build          = $OS.BuildNumber
+        Architecture   = $OS.OSArchitecture
+        InstallDate    = $OS.InstallDate.ToString('yyyy-MM-dd')
+        LastBoot       = $OS.LastBootUpTime.ToString('yyyy-MM-dd HH:mm:ss')
+        Uptime         = ((Get-Date) - $OS.LastBootUpTime).ToString('dd\.hh\:mm\:ss')
+        WindowsDir     = $OS.WindowsDirectory
+        SystemDrive    = $OS.SystemDrive
+        Locale         = (Get-Culture).DisplayName
+        TimeZone       = $TZ.DisplayName
+        TimeZoneId     = $TZ.Id
+    }
+    CPU = @{
+        Name           = $CPU.Name.Trim()
+        Cores          = $CPU.NumberOfCores
+        LogicalProcs   = $CPU.NumberOfLogicalProcessors
+        MaxClockMHz    = $CPU.MaxClockSpeed
+        CurrentClockMHz = $CPU.CurrentClockSpeed
+        SocketDesignation = $CPU.SocketDesignation
+        L2CacheKB      = $CPU.L2CacheSize
+        L3CacheKB      = $CPU.L3CacheSize
+        ProcessorId    = $CPU.ProcessorId
+        Architecture   = switch($CPU.Architecture) { 0 {'x86'} 5 {'ARM'} 9 {'x64'} 12 {'ARM64'} default {$CPU.Architecture} }
+    }
+    BIOS = @{
+        Version        = $BIOS.SMBIOSBIOSVersion
+        ReleaseDate    = if ($BIOS.ReleaseDate) { $BIOS.ReleaseDate.ToString('yyyy-MM-dd') } else { 'Unknown' }
+        Manufacturer   = $BIOS.Manufacturer
+        SerialNumber   = $BIOS.SerialNumber
+    }
+    Baseboard = @{
+        Manufacturer   = $BB.Manufacturer
+        Product        = $BB.Product
+        Version        = $BB.Version
+        SerialNumber   = $BB.SerialNumber
+    }
+    GPU = $GPU
+    Network = $NIC
+    Memory = $RAM
+    Disks = $Disk
+    Volumes = $Vol
+} | ConvertTo-Json -Depth 3
+"""
+        r = subprocess.run(
+            ["powershell", "-NonInteractive", "-Command", cmd],
+            capture_output=True, text=True, timeout=30
+        )
+        data = json.loads(r.stdout.strip()) if r.stdout.strip() else {}
+
+        # Normalize single-item lists (PowerShell returns dict for single item)
+        for key in ("GPU", "Network", "Memory", "Disks", "Volumes"):
+            val = data.get(key)
+            if isinstance(val, dict):
+                data[key] = [val]
+            elif val is None:
+                data[key] = []
+
+        return jsonify({"status": "ok", "data": data})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+
+def summarize_sysinfo(data: dict) -> dict:
+    """Summarize system info for the summary banner."""
+    insights = []
+    actions = []
+    status = "ok"
+
+    comp = data.get("Computer", {})
+    os_info = data.get("OS", {})
+    cpu = data.get("CPU", {})
+
+    # Uptime check
+    uptime_str = os_info.get("Uptime", "")
+    if uptime_str:
+        try:
+            days = int(uptime_str.split(".")[0])
+            if days > 14:
+                status = "warning"
+                insights.append({"level": "warning", "text": f"System uptime is {days} days", "detail": "Consider rebooting periodically for stability and updates."})
+                actions.append("Reboot the system to apply pending updates and clear memory leaks")
+            elif days > 7:
+                insights.append({"level": "info", "text": f"System uptime is {days} days", "detail": "Moderate uptime — fine for most workloads."})
+        except (ValueError, IndexError):
+            pass
+
+    # RAM check
+    ram_gb = comp.get("TotalRAM_GB", 0)
+    if ram_gb and ram_gb < 16:
+        status = "warning"
+        insights.append({"level": "warning", "text": f"Only {ram_gb} GB RAM installed", "detail": "16 GB is recommended minimum for modern workloads."})
+    elif ram_gb:
+        insights.append({"level": "ok", "text": f"{ram_gb} GB RAM installed", "detail": ""})
+
+    # CPU info
+    cpu_name = cpu.get("Name", "Unknown")
+    cores = cpu.get("Cores", 0)
+    logical = cpu.get("LogicalProcs", 0)
+    if cpu_name != "Unknown":
+        insights.append({"level": "ok", "text": f"{cpu_name}", "detail": f"{cores} cores / {logical} logical processors"})
+
+    # OS info
+    os_name = os_info.get("Name", "")
+    if os_name:
+        insights.append({"level": "ok", "text": os_name, "detail": f"Build {os_info.get('Build', '')} — installed {os_info.get('InstallDate', '')}"})
+
+    headline = f"{comp.get('Manufacturer', '')} {comp.get('Model', '')} — {cpu_name}".strip()
+
+    return {"status": status, "headline": headline, "insights": insights, "actions": actions}
 
 
 @app.route("/api/dashboard/summary")

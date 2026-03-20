@@ -515,3 +515,83 @@ class TestSummarizeThermals:
     def test_result_has_required_keys(self):
         result = wdm.summarize_thermals(self._data())
         assert {"status", "headline", "insights", "actions"} <= set(result.keys())
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# summarize_sysinfo
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestSummarizeSysinfo:
+    """Tests for the summarize_sysinfo function."""
+
+    @staticmethod
+    def _data(ram_gb=32, uptime="01.05:30:00", cpu_name="Intel(R) Core(TM) i9-14900K",
+              cores=24, logical=32, os_name="Microsoft Windows 11 Pro",
+              build="22631", install_date="2024-01-15",
+              manufacturer="Dell Inc.", model="XPS 8960"):
+        return {
+            "Computer": {"Manufacturer": manufacturer, "Model": model, "TotalRAM_GB": ram_gb},
+            "OS": {"Name": os_name, "Uptime": uptime, "Build": build, "InstallDate": install_date},
+            "CPU": {"Name": cpu_name, "Cores": cores, "LogicalProcs": logical},
+        }
+
+    def test_returns_required_keys(self):
+        result = wdm.summarize_sysinfo(self._data())
+        assert {"status", "headline", "insights", "actions"} <= set(result.keys())
+
+    def test_ok_status_for_normal_system(self):
+        result = wdm.summarize_sysinfo(self._data())
+        assert result["status"] == "ok"
+
+    def test_headline_contains_manufacturer_and_cpu(self):
+        result = wdm.summarize_sysinfo(self._data())
+        assert "Dell" in result["headline"]
+        assert "i9-14900K" in result["headline"]
+
+    def test_warning_for_high_uptime(self):
+        result = wdm.summarize_sysinfo(self._data(uptime="15.00:00:00"))
+        assert result["status"] == "warning"
+        levels = [i["level"] for i in result["insights"]]
+        assert "warning" in levels
+
+    def test_info_for_moderate_uptime(self):
+        result = wdm.summarize_sysinfo(self._data(uptime="08.12:00:00"))
+        # Moderate uptime should be info, not warning
+        levels = [i["level"] for i in result["insights"]]
+        assert "info" in levels
+
+    def test_no_uptime_warning_for_short_uptime(self):
+        result = wdm.summarize_sysinfo(self._data(uptime="02.05:30:00"))
+        levels = [i["level"] for i in result["insights"]]
+        assert "warning" not in levels
+
+    def test_warning_for_low_ram(self):
+        result = wdm.summarize_sysinfo(self._data(ram_gb=8))
+        assert result["status"] == "warning"
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "8" in texts
+
+    def test_ok_for_sufficient_ram(self):
+        result = wdm.summarize_sysinfo(self._data(ram_gb=32))
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "32" in texts
+
+    def test_cpu_insight_present(self):
+        result = wdm.summarize_sysinfo(self._data())
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "i9-14900K" in texts
+
+    def test_os_insight_present(self):
+        result = wdm.summarize_sysinfo(self._data())
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "Windows 11" in texts
+
+    def test_empty_data_does_not_crash(self):
+        result = wdm.summarize_sysinfo({})
+        assert "status" in result
+        assert "headline" in result
+
+    def test_actions_populated_on_high_uptime(self):
+        result = wdm.summarize_sysinfo(self._data(uptime="20.00:00:00"))
+        assert len(result["actions"]) > 0
+        assert "reboot" in result["actions"][0].lower()

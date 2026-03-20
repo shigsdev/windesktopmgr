@@ -1311,3 +1311,171 @@ class TestWarrantyRoute:
         d = r.get_json()
         assert d["status"] == "error"
         assert "message" in d
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GET /api/sysinfo/data
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestSysinfoRoute:
+    """Tests for /api/sysinfo/data"""
+
+    SAMPLE_OUTPUT = json.dumps({
+        "Computer": {
+            "Name": "DESKTOP-TEST", "Domain": "WORKGROUP",
+            "Manufacturer": "Dell Inc.", "Model": "XPS 8960",
+            "SystemType": "x64-based PC", "TotalRAM_GB": 31.7,
+        },
+        "OS": {
+            "Name": "Microsoft Windows 11 Pro", "Version": "10.0.22631",
+            "Build": "22631", "Architecture": "64-bit",
+            "InstallDate": "2024-01-15", "LastBoot": "2025-03-18 10:00:00",
+            "Uptime": "01.05:30:00", "WindowsDir": "C:\\WINDOWS",
+            "SystemDrive": "C:", "Locale": "English (United States)",
+            "TimeZone": "(UTC-08:00) Pacific Time", "TimeZoneId": "Pacific Standard Time",
+        },
+        "CPU": {
+            "Name": "Intel(R) Core(TM) i9-14900K", "Cores": 24,
+            "LogicalProcs": 32, "MaxClockMHz": 3200, "CurrentClockMHz": 3200,
+            "SocketDesignation": "LGA1700", "L2CacheKB": 32768,
+            "L3CacheKB": 36864, "ProcessorId": "BFEBFBFF000B0671",
+            "Architecture": "x64",
+        },
+        "BIOS": {
+            "Version": "2.22.0", "ReleaseDate": "2025-01-10",
+            "Manufacturer": "Dell Inc.", "SerialNumber": "ABC1234",
+        },
+        "Baseboard": {
+            "Manufacturer": "Dell Inc.", "Product": "0WN7Y6",
+            "Version": "A01", "SerialNumber": "/ABC1234/",
+        },
+        "GPU": [
+            {"Name": "NVIDIA GeForce RTX 4060 Ti", "DriverVersion": "32.0.15.9174",
+             "AdapterRAM": 8589934592, "CurrentRefreshRate": 144,
+             "VideoModeDescription": "2560 x 1440 x 32 bits"},
+        ],
+        "Network": [
+            {"Description": "Killer E3100G", "MACAddress": "AA:BB:CC:DD:EE:FF",
+             "IPAddress": "192.168.1.100", "DHCPEnabled": True,
+             "DHCPServer": "192.168.1.1", "DNSServerSearchOrder": ["8.8.8.8"]},
+        ],
+        "Memory": [
+            {"BankLabel": "DIMM1", "Capacity": 17179869184, "Speed": 5600,
+             "Manufacturer": "SK Hynix", "PartNumber": "HMCG78AGBUA081N"},
+        ],
+        "Disks": [
+            {"Model": "Samsung SSD 990 PRO 2TB", "Size": 2000398934016,
+             "InterfaceType": "NVMe", "MediaType": "SSD",
+             "SerialNumber": "S123456", "Partitions": 3},
+        ],
+        "Volumes": [
+            {"DeviceID": "C:", "VolumeName": "OS", "FileSystem": "NTFS",
+             "SizeGB": 931.5, "FreeGB": 200.0},
+        ],
+    })
+
+    def test_returns_ok_with_system_data(self, client, mocker):
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/sysinfo/data")
+        assert r.status_code == 200
+        d = r.get_json()
+        assert d["status"] == "ok"
+        assert "data" in d
+
+    def test_returns_computer_info(self, client, mocker):
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/sysinfo/data")
+        d = r.get_json()["data"]
+        assert d["Computer"]["Name"] == "DESKTOP-TEST"
+        assert d["Computer"]["Manufacturer"] == "Dell Inc."
+
+    def test_returns_cpu_info(self, client, mocker):
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/sysinfo/data")
+        d = r.get_json()["data"]
+        assert "i9-14900K" in d["CPU"]["Name"]
+        assert d["CPU"]["Cores"] == 24
+
+    def test_returns_os_info(self, client, mocker):
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/sysinfo/data")
+        d = r.get_json()["data"]
+        assert "Windows 11" in d["OS"]["Name"]
+        assert d["OS"]["Build"] == "22631"
+
+    def test_normalizes_single_gpu_to_list(self, client, mocker):
+        """PowerShell returns dict for single item — should be normalized to list."""
+        single_gpu = json.loads(self.SAMPLE_OUTPUT)
+        single_gpu["GPU"] = single_gpu["GPU"][0]  # dict instead of list
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.return_value.stdout = json.dumps(single_gpu)
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/sysinfo/data")
+        d = r.get_json()["data"]
+        assert isinstance(d["GPU"], list)
+        assert len(d["GPU"]) == 1
+
+    def test_normalizes_single_disk_to_list(self, client, mocker):
+        single_disk = json.loads(self.SAMPLE_OUTPUT)
+        single_disk["Disks"] = single_disk["Disks"][0]
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.return_value.stdout = json.dumps(single_disk)
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/sysinfo/data")
+        d = r.get_json()["data"]
+        assert isinstance(d["Disks"], list)
+
+    def test_handles_empty_output(self, client, mocker):
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.return_value.stdout = ""
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/sysinfo/data")
+        d = r.get_json()
+        assert d["status"] == "ok"
+
+    def test_handles_subprocess_failure(self, client, mocker):
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.side_effect = Exception("PowerShell crashed")
+
+        r = client.get("/api/sysinfo/data")
+        d = r.get_json()
+        assert d["status"] == "error"
+        assert "message" in d
+
+    def test_summary_route_accepts_sysinfo(self, client, mocker):
+        """Verify the summary endpoint handles sysinfo tab."""
+        mocker.patch("windesktopmgr.subprocess.run")
+        payload = {
+            "Computer": {"Name": "TEST", "Manufacturer": "Dell", "Model": "XPS", "TotalRAM_GB": 32},
+            "OS": {"Name": "Windows 11", "Uptime": "02.10:00:00", "Build": "22631", "InstallDate": "2024-01-01"},
+            "CPU": {"Name": "i9-14900K", "Cores": 24, "LogicalProcs": 32},
+        }
+        r = client.post("/api/summary/sysinfo",
+                        data=json.dumps(payload),
+                        content_type="application/json")
+        assert r.status_code == 200
+        d = r.get_json()
+        assert "status" in d
+        assert "headline" in d
