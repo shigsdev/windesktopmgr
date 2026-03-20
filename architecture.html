@@ -20,6 +20,7 @@
     --yellow:  #ffd740;
     --red:     #ff4560;
     --blue:    #448aff;
+    --pink:    #ff80ab;
     --font-head: 'Syne', sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
   }
@@ -41,7 +42,6 @@
     background-size: 28px 28px;
   }
 
-  /* Header */
   .header {
     display: flex; align-items: flex-end; justify-content: space-between;
     margin-bottom: 36px; padding-bottom: 20px;
@@ -53,347 +53,121 @@
   .badge { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 7px 14px; font-size: 11px; color: var(--muted); }
   .badge a { color: var(--cyan); text-decoration: none; }
 
-  /* Architecture canvas */
-  .arch {
-    display: grid;
-    grid-template-columns: 200px 1fr 220px;
-    grid-template-rows: auto auto auto;
-    gap: 0;
-    position: relative;
+  .row-label {
+    font-size: 10px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 14px; display: flex; align-items: center; gap: 8px;
+  }
+  .row-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+  .tab-chip {
+    background: #00d4ff0d; border: 1px solid #00d4ff22; border-radius: 5px;
+    padding: 6px 8px; text-align: center; font-size: 10px; color: var(--cyan);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .tab-chip .tab-icon { display: block; font-size: 13px; margin-bottom: 2px; }
+
+  .route-chip {
+    background: #b388ff0d; border: 1px solid #b388ff22; border-radius: 4px;
+    padding: 3px 8px; font-size: 10px; color: var(--purple); white-space: nowrap;
+  }
+  .route-chip .method { color: var(--orange); font-weight: 700; margin-right: 4px; }
+
+  .worker-chip {
+    background: #ff70430d; border: 1px solid #ff704333; border-radius: 6px;
+    padding: 8px 12px; font-size: 11px; color: var(--orange); display: flex; align-items: center; gap: 8px;
+  }
+  .worker-dot {
+    width: 6px; height: 6px; background: var(--green); border-radius: 50%;
+    box-shadow: 0 0 6px var(--green); animation: pulse 2s infinite; flex-shrink: 0;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+  .worker-sub { font-size: 10px; color: var(--muted); display: block; margin-top: 1px; }
+
+  .cache-chip {
+    background: #ffd7400a; border: 1px solid #ffd74033; border-radius: 5px;
+    padding: 6px 10px; font-size: 10px; color: var(--yellow); font-family: var(--font-mono);
   }
 
-  /* Layer labels */
-  .layer-label {
-    writing-mode: vertical-rl;
-    text-orientation: mixed;
-    transform: rotate(180deg);
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: .15em;
-    text-transform: uppercase;
-    color: var(--muted);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 12px 0;
-    border-right: 1px solid var(--border);
-    margin-right: 20px;
+  .wmi-chip {
+    background: #00e6760a; border: 1px solid #00e67633; border-radius: 6px; padding: 8px 10px; font-size: 10px;
+  }
+  .wmi-chip .wmi-title { color: var(--green); font-weight: 700; margin-bottom: 2px; }
+  .wmi-chip .wmi-sub { color: var(--muted); font-size: 9px; line-height: 1.4; }
+
+  .ext-chip {
+    background: #ffd7400a; border: 1px solid #ffd74033; border-radius: 6px; padding: 8px 12px;
+  }
+  .ext-chip .ext-title { color: var(--yellow); font-weight: 700; font-size: 11px; }
+  .ext-chip .ext-sub { color: var(--muted); font-size: 10px; margin-top: 2px; }
+  .ext-chip .ext-badge {
+    font-size: 9px; padding: 1px 6px; border-radius: 8px;
+    background: #ffd74022; color: var(--yellow);
+    display: inline-block; margin-top: 4px; text-transform: uppercase; font-weight: 700;
   }
 
-  /* Section wrappers */
-  .section {
-    padding: 16px 0 20px;
-    border-bottom: 1px solid var(--border);
-  }
-  .section:last-child { border-bottom: none; }
-  .section-title {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: .12em;
-    text-transform: uppercase;
-    color: var(--muted);
-    margin-bottom: 14px;
+  .fs-chip { background: #448aff0a; border: 1px solid #448aff33; border-radius: 6px; padding: 8px 12px; }
+  .fs-chip .fs-title { color: var(--blue); font-weight: 700; font-size: 11px; }
+  .fs-chip .fs-sub { color: var(--muted); font-size: 10px; margin-top: 2px; }
+
+  .test-chip { background: #ff80ab0a; border: 1px solid #ff80ab33; border-radius: 6px; padding: 8px 12px; }
+  .test-chip .test-title { color: var(--pink); font-weight: 700; font-size: 11px; }
+  .test-chip .test-sub { color: var(--muted); font-size: 10px; margin-top: 2px; }
+
+  .footer {
+    margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--border);
+    display: flex; justify-content: space-between; font-size: 11px; color: var(--muted);
   }
 
-  /* Node boxes */
-  .nodes { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
+  .legend {
+    display: flex; gap: 20px; flex-wrap: wrap; padding: 16px 24px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-top: 20px;
+  }
+  .legend-item { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
+  .legend-line { width: 24px; height: 2px; }
 
-  .node {
-    border-radius: 8px;
-    padding: 10px 14px;
-    border: 1px solid;
-    position: relative;
-    min-width: 120px;
+  /* SVG arrow overlay */
+  .arch-container { position: relative; }
+  .arch-container svg.arrows {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none; z-index: 10;
   }
-  .node-title {
-    font-weight: 700;
-    font-size: 12px;
-    margin-bottom: 3px;
-    white-space: nowrap;
-  }
-  .node-sub {
-    font-size: 10px;
-    color: var(--muted);
-    line-height: 1.4;
-  }
-  .node-tag {
-    font-size: 9px;
-    padding: 1px 6px;
-    border-radius: 10px;
-    font-weight: 700;
-    display: inline-block;
-    margin-top: 4px;
-    letter-spacing: .05em;
-    text-transform: uppercase;
+  .arch-container svg.arrows line, .arch-container svg.arrows path {
+    stroke-width: 1.5; fill: none;
   }
 
-  /* Colour variants */
-  .node-cyan   { background: #00d4ff0a; border-color: #00d4ff33; }
-  .node-cyan   .node-title { color: var(--cyan); }
-  .node-cyan   .node-tag   { background: #00d4ff22; color: var(--cyan); }
-
-  .node-orange { background: #ff70430a; border-color: #ff704333; }
-  .node-orange .node-title { color: var(--orange); }
-  .node-orange .node-tag   { background: #ff704322; color: var(--orange); }
-
-  .node-green  { background: #00e6760a; border-color: #00e67633; }
-  .node-green  .node-title { color: var(--green); }
-  .node-green  .node-tag   { background: #00e67622; color: var(--green); }
-
-  .node-purple { background: #b388ff0a; border-color: #b388ff33; }
-  .node-purple .node-title { color: var(--purple); }
-  .node-purple .node-tag   { background: #b388ff22; color: var(--purple); }
-
-  .node-yellow { background: #ffd7400a; border-color: #ffd74033; }
-  .node-yellow .node-title { color: var(--yellow); }
-  .node-yellow .node-tag   { background: #ffd74022; color: var(--yellow); }
-
-  .node-red    { background: #ff45600a; border-color: #ff456033; }
-  .node-red    .node-title { color: var(--red); }
-  .node-red    .node-tag   { background: #ff456022; color: var(--red); }
-
-  .node-blue   { background: #448aff0a; border-color: #448aff33; }
-  .node-blue   .node-title { color: var(--blue); }
-  .node-blue   .node-tag   { background: #448aff22; color: var(--blue); }
-
-  .node-muted  { background: #ffffff05; border-color: #ffffff15; }
-  .node-muted  .node-title { color: #888; }
-
-  /* The main layout — three rows */
+  /* Diagram wrapper */
   .diagram {
-    display: flex;
-    flex-direction: column;
-    gap: 0;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    overflow: hidden;
+    display: flex; flex-direction: column; gap: 0;
+    border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
   }
-
   .row {
-    display: grid;
-    padding: 20px 24px;
-    gap: 16px;
-    border-bottom: 1px solid var(--border);
-    position: relative;
+    display: grid; padding: 20px 24px; gap: 16px;
+    border-bottom: 1px solid var(--border); position: relative;
   }
   .row:last-child { border-bottom: none; }
-
-  .row-label {
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: .14em;
-    text-transform: uppercase;
-    color: var(--muted);
-    margin-bottom: 14px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .row-label::after {
-    content: '';
-    flex: 1;
-    height: 1px;
-    background: var(--border);
-  }
-
-  /* Row specific layouts */
   .row-browser  { background: #00d4ff04; }
   .row-flask    { background: #b388ff04; }
   .row-workers  { background: #ff704304; }
   .row-data     { background: #00e67604; }
   .row-external { background: #ffd74004; }
   .row-fs       { background: #448aff04; }
+  .row-tests    { background: #ff80ab04; }
 
-  /* Tab grid for browser row */
-  .tab-grid {
-    display: grid;
-    grid-template-columns: repeat(7, 1fr);
-    gap: 6px;
-    margin-bottom: 10px;
+  /* Arrow connector between rows */
+  .arrow-connector {
+    display: flex; align-items: center; justify-content: center;
+    padding: 6px 0; position: relative;
   }
-  .tab-grid-2 {
-    display: grid;
-    grid-template-columns: repeat(7, 1fr);
-    gap: 6px;
+  .arrow-connector .arrow-line {
+    width: 2px; height: 28px; position: relative;
   }
-  .tab-chip {
-    background: #00d4ff0d;
-    border: 1px solid #00d4ff22;
-    border-radius: 5px;
-    padding: 6px 8px;
-    text-align: center;
-    font-size: 10px;
-    color: var(--cyan);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .arrow-connector .arrow-label {
+    font-size: 9px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+    padding: 2px 10px; border-radius: 10px; white-space: nowrap;
   }
-  .tab-chip .tab-icon { display: block; font-size: 13px; margin-bottom: 2px; }
-
-  /* API routes */
-  .route-grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
+  .arrow-connector .arrow-head {
+    width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent;
   }
-  .route-chip {
-    background: #b388ff0d;
-    border: 1px solid #b388ff22;
-    border-radius: 4px;
-    padding: 3px 8px;
-    font-size: 10px;
-    color: var(--purple);
-    white-space: nowrap;
-  }
-  .route-chip .method {
-    color: var(--orange);
-    font-weight: 700;
-    margin-right: 4px;
-  }
-
-  /* Worker threads */
-  .worker-row {
-    display: flex;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
-  .worker-chip {
-    background: #ff70430d;
-    border: 1px solid #ff704333;
-    border-radius: 6px;
-    padding: 8px 12px;
-    font-size: 11px;
-    color: var(--orange);
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .worker-dot {
-    width: 6px; height: 6px;
-    background: var(--green);
-    border-radius: 50%;
-    box-shadow: 0 0 6px var(--green);
-    animation: pulse 2s infinite;
-    flex-shrink: 0;
-  }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-  .worker-sub { font-size: 10px; color: var(--muted); display: block; margin-top: 1px; }
-
-  /* Cache files */
-  .cache-grid {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-  .cache-chip {
-    background: #ffd7400a;
-    border: 1px solid #ffd74033;
-    border-radius: 5px;
-    padding: 6px 10px;
-    font-size: 10px;
-    color: var(--yellow);
-    font-family: var(--font-mono);
-  }
-
-  /* WMI / PowerShell sources */
-  .wmi-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 8px;
-  }
-  .wmi-chip {
-    background: #00e6760a;
-    border: 1px solid #00e67633;
-    border-radius: 6px;
-    padding: 8px 10px;
-    font-size: 10px;
-  }
-  .wmi-chip .wmi-title { color: var(--green); font-weight: 700; margin-bottom: 2px; }
-  .wmi-chip .wmi-sub   { color: var(--muted); font-size: 9px; line-height: 1.4; }
-
-  /* External */
-  .ext-grid {
-    display: flex;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
-  .ext-chip {
-    background: #ffd7400a;
-    border: 1px solid #ffd74033;
-    border-radius: 6px;
-    padding: 8px 12px;
-  }
-  .ext-chip .ext-title { color: var(--yellow); font-weight: 700; font-size: 11px; }
-  .ext-chip .ext-sub   { color: var(--muted); font-size: 10px; margin-top: 2px; }
-  .ext-chip .ext-badge {
-    font-size: 9px; padding: 1px 6px; border-radius: 8px;
-    background: #ffd74022; color: var(--yellow);
-    display: inline-block; margin-top: 4px;
-    text-transform: uppercase; font-weight: 700;
-  }
-
-  /* File system */
-  .fs-grid {
-    display: flex;
-    gap: 10px;
-    flex-wrap: wrap;
-  }
-  .fs-chip {
-    background: #448aff0a;
-    border: 1px solid #448aff33;
-    border-radius: 6px;
-    padding: 8px 12px;
-  }
-  .fs-chip .fs-title { color: var(--blue); font-weight: 700; font-size: 11px; }
-  .fs-chip .fs-sub   { color: var(--muted); font-size: 10px; margin-top: 2px; }
-
-  /* Arrows legend */
-  .legend {
-    display: flex;
-    gap: 20px;
-    flex-wrap: wrap;
-    padding: 16px 24px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    margin-top: 20px;
-  }
-  .legend-item { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
-  .legend-line { width: 24px; height: 2px; }
-
-  /* Flow arrows SVG overlay */
-  .flow-section {
-    position: relative;
-  }
-
-  /* Footer */
-  .footer {
-    margin-top: 28px;
-    padding-top: 16px;
-    border-top: 1px solid var(--border);
-    display: flex;
-    justify-content: space-between;
-    font-size: 11px;
-    color: var(--muted);
-  }
-
-  /* Startup task box */
-  .startup-box {
-    background: #448aff08;
-    border: 1px solid #448aff33;
-    border-radius: 8px;
-    padding: 10px 14px;
-    font-size: 11px;
-  }
-  .startup-box .sb-title { color: var(--blue); font-weight: 700; margin-bottom: 6px; }
-  .startup-task {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 4px;
-    align-items: center;
-  }
-  .startup-task .st-name { color: var(--text); font-weight: 600; min-width: 160px; }
-  .startup-task .st-desc { color: var(--muted); font-size: 10px; }
 
   @media print {
     body { padding: 16px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -408,17 +182,24 @@
     <div class="logo">Win<span>DesktopMgr</span></div>
     <div class="subtitle">Software Architecture Diagram</div>
   </div>
-  <div class="badge">
-    <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
+  <div style="display:flex;gap:12px;align-items:flex-end">
+    <div class="badge" style="color:var(--green);border-color:#00e67633">508 tests passing</div>
+    <div class="badge">
+      <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
+    </div>
   </div>
 </div>
 
+<!-- ═══════════════════════════════════════════════════════════════════════
+     MAIN ARCHITECTURE — CONNECTED COMPONENT DIAGRAM
+═══════════════════════════════════════════════════════════════════════ -->
 <div class="diagram">
 
   <!-- ── LAYER 1: BROWSER / FRONTEND ──────────────────────────── -->
-  <div class="row row-browser">
+  <div class="row row-browser" id="layer-browser">
     <div class="row-label">🌐 Frontend — Browser (index.html · Single Page App · Chart.js 4.4)</div>
-    <div class="tab-grid">
+    <div style="display:grid;grid-template-columns:repeat(9,1fr);gap:6px;margin-bottom:6px">
+      <div class="tab-chip"><span class="tab-icon">🏠</span>Dashboard</div>
       <div class="tab-chip"><span class="tab-icon">⟳</span>Driver Mgr</div>
       <div class="tab-chip"><span class="tab-icon">⚠</span>BSOD</div>
       <div class="tab-chip"><span class="tab-icon">🚀</span>Startup</div>
@@ -426,53 +207,120 @@
       <div class="tab-chip"><span class="tab-icon">🌐</span>Network</div>
       <div class="tab-chip"><span class="tab-icon">🔄</span>Updates</div>
       <div class="tab-chip"><span class="tab-icon">📋</span>Event Log</div>
-    </div>
-    <div class="tab-grid-2">
       <div class="tab-chip"><span class="tab-icon">⚡</span>Processes</div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(9,1fr);gap:6px">
       <div class="tab-chip"><span class="tab-icon">🌡</span>Thermals</div>
       <div class="tab-chip"><span class="tab-icon">⚙</span>Services</div>
       <div class="tab-chip"><span class="tab-icon">📈</span>Health Hist</div>
       <div class="tab-chip"><span class="tab-icon">⏱</span>Timeline</div>
       <div class="tab-chip"><span class="tab-icon">🧠</span>Memory</div>
       <div class="tab-chip"><span class="tab-icon">🔩</span>BIOS</div>
+      <div class="tab-chip"><span class="tab-icon">🔐</span>Credentials</div>
+      <div class="tab-chip" style="border-color:#00e67644;background:#00e6760d"><span class="tab-icon">🖥</span>System Info</div>
+      <div class="tab-chip" style="border-color:#ffd74044;background:#ffd7400d"><span class="tab-icon">🛡</span>Warranty</div>
     </div>
   </div>
 
+  <!-- ▼ ARROW: Browser → Flask ──────────────────────────── -->
+  <div style="display:flex;align-items:center;justify-content:center;padding:4px 0;background:linear-gradient(180deg,#00d4ff04,#b388ff04)">
+    <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+      <svg width="12" height="20"><line x1="6" y1="0" x2="6" y2="14" stroke="var(--cyan)" stroke-width="2"/><polygon points="1,14 6,20 11,14" fill="var(--cyan)"/></svg>
+      <span style="font-size:9px;color:var(--cyan);font-weight:700;letter-spacing:.08em">FETCH / POST</span>
+      <svg width="12" height="20"><polygon points="1,6 6,0 11,6" fill="var(--purple)"/><line x1="6" y1="6" x2="6" y2="20" stroke="var(--purple)" stroke-width="2"/></svg>
+    </div>
+    <span style="font-size:9px;color:var(--muted);margin-left:12px">HTTP JSON · 45 API endpoints · localhost:5000</span>
+  </div>
+
   <!-- ── LAYER 2: FLASK BACKEND ───────────────────────────────── -->
-  <div class="row row-flask">
-    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · Python 3.14 · port 5000</div>
+  <div class="row row-flask" id="layer-flask">
+    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~5,990 lines · Python 3.14 · port 5000 · threaded=True</div>
     <div style="margin-bottom:10px">
-      <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes</div>
-      <div class="route-grid">
+      <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes (45 endpoints)</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        <div class="route-chip"><span class="method">GET</span>/</div>
+        <div class="route-chip"><span class="method">POST</span>/api/scan/start</div>
+        <div class="route-chip"><span class="method">GET</span>/api/scan/status</div>
         <div class="route-chip"><span class="method">GET</span>/api/scan/results</div>
         <div class="route-chip"><span class="method">GET</span>/api/bsod/data</div>
+        <div class="route-chip"><span class="method">GET</span>/api/bsod/cache</div>
+        <div class="route-chip"><span class="method">DELETE</span>/api/bsod/cache/delete</div>
+        <div class="route-chip"><span class="method">POST</span>/api/bsod/cache/clear</div>
         <div class="route-chip"><span class="method">GET</span>/api/startup/list</div>
+        <div class="route-chip"><span class="method">POST</span>/api/startup/lookup-unknowns</div>
+        <div class="route-chip"><span class="method">GET</span>/api/startup/lookup-status</div>
+        <div class="route-chip"><span class="method">GET</span>/api/startup/cache</div>
+        <div class="route-chip"><span class="method">POST</span>/api/startup/toggle</div>
         <div class="route-chip"><span class="method">GET</span>/api/disk/data</div>
         <div class="route-chip"><span class="method">GET</span>/api/network/data</div>
         <div class="route-chip"><span class="method">GET</span>/api/updates/history</div>
         <div class="route-chip"><span class="method">POST</span>/api/events/query</div>
+        <div class="route-chip"><span class="method">GET</span>/api/events/cache</div>
+        <div class="route-chip"><span class="method">DELETE</span>/api/events/cache/delete</div>
+        <div class="route-chip"><span class="method">POST</span>/api/events/cache/clear</div>
         <div class="route-chip"><span class="method">GET</span>/api/processes/list</div>
+        <div class="route-chip"><span class="method">POST</span>/api/processes/lookup-unknowns</div>
+        <div class="route-chip"><span class="method">GET</span>/api/processes/lookup-status</div>
         <div class="route-chip"><span class="method">POST</span>/api/processes/kill</div>
         <div class="route-chip"><span class="method">GET</span>/api/thermals/data</div>
         <div class="route-chip"><span class="method">GET</span>/api/services/list</div>
         <div class="route-chip"><span class="method">POST</span>/api/services/toggle</div>
+        <div class="route-chip"><span class="method">POST</span>/api/services/lookup-unknowns</div>
+        <div class="route-chip"><span class="method">GET</span>/api/services/lookup-status</div>
         <div class="route-chip"><span class="method">GET</span>/api/health-history/data</div>
         <div class="route-chip"><span class="method">GET</span>/api/timeline/data</div>
         <div class="route-chip"><span class="method">GET</span>/api/memory/data</div>
         <div class="route-chip"><span class="method">GET</span>/api/bios/status</div>
+        <div class="route-chip"><span class="method">POST</span>/api/bios/cache/clear</div>
+        <div class="route-chip"><span class="method">GET</span>/api/credentials/health</div>
+        <div class="route-chip"><span class="method">POST</span>/api/credentials/resume-onedrive</div>
+        <div class="route-chip"><span class="method">POST</span>/api/credentials/resume-brokers</div>
+        <div class="route-chip"><span class="method">POST</span>/api/credentials/fix-fast-startup</div>
+        <div class="route-chip"><span class="method">GET</span>/api/warranty/data</div>
+        <div class="route-chip"><span class="method">GET</span>/api/sysinfo/data</div>
         <div class="route-chip"><span class="method">POST</span>/api/summary/&lt;tab&gt;</div>
-        <div class="route-chip"><span class="method">POST</span>/api/startup/lookup-unknowns</div>
-        <div class="route-chip"><span class="method">POST</span>/api/startup/toggle</div>
-        <div class="route-chip"><span class="method">GET</span>/api/events/cache</div>
-        <div class="route-chip"><span class="method">GET</span>/api/bsod/cache</div>
+        <div class="route-chip"><span class="method">GET</span>/api/dashboard/summary</div>
+      </div>
+    </div>
+    <div>
+      <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">Summarizers (AI-style insight engine per tab)</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        <div style="background:#b388ff0d;border:1px solid #b388ff22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--purple)">summarize_drivers</div>
+        <div style="background:#b388ff0d;border:1px solid #b388ff22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--purple)">summarize_bsod</div>
+        <div style="background:#b388ff0d;border:1px solid #b388ff22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--purple)">summarize_startup</div>
+        <div style="background:#b388ff0d;border:1px solid #b388ff22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--purple)">summarize_disk</div>
+        <div style="background:#b388ff0d;border:1px solid #b388ff22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--purple)">summarize_network</div>
+        <div style="background:#b388ff0d;border:1px solid #b388ff22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--purple)">summarize_updates</div>
+        <div style="background:#b388ff0d;border:1px solid #b388ff22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--purple)">summarize_processes</div>
+        <div style="background:#b388ff0d;border:1px solid #b388ff22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--purple)">summarize_thermals</div>
+        <div style="background:#b388ff0d;border:1px solid #b388ff22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--purple)">summarize_services</div>
+        <div style="background:#b388ff0d;border:1px solid #b388ff22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--purple)">summarize_sysinfo</div>
+        <div style="background:#b388ff0d;border:1px solid #b388ff22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--purple)">summarize_credentials</div>
+        <div style="background:#b388ff0d;border:1px solid #b388ff22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--purple)">dashboard_summary</div>
       </div>
     </div>
   </div>
 
+  <!-- ▼ ARROW: Flask ↔ Workers & Data ──────────────────── -->
+  <div style="display:flex;align-items:center;justify-content:space-around;padding:4px 24px;background:linear-gradient(180deg,#b388ff04,#ff704304)">
+    <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+      <svg width="12" height="20"><line x1="6" y1="0" x2="6" y2="14" stroke="var(--purple)" stroke-width="2"/><polygon points="1,14 6,20 11,14" fill="var(--purple)"/></svg>
+      <span style="font-size:9px;color:var(--orange);font-weight:700;letter-spacing:.08em">QUEUE UNKNOWNS</span>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+      <svg width="12" height="20"><line x1="6" y1="0" x2="6" y2="14" stroke="var(--green)" stroke-width="2"/><polygon points="1,14 6,20 11,14" fill="var(--green)"/></svg>
+      <span style="font-size:9px;color:var(--green);font-weight:700;letter-spacing:.08em">SUBPROCESS.RUN()</span>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+      <svg width="12" height="16"><polygon points="1,6 6,0 11,6" fill="var(--yellow)"/><line x1="6" y1="6" x2="6" y2="16" stroke="var(--yellow)" stroke-width="2"/></svg>
+      <span style="font-size:9px;color:var(--yellow);font-weight:700;letter-spacing:.08em">CACHE READ/WRITE</span>
+    </div>
+  </div>
+
   <!-- ── LAYER 3: BACKGROUND WORKERS ─────────────────────────── -->
-  <div class="row row-workers">
-    <div class="row-label">🔄 Background Worker Threads — daemon=True · self-learning knowledge enrichment</div>
-    <div class="worker-row">
+  <div class="row row-workers" id="layer-workers">
+    <div class="row-label">🔄 Background Worker Threads — daemon=True · self-learning knowledge enrichment · thread-safe queues</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
       <div class="worker-chip">
         <div class="worker-dot"></div>
         <div>
@@ -511,7 +359,7 @@
     </div>
     <div style="margin-top:12px">
       <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">Knowledge Cache Files (JSON · 24h stale refresh · unknown retry on startup)</div>
-      <div class="cache-grid">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
         <div class="cache-chip">event_id_cache.json</div>
         <div class="cache-chip">bsod_code_cache.json</div>
         <div class="cache-chip">startup_item_cache.json</div>
@@ -522,21 +370,59 @@
     </div>
   </div>
 
+  <!-- ▼ ARROW: Workers → External ──────────────────────── -->
+  <div style="display:flex;align-items:center;justify-content:center;padding:4px 0;background:linear-gradient(180deg,#ff704304,#00e67604)">
+    <div style="display:flex;align-items:center;gap:16px">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+        <svg width="12" height="20"><line x1="6" y1="0" x2="6" y2="14" stroke="var(--orange)" stroke-width="2" stroke-dasharray="4,3"/><polygon points="1,14 6,20 11,14" fill="var(--orange)"/></svg>
+        <span style="font-size:9px;color:var(--orange);font-weight:700;letter-spacing:.08em">URLLIB / WEB FALLBACK</span>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+        <svg width="12" height="20"><line x1="6" y1="0" x2="6" y2="14" stroke="var(--green)" stroke-width="2"/><polygon points="1,14 6,20 11,14" fill="var(--green)"/></svg>
+        <span style="font-size:9px;color:var(--green);font-weight:700;letter-spacing:.08em">POWERSHELL / WMI</span>
+      </div>
+    </div>
+  </div>
+
   <!-- ── LAYER 4: WINDOWS DATA SOURCES ────────────────────────── -->
-  <div class="row row-data">
-    <div class="row-label">🖥 Windows Data Sources — PowerShell / WMI / COM Objects</div>
-    <div class="wmi-grid">
+  <div class="row row-data" id="layer-data">
+    <div class="row-label">🖥 Windows Data Sources — PowerShell / WMI / CIM / COM / Registry</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
       <div class="wmi-chip">
         <div class="wmi-title">Win32_PnPSignedDriver</div>
         <div class="wmi-sub">Installed drivers · version · date · class</div>
       </div>
       <div class="wmi-chip">
-        <div class="wmi-title">Microsoft.Update.Session</div>
-        <div class="wmi-sub">Windows Update history · pending updates · driver updates</div>
+        <div class="wmi-title">Win32_Processor</div>
+        <div class="wmi-sub">CPU model · cores · speed · serial · ProcessorId</div>
+      </div>
+      <div class="wmi-chip">
+        <div class="wmi-title">Win32_OperatingSystem</div>
+        <div class="wmi-sub">RAM · uptime · OS version · install date · build</div>
+      </div>
+      <div class="wmi-chip">
+        <div class="wmi-title">Win32_ComputerSystem</div>
+        <div class="wmi-sub">Manufacturer · model · domain · system type</div>
+      </div>
+      <div class="wmi-chip">
+        <div class="wmi-title">Win32_BIOS + BaseBoard</div>
+        <div class="wmi-sub">BIOS version · date · service tag · board model</div>
+      </div>
+      <div class="wmi-chip">
+        <div class="wmi-title">Win32_VideoController</div>
+        <div class="wmi-sub">GPU name · driver · VRAM · video modes</div>
+      </div>
+      <div class="wmi-chip">
+        <div class="wmi-title">Win32_PhysicalMemory</div>
+        <div class="wmi-sub">DIMM slots · speed · manufacturer · capacity</div>
+      </div>
+      <div class="wmi-chip">
+        <div class="wmi-title">Win32_DiskDrive</div>
+        <div class="wmi-sub">Disk model · size · interface · media type · serial</div>
       </div>
       <div class="wmi-chip">
         <div class="wmi-title">Get-WinEvent</div>
-        <div class="wmi-sub">System/App/Security event log · IDs 41, 1001, 6008, 7036</div>
+        <div class="wmi-sub">System/App/Security log · IDs 41, 1001, 6008, 17, 19</div>
       </div>
       <div class="wmi-chip">
         <div class="wmi-title">Get-Process + Win32_Process</div>
@@ -544,43 +430,43 @@
       </div>
       <div class="wmi-chip">
         <div class="wmi-title">Get-NetTCPConnection</div>
-        <div class="wmi-sub">Active TCP connections · ports · owning process</div>
+        <div class="wmi-sub">TCP connections · ports · owning process</div>
       </div>
       <div class="wmi-chip">
-        <div class="wmi-title">MSAcpi_ThermalZoneTemperature</div>
-        <div class="wmi-sub">CPU thermal zones · OpenHardwareMonitor WMI namespace</div>
+        <div class="wmi-title">MSAcpi_ThermalZone</div>
+        <div class="wmi-sub">CPU thermal zones · OpenHardwareMonitor WMI</div>
       </div>
       <div class="wmi-chip">
         <div class="wmi-title">Win32_Service</div>
         <div class="wmi-sub">All services · state · start mode · PID · path</div>
       </div>
       <div class="wmi-chip">
-        <div class="wmi-title">Win32_BIOS + Win32_BaseBoard</div>
-        <div class="wmi-sub">BIOS version · date · manufacturer · service tag · board</div>
-      </div>
-      <div class="wmi-chip">
-        <div class="wmi-title">Get-PSDrive + Get-PhysicalDisk</div>
-        <div class="wmi-sub">Drive usage · free space · health · bus type · media type</div>
+        <div class="wmi-title">Get-PSDrive + PhysicalDisk</div>
+        <div class="wmi-sub">Drive usage · free space · health · bus type</div>
       </div>
       <div class="wmi-chip">
         <div class="wmi-title">Registry Run Keys</div>
         <div class="wmi-sub">HKLM/HKCU startup entries · enabled/disabled</div>
       </div>
       <div class="wmi-chip">
-        <div class="wmi-title">Get-ScheduledTask</div>
-        <div class="wmi-sub">Logon/boot triggered tasks · state · last run</div>
-      </div>
-      <div class="wmi-chip">
-        <div class="wmi-title">Win32_OperatingSystem</div>
-        <div class="wmi-sub">Total/free RAM · uptime · OS version</div>
+        <div class="wmi-title">cmdkey + Get-SmbConnection</div>
+        <div class="wmi-sub">Credential Manager · SMB drives · NAS health</div>
       </div>
     </div>
   </div>
 
+  <!-- ▼ ARROW: Data ↔ External ──────────────────────────── -->
+  <div style="display:flex;align-items:center;justify-content:center;padding:4px 0;background:linear-gradient(180deg,#00e67604,#ffd74004)">
+    <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+      <svg width="12" height="20"><line x1="6" y1="0" x2="6" y2="14" stroke="var(--yellow)" stroke-width="2" stroke-dasharray="4,3"/><polygon points="1,14 6,20 11,14" fill="var(--yellow)"/></svg>
+      <span style="font-size:9px;color:var(--yellow);font-weight:700;letter-spacing:.08em">EXTERNAL API CALLS (cached results)</span>
+    </div>
+  </div>
+
   <!-- ── LAYER 5: EXTERNAL SERVICES ───────────────────────────── -->
-  <div class="row row-external">
+  <div class="row row-external" id="layer-external">
     <div class="row-label">☁ External Services — internet fallback · results cached locally</div>
-    <div class="ext-grid">
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
       <div class="ext-chip">
         <div class="ext-title">Microsoft Learn API</div>
         <div class="ext-sub">learn.microsoft.com/api/search<br>Event IDs · stop codes · process/service descriptions</div>
@@ -592,9 +478,14 @@
         <span class="ext-badge">offline first</span>
       </div>
       <div class="ext-chip">
-        <div class="ext-title">Dell Support (BIOS)</div>
-        <div class="ext-sub">dell.com/support/servicetag/9T46D14<br>Dell Command Update CLI · catalog XML</div>
+        <div class="ext-title">Dell Support</div>
+        <div class="ext-sub">dell.com/support · Dell Command Update CLI<br>BIOS updates · service tag lookup · catalog XML</div>
         <span class="ext-badge">24h cache</span>
+      </div>
+      <div class="ext-chip">
+        <div class="ext-title">Intel Warranty Portal</div>
+        <div class="ext-sub">intel.com/warranty<br>13th/14th Gen CPU degradation claims</div>
+        <span class="ext-badge">manual</span>
       </div>
       <div class="ext-chip">
         <div class="ext-title">Windows Update Service</div>
@@ -605,40 +496,44 @@
   </div>
 
   <!-- ── LAYER 6: FILE SYSTEM & TASKS ─────────────────────────── -->
-  <div class="row row-fs">
+  <div class="row row-fs" id="layer-fs">
     <div class="row-label">📁 File System &amp; Scheduled Tasks</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
       <div>
-        <div style="font-size:10px;color:var(--muted);font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">Files — OneDrive\Coding\Windows Tools\windesktopmgr\</div>
-        <div class="fs-grid">
+        <div style="font-size:10px;color:var(--muted);font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">Source Files</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
           <div class="fs-chip">
             <div class="fs-title">windesktopmgr.py</div>
-            <div class="fs-sub">Flask backend · ~4,600 lines</div>
+            <div class="fs-sub">Flask backend · ~5,990 lines</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">templates/index.html</div>
-            <div class="fs-sub">Single-page frontend · ~2,900 lines</div>
+            <div class="fs-sub">Single-page frontend · ~3,700 lines</div>
+          </div>
+          <div class="fs-chip">
+            <div class="fs-title">SystemHealthDiag.py</div>
+            <div class="fs-sub">Daily health diagnostic · ~1,100 lines · 29 functions</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">setup-startup.ps1</div>
             <div class="fs-sub">Task Scheduler registration</div>
           </div>
           <div class="fs-chip">
-            <div class="fs-title">windesktopmgr.log</div>
-            <div class="fs-sub">Server output log</div>
+            <div class="fs-title">architecture.html</div>
+            <div class="fs-sub">This diagram</div>
           </div>
         </div>
       </div>
       <div>
         <div style="font-size:10px;color:var(--muted);font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">Scheduled Tasks — Windows Task Scheduler</div>
-        <div class="startup-box">
-          <div class="startup-task">
-            <div class="st-name" style="color:var(--blue)">WinDesktopMgr</div>
-            <div class="st-desc">At login → start Flask + open browser (6s delay)</div>
+        <div style="background:#448aff08;border:1px solid #448aff33;border-radius:8px;padding:10px 14px;font-size:11px">
+          <div style="display:flex;gap:8px;margin-bottom:4px;align-items:center">
+            <div style="color:var(--blue);font-weight:600;min-width:200px">WinDesktopMgr</div>
+            <div style="color:var(--muted);font-size:10px">At login → start Flask + open browser (6s delay)</div>
           </div>
-          <div class="startup-task">
-            <div class="st-name" style="color:var(--green)">SystemHealthDiagnostic</div>
-            <div class="st-desc">Daily 7:00 AM → run SystemHealthDiag.ps1 → PDF + email</div>
+          <div style="display:flex;gap:8px;margin-bottom:4px;align-items:center">
+            <div style="color:var(--green);font-weight:600;min-width:200px">SystemHealthDiagnostic</div>
+            <div style="color:var(--muted);font-size:10px">Daily 7:00 AM → run SystemHealthDiag.py → PDF + email</div>
           </div>
           <div style="margin-top:8px;font-size:10px;color:var(--muted)">
             Both use <code style="color:var(--orange)">-ExecutionPolicy Bypass</code> to avoid signing errors
@@ -647,23 +542,61 @@
       </div>
     </div>
     <div style="margin-top:14px">
-      <div style="font-size:10px;color:var(--muted);font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">Health Reports — OneDrive\Coding\Windows Tools\System Health Reports\</div>
-      <div class="fs-grid">
+      <div style="font-size:10px;color:var(--muted);font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">Health Reports — System Health Reports\</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
         <div class="fs-chip">
           <div class="fs-title">SystemHealthReport_*.html</div>
           <div class="fs-sub">Daily HTML report · parsed by Health History tab</div>
         </div>
         <div class="fs-chip">
           <div class="fs-title">SystemHealthReport_*.pdf</div>
-          <div class="fs-sub">PDF version via Edge headless · emailed via Gmail</div>
+          <div class="fs-sub">PDF via Edge headless · emailed via Gmail SMTP</div>
         </div>
       </div>
     </div>
   </div>
 
+  <!-- ── LAYER 7: TEST SUITE ──────────────────────────────────── -->
+  <div class="row row-tests" id="layer-tests">
+    <div class="row-label">🧪 Test Suite — 508 tests · pytest · 0.6s · Flask + PowerShell + Python</div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+      <div class="test-chip">
+        <div class="test-title">test_routes.py</div>
+        <div class="test-sub">130 tests · all 45 Flask endpoints · server config · warranty · sysinfo</div>
+      </div>
+      <div class="test-chip">
+        <div class="test-title">test_powershell.py</div>
+        <div class="test-sub">114 tests · subprocess mocking · single-item normalization · timeouts</div>
+      </div>
+      <div class="test-chip">
+        <div class="test-title">test_system_health_diag.py</div>
+        <div class="test-sub">121 tests · 29 functions · warranty · cross-platform mocks</div>
+      </div>
+      <div class="test-chip">
+        <div class="test-title">test_summarizers.py</div>
+        <div class="test-sub">70 tests · all 12 summarizer functions · insight engine</div>
+      </div>
+      <div class="test-chip">
+        <div class="test-title">test_pure_functions.py</div>
+        <div class="test-sub">46 tests · categorize · version compare · timestamp parse</div>
+      </div>
+      <div class="test-chip">
+        <div class="test-title">test_bsod_parsing.py</div>
+        <div class="test-sub">27 tests · event parsing · report crashes · recommendations</div>
+      </div>
+    </div>
+    <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">
+      <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">conftest.py — shared fixtures · Flask test client</div>
+      <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">requirements-dev.txt — pytest · pytest-flask · pytest-mock</div>
+      <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">ctypes + winreg mocked at import for cross-platform</div>
+    </div>
+  </div>
+
 </div>
 
-<!-- Data flow legend -->
+<!-- ═══════════════════════════════════════════════════════════════════════
+     DATA FLOW LEGEND
+═══════════════════════════════════════════════════════════════════════ -->
 <div class="legend">
   <div style="font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);align-self:center;margin-right:8px">Data flow:</div>
   <div class="legend-item">
@@ -676,18 +609,22 @@
   </div>
   <div class="legend-item">
     <div class="legend-line" style="background:var(--orange); height:2px; border-top: 1px dashed var(--orange); background: none;"></div>
-    Workers → External APIs (urllib · async · cached)
+    Workers → External APIs (urllib · cached)
   </div>
   <div class="legend-item">
     <div class="legend-line" style="background:var(--yellow)"></div>
-    Cache read/write (JSON files on disk)
+    Cache read/write (JSON on disk)
   </div>
   <div class="legend-item">
     <div class="legend-line" style="background:var(--blue)"></div>
-    Task Scheduler → Scripts (at login / daily)
+    Task Scheduler → Scripts
+  </div>
+  <div class="legend-item">
+    <div class="legend-line" style="background:var(--pink)"></div>
+    Test coverage (mocked subprocess)
   </div>
   <div style="margin-left:auto;font-size:10px;color:var(--muted)">
-    All PowerShell calls run via <code style="color:var(--purple)">subprocess.run()</code> · results parsed as JSON
+    All PowerShell calls via <code style="color:var(--purple)">subprocess.run()</code> · results parsed as JSON
   </div>
 </div>
 
@@ -704,7 +641,6 @@
   </div>
   <div style="padding:24px;background:var(--surface)">
 
-    <!-- Flow steps -->
     <div style="display:flex;align-items:stretch;gap:0;flex-wrap:nowrap;overflow-x:auto">
 
       <!-- Step 1 -->
@@ -722,7 +658,7 @@
       <div style="flex-shrink:0;width:150px;background:#b388ff0a;border:1px solid #b388ff33;border-radius:8px;padding:14px 12px;text-align:center">
         <div style="font-size:18px;margin-bottom:6px">🐍</div>
         <div style="color:var(--purple);font-weight:700;font-size:11px;margin-bottom:4px">FLASK ROUTE</div>
-        <div style="color:var(--muted);font-size:10px;line-height:1.4">e.g. GET /api/processes/list receives the request</div>
+        <div style="color:var(--muted);font-size:10px;line-height:1.4">Matches one of 45 API endpoints</div>
       </div>
       <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 6px;flex-shrink:0">
         <div style="font-size:10px;color:var(--purple);font-weight:700;white-space:nowrap">subprocess</div>
@@ -733,7 +669,7 @@
       <div style="flex-shrink:0;width:150px;background:#00e6760a;border:1px solid #00e67633;border-radius:8px;padding:14px 12px;text-align:center">
         <div style="font-size:18px;margin-bottom:6px">⚡</div>
         <div style="color:var(--green);font-weight:700;font-size:11px;margin-bottom:4px">POWERSHELL / WMI</div>
-        <div style="color:var(--muted);font-size:10px;line-height:1.4">Query Windows — Get-Process, Win32_Service, Get-WinEvent etc.</div>
+        <div style="color:var(--muted);font-size:10px;line-height:1.4">Query Windows — Get-CimInstance, Get-WinEvent, etc.</div>
       </div>
       <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 6px;flex-shrink:0">
         <div style="font-size:10px;color:var(--green);font-weight:700;white-space:nowrap">JSON</div>
@@ -743,8 +679,8 @@
       <!-- Step 4 -->
       <div style="flex-shrink:0;width:150px;background:#ff70430a;border:1px solid #ff704333;border-radius:8px;padding:14px 12px;text-align:center">
         <div style="font-size:18px;margin-bottom:6px">🔄</div>
-        <div style="color:var(--orange);font-weight:700;font-size:11px;margin-bottom:4px">ENRICH + PROCESS</div>
-        <div style="color:var(--muted);font-size:10px;line-height:1.4">Merge KB lookup, flag anomalies, build summary insights</div>
+        <div style="color:var(--orange);font-weight:700;font-size:11px;margin-bottom:4px">ENRICH + SUMMARIZE</div>
+        <div style="color:var(--muted);font-size:10px;line-height:1.4">Merge KB cache, flag anomalies, build insight summary</div>
       </div>
       <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 6px;flex-shrink:0">
         <div style="font-size:10px;color:var(--orange);font-weight:700;white-space:nowrap">jsonify()</div>
@@ -760,7 +696,7 @@
 
     </div>
 
-    <!-- Background enrichment side path -->
+    <!-- Background enrichment -->
     <div style="margin-top:20px;background:#ffffff05;border:1px solid var(--border);border-radius:8px;padding:14px 20px">
       <div style="font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:10px">
         Parallel — Background Worker Enrichment (for unknown items)
@@ -796,105 +732,179 @@
   </div>
   <div style="padding:24px;background:var(--surface)">
 
-    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:0;align-items:start">
+    <div style="display:flex;align-items:center;gap:0;flex-wrap:nowrap;overflow-x:auto">
 
-      <!-- Step 1 -->
-      <div style="text-align:center;padding:0 6px">
-        <div style="background:#448aff0a;border:1px solid #448aff33;border-radius:8px;padding:12px 8px;margin-bottom:8px">
-          <div style="font-size:20px;margin-bottom:4px">👤</div>
-          <div style="color:var(--blue);font-weight:700;font-size:10px">WINDOWS LOGIN</div>
-          <div style="color:var(--muted);font-size:9px;margin-top:4px;line-height:1.4">User signs in to Windows 11</div>
-        </div>
+      <div style="flex-shrink:0;width:140px;background:#448aff0a;border:1px solid #448aff33;border-radius:8px;padding:12px 8px;text-align:center">
+        <div style="font-size:20px;margin-bottom:4px">👤</div>
+        <div style="color:var(--blue);font-weight:700;font-size:10px">WINDOWS LOGIN</div>
+        <div style="color:var(--muted);font-size:9px;margin-top:4px">User signs into Windows 11</div>
       </div>
-      <div style="display:flex;align-items:center;justify-content:center;padding-top:20px">
-        <div style="text-align:center">
-          <div style="font-size:9px;color:var(--muted);white-space:nowrap">triggers</div>
-          <div style="font-size:18px;color:var(--blue)">→</div>
-        </div>
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 6px;flex-shrink:0">
+        <div style="font-size:9px;color:var(--muted)">triggers</div>
+        <div style="font-size:18px;color:var(--blue)">→</div>
       </div>
 
-      <!-- Step 2 -->
-      <div style="text-align:center;padding:0 6px">
-        <div style="background:#448aff0a;border:1px solid #448aff33;border-radius:8px;padding:12px 8px;margin-bottom:8px">
-          <div style="font-size:20px;margin-bottom:4px">📅</div>
-          <div style="color:var(--blue);font-weight:700;font-size:10px">TASK SCHEDULER</div>
-          <div style="color:var(--muted);font-size:9px;margin-top:4px;line-height:1.4">WinDesktopMgr task fires on login trigger</div>
-        </div>
+      <div style="flex-shrink:0;width:140px;background:#448aff0a;border:1px solid #448aff33;border-radius:8px;padding:12px 8px;text-align:center">
+        <div style="font-size:20px;margin-bottom:4px">📅</div>
+        <div style="color:var(--blue);font-weight:700;font-size:10px">TASK SCHEDULER</div>
+        <div style="color:var(--muted);font-size:9px;margin-top:4px">WinDesktopMgr task fires</div>
       </div>
-      <div style="display:flex;align-items:center;justify-content:center;padding-top:20px">
-        <div style="text-align:center">
-          <div style="font-size:9px;color:var(--muted);white-space:nowrap">runs</div>
-          <div style="font-size:18px;color:var(--blue)">→</div>
-        </div>
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 6px;flex-shrink:0">
+        <div style="font-size:9px;color:var(--muted)">runs</div>
+        <div style="font-size:18px;color:var(--blue)">→</div>
       </div>
 
-      <!-- Step 3 -->
-      <div style="text-align:center;padding:0 6px">
-        <div style="background:#448aff0a;border:1px solid #448aff33;border-radius:8px;padding:12px 8px;margin-bottom:8px">
-          <div style="font-size:20px;margin-bottom:4px">📄</div>
-          <div style="color:var(--blue);font-weight:700;font-size:10px">start-windesktopmgr.bat</div>
-          <div style="color:var(--muted);font-size:9px;margin-top:4px;line-height:1.4">Resolves Python path (py.exe fallback chain)</div>
-        </div>
+      <div style="flex-shrink:0;width:140px;background:#448aff0a;border:1px solid #448aff33;border-radius:8px;padding:12px 8px;text-align:center">
+        <div style="font-size:20px;margin-bottom:4px">📄</div>
+        <div style="color:var(--blue);font-weight:700;font-size:10px">start-windesktopmgr.bat</div>
+        <div style="color:var(--muted);font-size:9px;margin-top:4px">Resolves Python path</div>
       </div>
-      <div style="display:flex;align-items:center;justify-content:center;padding-top:20px">
-        <div style="text-align:center">
-          <div style="font-size:9px;color:var(--muted);white-space:nowrap">starts</div>
-          <div style="font-size:18px;color:var(--blue)">→</div>
-        </div>
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 6px;flex-shrink:0">
+        <div style="font-size:9px;color:var(--muted)">starts</div>
+        <div style="font-size:18px;color:var(--blue)">→</div>
       </div>
 
-      <!-- Step 4 placeholder for next row -->
+      <div style="flex-shrink:0;width:140px;background:#b388ff0a;border:1px solid #b388ff33;border-radius:8px;padding:12px 8px;text-align:center">
+        <div style="font-size:20px;margin-bottom:4px">🐍</div>
+        <div style="color:var(--purple);font-weight:700;font-size:10px">FLASK STARTS</div>
+        <div style="color:var(--muted);font-size:9px;margin-top:4px">Port 5000 · threaded=True</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 6px;flex-shrink:0">
+        <div style="font-size:9px;color:var(--muted)">spawns</div>
+        <div style="font-size:18px;color:var(--orange)">→</div>
+      </div>
+
+      <div style="flex-shrink:0;width:140px;background:#ff70430a;border:1px solid #ff704333;border-radius:8px;padding:12px 8px;text-align:center">
+        <div style="font-size:20px;margin-bottom:4px">🔄</div>
+        <div style="color:var(--orange);font-weight:700;font-size:10px">5 WORKER THREADS</div>
+        <div style="color:var(--muted);font-size:9px;margin-top:4px">Daemon threads · load caches</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 6px;flex-shrink:0">
+        <div style="font-size:9px;color:var(--muted)">6s delay</div>
+        <div style="font-size:18px;color:var(--cyan)">→</div>
+      </div>
+
+      <div style="flex-shrink:0;width:140px;background:#00e6760a;border:1px solid #00e67633;border-radius:8px;padding:12px 8px;text-align:center">
+        <div style="font-size:20px;margin-bottom:4px">🌐</div>
+        <div style="color:var(--green);font-weight:700;font-size:10px">BROWSER OPENS</div>
+        <div style="color:var(--muted);font-size:9px;margin-top:4px">localhost:5000 — live</div>
+      </div>
+
     </div>
 
-    <!-- Row 2 -->
-    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:0;align-items:start;margin-top:8px">
-      <div></div><div></div><div></div><div></div>
-
-      <!-- Step 4 -->
-      <div style="text-align:center;padding:0 6px">
-        <div style="background:#00d4ff0a;border:1px solid #00d4ff33;border-radius:8px;padding:12px 8px;margin-bottom:8px">
-          <div style="font-size:20px;margin-bottom:4px">🐍</div>
-          <div style="color:var(--cyan);font-weight:700;font-size:10px">FLASK STARTS</div>
-          <div style="color:var(--muted);font-size:9px;margin-top:4px;line-height:1.4">windesktopmgr.py launches silently on port 5000</div>
-        </div>
-      </div>
-      <div style="display:flex;align-items:center;justify-content:center;padding-top:20px">
-        <div style="text-align:center">
-          <div style="font-size:9px;color:var(--muted);white-space:nowrap">6s delay</div>
-          <div style="font-size:18px;color:var(--cyan)">→</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Row 3: full width final step -->
-    <div style="margin-top:8px;display:grid;grid-template-columns:repeat(6,1fr);gap:0;align-items:start">
-      <div></div><div></div><div></div><div></div><div></div>
-      <div style="text-align:center;padding:0 6px">
-        <div style="background:#00e6760a;border:1px solid #00e67633;border-radius:8px;padding:12px 8px">
-          <div style="font-size:20px;margin-bottom:4px">🌐</div>
-          <div style="color:var(--green);font-weight:700;font-size:10px">BROWSER OPENS</div>
-          <div style="color:var(--muted);font-size:9px;margin-top:4px;line-height:1.4">localhost:5000 opens automatically — dashboard is live</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Side task -->
+    <!-- Daily health task -->
     <div style="margin-top:20px;display:grid;grid-template-columns:1fr 1fr;gap:16px">
       <div style="background:#00e67608;border:1px solid #00e67633;border-radius:8px;padding:14px 16px">
         <div style="color:var(--green);font-weight:700;font-size:11px;margin-bottom:8px">📅 Daily at 7:00 AM — SystemHealthDiagnostic Task</div>
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
           <div style="background:#00e6760d;border:1px solid #00e67622;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--green)">Task fires</div>
           <div style="color:var(--muted);font-size:12px">→</div>
-          <div style="background:#00e6760d;border:1px solid #00e67622;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--green)">SystemHealthDiag.ps1</div>
+          <div style="background:#00e6760d;border:1px solid #00e67622;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--green)">SystemHealthDiag.py</div>
+          <div style="color:var(--muted);font-size:12px">→</div>
+          <div style="background:#00e6760d;border:1px solid #00e67622;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--green)">16 analysis functions</div>
           <div style="color:var(--muted);font-size:12px">→</div>
           <div style="background:#00e6760d;border:1px solid #00e67622;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--green)">HTML + PDF report</div>
           <div style="color:var(--muted);font-size:12px">→</div>
           <div style="background:#00e6760d;border:1px solid #00e67622;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--green)">Gmail via SMTP</div>
         </div>
+        <div style="font-size:10px;color:var(--muted);margin-top:8px">Includes: warranty readiness · Intel CPU check · BSOD analysis · disk SMART · driver scan · memory · thermals</div>
       </div>
-      <div style="background:#448aff08;border:1px solid #448aff33;border-radius:8px;padding:14px 16px">
-        <div style="color:var(--blue);font-weight:700;font-size:11px;margin-bottom:8px">🔑 Key: -ExecutionPolicy Bypass</div>
-        <div style="color:var(--muted);font-size:10px;line-height:1.5">Both tasks use <code style="color:var(--orange)">-ExecutionPolicy Bypass</code> in their action arguments. Without this, Windows blocks unsigned PowerShell scripts and the task silently fails with <code style="color:var(--red)">0xC0000005</code>.</div>
+      <div style="background:#ff80ab08;border:1px solid #ff80ab33;border-radius:8px;padding:14px 16px">
+        <div style="color:var(--pink);font-weight:700;font-size:11px;margin-bottom:8px">🧪 Test Pipeline — Every Change</div>
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">Code change</div>
+          <div style="color:var(--muted);font-size:12px">→</div>
+          <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">pytest tests/</div>
+          <div style="color:var(--muted);font-size:12px">→</div>
+          <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">508 tests in 0.6s</div>
+          <div style="color:var(--muted);font-size:12px">→</div>
+          <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">git push main</div>
+        </div>
+        <div style="font-size:10px;color:var(--muted);margin-top:8px">Rule: every new feature ships with tests. Flask routes, PowerShell mocks, and pure Python all covered.</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     DIAGRAM 3: SystemHealthDiag.py — Function Architecture
+═══════════════════════════════════════════════════════════════════════ -->
+<div style="margin-top:24px;border:1px solid var(--border);border-radius:12px;overflow:hidden">
+  <div style="background:var(--card);padding:14px 24px;border-bottom:1px solid var(--border)">
+    <div style="font-family:var(--font-head);font-size:14px;font-weight:700;color:var(--green)">
+      SystemHealthDiag.py — Daily Health Report Architecture
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-top:2px">29 functions · refactored from module-level code into testable, importable functions</div>
+  </div>
+  <div style="padding:24px;background:var(--surface)">
+
+    <!-- main() orchestrator -->
+    <div style="background:#00e6760a;border:2px solid #00e67644;border-radius:10px;padding:16px 20px;margin-bottom:16px">
+      <div style="color:var(--green);font-weight:700;font-size:13px;margin-bottom:10px">main() — Orchestrator</div>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <div style="background:#00e6760d;border:1px solid #00e67633;border-radius:4px;padding:4px 10px;font-size:10px;color:var(--green)">is_admin()</div>
+        <div style="color:var(--muted)">→</div>
+        <div style="background:#00e6760d;border:1px solid #00e67633;border-radius:4px;padding:4px 10px;font-size:10px;color:var(--green)">collect_system_info()</div>
+        <div style="color:var(--muted)">→</div>
+        <div style="background:#00e6760d;border:1px solid #00e67633;border-radius:4px;padding:4px 10px;font-size:10px;color:var(--green)">check_intel_cpu()</div>
+        <div style="color:var(--muted)">→</div>
+        <div style="background:#00e6760d;border:1px solid #00e67633;border-radius:4px;padding:4px 10px;font-size:10px;color:var(--green)">analyze_bsod()</div>
+        <div style="color:var(--muted)">→</div>
+        <div style="background:#00e6760d;border:1px solid #00e67633;border-radius:4px;padding:4px 10px;font-size:10px;color:var(--green)">scan_event_logs()</div>
+        <div style="color:var(--muted)">→</div>
+        <div style="background:#00e6760d;border:1px solid #00e67633;border-radius:4px;padding:4px 10px;font-size:10px;color:var(--green)">analyze_drivers()</div>
+        <div style="color:var(--muted)">→</div>
+        <div style="background:#00e6760d;border:1px solid #00e67633;border-radius:4px;padding:4px 10px;font-size:10px;color:var(--green)">check_disk_health()</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px">
+        <div style="background:#00e6760d;border:1px solid #00e67633;border-radius:4px;padding:4px 10px;font-size:10px;color:var(--green)">analyze_memory()</div>
+        <div style="color:var(--muted)">→</div>
+        <div style="background:#00e6760d;border:1px solid #00e67633;border-radius:4px;padding:4px 10px;font-size:10px;color:var(--green)">check_thermals()</div>
+        <div style="color:var(--muted)">→</div>
+        <div style="background:#00e6760d;border:1px solid #00e67633;border-radius:4px;padding:4px 10px;font-size:10px;color:var(--green)">check_updates()</div>
+        <div style="color:var(--muted)">→</div>
+        <div style="background:#00e6760d;border:1px solid #00e67633;border-radius:4px;padding:4px 10px;font-size:10px;color:var(--green)">collect_reliability()</div>
+        <div style="color:var(--muted)">→</div>
+        <div style="background:#ffd7400d;border:1px solid #ffd74033;border-radius:4px;padding:4px 10px;font-size:10px;color:var(--yellow)">collect_warranty_data()</div>
+        <div style="color:var(--muted)">→</div>
+        <div style="background:#00e6760d;border:1px solid #00e67633;border-radius:4px;padding:4px 10px;font-size:10px;color:var(--green)">calculate_score()</div>
+      </div>
+    </div>
+
+    <!-- Report generation pipeline -->
+    <div style="display:flex;align-items:center;gap:0;margin-top:4px">
+      <div style="flex:1;background:#b388ff0a;border:1px solid #b388ff33;border-radius:8px;padding:12px 16px;text-align:center">
+        <div style="color:var(--purple);font-weight:700;font-size:11px">build_html_report()</div>
+        <div style="color:var(--muted);font-size:9px;margin-top:2px">Assembles full HTML with warranty section</div>
+      </div>
+      <div style="padding:0 8px;color:var(--purple);font-size:16px">→</div>
+      <div style="flex:1;background:#448aff0a;border:1px solid #448aff33;border-radius:8px;padding:12px 16px;text-align:center">
+        <div style="color:var(--blue);font-weight:700;font-size:11px">convert_to_pdf()</div>
+        <div style="color:var(--muted);font-size:9px;margin-top:2px">Edge headless --print-to-pdf</div>
+      </div>
+      <div style="padding:0 8px;color:var(--blue);font-size:16px">→</div>
+      <div style="flex:1;background:#ff70430a;border:1px solid #ff704333;border-radius:8px;padding:12px 16px;text-align:center">
+        <div style="color:var(--orange);font-weight:700;font-size:11px">send_email_report()</div>
+        <div style="color:var(--muted);font-size:9px;margin-top:2px">SMTP + DPAPI-encrypted credentials</div>
+      </div>
+    </div>
+
+    <!-- Utility functions -->
+    <div style="margin-top:16px;background:#ffffff05;border:1px solid var(--border);border-radius:8px;padding:12px 16px">
+      <div style="font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px">Shared Utilities</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        <div style="background:#ffffff08;border:1px solid #ffffff15;border-radius:4px;padding:3px 8px;font-size:10px;color:#888">ps(cmd)</div>
+        <div style="background:#ffffff08;border:1px solid #ffffff15;border-radius:4px;padding:3px 8px;font-size:10px;color:#888">ps_events()</div>
+        <div style="background:#ffffff08;border:1px solid #ffffff15;border-radius:4px;padding:3px 8px;font-size:10px;color:#888">normalize_list()</div>
+        <div style="background:#ffffff08;border:1px solid #ffffff15;border-radius:4px;padding:3px 8px;font-size:10px;color:#888">safe_truncate()</div>
+        <div style="background:#ffffff08;border:1px solid #ffffff15;border-radius:4px;padding:3px 8px;font-size:10px;color:#888">cprint()</div>
+        <div style="background:#ffffff08;border:1px solid #ffffff15;border-radius:4px;padding:3px 8px;font-size:10px;color:#888">build_table()</div>
+        <div style="background:#ffffff08;border:1px solid #ffffff15;border-radius:4px;padding:3px 8px;font-size:10px;color:#888">build_findings()</div>
+        <div style="background:#ffffff08;border:1px solid #ffffff15;border-radius:4px;padding:3px 8px;font-size:10px;color:#888">sys_grid()</div>
+        <div style="background:#ffffff08;border:1px solid #ffffff15;border-radius:4px;padding:3px 8px;font-size:10px;color:#888">email_list_html()</div>
+        <div style="background:#ffffff08;border:1px solid #ffffff15;border-radius:4px;padding:3px 8px;font-size:10px;color:#888">build_warranty_section()</div>
       </div>
     </div>
 
@@ -903,8 +913,8 @@
 
 
 <div class="footer">
-  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro</span>
-  <span>github.com/shigsdev/windesktopmgr</span>
+  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 508 tests</span>
+  <span>github.com/shigsdev/windesktopmgr · Updated 2026-03-20</span>
 </div>
 
 </body>
