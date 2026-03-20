@@ -528,12 +528,22 @@ class TestSummarizeSysinfo:
     def _data(ram_gb=32, uptime="01.05:30:00", cpu_name="Intel(R) Core(TM) i9-14900K",
               cores=24, logical=32, os_name="Microsoft Windows 11 Pro",
               build="22631", install_date="2024-01-15",
-              manufacturer="Dell Inc.", model="XPS 8960"):
-        return {
+              manufacturer="Dell Inc.", model="XPS 8960",
+              memory=None, gpu=None, sound=None, nic_hw=None):
+        d = {
             "Computer": {"Manufacturer": manufacturer, "Model": model, "TotalRAM_GB": ram_gb},
             "OS": {"Name": os_name, "Uptime": uptime, "Build": build, "InstallDate": install_date},
             "CPU": {"Name": cpu_name, "Cores": cores, "LogicalProcs": logical},
         }
+        if memory is not None:
+            d["Memory"] = memory
+        if gpu is not None:
+            d["GPU"] = gpu
+        if sound is not None:
+            d["Sound"] = sound
+        if nic_hw is not None:
+            d["NetworkHardware"] = nic_hw
+        return d
 
     def test_returns_required_keys(self):
         result = wdm.summarize_sysinfo(self._data())
@@ -586,12 +596,54 @@ class TestSummarizeSysinfo:
         texts = " ".join(i["text"] for i in result["insights"])
         assert "Windows 11" in texts
 
-    def test_empty_data_does_not_crash(self):
+    def test_empty_data_returns_warning(self):
         result = wdm.summarize_sysinfo({})
+        assert result["status"] == "warning"
+        assert "unavailable" in result["headline"].lower()
+        assert len(result["insights"]) > 0
+        assert result["insights"][0]["level"] == "warning"
+
+    def test_partial_data_does_not_crash(self):
+        """Only Computer key present — should not raise."""
+        result = wdm.summarize_sysinfo({"Computer": {"Name": "TEST", "TotalRAM_GB": 16}})
         assert "status" in result
-        assert "headline" in result
 
     def test_actions_populated_on_high_uptime(self):
         result = wdm.summarize_sysinfo(self._data(uptime="20.00:00:00"))
         assert len(result["actions"]) > 0
         assert "reboot" in result["actions"][0].lower()
+
+    def test_memory_type_insight_ddr5(self):
+        mem = [{"MemoryType": "DDR5", "ConfiguredClockSpeed": 5600, "Capacity": 17179869184}]
+        result = wdm.summarize_sysinfo(self._data(memory=mem))
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "DDR5" in texts
+
+    def test_memory_type_insight_ddr4(self):
+        mem = [{"MemoryType": "DDR4", "ConfiguredClockSpeed": 3200, "Capacity": 8589934592}]
+        result = wdm.summarize_sysinfo(self._data(memory=mem))
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "DDR4" in texts
+        # DDR4 should be info level
+        mem_insights = [i for i in result["insights"] if "DDR4" in i["text"]]
+        assert mem_insights[0]["level"] == "info"
+
+    def test_gpu_manufacturer_in_insight(self):
+        gpu = [{"Name": "GeForce RTX 4060 Ti", "AdapterCompatibility": "NVIDIA",
+                "DriverVersion": "32.0", "AdapterRAM": 8589934592}]
+        result = wdm.summarize_sysinfo(self._data(gpu=gpu))
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "NVIDIA" in texts
+        assert "RTX 4060" in texts
+
+    def test_sound_devices_insight(self):
+        snd = [{"Name": "Realtek HD Audio", "Manufacturer": "Realtek", "Status": "OK"}]
+        result = wdm.summarize_sysinfo(self._data(sound=snd))
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "audio" in texts.lower()
+
+    def test_nic_hardware_insight(self):
+        nic = [{"Name": "Killer E3100G", "Manufacturer": "Intel"}]
+        result = wdm.summarize_sysinfo(self._data(nic_hw=nic))
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "network" in texts.lower()

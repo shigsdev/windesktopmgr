@@ -2960,14 +2960,36 @@ function loadArchitecture() {
 async function loadSystemInfo() {
   document.getElementById("si-loading").style.display = "block";
   document.getElementById("si-content").style.display = "none";
+  const staleBanner = document.getElementById("si-stale-banner");
+  if (staleBanner) staleBanner.style.display = "none";
   try {
     const r = await fetch("/api/sysinfo/data");
     const j = await r.json();
-    if (j.status === "ok") {
-      renderSystemInfo(j.data);
-      fetchSummary("sysinfo", j.data, "summary-sysinfo");
+    // Show stale/connectivity banner
+    if (j.stale) {
+      if (staleBanner) {
+        staleBanner.style.display = "flex";
+        staleBanner.querySelector(".stale-msg").textContent =
+          "Data may be incomplete \u2014 " + (j.error || "collection issue");
+        staleBanner.querySelector(".stale-time").textContent =
+          "Attempted: " + new Date(j.collected_at).toLocaleString();
+      }
+    }
+    // Show collected_at timestamp
+    if (j.collected_at) {
+      const tsEl = document.getElementById("si-collected-at");
+      if (tsEl) tsEl.textContent = "Collected: " + new Date(j.collected_at).toLocaleString();
+    }
+    if (j.status === "ok" || j.status === "partial") {
+      if (j.data && Object.keys(j.data).length > 0) {
+        renderSystemInfo(j.data);
+        fetchSummary("sysinfo", j.data, "summary-sysinfo");
+      } else {
+        document.getElementById("si-loading").textContent = "No data returned.";
+        return;
+      }
     } else {
-      document.getElementById("si-loading").textContent = "Error: " + (j.message || "Unknown");
+      document.getElementById("si-loading").textContent = "Error: " + (j.message || j.error || "Unknown");
       return;
     }
   } catch(e) {
@@ -2986,24 +3008,28 @@ function renderSystemInfo(d) {
   const bb = d.Baseboard || {};
   const gpus = d.GPU || [];
   const nics = d.Network || [];
+  const nicHw = d.NetworkHardware || [];
   const ram = d.Memory || [];
   const disks = d.Disks || [];
   const vols = d.Volumes || [];
+  const sound = d.Sound || [];
+  const usb = d.USBControllers || [];
+  const slots = d.PCIeSlots || [];
 
   // Stat cards
-  document.getElementById("si-hostname").textContent = comp.Name || "—";
-  document.getElementById("si-os").textContent = (os.Name || "—").replace("Microsoft ", "");
-  document.getElementById("si-cpu-short").textContent = (cpu.Name || "—").replace("Intel(R) Core(TM) ", "").replace(" Processor", "");
+  document.getElementById("si-hostname").textContent = comp.Name || "\u2014";
+  document.getElementById("si-os").textContent = (os.Name || "\u2014").replace("Microsoft ", "");
+  document.getElementById("si-cpu-short").textContent = (cpu.Name || "\u2014").replace("Intel(R) Core(TM) ", "").replace(" Processor", "");
   document.getElementById("si-ram").textContent = (comp.TotalRAM_GB || 0) + " GB";
-  document.getElementById("si-uptime").textContent = os.Uptime || "—";
-  document.getElementById("si-build").textContent = os.Build || "—";
+  document.getElementById("si-uptime").textContent = os.Uptime || "\u2014";
+  document.getElementById("si-build").textContent = os.Build || "\u2014";
 
   // Computer section
   const compRows = [
     ["Computer Name", comp.Name], ["Domain / Workgroup", comp.Domain],
     ["Manufacturer", comp.Manufacturer], ["Model", comp.Model],
     ["System Type", comp.SystemType], ["Total RAM", comp.TotalRAM_GB + " GB"],
-  ].map(([k,v]) => `<tr><td style="color:var(--cyan);width:200px">${k}</td><td>${v||'—'}</td></tr>`).join("");
+  ].map(([k,v]) => `<tr><td style="color:var(--cyan);width:200px">${k}</td><td>${v||'\u2014'}</td></tr>`).join("");
   document.getElementById("si-comp-tbody").innerHTML = compRows;
 
   // OS section
@@ -3013,17 +3039,17 @@ function renderSystemInfo(d) {
     ["Last Boot", os.LastBoot], ["Uptime", os.Uptime],
     ["Windows Directory", os.WindowsDir], ["System Drive", os.SystemDrive],
     ["Locale", os.Locale], ["Time Zone", os.TimeZone],
-  ].map(([k,v]) => `<tr><td style="color:var(--cyan);width:200px">${k}</td><td>${v||'—'}</td></tr>`).join("");
+  ].map(([k,v]) => `<tr><td style="color:var(--cyan);width:200px">${k}</td><td>${v||'\u2014'}</td></tr>`).join("");
   document.getElementById("si-os-tbody").innerHTML = osRows;
 
   // CPU section
   const cpuRows = [
     ["Processor", cpu.Name], ["Cores", cpu.Cores], ["Logical Processors", cpu.LogicalProcs],
     ["Max Clock", cpu.MaxClockMHz + " MHz"], ["Current Clock", cpu.CurrentClockMHz + " MHz"],
-    ["Socket", cpu.SocketDesignation], ["L2 Cache", (cpu.L2CacheKB ? cpu.L2CacheKB + " KB" : "—")],
-    ["L3 Cache", (cpu.L3CacheKB ? Math.round(cpu.L3CacheKB/1024) + " MB" : "—")],
+    ["Socket", cpu.SocketDesignation], ["L2 Cache", (cpu.L2CacheKB ? cpu.L2CacheKB + " KB" : "\u2014")],
+    ["L3 Cache", (cpu.L3CacheKB ? Math.round(cpu.L3CacheKB/1024) + " MB" : "\u2014")],
     ["Architecture", cpu.Architecture], ["Processor ID", cpu.ProcessorId],
-  ].map(([k,v]) => `<tr><td style="color:var(--cyan);width:200px">${k}</td><td>${v||'—'}</td></tr>`).join("");
+  ].map(([k,v]) => `<tr><td style="color:var(--cyan);width:200px">${k}</td><td>${v||'\u2014'}</td></tr>`).join("");
   document.getElementById("si-cpu-tbody").innerHTML = cpuRows;
 
   // BIOS + Baseboard section
@@ -3032,38 +3058,66 @@ function renderSystemInfo(d) {
     ["BIOS Manufacturer", bios.Manufacturer], ["Serial Number (Service Tag)", bios.SerialNumber],
     ["Baseboard", bb.Manufacturer + " " + bb.Product],
     ["Baseboard Version", bb.Version], ["Baseboard Serial", bb.SerialNumber],
-  ].map(([k,v]) => `<tr><td style="color:var(--cyan);width:200px">${k}</td><td>${v||'—'}</td></tr>`).join("");
+  ].map(([k,v]) => `<tr><td style="color:var(--cyan);width:200px">${k}</td><td>${v||'\u2014'}</td></tr>`).join("");
   document.getElementById("si-bios-tbody").innerHTML = biosRows;
 
-  // GPU section
+  // GPU section (expanded with manufacturer + PNP ID)
   const gpuHtml = gpus.map(g => {
-    const vram = g.AdapterRAM ? Math.round(g.AdapterRAM / 1073741824) + " GB" : "—";
+    const vram = g.AdapterRAM ? Math.round(g.AdapterRAM / 1073741824) + " GB" : "\u2014";
     return [
-      ["GPU", g.Name], ["Driver Version", g.DriverVersion],
-      ["Video RAM", vram], ["Refresh Rate", (g.CurrentRefreshRate||"—") + " Hz"],
-      ["Resolution", g.VideoModeDescription],
-    ].map(([k,v]) => `<tr><td style="color:var(--cyan);width:200px">${k}</td><td>${v||'—'}</td></tr>`).join("");
+      ["GPU", g.Name], ["Manufacturer", g.AdapterCompatibility], ["Driver Version", g.DriverVersion],
+      ["Video RAM", vram], ["Refresh Rate", (g.CurrentRefreshRate||"\u2014") + " Hz"],
+      ["Resolution", g.VideoModeDescription], ["PNP Device ID", g.PNPDeviceID],
+    ].map(([k,v]) => `<tr><td style="color:var(--cyan);width:200px">${k}</td><td>${v||'\u2014'}</td></tr>`).join("");
   }).join('<tr><td colspan="2" style="border-top:1px solid var(--border)"></td></tr>');
   document.getElementById("si-gpu-tbody").innerHTML = gpuHtml || '<tr><td colspan="2" style="color:var(--muted)">No GPU detected</td></tr>';
 
-  // Memory modules
+  // Memory modules (expanded with type, form factor, clock, locator)
   const ramHtml = ram.map(m => {
-    const gb = m.Capacity ? (m.Capacity / 1073741824).toFixed(0) + " GB" : "—";
-    return `<tr><td>${m.BankLabel||'—'}</td><td>${gb}</td><td>${m.Speed||'—'} MHz</td><td>${m.Manufacturer||'—'}</td><td><code>${(m.PartNumber||'').trim()}</code></td></tr>`;
+    const gb = m.Capacity ? (m.Capacity / 1073741824).toFixed(0) + " GB" : "\u2014";
+    return `<tr><td>${m.BankLabel||'\u2014'}</td><td>${m.DeviceLocator||'\u2014'}</td><td>${gb}</td><td>${m.MemoryType||'\u2014'}</td><td>${m.FormFactor||'\u2014'}</td><td>${m.ConfiguredClockSpeed||m.Speed||'\u2014'} MHz</td><td>${m.Manufacturer||'\u2014'}</td><td><code>${(m.PartNumber||'').trim()}</code></td></tr>`;
   }).join("");
-  document.getElementById("si-ram-tbody").innerHTML = ramHtml || '<tr><td colspan="5" style="color:var(--muted)">No data</td></tr>';
+  document.getElementById("si-ram-tbody").innerHTML = ramHtml || '<tr><td colspan="8" style="color:var(--muted)">No data</td></tr>';
 
-  // Network adapters
+  // Network adapters (IP config)
   const nicHtml = nics.map(n => {
-    const dns = Array.isArray(n.DNSServerSearchOrder) ? n.DNSServerSearchOrder.join(", ") : (n.DNSServerSearchOrder||"—");
-    return `<tr><td>${n.Description||'—'}</td><td><code>${n.MACAddress||'—'}</code></td><td>${n.IPAddress||'—'}</td><td>${n.DHCPEnabled ? 'Yes ('+n.DHCPServer+')' : 'Static'}</td><td style="font-size:11px">${dns}</td></tr>`;
+    const dns = Array.isArray(n.DNSServerSearchOrder) ? n.DNSServerSearchOrder.join(", ") : (n.DNSServerSearchOrder||"\u2014");
+    return `<tr><td>${n.Description||'\u2014'}</td><td><code>${n.MACAddress||'\u2014'}</code></td><td>${n.IPAddress||'\u2014'}</td><td>${n.DHCPEnabled ? 'Yes ('+n.DHCPServer+')' : 'Static'}</td><td style="font-size:11px">${dns}</td></tr>`;
   }).join("");
   document.getElementById("si-nic-tbody").innerHTML = nicHtml || '<tr><td colspan="5" style="color:var(--muted)">No active adapters</td></tr>';
 
+  // Network hardware (manufacturer details)
+  const nicHwHtml = nicHw.map(n => {
+    const speed = n.Speed ? (n.Speed >= 1e9 ? (n.Speed/1e9).toFixed(0) + " Gbps" : (n.Speed/1e6).toFixed(0) + " Mbps") : "\u2014";
+    return `<tr><td>${n.Name||'\u2014'}</td><td>${n.Manufacturer||'\u2014'}</td><td>${n.NetConnectionID||'\u2014'}</td><td>${speed}</td><td>${n.AdapterType||'\u2014'}</td><td><code>${n.MACAddress||'\u2014'}</code></td></tr>`;
+  }).join("");
+  document.getElementById("si-nichw-tbody").innerHTML = nicHwHtml || '<tr><td colspan="6" style="color:var(--muted)">No adapters</td></tr>';
+
+  // Sound devices
+  const soundHtml = sound.map(s => {
+    const statusCol = (s.Status||"").toLowerCase() === "ok" ? "var(--green)" : "var(--orange)";
+    return `<tr><td>${s.Name||'\u2014'}</td><td>${s.Manufacturer||'\u2014'}</td><td style="color:${statusCol}">${s.Status||'\u2014'}</td></tr>`;
+  }).join("");
+  document.getElementById("si-sound-tbody").innerHTML = soundHtml || '<tr><td colspan="3" style="color:var(--muted)">No sound devices</td></tr>';
+
+  // USB controllers
+  const usbHtml = usb.map(u => {
+    const statusCol = (u.Status||"").toLowerCase() === "ok" ? "var(--green)" : "var(--orange)";
+    return `<tr><td>${u.Name||'\u2014'}</td><td>${u.Manufacturer||'\u2014'}</td><td style="color:${statusCol}">${u.Status||'\u2014'}</td></tr>`;
+  }).join("");
+  document.getElementById("si-usb-tbody").innerHTML = usbHtml || '<tr><td colspan="3" style="color:var(--muted)">No USB controllers</td></tr>';
+
+  // PCIe slots
+  const slotHtml = slots.map(s => {
+    const usageCol = s.CurrentUsage === "In Use" ? "var(--green)" : s.CurrentUsage === "Available" ? "var(--muted)" : "var(--orange)";
+    return `<tr><td>${s.SlotDesignation||'\u2014'}</td><td style="color:${usageCol}">${s.CurrentUsage||'\u2014'}</td><td>${s.Status||'\u2014'}</td><td style="font-size:11px">${s.Description||'\u2014'}</td></tr>`;
+  }).join("");
+  document.getElementById("si-pcie-tbody").innerHTML = slotHtml || '<tr><td colspan="4" style="color:var(--muted)">No slot data</td></tr>';
+
   // Disks
   const diskHtml = disks.map(dk => {
-    const sizeGB = dk.Size ? (dk.Size / 1073741824).toFixed(1) + " GB" : "—";
-    return `<tr><td>${dk.Model||'—'}</td><td>${sizeGB}</td><td>${dk.InterfaceType||'—'}</td><td>${dk.MediaType||'—'}</td><td>${dk.Partitions||'—'}</td><td style="font-size:10px"><code>${(dk.SerialNumber||'').trim()}</code></td></tr>`;
+    const sizeGB = dk.Size ? (dk.Size / 1073741824).toFixed(1) + " GB" : "\u2014";
+    return `<tr><td>${dk.Model||'\u2014'}</td><td>${sizeGB}</td><td>${dk.InterfaceType||'\u2014'}</td><td>${dk.MediaType||'\u2014'}</td><td>${dk.Partitions||'\u2014'}</td><td style="font-size:10px"><code>${(dk.SerialNumber||'').trim()}</code></td></tr>`;
   }).join("");
   document.getElementById("si-disk-tbody").innerHTML = diskHtml || '<tr><td colspan="6" style="color:var(--muted)">No disks</td></tr>';
 
@@ -3071,7 +3125,7 @@ function renderSystemInfo(d) {
   const volHtml = vols.map(v => {
     const pctFree = v.SizeGB ? ((v.FreeGB / v.SizeGB) * 100).toFixed(1) : 0;
     const col = pctFree < 10 ? "var(--red)" : pctFree < 20 ? "var(--orange)" : "var(--green)";
-    return `<tr><td><strong>${v.DeviceID||'—'}</strong></td><td>${v.VolumeName||''}</td><td>${v.FileSystem||'—'}</td><td>${v.SizeGB||'—'} GB</td><td>${v.FreeGB||'—'} GB</td><td style="color:${col};font-weight:600">${pctFree}%</td></tr>`;
+    return `<tr><td><strong>${v.DeviceID||'\u2014'}</strong></td><td>${v.VolumeName||''}</td><td>${v.FileSystem||'\u2014'}</td><td>${v.SizeGB||'\u2014'} GB</td><td>${v.FreeGB||'\u2014'} GB</td><td style="color:${col};font-weight:600">${pctFree}%</td></tr>`;
   }).join("");
   document.getElementById("si-vol-tbody").innerHTML = volHtml || '<tr><td colspan="6" style="color:var(--muted)">No volumes</td></tr>';
 }
@@ -3820,6 +3874,13 @@ function renderSystemInfo(d) {
   <div id="page-sysinfo" style="display:none">
     <div id="summary-sysinfo" class="summary-banner"></div>
 
+    <!-- Stale / connectivity warning banner -->
+    <div id="si-stale-banner" style="display:none;align-items:center;gap:10px;padding:10px 16px;margin-bottom:12px;background:#ff990015;border:1px solid var(--orange);border-radius:8px;color:var(--orange);font-size:13px">
+      <span style="font-size:18px">&#9888;</span>
+      <span class="stale-msg"></span>
+      <span class="stale-time" style="margin-left:auto;font-size:11px;color:var(--muted)"></span>
+    </div>
+
     <div class="stats">
       <div class="stat-card s-cyan">  <div class="label">Hostname</div>       <div class="value" id="si-hostname" style="font-size:13px">—</div></div>
       <div class="stat-card s-green"> <div class="label">OS</div>             <div class="value" id="si-os" style="font-size:12px">—</div></div>
@@ -3831,7 +3892,8 @@ function renderSystemInfo(d) {
 
     <div style="display:flex;align-items:center;gap:10px;margin:20px 0 16px">
       <h2 style="margin:0">System Information</h2>
-      <button class="btn-action" onclick="loadSystemInfo()" style="padding:6px 16px;font-size:12px">↺ Refresh</button>
+      <button class="btn-action" onclick="_tabLoaded['sysinfo']=false;loadSystemInfo()" style="padding:6px 16px;font-size:12px">↺ Refresh</button>
+      <span id="si-collected-at" style="margin-left:auto;font-size:11px;color:var(--muted)"></span>
     </div>
 
     <div id="si-loading" style="text-align:center;padding:40px;color:var(--muted)">Collecting system information…</div>
@@ -3871,17 +3933,53 @@ function renderSystemInfo(d) {
       <div style="margin-bottom:20px">
         <h3 style="color:var(--cyan);margin-bottom:8px">🧠 Memory Modules</h3>
         <table class="styled-table">
-          <thead><tr><th>Slot</th><th>Size</th><th>Speed</th><th>Manufacturer</th><th>Part Number</th></tr></thead>
+          <thead><tr><th>Slot</th><th>Locator</th><th>Size</th><th>Type</th><th>Form</th><th>Clock</th><th>Manufacturer</th><th>Part Number</th></tr></thead>
           <tbody id="si-ram-tbody"></tbody>
         </table>
       </div>
 
-      <!-- Network Adapters -->
+      <!-- Network Adapters (IP Config) -->
       <div style="margin-bottom:20px">
-        <h3 style="color:var(--cyan);margin-bottom:8px">🌐 Network Adapters</h3>
+        <h3 style="color:var(--cyan);margin-bottom:8px">🌐 Network Adapters — IP Configuration</h3>
         <table class="styled-table">
           <thead><tr><th>Adapter</th><th>MAC</th><th>IP Address</th><th>DHCP</th><th>DNS Servers</th></tr></thead>
           <tbody id="si-nic-tbody"></tbody>
+        </table>
+      </div>
+
+      <!-- Network Hardware (Manufacturer Details) -->
+      <div style="margin-bottom:20px">
+        <h3 style="color:var(--cyan);margin-bottom:8px">🔌 Network Hardware</h3>
+        <table class="styled-table">
+          <thead><tr><th>Name</th><th>Manufacturer</th><th>Connection</th><th>Speed</th><th>Type</th><th>MAC</th></tr></thead>
+          <tbody id="si-nichw-tbody"></tbody>
+        </table>
+      </div>
+
+      <!-- Sound Devices -->
+      <div style="margin-bottom:20px">
+        <h3 style="color:var(--cyan);margin-bottom:8px">🔊 Sound Devices</h3>
+        <table class="styled-table">
+          <thead><tr><th>Name</th><th>Manufacturer</th><th>Status</th></tr></thead>
+          <tbody id="si-sound-tbody"></tbody>
+        </table>
+      </div>
+
+      <!-- USB Controllers -->
+      <div style="margin-bottom:20px">
+        <h3 style="color:var(--cyan);margin-bottom:8px">🔌 USB Controllers</h3>
+        <table class="styled-table">
+          <thead><tr><th>Name</th><th>Manufacturer</th><th>Status</th></tr></thead>
+          <tbody id="si-usb-tbody"></tbody>
+        </table>
+      </div>
+
+      <!-- PCIe Slots -->
+      <div style="margin-bottom:20px">
+        <h3 style="color:var(--cyan);margin-bottom:8px">🔧 PCIe Slots</h3>
+        <table class="styled-table">
+          <thead><tr><th>Slot</th><th>Usage</th><th>Status</th><th>Description</th></tr></thead>
+          <tbody id="si-pcie-tbody"></tbody>
         </table>
       </div>
 

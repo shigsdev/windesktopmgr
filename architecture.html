@@ -183,7 +183,7 @@
     <div class="subtitle">Software Architecture Diagram</div>
   </div>
   <div style="display:flex;gap:12px;align-items:flex-end">
-    <div class="badge" style="color:var(--green);border-color:#00e67633">508 tests passing</div>
+    <div class="badge" style="color:var(--green);border-color:#00e67633">528 tests passing</div>
     <div class="badge">
       <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
     </div>
@@ -234,7 +234,7 @@
 
   <!-- ── LAYER 2: FLASK BACKEND ───────────────────────────────── -->
   <div class="row row-flask" id="layer-flask">
-    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~5,990 lines · Python 3.14 · port 5000 · threaded=True</div>
+    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~6,070 lines · Python 3.14 · port 5000 · threaded=True</div>
     <div style="margin-bottom:10px">
       <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes (45 endpoints)</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
@@ -410,15 +410,31 @@
       </div>
       <div class="wmi-chip">
         <div class="wmi-title">Win32_VideoController</div>
-        <div class="wmi-sub">GPU name · driver · VRAM · video modes</div>
+        <div class="wmi-sub">GPU name · manufacturer · driver · VRAM · PNP ID</div>
       </div>
       <div class="wmi-chip">
         <div class="wmi-title">Win32_PhysicalMemory</div>
-        <div class="wmi-sub">DIMM slots · speed · manufacturer · capacity</div>
+        <div class="wmi-sub">DIMM slots · speed · manufacturer · DDR type · form factor · locator</div>
       </div>
       <div class="wmi-chip">
         <div class="wmi-title">Win32_DiskDrive</div>
         <div class="wmi-sub">Disk model · size · interface · media type · serial</div>
+      </div>
+      <div class="wmi-chip">
+        <div class="wmi-title">Win32_NetworkAdapter</div>
+        <div class="wmi-sub">NIC manufacturer · product · speed · type · MAC</div>
+      </div>
+      <div class="wmi-chip">
+        <div class="wmi-title">Win32_SoundDevice</div>
+        <div class="wmi-sub">Audio device name · manufacturer · status</div>
+      </div>
+      <div class="wmi-chip">
+        <div class="wmi-title">Win32_USBController</div>
+        <div class="wmi-sub">USB host controllers · manufacturer · status</div>
+      </div>
+      <div class="wmi-chip">
+        <div class="wmi-title">Win32_SystemSlot</div>
+        <div class="wmi-sub">PCIe slot designation · usage · status</div>
       </div>
       <div class="wmi-chip">
         <div class="wmi-title">Get-WinEvent</div>
@@ -504,15 +520,15 @@
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <div class="fs-chip">
             <div class="fs-title">windesktopmgr.py</div>
-            <div class="fs-sub">Flask backend · ~5,990 lines</div>
+            <div class="fs-sub">Flask backend · ~6,070 lines</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">templates/index.html</div>
-            <div class="fs-sub">Single-page frontend · ~3,700 lines</div>
+            <div class="fs-sub">Single-page frontend · ~4,020 lines</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">SystemHealthDiag.py</div>
-            <div class="fs-sub">Daily health diagnostic · ~1,100 lines · 29 functions</div>
+            <div class="fs-sub">Daily health diagnostic · ~1,310 lines · 29 functions</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">setup-startup.ps1</div>
@@ -558,11 +574,11 @@
 
   <!-- ── LAYER 7: TEST SUITE ──────────────────────────────────── -->
   <div class="row row-tests" id="layer-tests">
-    <div class="row-label">🧪 Test Suite — 508 tests · pytest · 0.6s · Flask + PowerShell + Python</div>
+    <div class="row-label">🧪 Test Suite — 528 tests · pytest · 0.7s · Flask + PowerShell + Python</div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
       <div class="test-chip">
         <div class="test-title">test_routes.py</div>
-        <div class="test-sub">130 tests · all 45 Flask endpoints · server config · warranty · sysinfo</div>
+        <div class="test-sub">144 tests · all 45 Flask endpoints · server config · warranty · sysinfo · stale data</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_powershell.py</div>
@@ -574,7 +590,7 @@
       </div>
       <div class="test-chip">
         <div class="test-title">test_summarizers.py</div>
-        <div class="test-sub">70 tests · all 12 summarizer functions · insight engine</div>
+        <div class="test-sub">76 tests · all 12 summarizer functions · insight engine · memory type · GPU mfr</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_pure_functions.py</div>
@@ -816,7 +832,7 @@
           <div style="color:var(--muted);font-size:12px">→</div>
           <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">pytest tests/</div>
           <div style="color:var(--muted);font-size:12px">→</div>
-          <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">508 tests in 0.6s</div>
+          <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">528 tests in 0.7s</div>
           <div style="color:var(--muted);font-size:12px">→</div>
           <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">git push main</div>
         </div>
@@ -913,9 +929,118 @@
 
 
 <div class="footer">
-  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 508 tests</span>
+  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 528 tests · ~17,800 lines</span>
   <span>github.com/shigsdev/windesktopmgr · Updated 2026-03-20</span>
 </div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     SVG ARROW OVERLAY — Draws connection lines between layers on resize
+═══════════════════════════════════════════════════════════════════════ -->
+<script>
+(function() {
+  const diagram = document.querySelector('.diagram');
+  if (!diagram) return;
+
+  // Wrap diagram in a relative container for the SVG overlay
+  const container = document.createElement('div');
+  container.style.position = 'relative';
+  diagram.parentNode.insertBefore(container, diagram);
+  container.appendChild(diagram);
+
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:20';
+  container.appendChild(svg);
+
+  // Define arrow markers
+  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+  const colors = {cyan:'#00d4ff', purple:'#b388ff', orange:'#ff7043', green:'#00e676', yellow:'#ffd740', blue:'#448aff', pink:'#ff80ab'};
+  for (const [name, color] of Object.entries(colors)) {
+    const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+    marker.setAttribute('id', 'arrow-'+name);
+    marker.setAttribute('markerWidth', '8');
+    marker.setAttribute('markerHeight', '6');
+    marker.setAttribute('refX', '8');
+    marker.setAttribute('refY', '3');
+    marker.setAttribute('orient', 'auto');
+    marker.setAttribute('markerUnits', 'strokeWidth');
+    const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+    poly.setAttribute('points', '0 0, 8 3, 0 6');
+    poly.setAttribute('fill', color);
+    marker.appendChild(poly);
+    defs.appendChild(marker);
+  }
+  svg.appendChild(defs);
+
+  function drawArrow(fromEl, toEl, color, dashArray) {
+    if (!fromEl || !toEl) return;
+    const cr = container.getBoundingClientRect();
+    const f = fromEl.getBoundingClientRect();
+    const t = toEl.getBoundingClientRect();
+
+    const x1 = f.left + f.width/2 - cr.left;
+    const y1 = f.bottom - cr.top;
+    const x2 = t.left + t.width/2 - cr.left;
+    const y2 = t.top - cr.top;
+
+    // Create a curved path
+    const midY = (y1 + y2) / 2;
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    const dx = Math.abs(x2 - x1);
+    const cpOffset = Math.min(dx * 0.3, 40);
+    const d = dx < 10
+      ? `M ${x1} ${y1} L ${x2} ${y2}`
+      : `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`;
+    path.setAttribute('d', d);
+    path.setAttribute('stroke', color);
+    path.setAttribute('stroke-width', '1.5');
+    path.setAttribute('fill', 'none');
+    path.setAttribute('opacity', '0.5');
+    const colorName = Object.entries(colors).find(([,v]) => v===color)?.[0] || 'cyan';
+    path.setAttribute('marker-end', `url(#arrow-${colorName})`);
+    if (dashArray) path.setAttribute('stroke-dasharray', dashArray);
+    svg.appendChild(path);
+  }
+
+  function redraw() {
+    // Clear previous arrows (keep defs)
+    while (svg.children.length > 1) svg.removeChild(svg.lastChild);
+
+    const layers = {
+      browser: document.getElementById('layer-browser'),
+      flask:   document.getElementById('layer-flask'),
+      workers: document.getElementById('layer-workers'),
+      data:    document.getElementById('layer-data'),
+      external:document.getElementById('layer-external'),
+      fs:      document.getElementById('layer-fs'),
+      tests:   document.getElementById('layer-tests'),
+    };
+
+    // Draw the main vertical flow arrows between layers
+    // Browser → Flask
+    drawArrow(layers.browser, layers.flask, colors.cyan);
+    // Flask → Workers
+    drawArrow(layers.flask, layers.workers, colors.purple);
+    // Flask → Data (offset left)
+    drawArrow(layers.flask, layers.data, colors.green);
+    // Workers → External
+    drawArrow(layers.workers, layers.external, colors.orange, '6,3');
+    // Workers → Data (for cache writes)
+    drawArrow(layers.workers, layers.data, colors.yellow);
+    // Data → External
+    drawArrow(layers.data, layers.external, colors.yellow, '6,3');
+    // External → FS
+    drawArrow(layers.external, layers.fs, colors.blue);
+    // FS → Tests
+    drawArrow(layers.fs, layers.tests, colors.pink);
+  }
+
+  // Draw on load and resize
+  window.addEventListener('load', redraw);
+  window.addEventListener('resize', redraw);
+  // Also redraw after fonts load
+  if (document.fonts) document.fonts.ready.then(redraw);
+})();
+</script>
 
 </body>
 </html>

@@ -1352,16 +1352,24 @@ class TestSysinfoRoute:
         "GPU": [
             {"Name": "NVIDIA GeForce RTX 4060 Ti", "DriverVersion": "32.0.15.9174",
              "AdapterRAM": 8589934592, "CurrentRefreshRate": 144,
-             "VideoModeDescription": "2560 x 1440 x 32 bits"},
+             "VideoModeDescription": "2560 x 1440 x 32 bits",
+             "AdapterCompatibility": "NVIDIA", "PNPDeviceID": "PCI\\VEN_10DE&DEV_2803"},
         ],
         "Network": [
             {"Description": "Killer E3100G", "MACAddress": "AA:BB:CC:DD:EE:FF",
              "IPAddress": "192.168.1.100", "DHCPEnabled": True,
              "DHCPServer": "192.168.1.1", "DNSServerSearchOrder": ["8.8.8.8"]},
         ],
+        "NetworkHardware": [
+            {"Name": "Killer E3100G 2.5 Gigabit Ethernet Controller", "Manufacturer": "Intel",
+             "ProductName": "Killer E3100G", "NetConnectionID": "Ethernet",
+             "Speed": 2500000000, "AdapterType": "Ethernet 802.3", "MACAddress": "AA:BB:CC:DD:EE:FF"},
+        ],
         "Memory": [
             {"BankLabel": "DIMM1", "Capacity": 17179869184, "Speed": 5600,
-             "Manufacturer": "SK Hynix", "PartNumber": "HMCG78AGBUA081N"},
+             "Manufacturer": "SK Hynix", "PartNumber": "HMCG78AGBUA081N",
+             "ConfiguredClockSpeed": 5600, "FormFactor": "DIMM",
+             "MemoryType": "DDR5", "DataWidth": 64, "DeviceLocator": "DIMM_A1"},
         ],
         "Disks": [
             {"Model": "Samsung SSD 990 PRO 2TB", "Size": 2000398934016,
@@ -1371,6 +1379,17 @@ class TestSysinfoRoute:
         "Volumes": [
             {"DeviceID": "C:", "VolumeName": "OS", "FileSystem": "NTFS",
              "SizeGB": 931.5, "FreeGB": 200.0},
+        ],
+        "Sound": [
+            {"Name": "Realtek High Definition Audio", "Manufacturer": "Realtek", "Status": "OK"},
+            {"Name": "NVIDIA Virtual Audio Device", "Manufacturer": "NVIDIA", "Status": "OK"},
+        ],
+        "USBControllers": [
+            {"Name": "Intel USB 3.2 eXtensible Host Controller", "Manufacturer": "Intel", "Status": "OK"},
+        ],
+        "PCIeSlots": [
+            {"SlotDesignation": "PCIEX16_1", "CurrentUsage": "In Use", "Status": "OK", "Description": "x16 PCI Express"},
+            {"SlotDesignation": "PCIEX1_1", "CurrentUsage": "Available", "Status": "OK", "Description": "x1 PCI Express"},
         ],
     })
 
@@ -1454,6 +1473,7 @@ class TestSysinfoRoute:
         r = client.get("/api/sysinfo/data")
         d = r.get_json()
         assert d["status"] == "ok"
+        assert d["stale"] is False
 
     def test_handles_subprocess_failure(self, client, mocker):
         mock_run = mocker.patch("windesktopmgr.subprocess.run")
@@ -1461,8 +1481,125 @@ class TestSysinfoRoute:
 
         r = client.get("/api/sysinfo/data")
         d = r.get_json()
-        assert d["status"] == "error"
-        assert "message" in d
+        assert d["status"] == "partial"
+        assert d["stale"] is True
+        assert "PowerShell crashed" in d["error"]
+
+    def test_timeout_returns_partial(self, client, mocker):
+        import subprocess as sp
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.side_effect = sp.TimeoutExpired(cmd="powershell", timeout=30)
+
+        r = client.get("/api/sysinfo/data")
+        d = r.get_json()
+        assert d["status"] == "partial"
+        assert d["stale"] is True
+        assert "timed out" in d["error"]
+        assert "collected_at" in d
+
+    def test_returns_collected_at(self, client, mocker):
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/sysinfo/data")
+        d = r.get_json()
+        assert "collected_at" in d
+        assert d["stale"] is False
+        assert d["error"] is None
+
+    def test_returns_sound_devices(self, client, mocker):
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/sysinfo/data")
+        d = r.get_json()["data"]
+        assert isinstance(d["Sound"], list)
+        assert len(d["Sound"]) == 2
+        assert d["Sound"][0]["Manufacturer"] == "Realtek"
+
+    def test_returns_usb_controllers(self, client, mocker):
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/sysinfo/data")
+        d = r.get_json()["data"]
+        assert isinstance(d["USBControllers"], list)
+        assert len(d["USBControllers"]) == 1
+
+    def test_returns_pcie_slots(self, client, mocker):
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/sysinfo/data")
+        d = r.get_json()["data"]
+        assert isinstance(d["PCIeSlots"], list)
+        assert len(d["PCIeSlots"]) == 2
+        assert d["PCIeSlots"][0]["CurrentUsage"] == "In Use"
+
+    def test_returns_network_hardware(self, client, mocker):
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/sysinfo/data")
+        d = r.get_json()["data"]
+        assert isinstance(d["NetworkHardware"], list)
+        assert d["NetworkHardware"][0]["Manufacturer"] == "Intel"
+
+    def test_returns_extended_memory_fields(self, client, mocker):
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/sysinfo/data")
+        mem = r.get_json()["data"]["Memory"][0]
+        assert mem["MemoryType"] == "DDR5"
+        assert mem["FormFactor"] == "DIMM"
+        assert mem["ConfiguredClockSpeed"] == 5600
+        assert mem["DeviceLocator"] == "DIMM_A1"
+
+    def test_returns_extended_gpu_fields(self, client, mocker):
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/sysinfo/data")
+        gpu = r.get_json()["data"]["GPU"][0]
+        assert gpu["AdapterCompatibility"] == "NVIDIA"
+        assert "PCI" in gpu["PNPDeviceID"]
+
+    def test_normalizes_single_sound_to_list(self, client, mocker):
+        single = json.loads(self.SAMPLE_OUTPUT)
+        single["Sound"] = single["Sound"][0]  # dict instead of list
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.return_value.stdout = json.dumps(single)
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/sysinfo/data")
+        assert isinstance(r.get_json()["data"]["Sound"], list)
+
+    def test_normalizes_single_usb_to_list(self, client, mocker):
+        single = json.loads(self.SAMPLE_OUTPUT)
+        single["USBControllers"] = single["USBControllers"][0]
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.return_value.stdout = json.dumps(single)
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/sysinfo/data")
+        assert isinstance(r.get_json()["data"]["USBControllers"], list)
 
     def test_summary_route_accepts_sysinfo(self, client, mocker):
         """Verify the summary endpoint handles sysinfo tab."""

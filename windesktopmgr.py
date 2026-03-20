@@ -5570,6 +5570,11 @@ def architecture_diagram():
 @app.route("/api/sysinfo/data")
 def sysinfo_data():
     """Collect comprehensive system information for the System Info tab."""
+    from datetime import datetime, timezone as tz
+    collected_at = datetime.now(tz.utc).isoformat()
+    stale = False
+    error_detail = None
+    data = {}
     try:
         cmd = r"""
 $OS   = Get-CimInstance Win32_OperatingSystem
@@ -5577,11 +5582,15 @@ $CS   = Get-CimInstance Win32_ComputerSystem
 $CPU  = Get-CimInstance Win32_Processor
 $BIOS = Get-CimInstance Win32_BIOS
 $BB   = Get-CimInstance Win32_BaseBoard
-$GPU  = Get-CimInstance Win32_VideoController | Select-Object Name, DriverVersion, DriverDate, AdapterRAM, VideoProcessor, CurrentRefreshRate, VideoModeDescription
+$GPU  = Get-CimInstance Win32_VideoController | Select-Object Name, DriverVersion, DriverDate, AdapterRAM, VideoProcessor, CurrentRefreshRate, VideoModeDescription, AdapterCompatibility, PNPDeviceID
 $NIC  = Get-CimInstance Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled } | Select-Object Description, MACAddress, @{N='IPAddress';E={$_.IPAddress -join ', '}}, DHCPEnabled, DHCPServer, DNSServerSearchOrder
-$RAM  = Get-CimInstance Win32_PhysicalMemory | Select-Object BankLabel, Capacity, Speed, Manufacturer, PartNumber
+$NICHw = Get-CimInstance Win32_NetworkAdapter | Where-Object { $_.NetConnectionID -ne $null } | Select-Object Name, Manufacturer, ProductName, NetConnectionID, Speed, AdapterType, MACAddress
+$RAM  = Get-CimInstance Win32_PhysicalMemory | Select-Object BankLabel, Capacity, Speed, Manufacturer, PartNumber, ConfiguredClockSpeed, @{N='FormFactor';E={switch($_.FormFactor){8{'DIMM'}12{'SODIMM'}0{'Unknown'}default{$_.FormFactor}}}}, @{N='MemoryType';E={switch($_.SMBIOSMemoryType){20{'DDR'}21{'DDR2'}22{'DDR2 FB-DIMM'}24{'DDR3'}26{'DDR4'}34{'DDR5'}0{'Unknown'}default{$_.SMBIOSMemoryType}}}}, DataWidth, DeviceLocator
 $Disk = Get-CimInstance Win32_DiskDrive | Select-Object Model, Size, InterfaceType, MediaType, SerialNumber, Partitions
 $Vol  = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | Select-Object DeviceID, VolumeName, FileSystem, @{N='SizeGB';E={[math]::Round($_.Size/1GB,1)}}, @{N='FreeGB';E={[math]::Round($_.FreeSpace/1GB,1)}}
+$Sound = Get-CimInstance Win32_SoundDevice | Select-Object Name, Manufacturer, Status
+$USB  = Get-CimInstance Win32_USBController | Select-Object Name, Manufacturer, Status
+$Slots = Get-CimInstance Win32_SystemSlot | Select-Object SlotDesignation, @{N='CurrentUsage';E={switch($_.CurrentUsage){1{'Other'}2{'Unknown'}3{'Available'}4{'In Use'}default{$_.CurrentUsage}}}}, Status, Description
 $TZ   = Get-TimeZone
 
 @{
@@ -5633,9 +5642,13 @@ $TZ   = Get-TimeZone
     }
     GPU = $GPU
     Network = $NIC
+    NetworkHardware = $NICHw
     Memory = $RAM
     Disks = $Disk
     Volumes = $Vol
+    Sound = $Sound
+    USBControllers = $USB
+    PCIeSlots = $Slots
 } | ConvertTo-Json -Depth 3
 """
         r = subprocess.run(
@@ -5645,16 +5658,28 @@ $TZ   = Get-TimeZone
         data = json.loads(r.stdout.strip()) if r.stdout.strip() else {}
 
         # Normalize single-item lists (PowerShell returns dict for single item)
-        for key in ("GPU", "Network", "Memory", "Disks", "Volumes"):
+        for key in ("GPU", "Network", "NetworkHardware", "Memory", "Disks",
+                     "Volumes", "Sound", "USBControllers", "PCIeSlots"):
             val = data.get(key)
             if isinstance(val, dict):
                 data[key] = [val]
             elif val is None:
                 data[key] = []
 
-        return jsonify({"status": "ok", "data": data})
+    except subprocess.TimeoutExpired:
+        stale = True
+        error_detail = "PowerShell timed out after 30s"
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
+        stale = True
+        error_detail = str(e)
+
+    return jsonify({
+        "status": "partial" if stale else "ok",
+        "data": data,
+        "collected_at": collected_at,
+        "stale": stale,
+        "error": error_detail,
+    })
 
 
 def summarize_sysinfo(data: dict) -> dict:
@@ -5662,6 +5687,15 @@ def summarize_sysinfo(data: dict) -> dict:
     insights = []
     actions = []
     status = "ok"
+
+    # Handle empty / stale data
+    if not data or all(not data.get(k) for k in ("Computer", "OS", "CPU")):
+        return {
+            "status": "warning",
+            "headline": "System info unavailable",
+            "insights": [{"level": "warning", "text": "Data collection failed or returned empty", "detail": "PowerShell/WMI may not be responding."}],
+            "actions": ["Refresh the System Info tab or check PowerShell connectivity"],
+        }
 
     comp = data.get("Computer", {})
     os_info = data.get("OS", {})
@@ -5689,6 +5723,20 @@ def summarize_sysinfo(data: dict) -> dict:
     elif ram_gb:
         insights.append({"level": "ok", "text": f"{ram_gb} GB RAM installed", "detail": ""})
 
+    # Memory type insight
+    mem_sticks = data.get("Memory", [])
+    if mem_sticks:
+        mem_types = set(m.get("MemoryType", "") for m in mem_sticks if m.get("MemoryType"))
+        mem_type_str = ", ".join(sorted(mem_types)) if mem_types else "Unknown"
+        speeds = [m.get("ConfiguredClockSpeed", 0) for m in mem_sticks if m.get("ConfiguredClockSpeed")]
+        speed_str = f" @ {max(speeds)} MHz" if speeds else ""
+        if "DDR5" in mem_types:
+            insights.append({"level": "ok", "text": f"{mem_type_str}{speed_str} — {len(mem_sticks)} DIMM(s)", "detail": "Latest generation memory"})
+        elif "DDR4" in mem_types:
+            insights.append({"level": "info", "text": f"{mem_type_str}{speed_str} — {len(mem_sticks)} DIMM(s)", "detail": "Previous generation — still widely supported"})
+        else:
+            insights.append({"level": "info", "text": f"Memory: {mem_type_str}{speed_str} — {len(mem_sticks)} DIMM(s)", "detail": ""})
+
     # CPU info
     cpu_name = cpu.get("Name", "Unknown")
     cores = cpu.get("Cores", 0)
@@ -5696,10 +5744,32 @@ def summarize_sysinfo(data: dict) -> dict:
     if cpu_name != "Unknown":
         insights.append({"level": "ok", "text": f"{cpu_name}", "detail": f"{cores} cores / {logical} logical processors"})
 
+    # GPU info with manufacturer
+    gpus = data.get("GPU", [])
+    for gpu in gpus:
+        gpu_name = gpu.get("Name", "Unknown GPU")
+        gpu_mfr = gpu.get("AdapterCompatibility", "")
+        vram = gpu.get("AdapterRAM", 0)
+        vram_str = f" — {round(vram / (1024**3), 1)} GB VRAM" if vram and vram > 0 else ""
+        prefix = f"{gpu_mfr} " if gpu_mfr and gpu_mfr not in gpu_name else ""
+        insights.append({"level": "ok", "text": f"{prefix}{gpu_name}{vram_str}", "detail": f"Driver: {gpu.get('DriverVersion', 'N/A')}"})
+
     # OS info
     os_name = os_info.get("Name", "")
     if os_name:
         insights.append({"level": "ok", "text": os_name, "detail": f"Build {os_info.get('Build', '')} — installed {os_info.get('InstallDate', '')}"})
+
+    # Sound devices
+    sound = data.get("Sound", [])
+    if sound:
+        names = [s.get("Name", "?") for s in sound[:3]]
+        insights.append({"level": "ok", "text": f"{len(sound)} audio device(s)", "detail": ", ".join(names)})
+
+    # NIC hardware
+    nic_hw = data.get("NetworkHardware", [])
+    if nic_hw:
+        nic_names = [n.get("Manufacturer", n.get("Name", "?")) for n in nic_hw[:3]]
+        insights.append({"level": "ok", "text": f"{len(nic_hw)} network adapter(s)", "detail": ", ".join(nic_names)})
 
     headline = f"{comp.get('Manufacturer', '')} {comp.get('Model', '')} — {cpu_name}".strip()
 
