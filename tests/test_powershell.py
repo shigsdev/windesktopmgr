@@ -1120,3 +1120,32 @@ class TestGetStartupItems:
         ]
         result = wdm.get_startup_items()
         assert isinstance(result, list)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# get_credentials_network_health — PS command content
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestCredentialsNetworkPSCommands:
+    """Verify the PowerShell scripts in get_credentials_network_health."""
+
+    def _capture_ps_commands(self, mocker):
+        """Run the function with mocked subprocess and return PS command strings."""
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.return_value = type("R", (), {"stdout": "{}", "returncode": 0, "stderr": ""})()
+        wdm.get_credentials_network_health()
+        return [call[0][0][-1] for call in m.call_args_list]
+
+    def test_smb_fallback_defines_portnum(self, mocker):
+        """PSDrive fallback block must initialise $portNum (was undefined before fix)."""
+        commands = self._capture_ps_commands(mocker)
+        # ps_smb is the second script (index 1): creds, smb, onedrive, fast, events, fw
+        ps_smb = commands[1]
+        # The fallback PSDrive block must define $portNum before using it
+        assert "$portNum   = if" in ps_smb or "$portNum = if" in ps_smb
+
+    def test_smb_fallback_has_no_dialect2_typo(self, mocker):
+        """PSDrive fallback block must not reference $dialect2 (was a typo)."""
+        commands = self._capture_ps_commands(mocker)
+        ps_smb = commands[1]
+        assert "$dialect2" not in ps_smb

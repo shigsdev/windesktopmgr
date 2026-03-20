@@ -4628,6 +4628,8 @@ try {
                 }
             } catch {}
                 $proto     = if ($disp -match '^//') { "NFS" } else { "SMB/CIFS" }
+                $portNum   = if ($proto -eq "NFS") { 2049 } else { 445 }
+                $dialect   = ""
                 $mappedDrives += [PSCustomObject]@{
                     Name        = $pd.Name
                     Root        = $pd.Root
@@ -4635,7 +4637,7 @@ try {
                     Reachable   = [bool]$reachable
                     Protocol    = $proto
                     Port        = $portNum
-                    Dialect     = $dialect2
+                    Dialect     = $dialect
                 }
             }
         }
