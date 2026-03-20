@@ -2421,11 +2421,12 @@ def _lookup_via_windows_provider(event_id: int, source: str) -> dict | None:
     This is always up to date — it reads whatever Windows has installed.
     Works offline. Returns None if the provider/event isn't registered.
     """
+    safe_source = re.sub(r"[^\w\s\-]", "", source)
     ps = f"""
 try {{
     # Try exact source name first
     $providers = @(Get-WinEvent -ListProvider "*" -EA SilentlyContinue |
-        Where-Object {{ $_.Name -like "*{re.sub(r"[^\w\s\-]", "", source)}*" }})
+        Where-Object {{ $_.Name -like "*{safe_source}*" }})
     foreach ($p in $providers) {{
         $evt = $p.Events | Where-Object {{ $_.Id -eq {event_id} }} | Select-Object -First 1
         if ($evt) {{
