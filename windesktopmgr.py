@@ -4230,11 +4230,18 @@ def check_dell_bios_update(board_product: str, current_version: str) -> dict:
     except Exception:
         pass
 
-    # Hardcoded known-good values for this XPS 8960 (service tag 9T46D14)
-    # Dell support confirmed drivers/BIOS up to date as of March 2026
-    SERVICE_TAG    = "9T46D14"
-    KNOWN_LATEST   = "2.22.0"
-    KNOWN_DATE     = "January 6, 2026"
+    # Get service tag dynamically from WMI
+    service_tag = ""
+    try:
+        r_tag = subprocess.run(
+            ["powershell", "-NonInteractive", "-Command",
+             "(Get-WmiObject Win32_BIOS).SerialNumber"],
+            capture_output=True, text=True, timeout=8)
+        tag = r_tag.stdout.strip()
+        if tag and len(tag) >= 5:
+            service_tag = tag
+    except Exception:
+        pass
 
     result = {
         "checked_at":       datetime.now(timezone.utc).isoformat(),
@@ -4243,28 +4250,12 @@ def check_dell_bios_update(board_product: str, current_version: str) -> dict:
         "latest_date":      None,
         "update_available": False,
         "release_notes":    "",
-        "service_tag":      SERVICE_TAG,
-        "download_url":     f"https://www.dell.com/support/home/en-us/product-support/servicetag/{SERVICE_TAG}/drivers",
+        "service_tag":      service_tag,
+        "download_url":     (f"https://www.dell.com/support/home/en-us/product-support/servicetag/{service_tag}/drivers"
+                             if service_tag else "https://www.dell.com/support/home/en-us"),
         "source":           "unknown",
         "error":            None,
     }
-
-    # Fast path: if current version matches the confirmed latest, skip remote checks
-    if current_version.strip() == KNOWN_LATEST:
-        result.update({
-            "latest_version":   KNOWN_LATEST,
-            "latest_date":      KNOWN_DATE,
-            "update_available": False,
-            "release_notes":    "Dell confirmed: drivers and BIOS are up to date for this system.",
-            "source":           "confirmed_current",
-        })
-        try:
-            with open(BIOS_CACHE_FILE, "w", encoding="utf-8") as f:
-                json.dump(result, f, indent=2)
-        except Exception:
-            pass
-        print(f"[BIOS] Version {current_version} matches confirmed latest — skipping remote checks")
-        return result
 
     def _ver_gt(latest: str, current: str) -> bool:
         def _v(s):
@@ -4426,24 +4417,24 @@ try {
             pass
 
     # ── Method 4: Get service tag for a direct personalised Dell support URL ────
-    # Even if we can't find the version, give the user a URL with their service tag
-    # so they land directly on their device's driver page
-    try:
-        ps_tag = r"""
+    # If we didn't get it at the top (e.g. timeout), try once more
+    if not result.get("service_tag"):
+        try:
+            ps_tag = r"""
 (Get-WmiObject Win32_BIOS).SerialNumber
 """
-        r4 = subprocess.run(["powershell", "-NonInteractive", "-Command", ps_tag],
-                            capture_output=True, text=True, timeout=8)
-        tag = r4.stdout.strip()
-        if tag and len(tag) >= 5:
-            result["service_tag"]  = tag
-            result["download_url"] = (
-                f"https://www.dell.com/support/home/en-us/product-support/"
-                f"servicetag/{tag}/drivers"
-            )
-            print(f"[BIOS] Service tag: {tag}")
-    except Exception:
-        pass
+            r4 = subprocess.run(["powershell", "-NonInteractive", "-Command", ps_tag],
+                                capture_output=True, text=True, timeout=8)
+            tag = r4.stdout.strip()
+            if tag and len(tag) >= 5:
+                result["service_tag"]  = tag
+                result["download_url"] = (
+                    f"https://www.dell.com/support/home/en-us/product-support/"
+                    f"servicetag/{tag}/drivers"
+                )
+                print(f"[BIOS] Service tag: {tag}")
+        except Exception:
+            pass
 
     # ── Save cache ────────────────────────────────────────────────────────────
     try:
