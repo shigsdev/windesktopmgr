@@ -2385,6 +2385,85 @@ async function clearBiosCache() {
   loadBios();
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// WARRANTY READINESS
+// ══════════════════════════════════════════════════════════════════════════
+async function loadWarrantyData() {
+  const panel = document.getElementById("warranty-panel");
+  const loading = document.getElementById("warranty-loading");
+  const content = document.getElementById("warranty-content");
+  loading.style.display = "block";
+  content.style.display = "none";
+  panel.style.display = "block";
+  try {
+    const r = await fetch("/api/warranty/data");
+    const d = await r.json();
+    if (d.status !== "ok") throw new Error(d.message || "Failed");
+    renderWarranty(d.warranty);
+  } catch (e) {
+    loading.innerHTML = `<span style="color:var(--red)">Failed to load warranty data: ${e.message}</span>`;
+  }
+}
+
+function renderWarranty(w) {
+  const esc = s => String(s||"—").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+  const grid = document.getElementById("warranty-grid");
+  const statColor = (v, threshold=0) => v > threshold ? "var(--red)" : "var(--green)";
+
+  const fields = [
+    ["CPU Model", w.CPUModel, "var(--text)"],
+    ["CPU ID", w.CPUSerial, "var(--cyan)"],
+    ["Microcode", w.MicrocodeVersion, "var(--cyan)"],
+    ["BIOS", `${w.BIOSVersion} (${w.BIOSDate})`, "var(--text)"],
+    ["Dell Service Tag", w.DellServiceTag, "var(--cyan)"],
+    ["Affected CPU", w.IsAffectedCPU ? "YES" : "No", w.IsAffectedCPU ? "var(--orange)" : "var(--green)"],
+    ["BSODs (30 days)", w.BSODs30Days, statColor(w.BSODs30Days)],
+    ["WHEA Errors", w.WHEAErrors, statColor(w.WHEAErrors)],
+    ["Unexpected Shutdowns", w.UnexpectedShutdowns, statColor(w.UnexpectedShutdowns)],
+  ];
+
+  grid.innerHTML = fields.map(([label, value, color]) => `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${label}</div>
+      <div style="font-size:13px;font-weight:600;color:${color};word-break:break-all">${esc(value)}</div>
+    </div>`).join("");
+
+  // Evidence summary
+  const lines = [];
+  lines.push(`System: ${w.Manufacturer} ${w.Model}`);
+  lines.push(`CPU: ${w.CPUModel}`);
+  lines.push(`CPU ID: ${w.CPUSerial}`);
+  lines.push(`BIOS: ${w.BIOSVersion} (${w.BIOSDate})`);
+  lines.push(`Microcode: ${w.MicrocodeVersion}`);
+  if (w.DellServiceTag !== "N/A") lines.push(`Dell Service Tag: ${w.DellServiceTag}`);
+  lines.push(`BSODs in last 30 days: ${w.BSODs30Days}`);
+  lines.push(`WHEA hardware errors: ${w.WHEAErrors}`);
+  lines.push(`Unexpected shutdowns: ${w.UnexpectedShutdowns}`);
+  lines.push("");
+  lines.push("This system exhibits symptoms consistent with the known Intel 13th/14th Gen");
+  lines.push("desktop processor voltage instability issue (eTVB/SVID). Requesting warranty");
+  lines.push("evaluation and potential CPU replacement under Intel's extended warranty program.");
+
+  document.getElementById("warranty-evidence-text").textContent = lines.join("\n");
+
+  // Links
+  document.getElementById("warranty-intel-link").href = w.IntelWarrantyURL;
+  document.getElementById("warranty-dell-link").href = w.DellSupportURL;
+  if (w.DellServiceTag !== "N/A") {
+    document.getElementById("warranty-dell-link").textContent = "🔗 Dell Support (Your Service Tag)";
+  }
+
+  document.getElementById("warranty-loading").style.display = "none";
+  document.getElementById("warranty-content").style.display = "block";
+}
+
+// Auto-load warranty data when BIOS tab loads
+const origLoadBios = loadBios;
+loadBios = async function() {
+  await origLoadBios();
+  loadWarrantyData();
+};
+
 
 // ══════════════════════════════════════════════════════════════════════════
 // CREDENTIALS & NETWORK HEALTH
@@ -3451,6 +3530,34 @@ document.addEventListener("DOMContentLoaded", () => {
              style="display:inline-block;background:#ff704322;border:1px solid var(--orange);color:var(--orange);padding:6px 14px;border-radius:6px;text-decoration:none;font-size:12px">
             🔄 Windows Update
           </a>
+        </div>
+      </div>
+
+      <!-- WARRANTY READINESS PANEL -->
+      <div id="warranty-panel" style="margin-top:20px;display:none">
+        <div style="padding:20px;background:var(--card);border:1px solid var(--border);border-radius:10px;border-left:4px solid var(--cyan)">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+            <div style="font-weight:700;font-size:15px;color:var(--cyan)">📋 Intel Warranty — Ready to File</div>
+            <button class="btn-action" onclick="loadWarrantyData()" style="padding:5px 12px;font-size:11px">↺ Refresh</button>
+          </div>
+          <div id="warranty-loading" style="text-align:center;padding:20px;color:var(--muted)">Loading warranty data…</div>
+          <div id="warranty-content" style="display:none">
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:16px" id="warranty-grid"></div>
+            <div id="warranty-evidence" style="margin-top:12px">
+              <div style="font-weight:600;font-size:13px;color:var(--text-dim);margin-bottom:8px">📋 Evidence Summary (copy & paste into warranty claim)</div>
+              <pre id="warranty-evidence-text" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-dim);line-height:1.7;white-space:pre-wrap;cursor:text;user-select:all;max-height:300px;overflow-y:auto"></pre>
+            </div>
+            <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap">
+              <a id="warranty-intel-link" href="https://warranty.intel.com" target="_blank"
+                 style="display:inline-flex;align-items:center;gap:6px;background:var(--cyan);color:#000;padding:8px 16px;border-radius:6px;text-decoration:none;font-size:12px;font-weight:600">
+                🔗 Intel Warranty Portal
+              </a>
+              <a id="warranty-dell-link" href="https://www.dell.com/support" target="_blank"
+                 style="display:inline-flex;align-items:center;gap:6px;background:var(--orange);color:#000;padding:8px 16px;border-radius:6px;text-decoration:none;font-size:12px;font-weight:600">
+                🔗 Dell Support
+              </a>
+            </div>
+          </div>
         </div>
       </div>
     </div>

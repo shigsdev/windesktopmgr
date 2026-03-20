@@ -1230,3 +1230,84 @@ class TestServerConfig:
             assert isinstance(kw.value, ast.Constant) and kw.value.value is True, (
                 "All worker threads must have daemon=True"
             )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# WARRANTY DATA ROUTE
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestWarrantyRoute:
+    """Tests for /api/warranty/data"""
+
+    def test_returns_ok_with_warranty_data(self, client, mocker):
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        # First call: CPU/BIOS/system info
+        mock_run.return_value.stdout = json.dumps({
+            "CPUName": "Intel(R) Core(TM) i9-14900K",
+            "ProcessorId": "BFEBFBFF000B0671",
+            "SerialNumber": "N/A",
+            "DellServiceTag": "ABC1234",
+            "BIOSVersion": "2.18.0",
+            "BIOSDate": "2025-01-10",
+            "Manufacturer": "Dell Inc.",
+            "Model": "XPS 8960",
+        })
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/warranty/data")
+        assert r.status_code == 200
+        d = r.get_json()
+        assert d["status"] == "ok"
+        assert "warranty" in d
+        w = d["warranty"]
+        assert w["IsAffectedCPU"] is True
+        assert "i9-14900K" in w["CPUModel"]
+
+    def test_returns_service_tag(self, client, mocker):
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.return_value.stdout = json.dumps({
+            "CPUName": "Intel(R) Core(TM) i9-14900K",
+            "ProcessorId": "TEST",
+            "SerialNumber": "N/A",
+            "DellServiceTag": "XYZ7890",
+            "BIOSVersion": "2.18.0",
+            "BIOSDate": "2025-01-10",
+            "Manufacturer": "Dell Inc.",
+            "Model": "XPS 8960",
+        })
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/warranty/data")
+        d = r.get_json()
+        assert d["warranty"]["DellServiceTag"] == "XYZ7890"
+        assert "XYZ7890" in d["warranty"]["DellSupportURL"]
+
+    def test_non_affected_cpu(self, client, mocker):
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.return_value.stdout = json.dumps({
+            "CPUName": "AMD Ryzen 9 7950X",
+            "ProcessorId": "TEST",
+            "SerialNumber": "N/A",
+            "DellServiceTag": "N/A",
+            "BIOSVersion": "1.0",
+            "BIOSDate": "2025-01-01",
+            "Manufacturer": "AMD",
+            "Model": "Custom",
+        })
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stderr = ""
+
+        r = client.get("/api/warranty/data")
+        d = r.get_json()
+        assert d["warranty"]["IsAffectedCPU"] is False
+
+    def test_handles_subprocess_failure(self, client, mocker):
+        mock_run = mocker.patch("windesktopmgr.subprocess.run")
+        mock_run.side_effect = Exception("PowerShell failed")
+
+        r = client.get("/api/warranty/data")
+        d = r.get_json()
+        assert d["status"] == "error"
+        assert "message" in d

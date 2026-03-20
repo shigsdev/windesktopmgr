@@ -5477,6 +5477,88 @@ def bios_cache_clear_route():
         pass
     return jsonify({"ok": True})
 
+@app.route("/api/warranty/data")
+def warranty_data():
+    """Collect Intel/Dell warranty readiness data."""
+    try:
+        # CPU info
+        cpu_cmd = """
+$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+$bios = Get-CimInstance Win32_BIOS
+$cs = Get-CimInstance Win32_ComputerSystem
+@{
+    CPUName = $cpu.Name.Trim()
+    ProcessorId = $cpu.ProcessorId
+    SerialNumber = if ($cpu.SerialNumber) { $cpu.SerialNumber } else { 'N/A' }
+    DellServiceTag = $bios.SerialNumber
+    BIOSVersion = $bios.SMBIOSBIOSVersion
+    BIOSDate = if ($bios.ReleaseDate) { $bios.ReleaseDate.ToString('yyyy-MM-dd') } else { 'Unknown' }
+    Manufacturer = $cs.Manufacturer
+    Model = $cs.Model
+} | ConvertTo-Json
+"""
+        r = subprocess.run(["powershell", "-NonInteractive", "-Command", cpu_cmd],
+                          capture_output=True, text=True, timeout=15)
+        sys_data = json.loads(r.stdout.strip()) if r.stdout.strip() else {}
+
+        cpu_name = sys_data.get("CPUName", "Unknown")
+        is_affected = bool(re.search(r"i[579]-1[34]\d{3}", cpu_name))
+
+        # Microcode from registry
+        mcu_cmd = """
+try {
+    $key = Get-ItemProperty 'HKLM:\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0'
+    $raw = $key.'Update Revision'
+    if ($raw -is [byte[]]) { '0x' + [BitConverter]::ToString($raw).Replace('-','') }
+    else { [string]$raw }
+} catch { 'Unable to read' }
+"""
+        r2 = subprocess.run(["powershell", "-NonInteractive", "-Command", mcu_cmd],
+                           capture_output=True, text=True, timeout=10)
+        microcode = r2.stdout.strip() if r2.stdout.strip() else "Unable to read"
+
+        # BSOD + WHEA counts (lightweight)
+        counts_cmd = """
+$bsod30 = @(Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Microsoft-Windows-WER-SystemErrorReporting';Id=1001} -MaxEvents 100 -EA SilentlyContinue |
+    Where-Object { $_.TimeCreated -gt (Get-Date).AddDays(-30) }).Count
+$whea = @(Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Microsoft-Windows-WHEA-Logger'} -MaxEvents 100 -EA SilentlyContinue).Count
+$kp41 = @(Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Microsoft-Windows-Kernel-Power';Id=41} -MaxEvents 100 -EA SilentlyContinue).Count
+@{BSODs30Days=$bsod30;WHEAErrors=$whea;UnexpectedShutdowns=$kp41} | ConvertTo-Json
+"""
+        r3 = subprocess.run(["powershell", "-NonInteractive", "-Command", counts_cmd],
+                           capture_output=True, text=True, timeout=20)
+        counts = json.loads(r3.stdout.strip()) if r3.stdout.strip() else {}
+
+        service_tag = sys_data.get("DellServiceTag", "N/A")
+        if service_tag in ("", "To Be Filled By O.E.M.", "Default string"):
+            service_tag = "N/A"
+
+        cpu_serial = sys_data.get("ProcessorId", "Unknown")
+        if sys_data.get("SerialNumber", "N/A") not in ("N/A", "", "To Be Filled By O.E.M."):
+            cpu_serial = sys_data["SerialNumber"]
+
+        warranty = {
+            "IsAffectedCPU": is_affected,
+            "CPUModel": cpu_name,
+            "CPUSerial": cpu_serial,
+            "MicrocodeVersion": microcode,
+            "BIOSVersion": sys_data.get("BIOSVersion", "Unknown"),
+            "BIOSDate": sys_data.get("BIOSDate", "Unknown"),
+            "DellServiceTag": service_tag,
+            "Manufacturer": sys_data.get("Manufacturer", "Unknown"),
+            "Model": sys_data.get("Model", "Unknown"),
+            "BSODs30Days": counts.get("BSODs30Days", 0),
+            "WHEAErrors": counts.get("WHEAErrors", 0),
+            "UnexpectedShutdowns": counts.get("UnexpectedShutdowns", 0),
+            "IntelWarrantyURL": "https://warranty.intel.com",
+            "DellSupportURL": f"https://www.dell.com/support/home/en-us/product-support/servicetag/{service_tag}" if service_tag != "N/A" else "https://www.dell.com/support",
+        }
+
+        return jsonify({"status": "ok", "warranty": warranty})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
+
+
 @app.route("/api/dashboard/summary")
 def dashboard_summary():
     """

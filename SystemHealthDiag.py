@@ -542,6 +542,139 @@ def collect_reliability():
 
 
 # ============================================================
+# WARRANTY READINESS DATA
+# ============================================================
+def collect_warranty_data(sys_info, intel_check, bsod_data, event_data):
+    """Collect all data needed for Intel/Dell warranty claims.
+
+    Returns:
+        dict: Warranty-ready data with CPU serial, service tag, and evidence summary.
+    """
+    cprint("Collecting warranty readiness data...", "gray")
+
+    warranty = {
+        "CPUModel": sys_info.get("CPUName", "Unknown"),
+        "CPUFamily": intel_check.get("CPUFamily", "Unknown"),
+        "IsAffectedCPU": intel_check.get("IsAffectedCPU", False),
+        "MicrocodeVersion": intel_check.get("MicrocodeVersion", "Unknown"),
+        "BIOSVersion": sys_info.get("BIOSVersion", "Unknown"),
+        "BIOSDate": sys_info.get("BIOSDate", "Unknown"),
+        "CPUSerial": "Unable to read",
+        "DellServiceTag": "N/A",
+        "SystemManufacturer": sys_info.get("Manufacturer", "Unknown"),
+        "SystemModel": sys_info.get("Model", "Unknown"),
+        "BSODCount30Days": bsod_data.get("RecentCrashes", 0),
+        "UnexpectedShutdowns": bsod_data.get("UnexpectedShutdowns", 0),
+        "BugCheckCodes": bsod_data.get("BugCheckCodes", []),
+        "WHEAErrorCount": len(event_data.get("WHEAErrors", [])),
+        "IntelWarrantyURL": "https://warranty.intel.com",
+        "DellSupportURL": "https://www.dell.com/support",
+    }
+
+    # Read CPU ProcessorId (CPUID — closest to serial available via WMI)
+    cpu_id_cmd = """
+$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+@{
+    ProcessorId = $cpu.ProcessorId
+    UniqueId = if ($cpu.UniqueId) { $cpu.UniqueId } else { 'N/A' }
+    SerialNumber = if ($cpu.SerialNumber) { $cpu.SerialNumber } else { 'N/A' }
+} | ConvertTo-Json
+"""
+    cpu_id = ps(cpu_id_cmd, as_json=True) or {}
+    warranty["CPUSerial"] = cpu_id.get("ProcessorId", "Unable to read")
+    if cpu_id.get("SerialNumber", "N/A") not in ("N/A", "", "To Be Filled By O.E.M."):
+        warranty["CPUSerial"] = cpu_id["SerialNumber"]
+
+    # Read Dell Service Tag via WMI
+    tag_cmd = "(Get-CimInstance Win32_BIOS).SerialNumber"
+    tag = ps(tag_cmd)
+    if tag and tag not in ("", "To Be Filled By O.E.M.", "Default string"):
+        warranty["DellServiceTag"] = tag
+        warranty["DellSupportURL"] = f"https://www.dell.com/support/home/en-us/product-support/servicetag/{tag}"
+
+    # Build evidence summary (copy-pasteable for warranty claim)
+    evidence_lines = []
+    evidence_lines.append(f"System: {warranty['SystemManufacturer']} {warranty['SystemModel']}")
+    evidence_lines.append(f"CPU: {warranty['CPUModel']}")
+    evidence_lines.append(f"CPU ID: {warranty['CPUSerial']}")
+    evidence_lines.append(f"BIOS: {warranty['BIOSVersion']} ({warranty['BIOSDate']})")
+    evidence_lines.append(f"Microcode: {warranty['MicrocodeVersion']}")
+    evidence_lines.append(f"BSODs in last 30 days: {warranty['BSODCount30Days']}")
+    evidence_lines.append(f"Unexpected shutdowns: {warranty['UnexpectedShutdowns']}")
+    evidence_lines.append(f"WHEA hardware errors: {warranty['WHEAErrorCount']}")
+    if warranty["BugCheckCodes"]:
+        codes_str = ", ".join(warranty["BugCheckCodes"])
+        evidence_lines.append(f"Bug check codes: {codes_str}")
+        hw_codes_found = [c for c in warranty["BugCheckCodes"] if c in HW_CODES]
+        if hw_codes_found:
+            evidence_lines.append(f"Hardware-related codes: {', '.join(hw_codes_found)}")
+    if warranty["DellServiceTag"] != "N/A":
+        evidence_lines.append(f"Dell Service Tag: {warranty['DellServiceTag']}")
+    evidence_lines.append("")
+    evidence_lines.append("This system exhibits symptoms consistent with the known Intel 13th/14th Gen")
+    evidence_lines.append("desktop processor voltage instability issue (eTVB/SVID). Requesting warranty")
+    evidence_lines.append("evaluation and potential CPU replacement under Intel's extended warranty program.")
+
+    warranty["EvidenceSummary"] = "\n".join(evidence_lines)
+
+    return warranty
+
+
+def build_warranty_section(warranty):
+    """Build the Warranty Ready HTML section for the report.
+
+    Returns:
+        str: HTML for the warranty section, or empty string if CPU is not affected.
+    """
+    if not warranty.get("IsAffectedCPU"):
+        return ""
+
+    has_issues = (warranty["BSODCount30Days"] > 0 or
+                  warranty["WHEAErrorCount"] > 0 or
+                  warranty["UnexpectedShutdowns"] > 0)
+
+    border_class = "intel-critical" if has_issues else "intel-warn"
+
+    html = f"""<div class="section"><div class="section-header"><div class="section-icon">&#x1F4CB;</div><h2>Warranty Claim — Ready to File</h2></div><div class="section-body">
+    <div class="intel-box {border_class}">
+    <h3>{'⚠️ Evidence Supports Warranty Claim' if has_issues else 'ℹ️ Warranty Information'}</h3>
+    <p class="help-text" style="margin-bottom:1rem">All data below is auto-collected from your system. Copy the evidence summary and paste it into your warranty claim.</p>
+
+    <div class="intel-grid" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));">
+        <div><span class="stat-label">CPU Model</span><span class="stat-val">{he(warranty['CPUModel'])}</span></div>
+        <div><span class="stat-label">CPU ID / Serial</span><span class="stat-val"><code>{he(warranty['CPUSerial'])}</code></span></div>
+        <div><span class="stat-label">Microcode</span><span class="stat-val"><code>{he(warranty['MicrocodeVersion'])}</code></span></div>
+        <div><span class="stat-label">BIOS Version</span><span class="stat-val">{he(warranty['BIOSVersion'])} ({he(warranty['BIOSDate'])})</span></div>
+        <div><span class="stat-label">Dell Service Tag</span><span class="stat-val"><code>{he(warranty['DellServiceTag'])}</code></span></div>
+        <div><span class="stat-label">BSODs (30 days)</span><span class="stat-val" style="color:{'var(--red)' if warranty['BSODCount30Days'] > 0 else 'var(--green)'};">{warranty['BSODCount30Days']}</span></div>
+        <div><span class="stat-label">WHEA Errors</span><span class="stat-val" style="color:{'var(--red)' if warranty['WHEAErrorCount'] > 0 else 'var(--green)'};">{warranty['WHEAErrorCount']}</span></div>
+        <div><span class="stat-label">Unexpected Shutdowns</span><span class="stat-val" style="color:{'var(--red)' if warranty['UnexpectedShutdowns'] > 0 else 'var(--green)'};">{warranty['UnexpectedShutdowns']}</span></div>
+    </div>"""
+
+    if warranty["BugCheckCodes"]:
+        codes_html = " ".join(
+            f'<span class="badge {"badge-crit" if c in HW_CODES else "badge-warn"}">{c}</span>'
+            for c in warranty["BugCheckCodes"]
+        )
+        html += f'<div style="margin-top:1rem;"><span class="stat-label">Bug Check Codes</span><div style="margin-top:.4rem;display:flex;flex-wrap:wrap;gap:.4rem;">{codes_html}</div></div>'
+
+    # Copy-pasteable evidence
+    html += f"""
+    <div style="margin-top:1.5rem;">
+        <h4 style="color:var(--text-bright);font-size:.9rem;margin-bottom:.5rem;">📋 Evidence Summary (copy &amp; paste into warranty claim)</h4>
+        <pre style="background:rgba(0,0,0,.3);border:1px solid var(--border);border-radius:8px;padding:1rem;font-family:var(--mono);font-size:.78rem;color:var(--text);line-height:1.7;white-space:pre-wrap;cursor:text;user-select:all;">{he(warranty['EvidenceSummary'])}</pre>
+    </div>
+
+    <div style="margin-top:1.5rem;display:flex;gap:1rem;flex-wrap:wrap;">
+        <a href="{warranty['IntelWarrantyURL']}" target="_blank" style="display:inline-flex;align-items:center;gap:.5rem;padding:.6rem 1.2rem;background:var(--accent);color:var(--bg);border-radius:6px;text-decoration:none;font-weight:600;font-size:.85rem;">🔗 Intel Warranty Portal</a>
+        <a href="{warranty['DellSupportURL']}" target="_blank" style="display:inline-flex;align-items:center;gap:.5rem;padding:.6rem 1.2rem;background:var(--orange);color:var(--bg);border-radius:6px;text-decoration:none;font-weight:600;font-size:.85rem;">🔗 Dell Support{' (Your Service Tag)' if warranty['DellServiceTag'] != 'N/A' else ''}</a>
+    </div>
+    </div></div></div>"""
+
+    return html
+
+
+# ============================================================
 # SCORE CALCULATION
 # ============================================================
 def calculate_score(critical, warnings):
@@ -673,7 +806,7 @@ details{margin-top:.5rem}summary{cursor:pointer;font-size:.85rem;color:var(--acc
 def build_html_report(sys_info, intel_check, bsod_data, event_data, driver_data,
                       disk_data, mem_data, thermal_data, update_history,
                       app_crashes, app_hangs, critical, warnings, info,
-                      score, score_label, score_color):
+                      score, score_label, score_color, warranty=None):
     """Assemble the full HTML diagnostic report.
 
     Returns:
@@ -812,6 +945,8 @@ def build_html_report(sys_info, intel_check, bsod_data, event_data, driver_data,
     <div class="section"><div class="section-header"><div class="section-icon">&#x1F50D;</div><h2>Key Findings</h2></div><div class="section-body">{build_findings(critical, warnings, info)}</div></div>
 
     {build_intel_section(intel_check, critical)}
+
+    {build_warranty_section(warranty) if warranty else ""}
 
     <div class="section"><div class="section-header"><div class="section-icon">&#x1F4A5;</div><h2>BSOD / Crash Analysis</h2></div><div class="section-body">
         <div class="subsection">{sys_grid([("Minidump Files", len(bsod_data["MinidumpFiles"])), ("Crashes - 30 days", bsod_data["RecentCrashes"]), ("Unexpected Shutdowns", bsod_data["UnexpectedShutdowns"]), ("Bug Check Codes", f"{len(bsod_data['BugCheckCodes'])} unique")])}</div>
@@ -1121,6 +1256,9 @@ def main():
     # Section 10: Reliability
     app_crashes, app_hangs = collect_reliability()
 
+    # Warranty readiness data
+    warranty = collect_warranty_data(sys_info, intel_check, bsod_data, event_data)
+
     # Score
     score, score_label, score_color = calculate_score(all_critical, all_warnings)
 
@@ -1131,7 +1269,7 @@ def main():
         sys_info, intel_check, bsod_data, event_data, driver_data,
         disk_data, mem_data, thermal_data, update_history,
         app_crashes, app_hangs, all_critical, all_warnings, all_info,
-        score, score_label, score_color
+        score, score_label, score_color, warranty=warranty
     )
 
     with open(report_path, "w", encoding="utf-8") as f:

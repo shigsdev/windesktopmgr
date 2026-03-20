@@ -937,3 +937,189 @@ class TestEdgeCases:
 
     def test_main_function_exists(self):
         assert callable(shd.main)
+
+
+# ===========================================================================
+# TEST CLASS: collect_warranty_data
+# ===========================================================================
+class TestCollectWarrantyData:
+    """Test the collect_warranty_data function."""
+
+    def _make_inputs(self, cpu_name="Intel(R) Core(TM) i9-14900K", bsod_count=3,
+                     whea_count=5, shutdowns=2, bugcheck_codes=None):
+        sys_info = {
+            "CPUName": cpu_name, "BIOSVersion": "2.18.0", "BIOSDate": "2025-01-10",
+            "Manufacturer": "Dell Inc.", "Model": "XPS 8960",
+        }
+        intel_check = {
+            "IsAffectedCPU": bool(re.search(r"i[579]-1[34]\d{3}", cpu_name)),
+            "CPUFamily": "Intel 14th Gen Core i9",
+            "MicrocodeVersion": "0x0129",
+        }
+        bsod_data = {
+            "RecentCrashes": bsod_count,
+            "UnexpectedShutdowns": shutdowns,
+            "BugCheckCodes": bugcheck_codes if bugcheck_codes is not None else ["0x00000139"],
+        }
+        event_data = {
+            "WHEAErrors": [{"EventID": 18}] * whea_count,
+        }
+        return sys_info, intel_check, bsod_data, event_data
+
+    @patch.object(shd, "ps")
+    def test_returns_all_required_fields(self, mock_ps):
+        mock_ps.side_effect = [
+            {"ProcessorId": "BFEBFBFF000B0671", "UniqueId": "N/A", "SerialNumber": "N/A"},
+            "ABC1234",
+        ]
+        warranty = shd.collect_warranty_data(*self._make_inputs())
+        required = ["CPUModel", "CPUSerial", "IsAffectedCPU", "MicrocodeVersion",
+                     "BIOSVersion", "BIOSDate", "DellServiceTag", "BSODCount30Days",
+                     "WHEAErrorCount", "BugCheckCodes", "IntelWarrantyURL",
+                     "DellSupportURL", "EvidenceSummary"]
+        for field in required:
+            assert field in warranty, f"Missing field: {field}"
+
+    @patch.object(shd, "ps")
+    def test_affected_cpu_flag(self, mock_ps):
+        mock_ps.side_effect = [{"ProcessorId": "TEST", "SerialNumber": "N/A"}, "TAG123"]
+        warranty = shd.collect_warranty_data(*self._make_inputs())
+        assert warranty["IsAffectedCPU"] is True
+
+    @patch.object(shd, "ps")
+    def test_non_affected_cpu(self, mock_ps):
+        mock_ps.side_effect = [{"ProcessorId": "TEST", "SerialNumber": "N/A"}, "TAG"]
+        warranty = shd.collect_warranty_data(*self._make_inputs(cpu_name="AMD Ryzen 9 7950X"))
+        assert warranty["IsAffectedCPU"] is False
+
+    @patch.object(shd, "ps")
+    def test_dell_service_tag_in_url(self, mock_ps):
+        mock_ps.side_effect = [{"ProcessorId": "TEST", "SerialNumber": "N/A"}, "XYZ7890"]
+        warranty = shd.collect_warranty_data(*self._make_inputs())
+        assert "XYZ7890" in warranty["DellSupportURL"]
+        assert warranty["DellServiceTag"] == "XYZ7890"
+
+    @patch.object(shd, "ps")
+    def test_oem_service_tag_ignored(self, mock_ps):
+        mock_ps.side_effect = [{"ProcessorId": "TEST", "SerialNumber": "N/A"}, "To Be Filled By O.E.M."]
+        warranty = shd.collect_warranty_data(*self._make_inputs())
+        assert warranty["DellServiceTag"] == "N/A"
+
+    @patch.object(shd, "ps")
+    def test_evidence_summary_contains_key_data(self, mock_ps):
+        mock_ps.side_effect = [{"ProcessorId": "BFEBFBFF", "SerialNumber": "N/A"}, "SVC123"]
+        warranty = shd.collect_warranty_data(*self._make_inputs(bsod_count=5, whea_count=10))
+        evidence = warranty["EvidenceSummary"]
+        assert "i9-14900K" in evidence
+        assert "BSODs in last 30 days: 5" in evidence
+        assert "WHEA hardware errors: 10" in evidence
+        assert "0x00000139" in evidence
+
+    @patch.object(shd, "ps")
+    def test_hw_codes_highlighted_in_evidence(self, mock_ps):
+        mock_ps.side_effect = [{"ProcessorId": "TEST", "SerialNumber": "N/A"}, "TAG"]
+        warranty = shd.collect_warranty_data(
+            *self._make_inputs(bugcheck_codes=["0x00000124", "0x0000003B"]))
+        evidence = warranty["EvidenceSummary"]
+        assert "Hardware-related codes: 0x00000124" in evidence
+
+    @patch.object(shd, "ps")
+    def test_empty_bugcheck_codes(self, mock_ps):
+        mock_ps.side_effect = [{"ProcessorId": "TEST", "SerialNumber": "N/A"}, "TAG"]
+        sys_info, intel_check, bsod_data, event_data = self._make_inputs(bugcheck_codes=[])
+        # Verify we actually passed empty codes
+        assert bsod_data["BugCheckCodes"] == []
+        warranty = shd.collect_warranty_data(sys_info, intel_check, bsod_data, event_data)
+        assert warranty["BugCheckCodes"] == []
+        assert "Bug check codes" not in warranty["EvidenceSummary"]
+
+    @patch.object(shd, "ps")
+    def test_cpu_serial_prefers_serial_number(self, mock_ps):
+        mock_ps.side_effect = [
+            {"ProcessorId": "BFEBFBFF", "SerialNumber": "REAL_SERIAL_123", "UniqueId": "N/A"},
+            "TAG",
+        ]
+        warranty = shd.collect_warranty_data(*self._make_inputs())
+        assert warranty["CPUSerial"] == "REAL_SERIAL_123"
+
+    @patch.object(shd, "ps")
+    def test_cpu_serial_falls_back_to_processor_id(self, mock_ps):
+        mock_ps.side_effect = [
+            {"ProcessorId": "BFEBFBFF000B0671", "SerialNumber": "N/A", "UniqueId": "N/A"},
+            "TAG",
+        ]
+        warranty = shd.collect_warranty_data(*self._make_inputs())
+        assert warranty["CPUSerial"] == "BFEBFBFF000B0671"
+
+
+# ===========================================================================
+# TEST CLASS: build_warranty_section
+# ===========================================================================
+class TestBuildWarrantySection:
+    """Test the build_warranty_section HTML builder."""
+
+    def _make_warranty(self, affected=True, bsod=3, whea=5, shutdowns=2,
+                       codes=None, tag="SVC123"):
+        return {
+            "IsAffectedCPU": affected,
+            "CPUModel": "Intel(R) Core(TM) i9-14900K",
+            "CPUSerial": "BFEBFBFF000B0671",
+            "MicrocodeVersion": "0x0129",
+            "BIOSVersion": "2.18.0",
+            "BIOSDate": "2025-01-10",
+            "DellServiceTag": tag,
+            "BSODCount30Days": bsod,
+            "WHEAErrorCount": whea,
+            "UnexpectedShutdowns": shutdowns,
+            "BugCheckCodes": codes or ["0x00000139"],
+            "IntelWarrantyURL": "https://warranty.intel.com",
+            "DellSupportURL": f"https://dell.com/support/{tag}",
+            "EvidenceSummary": "Test evidence summary",
+        }
+
+    def test_not_affected_returns_empty(self):
+        warranty = self._make_warranty(affected=False)
+        assert shd.build_warranty_section(warranty) == ""
+
+    def test_affected_returns_html(self):
+        html = shd.build_warranty_section(self._make_warranty())
+        assert "Warranty Claim" in html
+        assert "i9-14900K" in html
+
+    def test_evidence_summary_present(self):
+        html = shd.build_warranty_section(self._make_warranty())
+        assert "Evidence Summary" in html
+        assert "Test evidence summary" in html
+
+    def test_intel_link_present(self):
+        html = shd.build_warranty_section(self._make_warranty())
+        assert "warranty.intel.com" in html
+
+    def test_dell_link_present(self):
+        html = shd.build_warranty_section(self._make_warranty())
+        assert "dell.com/support" in html
+
+    def test_bugcheck_codes_displayed(self):
+        html = shd.build_warranty_section(self._make_warranty(codes=["0x00000124"]))
+        assert "0x00000124" in html
+        assert "badge-crit" in html  # 0x00000124 is in HW_CODES
+
+    def test_software_code_badge(self):
+        html = shd.build_warranty_section(self._make_warranty(codes=["0x0000003B"]))
+        assert "badge-warn" in html  # software code
+
+    def test_no_issues_uses_warn_border(self):
+        html = shd.build_warranty_section(self._make_warranty(bsod=0, whea=0, shutdowns=0))
+        assert "intel-warn" in html
+        assert "intel-critical" not in html
+
+    def test_with_issues_uses_critical_border(self):
+        html = shd.build_warranty_section(self._make_warranty(bsod=5))
+        assert "intel-critical" in html
+
+    def test_xss_prevention(self):
+        warranty = self._make_warranty()
+        warranty["CPUModel"] = "<script>alert(1)</script>"
+        html = shd.build_warranty_section(warranty)
+        assert "<script>" not in html
+        assert "&lt;script&gt;" in html
