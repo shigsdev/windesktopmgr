@@ -51,7 +51,7 @@ DELL_API = "https://www.dell.com/support/driver/en-us/ips/api/driverlist/fetchdr
 
 # ─── BSOD constants ───────────────────────────────────────────────────────────
 REPORT_DIR = os.path.join(
-    os.environ.get("USERPROFILE", "C:\\Users\\higs7"),
+    os.environ.get("USERPROFILE", os.path.expanduser("~")),
     "OneDrive", "Coding", "Windows Tools", "System Health Reports"
 )
 
