@@ -26,6 +26,7 @@ import windesktopmgr as wdm
 
 # ── App / client fixtures ──────────────────────────────────────────────────────
 
+
 @pytest.fixture(scope="session")
 def app():
     wdm.app.config["TESTING"] = True
@@ -41,13 +42,17 @@ def client(app):
 
 # ── Global state reset (autouse — runs before every test) ─────────────────────
 
+
 @pytest.fixture(autouse=True)
 def reset_globals():
     """Reset every mutable module-level global before each test."""
+    # Headless mode (set by tray.py — must be off during tests)
+    wdm.HEADLESS_MODE = False
+
     # Driver scan state
-    wdm._dell_cache   = None
+    wdm._dell_cache = None
     wdm._scan_results = None
-    wdm._scan_status  = {"status": "idle", "progress": 0, "message": "Ready to scan"}
+    wdm._scan_status = {"status": "idle", "progress": 0, "message": "Ready to scan"}
 
     # Knowledge caches (normally loaded from JSON on startup)
     wdm._bsod_cache.clear()
@@ -74,6 +79,7 @@ def reset_globals():
 
 
 # ── Reusable data fixtures ─────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def sample_crashes():

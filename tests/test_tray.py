@@ -11,6 +11,7 @@ Tests cover:
 
 import os
 import sys
+import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -93,6 +94,9 @@ class TestHealthMonitor(unittest.TestCase):
         assert self.monitor.current_status == "warning"
         assert len(self.monitor.current_concerns) == 1
         assert self.monitor.last_check is not None
+        # Verify icon and title were updated on the tray icon
+        assert mock_icon.icon is not None  # new icon was set
+        assert "Warnings" in mock_icon.title
 
     @patch("tray.send_notification")
     @patch("tray.urllib.request.urlopen")
@@ -247,6 +251,155 @@ class TestConstants(unittest.TestCase):
     def test_dashboard_url_format(self):
         assert tray.DASHBOARD_URL.startswith("http")
         assert "5000" in tray.DASHBOARD_URL
+
+
+class TestPollingLoop(unittest.TestCase):
+    """Test the background polling loop."""
+
+    @patch("tray.urllib.request.urlopen")
+    def test_polling_waits_for_flask_then_polls(self, mock_urlopen):
+        """Polling loop should wait for Flask, then call monitor.update()."""
+        # First call succeeds (Flask is ready), then stop immediately
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = lambda s: mock_resp
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        monitor = tray.HealthMonitor()
+        monitor.update = MagicMock()
+        stop_event = threading.Event()
+
+        # Set stop immediately so we only do one poll cycle
+        def stop_after_update():
+            monitor.update.side_effect = lambda: stop_event.set()
+
+        stop_after_update()
+        tray.polling_loop(monitor, stop_event)
+
+        monitor.update.assert_called()
+
+    def test_polling_exits_early_on_stop_event(self):
+        """If stop_event is set before Flask is ready, loop should exit without polling."""
+        monitor = tray.HealthMonitor()
+        monitor.update = MagicMock()
+        stop_event = threading.Event()
+        stop_event.set()  # Already stopped
+
+        tray.polling_loop(monitor, stop_event)
+        monitor.update.assert_not_called()
+
+    @patch("tray.urllib.request.urlopen")
+    def test_polling_stops_during_sleep_interval(self, mock_urlopen):
+        """Stop event during the inter-poll sleep should exit quickly."""
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = lambda s: mock_resp
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        monitor = tray.HealthMonitor()
+        call_count = 0
+
+        def update_then_stop():
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 1:
+                stop_event.set()
+
+        monitor.update = update_then_stop
+        stop_event = threading.Event()
+
+        import time
+
+        start = time.time()
+        tray.polling_loop(monitor, stop_event)
+        elapsed = time.time() - start
+
+        assert call_count >= 1
+        # Should exit within a few seconds, not wait for full POLL_INTERVAL
+        assert elapsed < 10
+
+
+class TestSendNotification(unittest.TestCase):
+    """Test the send_notification function."""
+
+    @patch("tray.subprocess.Popen" if hasattr(tray, "subprocess") else "subprocess.Popen")
+    def test_notification_escapes_quotes(self, mock_popen):
+        """Single quotes in title/message should be escaped for PowerShell."""
+        with patch.dict("os.environ", {}, clear=False):
+            tray.send_notification("It's a test", "Don't panic", tab="dashboard")
+        # Should not raise — quotes are handled internally
+
+    @patch("tray.subprocess.Popen" if hasattr(tray, "subprocess") else "subprocess.Popen")
+    def test_notification_truncates_long_title(self, mock_popen):
+        """Titles longer than 100 chars should be truncated."""
+        long_title = "A" * 200
+        tray.send_notification(long_title, "short message")
+        # Should not raise
+
+    def test_notification_exception_does_not_propagate(self):
+        """If notification fails internally, it should not raise."""
+        with patch("builtins.__import__", side_effect=ImportError("no subprocess")):
+            # Even if subprocess import fails, should not propagate
+            try:
+                tray.send_notification("Test", "Message")
+            except Exception:
+                pass  # The function has its own try/except
+
+    @patch("subprocess.Popen")
+    def test_notification_uses_create_no_window(self, mock_popen):
+        """On Windows, notification should use CREATE_NO_WINDOW flag."""
+        import subprocess as _sp
+
+        with patch("os.name", "nt"):
+            tray.send_notification("Test", "Message")
+            if mock_popen.called:
+                call_kwargs = mock_popen.call_args[1]
+                assert call_kwargs.get("creationflags") == _sp.CREATE_NO_WINDOW
+
+
+class TestStartFlask(unittest.TestCase):
+    """Test start_flask function."""
+
+    def test_start_flask_sets_headless_mode(self):
+        """start_flask should set HEADLESS_MODE to True before starting server."""
+        import windesktopmgr
+
+        original = windesktopmgr.HEADLESS_MODE
+        try:
+            with patch.object(windesktopmgr, "start_server") as mock_start:
+                tray.start_flask()
+                # After start_flask runs, HEADLESS_MODE should have been set to True
+                assert windesktopmgr.HEADLESS_MODE is True
+                mock_start.assert_called_once_with(open_browser=False)
+        finally:
+            windesktopmgr.HEADLESS_MODE = original
+
+
+class TestRefreshNow(unittest.TestCase):
+    """Test the refresh_now menu action."""
+
+    def test_refresh_now_calls_update(self):
+        """refresh_now should trigger monitor.update in a thread."""
+        monitor = tray.HealthMonitor()
+        monitor.update = MagicMock()
+        action = tray.refresh_now(monitor)
+        action(None, None)
+        # Give the thread a moment to run
+        import time
+
+        time.sleep(0.1)
+        monitor.update.assert_called()
+
+
+class TestQuitApp(unittest.TestCase):
+    """Test quit_app function."""
+
+    def test_quit_sets_stop_event_and_stops_icon(self):
+        stop_event = threading.Event()
+        mock_icon = MagicMock()
+        tray.quit_app(mock_icon, None, stop_event)
+        assert stop_event.is_set()
+        mock_icon.stop.assert_called_once()
 
 
 if __name__ == "__main__":

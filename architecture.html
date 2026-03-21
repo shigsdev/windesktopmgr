@@ -184,7 +184,7 @@
       <div id="btn-simple" onclick="setView('simple')" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:var(--cyan);color:var(--bg);font-weight:700">Simple</div>
       <div id="btn-detail" onclick="setView('detail')" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);color:var(--muted)">Detailed</div>
     </div>
-    <div class="badge" style="color:var(--green);border-color:#00e67633">689 tests · 80% coverage</div>
+    <div class="badge" style="color:var(--green);border-color:#00e67633">727 tests · 80% coverage</div>
     <div class="badge">
       <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
     </div>
@@ -230,6 +230,40 @@
     </div>
   </div>
 
+  <!-- ── SYSTEM TRAY MODE ──────────────────────────────── -->
+  <div class="row" style="background:#00e5a008;" id="layer-tray">
+    <div class="row-label" style="color:#00e5a0">🖥 System Tray Mode — tray.py · pythonw.exe · silent background operation</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <div style="background:#00e5a00d;border:1px solid #00e5a033;border-radius:6px;padding:8px 12px;font-size:11px;color:#00e5a0;display:flex;align-items:center;gap:8px">
+        <div class="worker-dot" style="background:#00e5a0;box-shadow:0 0 6px #00e5a0"></div>
+        <div>
+          <div>Tray Icon (pystray + Pillow)</div>
+          <span style="font-size:10px;color:var(--muted);display:block;margin-top:1px">Green/Yellow/Red circle · right-click menu · status tooltip</span>
+        </div>
+      </div>
+      <div style="background:#00e5a00d;border:1px solid #00e5a033;border-radius:6px;padding:8px 12px;font-size:11px;color:#00e5a0;display:flex;align-items:center;gap:8px">
+        <div class="worker-dot" style="background:#00e5a0;box-shadow:0 0 6px #00e5a0"></div>
+        <div>
+          <div>HealthMonitor Polling</div>
+          <span style="font-size:10px;color:var(--muted);display:block;margin-top:1px">Every 5 min → /api/dashboard/summary · state change detection</span>
+        </div>
+      </div>
+      <div style="background:#00e5a00d;border:1px solid #00e5a033;border-radius:6px;padding:8px 12px;font-size:11px;color:#00e5a0;display:flex;align-items:center;gap:8px">
+        <div class="worker-dot" style="background:#00e5a0;box-shadow:0 0 6px #00e5a0"></div>
+        <div>
+          <div>Toast Notifications</div>
+          <span style="font-size:10px;color:var(--muted);display:block;margin-top:1px">PowerShell WinRT toasts · CREATE_NO_WINDOW · new concerns only</span>
+        </div>
+      </div>
+      <div style="background:#00e5a00d;border:1px solid #00e5a033;border-radius:6px;padding:8px 12px;font-size:11px;color:#00e5a0;display:flex;align-items:center;gap:8px">
+        <div>
+          <div>HEADLESS_MODE Wrapper</div>
+          <span style="font-size:10px;color:var(--muted);display:block;margin-top:1px">subprocess.run monkey-patch · CREATE_NO_WINDOW on all 44 PS calls</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ▼ ARROW: Browser → Flask ──────────────────────────── -->
   <div class="inline-connector" style="display:flex;align-items:center;justify-content:center;padding:4px 0;background:linear-gradient(180deg,#00d4ff04,#b388ff04)">
     <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
@@ -242,7 +276,7 @@
 
   <!-- ── LAYER 2: FLASK BACKEND ───────────────────────────────── -->
   <div class="row row-flask" id="layer-flask">
-    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~7,640 lines · Python 3.14 · port 5000 · threaded=True</div>
+    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~7,660 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper</div>
     <div style="margin-bottom:10px">
       <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes (46 endpoints)</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
@@ -541,12 +575,16 @@
             <div class="fs-sub">Single-page frontend · ~4,180 lines</div>
           </div>
           <div class="fs-chip">
+            <div class="fs-title">tray.py</div>
+            <div class="fs-sub">System tray mode · ~312 lines · pystray + Pillow</div>
+          </div>
+          <div class="fs-chip">
             <div class="fs-title">SystemHealthDiag.py</div>
             <div class="fs-sub">Daily health diagnostic · ~1,310 lines · 29 functions</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">setup-startup.ps1</div>
-            <div class="fs-sub">Task Scheduler registration</div>
+            <div class="fs-sub">Task Scheduler → tray mode (pythonw.exe)</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">architecture.html</div>
@@ -559,7 +597,7 @@
         <div style="background:#448aff08;border:1px solid #448aff33;border-radius:8px;padding:10px 14px;font-size:11px">
           <div style="display:flex;gap:8px;margin-bottom:4px;align-items:center">
             <div style="color:var(--blue);font-weight:600;min-width:200px">WinDesktopMgr</div>
-            <div style="color:var(--muted);font-size:10px">At login → start Flask + open browser (6s delay)</div>
+            <div style="color:var(--muted);font-size:10px">At login → pythonw.exe tray.py → system tray icon + Flask server (silent)</div>
           </div>
           <div style="display:flex;gap:8px;margin-bottom:4px;align-items:center">
             <div style="color:var(--green);font-weight:600;min-width:200px">SystemHealthDiagnostic</div>
@@ -588,7 +626,7 @@
 
   <!-- ── LAYER 7: TEST SUITE ──────────────────────────────────── -->
   <div class="row row-tests" id="layer-tests">
-    <div class="row-label">🧪 Test Suite — 689 tests · pytest · 80% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ</div>
+    <div class="row-label">🧪 Test Suite — 727 tests · pytest · 80% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray</div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
       <div class="test-chip">
         <div class="test-title">test_routes.py</div>
@@ -621,6 +659,14 @@
       <div class="test-chip">
         <div class="test-title">test_nlq.py</div>
         <div class="test-sub">23 tests · Claude API mocking · tool dispatch · agentic loop · error handling</div>
+      </div>
+      <div class="test-chip">
+        <div class="test-title">test_tray.py</div>
+        <div class="test-sub">32 tests · icon gen · HealthMonitor · polling loop · notifications · tooltips</div>
+      </div>
+      <div class="test-chip">
+        <div class="test-title">test_headless.py</div>
+        <div class="test-sub">6 tests · subprocess wrapper · CREATE_NO_WINDOW · monkey-patch verification</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_integration.py</div>
@@ -669,6 +715,10 @@
   <div class="legend-item">
     <div class="legend-line" style="background:#a855f7"></div>
     NLQ → Claude API (tool use loop)
+  </div>
+  <div class="legend-item">
+    <div class="legend-line" style="background:#00e5a0"></div>
+    Tray → Flask (health polling · toast notifications)
   </div>
   <div style="margin-left:auto;font-size:10px;color:var(--muted)">
     All PowerShell calls via <code style="color:var(--purple)">subprocess.run()</code> · results parsed as JSON
