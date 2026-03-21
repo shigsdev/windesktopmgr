@@ -7598,7 +7598,11 @@ def _requeue_stale_cache(
     return requeued
 
 
-if __name__ == "__main__":
+def start_server(open_browser: bool = True):  # pragma: no cover
+    """
+    Initialize caches, start background workers, and run the Flask server.
+    Called by __main__ (direct run) and by tray.py (system tray mode).
+    """
     # Load persisted caches from disk
     _load_event_cache()
     _load_bsod_cache()
@@ -7633,3 +7637,7 @@ if __name__ == "__main__":
 
     print("\n  WinDesktopMgr running at http://localhost:5000\n")
     app.run(debug=False, port=5000, use_reloader=False, threaded=True)
+
+
+if __name__ == "__main__":
+    start_server()
