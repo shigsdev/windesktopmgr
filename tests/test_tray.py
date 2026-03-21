@@ -402,5 +402,31 @@ class TestQuitApp(unittest.TestCase):
         mock_icon.stop.assert_called_once()
 
 
+class TestRestartApp(unittest.TestCase):
+    """Test restart_app function."""
+
+    @patch("tray.os.execv")
+    def test_restart_stops_icon_and_reexecs(self, mock_execv):
+        stop_event = threading.Event()
+        mock_icon = MagicMock()
+        tray.restart_app(mock_icon, None, stop_event)
+        assert stop_event.is_set()
+        mock_icon.stop.assert_called_once()
+        mock_execv.assert_called_once()
+        # First arg is the python executable
+        assert mock_execv.call_args[0][0] == sys.executable
+
+    @patch("tray.os.execv")
+    def test_restart_preserves_sys_argv(self, mock_execv):
+        stop_event = threading.Event()
+        mock_icon = MagicMock()
+        original_argv = sys.argv[:]
+        tray.restart_app(mock_icon, None, stop_event)
+        # Second arg should include sys.argv
+        args = mock_execv.call_args[0][1]
+        assert args[0] == sys.executable
+        assert args[1:] == original_argv
+
+
 if __name__ == "__main__":
     unittest.main()

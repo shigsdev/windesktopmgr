@@ -237,6 +237,15 @@ def refresh_now(monitor):
     return _refresh
 
 
+def restart_app(icon, item, stop_event):
+    """Restart the entire tray application to pick up code changes."""
+    stop_event.set()
+    icon.stop()
+    # Re-exec the current process with the same arguments
+    python = sys.executable
+    os.execv(python, [python] + sys.argv)  # noqa: S606
+
+
 def quit_app(icon, item, stop_event):
     stop_event.set()
     icon.stop()
@@ -272,6 +281,7 @@ def main():
             ),
         ),
         pystray.MenuItem("Refresh Now", refresh_now(monitor)),
+        pystray.MenuItem("Restart App", lambda icon, item: restart_app(icon, item, stop_event)),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(
             lambda item: f"Last check: {monitor.last_check or 'never'}",
