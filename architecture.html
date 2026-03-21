@@ -184,7 +184,7 @@
       <div id="btn-simple" onclick="setView('simple')" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:var(--cyan);color:var(--bg);font-weight:700">Simple</div>
       <div id="btn-detail" onclick="setView('detail')" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);color:var(--muted)">Detailed</div>
     </div>
-    <div class="badge" style="color:var(--green);border-color:#00e67633">532 tests passing</div>
+    <div class="badge" style="color:var(--green);border-color:#00e67633">689 tests · 80% coverage</div>
     <div class="badge">
       <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
     </div>
@@ -210,6 +210,13 @@
       <div class="tab-chip" id="tab-events"><span class="tab-icon">📋</span>Event Log</div>
       <div class="tab-chip" id="tab-processes"><span class="tab-icon">⚡</span>Processes</div>
     </div>
+    <div style="display:flex;gap:6px;margin-top:6px;margin-bottom:6px">
+      <div class="tab-chip" id="tab-nlq" style="flex:1;border-color:#a855f744;background:#a855f70d;display:flex;align-items:center;gap:8px;padding:8px 14px">
+        <span style="font-size:14px">🔍</span>
+        <span style="color:var(--purple);font-size:11px;font-weight:700">NLQ Chat Bar</span>
+        <span style="color:var(--muted);font-size:10px;margin-left:4px">Ask anything about your system in plain English → Claude API tool use → real-time data</span>
+      </div>
+    </div>
     <div style="display:grid;grid-template-columns:repeat(9,1fr);gap:6px">
       <div class="tab-chip" id="tab-thermals"><span class="tab-icon">🌡</span>Thermals</div>
       <div class="tab-chip" id="tab-services"><span class="tab-icon">⚙</span>Services</div>
@@ -230,14 +237,14 @@
       <span style="font-size:9px;color:var(--cyan);font-weight:700;letter-spacing:.08em">FETCH / POST</span>
       <svg width="12" height="20"><polygon points="1,6 6,0 11,6" fill="var(--purple)"/><line x1="6" y1="6" x2="6" y2="20" stroke="var(--purple)" stroke-width="2"/></svg>
     </div>
-    <span style="font-size:9px;color:var(--muted);margin-left:12px">HTTP JSON · 45 API endpoints · localhost:5000</span>
+    <span style="font-size:9px;color:var(--muted);margin-left:12px">HTTP JSON · 46 API endpoints · localhost:5000</span>
   </div>
 
   <!-- ── LAYER 2: FLASK BACKEND ───────────────────────────────── -->
   <div class="row row-flask" id="layer-flask">
-    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~6,070 lines · Python 3.14 · port 5000 · threaded=True</div>
+    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~7,640 lines · Python 3.14 · port 5000 · threaded=True</div>
     <div style="margin-bottom:10px">
-      <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes (45 endpoints)</div>
+      <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes (46 endpoints)</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
         <div class="route-chip" id="rt-index"><span class="method">GET</span>/</div>
         <div class="route-chip" id="rt-scan"><span class="method">POST</span>/api/scan/start</div>
@@ -281,6 +288,7 @@
         <div class="route-chip" id="rt-sysinfo"><span class="method">GET</span>/api/sysinfo/data</div>
         <div class="route-chip" id="rt-summary"><span class="method">POST</span>/api/summary/&lt;tab&gt;</div>
         <div class="route-chip" id="rt-dashsum"><span class="method">GET</span>/api/dashboard/summary</div>
+        <div class="route-chip" id="rt-nlq" style="border-color:#a855f744;background:#a855f70d;color:var(--purple)"><span class="method">POST</span>/api/nlq/ask</div>
       </div>
     </div>
     <div>
@@ -509,6 +517,11 @@
         <div class="ext-sub">Microsoft.Update.Session COM<br>Pending driver updates · BIOS firmware</div>
         <span class="ext-badge">local COM</span>
       </div>
+      <div class="ext-chip" style="border-color:#a855f744;background:#a855f70d">
+        <div class="ext-title" style="color:var(--purple)">Claude API (Anthropic)</div>
+        <div class="ext-sub">api.anthropic.com · claude-sonnet-4-20250514<br>NLQ tool use loop · 16 data tools · natural language answers</div>
+        <span class="ext-badge" style="background:#a855f722;color:var(--purple)">per-query</span>
+      </div>
     </div>
   </div>
 
@@ -521,11 +534,11 @@
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <div class="fs-chip">
             <div class="fs-title">windesktopmgr.py</div>
-            <div class="fs-sub">Flask backend · ~6,070 lines</div>
+            <div class="fs-sub">Flask backend · ~7,640 lines</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">templates/index.html</div>
-            <div class="fs-sub">Single-page frontend · ~4,020 lines</div>
+            <div class="fs-sub">Single-page frontend · ~4,180 lines</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">SystemHealthDiag.py</div>
@@ -575,7 +588,7 @@
 
   <!-- ── LAYER 7: TEST SUITE ──────────────────────────────────── -->
   <div class="row row-tests" id="layer-tests">
-    <div class="row-label">🧪 Test Suite — 528 tests · pytest · 0.7s · Flask + PowerShell + Python</div>
+    <div class="row-label">🧪 Test Suite — 689 tests · pytest · 80% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ</div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
       <div class="test-chip">
         <div class="test-title">test_routes.py</div>
@@ -601,11 +614,24 @@
         <div class="test-title">test_bsod_parsing.py</div>
         <div class="test-sub">27 tests · event parsing · report crashes · recommendations</div>
       </div>
+      <div class="test-chip">
+        <div class="test-title">test_cache_systems.py</div>
+        <div class="test-sub">Cache lookup workers · queue management · thread safety</div>
+      </div>
+      <div class="test-chip">
+        <div class="test-title">test_nlq.py</div>
+        <div class="test-sub">23 tests · Claude API mocking · tool dispatch · agentic loop · error handling</div>
+      </div>
+      <div class="test-chip">
+        <div class="test-title">test_integration.py</div>
+        <div class="test-sub">28 tests · real PowerShell · @pytest.mark.integration · pre-push hook</div>
+      </div>
     </div>
     <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">
       <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">conftest.py — shared fixtures · Flask test client</div>
-      <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">requirements-dev.txt — pytest · pytest-flask · pytest-mock</div>
+      <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">pyproject.toml — ruff · pytest-cov · pre-commit · coverage fail-under=80%</div>
       <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">ctypes + winreg mocked at import for cross-platform</div>
+      <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">pre-commit: ruff lint + format · pre-push: integration tests</div>
     </div>
   </div>
 
@@ -639,6 +665,10 @@
   <div class="legend-item">
     <div class="legend-line" style="background:var(--pink)"></div>
     Test coverage (mocked subprocess)
+  </div>
+  <div class="legend-item">
+    <div class="legend-line" style="background:#a855f7"></div>
+    NLQ → Claude API (tool use loop)
   </div>
   <div style="margin-left:auto;font-size:10px;color:var(--muted)">
     All PowerShell calls via <code style="color:var(--purple)">subprocess.run()</code> · results parsed as JSON
