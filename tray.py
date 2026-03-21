@@ -62,21 +62,36 @@ def create_icon(status: str = "unknown", size: int = 64) -> Image.Image:
 
 
 def send_notification(title: str, message: str, tab: str | None = None):
-    """Send a Windows toast notification. Clicking opens the relevant tab."""
+    """Send a Windows toast notification without opening console windows."""
     try:
-        from winotify import Notification
+        # Use ctypes to call Windows notification API directly — no subprocess needed
+        import subprocess as _sp
 
-        toast = Notification(
-            app_id=APP_NAME,
-            title=title,
-            msg=message,
-            duration="long",
+        # Build a PowerShell one-liner for toast notification, but run it hidden
+        # Escape single quotes in title/message for PowerShell
+        safe_title = str(title).replace("'", "''")[:100]
+        safe_msg = str(message).replace("'", "''")[:200]
+
+        ps_script = (
+            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, "
+            "ContentType = WindowsRuntime] | Out-Null; "
+            "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime] | Out-Null; "
+            f'$xml = \'<toast><visual><binding template="ToastText02">'
+            f'<text id="1">{safe_title}</text>'
+            f'<text id="2">{safe_msg}</text>'
+            f"</binding></visual></toast>'; "
+            "$xdoc = [Windows.Data.Xml.Dom.XmlDocument]::new(); "
+            "$xdoc.LoadXml($xml); "
+            "$toast = [Windows.UI.Notifications.ToastNotification]::new($xdoc); "
+            f"[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{APP_NAME}').Show($toast)"
         )
-        if tab:
-            toast.add_actions(label="Open Dashboard", launch=f"{DASHBOARD_URL}#tab={tab}")
-        else:
-            toast.add_actions(label="Open Dashboard", launch=DASHBOARD_URL)
-        toast.show()
+
+        _sp.Popen(
+            ["powershell", "-WindowStyle", "Hidden", "-Command", ps_script],
+            creationflags=_sp.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            stdout=_sp.DEVNULL,
+            stderr=_sp.DEVNULL,
+        )
     except Exception as e:
         print(f"[Tray] Notification failed: {e}")
 
@@ -164,8 +179,16 @@ class HealthMonitor:
 
 def polling_loop(monitor: HealthMonitor, stop_event: threading.Event):
     """Continuously poll the health API in the background."""
-    # Wait for Flask to start
-    time.sleep(5)
+    # Wait for Flask to start — retry connection up to 30 seconds
+    for attempt in range(30):
+        if stop_event.is_set():
+            return
+        try:
+            urllib.request.urlopen(f"{DASHBOARD_URL}/", timeout=2)
+            print(f"[Tray] Flask server ready (attempt {attempt + 1})")
+            break
+        except Exception:
+            time.sleep(1)
 
     while not stop_event.is_set():
         monitor.update()
@@ -188,6 +211,8 @@ def start_flask():
 
     import windesktopmgr
 
+    # Enable headless mode — suppresses console windows for all subprocess calls
+    windesktopmgr.HEADLESS_MODE = True
     windesktopmgr.start_server(open_browser=False)
 
 

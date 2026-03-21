@@ -23,6 +23,23 @@ try:
 except ImportError:
     anthropic = None  # NLQ feature unavailable without the SDK
 
+# ─── Headless mode: suppress console windows for subprocess calls ─────────────
+# When running via tray.py (pythonw.exe), PowerShell subprocess calls would
+# flash console windows. This flag is set by tray.py before start_server().
+HEADLESS_MODE = False
+
+_original_subprocess_run = subprocess.run
+
+
+def _headless_subprocess_run(*args, **kwargs):
+    """Wrapper that adds CREATE_NO_WINDOW flag when in headless/tray mode."""
+    if HEADLESS_MODE and os.name == "nt" and "creationflags" not in kwargs:
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    return _original_subprocess_run(*args, **kwargs)
+
+
+subprocess.run = _headless_subprocess_run
+
 app = Flask(__name__)
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 EVENT_CACHE_FILE = os.path.join(APP_DIR, "event_id_cache.json")
