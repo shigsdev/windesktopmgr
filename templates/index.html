@@ -611,6 +611,7 @@
       <button class="page-tab" data-page="bios">🔩 BIOS &amp; Firmware</button>
       <button class="page-tab" data-page="credentials">🔐 Credentials &amp; Network</button>
       <button class="page-tab" data-page="sysinfo">🖥 System Info</button>
+      <button class="page-tab" data-page="remediation">🔧 Remediation</button>
       <button class="page-tab" data-page="architecture">🏗 Architecture</button>
     </div>
   </nav>
@@ -675,6 +676,15 @@
         <div style="font-size:48px;margin-bottom:16px">✅</div>
         <div style="font-size:20px;font-weight:700;color:var(--cyan);margin-bottom:8px">All systems healthy</div>
         <div style="font-size:13px;color:var(--muted)">No critical issues or warnings detected across any monitored area.</div>
+      </div>
+
+      <!-- Quick Fixes -->
+      <div id="db-quick-fixes" style="margin-top:24px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+          <div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)">Quick Fixes</div>
+          <div style="font-size:10px;color:var(--muted)">One-click remediation actions</div>
+        </div>
+        <div id="db-qf-cards" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px"></div>
       </div>
 
       <!-- Quick links to all tabs -->
@@ -996,7 +1006,7 @@ document.querySelectorAll(".page-tab").forEach(btn => {
     document.querySelectorAll(".page-tab").forEach(t => t.classList.remove("active"));
     btn.classList.add("active");
     const page = btn.dataset.page;
-    ["dashboard","drivers","bsod","startup","disk","network","updates","events","processes","thermals","services","health-history","timeline","memory","bios","credentials","sysinfo","architecture"].forEach(function(p) {
+    ["dashboard","drivers","bsod","startup","disk","network","updates","events","processes","thermals","services","health-history","timeline","memory","bios","credentials","sysinfo","remediation","architecture"].forEach(function(p) {
       var el = document.getElementById("page-" + p);
       if (el) el.style.display = (p === page) ? "" : "none";
     });
@@ -1032,6 +1042,8 @@ document.querySelectorAll(".page-tab").forEach(btn => {
       if (!_tabLoaded["credentials"])    { _tabLoaded["credentials"]    = true; loadCredentials(); }
     } else if (page === "sysinfo") {
       if (!_tabLoaded["sysinfo"])        { _tabLoaded["sysinfo"]        = true; loadSystemInfo(); }
+    } else if (page === "remediation") {
+      if (!_tabLoaded["remediation"])    { _tabLoaded["remediation"]    = true; loadRemediation(); }
     } else if (page === "architecture") {
       if (!_tabLoaded["architecture"])   { _tabLoaded["architecture"]   = true; loadArchitecture(); }
     }
@@ -2963,6 +2975,7 @@ const ALL_TABS = [
   { page:"memory",       icon:"🧠", label:"Memory Analysis" },
   { page:"bios",         icon:"🔩", label:"BIOS & Firmware" },
   { page:"credentials",  icon:"🔐", label:"Credentials & Network" },
+  { page:"remediation",  icon:"🔧", label:"Remediation" },
 ];
 
 async function loadDashboard() {
@@ -3076,6 +3089,24 @@ function renderDashboard(d) {
   });
   }
 
+  // ── Quick Fixes cards ────────────────────────────────────────────────────
+  fetch("/api/remediation/actions").then(r=>r.json()).then(actions=>{
+    const rc = r=>r==="high"?"var(--red)":r==="medium"?"var(--orange)":"var(--green)";
+    const rb = r=>r==="high"?"#ff456012":r==="medium"?"#ff704312":"#00e67612";
+    document.getElementById("db-qf-cards").innerHTML = actions.map(a=>`
+      <button onclick="runRemediationFromDashboard('${esc(a.id)}')"
+        style="background:var(--card);border:1px solid var(--border);border-radius:8px;
+        padding:10px 8px;cursor:pointer;text-align:center;transition:border-color .15s;position:relative"
+        onmouseover="this.style.borderColor='${rc(a.risk)}'"
+        onmouseout="this.style.borderColor='var(--border)'" title="${esc(a.description)}">
+        <div style="font-size:16px;margin-bottom:4px">${esc(a.icon)}</div>
+        <div style="font-size:10px;color:var(--fg);font-family:var(--font-mono);line-height:1.3;margin-bottom:6px">${esc(a.label)}</div>
+        <span style="font-size:9px;font-weight:700;text-transform:uppercase;
+          color:${rc(a.risk)};background:${rb(a.risk)};
+          border:1px solid ${rc(a.risk)};padding:1px 6px;border-radius:8px">${a.risk}</span>
+      </button>`).join("");
+  }).catch(()=>{});
+
   // ── Quick links grid ──────────────────────────────────────────────────────
   document.getElementById("db-quick-links").innerHTML = ALL_TABS.map(t =>
     `<button onclick="switchTab('${t.page}')"
@@ -3102,6 +3133,183 @@ document.addEventListener("DOMContentLoaded", () => {
 // ══════════════════════════════════════════════════════════════════════════
 // SYSTEM INFO TAB
 // ══════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════
+// REMEDIATION ENGINE
+// ══════════════════════════════════════════════════════════════════════════
+let _remActions   = [];
+let _remHistory   = [];
+let _remHistFilt  = [];
+
+const _remRiskColor = r => r==="high"?"var(--red)":r==="medium"?"var(--orange)":"var(--green)";
+const _remRiskBg    = r => r==="high"?"#ff456012":r==="medium"?"#ff704312":"#00e67612";
+
+async function loadRemediation() {
+  document.getElementById("rem-actions-loading").style.display = "block";
+  document.getElementById("rem-actions-grid").style.display    = "none";
+  document.getElementById("rem-history-loading").style.display = "block";
+  document.getElementById("rem-history-table").style.display   = "none";
+  document.getElementById("rem-history-empty").style.display   = "none";
+  try {
+    const [ar, hr] = await Promise.all([
+      fetch("/api/remediation/actions").then(r=>r.json()),
+      fetch("/api/remediation/history").then(r=>r.json()),
+    ]);
+    _remActions  = Array.isArray(ar) ? ar : [];
+    _remHistory  = Array.isArray(hr) ? hr : [];
+    _remHistFilt = _remHistory.slice();
+    renderRemActions();
+    renderRemHistory();
+  } catch(e) {
+    document.getElementById("rem-actions-loading").innerHTML =
+      `<span style="color:var(--red)">Error: ${esc(e.message)}</span>`;
+  }
+}
+
+function renderRemActions() {
+  const grid = document.getElementById("rem-actions-grid");
+  grid.innerHTML = _remActions.map(a => `
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 18px">
+      <div style="display:flex;align-items:flex-start;gap:12px">
+        <span style="font-size:24px;flex-shrink:0">${esc(a.icon)}</span>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:700;font-size:13px;margin-bottom:4px">${esc(a.label)}</div>
+          <div style="font-size:11px;color:var(--muted);line-height:1.5;margin-bottom:10px">${esc(a.description)}</div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-size:9px;font-weight:700;text-transform:uppercase;
+              color:${_remRiskColor(a.risk)};background:${_remRiskBg(a.risk)};
+              border:1px solid ${_remRiskColor(a.risk)};padding:2px 8px;border-radius:8px">
+              ${a.risk} risk</span>
+            ${a.reboot ? '<span style="font-size:9px;color:var(--orange);font-weight:700">&#9888; Reboot required</span>' : ""}
+            <button onclick="confirmRemediation('${esc(a.id)}')"
+              style="margin-left:auto;background:var(--card);border:1px solid ${_remRiskColor(a.risk)};
+              color:${_remRiskColor(a.risk)};padding:5px 14px;border-radius:6px;
+              cursor:pointer;font-size:11px;font-weight:700;font-family:var(--font-mono)">
+              Run &#8594;
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>`).join("");
+  document.getElementById("rem-actions-loading").style.display = "none";
+  grid.style.display = "grid";
+}
+
+function confirmRemediation(actionId) {
+  const action = _remActions.find(a => a.id === actionId);
+  if (!action) return;
+  const riskUpper = action.risk.toUpperCase();
+  const rebootNote = action.reboot
+    ? "\n\nThis action REQUIRES a reboot to take full effect."
+    : "";
+  const msg = `Run: ${action.label}\n\nRisk level: ${riskUpper}\n${action.description}${rebootNote}\n\nProceed?`;
+  if (!confirm(msg)) return;
+  runRemediation(actionId);
+}
+
+async function runRemediation(actionId) {
+  const action = _remActions.find(a => a.id === actionId);
+  const label  = action ? action.label : actionId;
+  document.querySelectorAll("#rem-actions-grid button, #db-qf-cards button").forEach(b => b.disabled = true);
+  try {
+    const r = await fetch("/api/remediation/run", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({action_id: actionId}),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      const rebootNote = (action && action.reboot)
+        ? `<br><button onclick="confirmRemediation('reboot_system')"
+            style="margin-top:10px;background:#ff456015;border:1px solid var(--red);
+            color:var(--red);padding:6px 16px;border-radius:6px;cursor:pointer;font-weight:700;font-family:var(--font-mono)">
+            Reboot Now</button>`
+        : "";
+      showRemToast(`${esc(label)}: ${esc(d.message)}${rebootNote}`, "ok");
+    } else {
+      showRemToast(`${esc(label)} failed: ${esc(d.message)}`, "err");
+    }
+    fetch("/api/remediation/history").then(r=>r.json()).then(h=>{
+      _remHistory  = Array.isArray(h) ? h : [];
+      _remHistFilt = _remHistory.slice();
+      renderRemHistory();
+    });
+  } catch(e) {
+    showRemToast(`Error running ${esc(label)}: ${esc(e.message)}`, "err");
+  } finally {
+    document.querySelectorAll("#rem-actions-grid button, #db-qf-cards button").forEach(b => b.disabled = false);
+  }
+}
+
+function runRemediationFromDashboard(actionId) {
+  if (_remActions.length === 0) {
+    fetch("/api/remediation/actions").then(r=>r.json()).then(a=>{
+      _remActions = Array.isArray(a) ? a : [];
+      confirmRemediation(actionId);
+    });
+  } else {
+    confirmRemediation(actionId);
+  }
+}
+
+function showRemToast(html, type) {
+  let toast = document.getElementById("rem-toast");
+  if (!toast) {
+    toast = document.createElement("div");
+    toast.id = "rem-toast";
+    toast.style.cssText =
+      "position:fixed;bottom:24px;right:24px;z-index:9999;max-width:420px;padding:14px 18px;" +
+      "border-radius:10px;font-size:13px;line-height:1.5;border:1px solid;font-family:var(--font-mono)";
+    document.body.appendChild(toast);
+  }
+  toast.style.background  = type==="ok" ? "#00e67618" : "#ff456018";
+  toast.style.borderColor = type==="ok" ? "var(--green)" : "var(--red)";
+  toast.style.color       = type==="ok" ? "var(--green)" : "var(--red)";
+  toast.innerHTML = html;
+  toast.style.display = "block";
+  if (toast._timer) clearTimeout(toast._timer);
+  toast._timer = setTimeout(()=>{ toast.style.display="none"; }, 8000);
+}
+
+function renderRemHistory() {
+  const tbody = document.getElementById("rem-history-tbody");
+  const table = document.getElementById("rem-history-table");
+  const empty = document.getElementById("rem-history-empty");
+  document.getElementById("rem-history-loading").style.display = "none";
+  if (!_remHistFilt.length) {
+    table.style.display = "none";
+    empty.style.display = "";
+    return;
+  }
+  tbody.innerHTML = _remHistFilt.map(h => {
+    const ts   = h.ts ? new Date(h.ts).toLocaleString() : "\u2014";
+    const ok   = h.ok;
+    const riskC = _remRiskColor(h.risk||"low");
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:8px 10px;font-size:11px;color:var(--muted);white-space:nowrap">${esc(ts)}</td>
+      <td style="padding:8px 10px;font-weight:600">${esc(h.label||h.id)}</td>
+      <td style="padding:8px 10px"><span style="font-size:9px;font-weight:700;text-transform:uppercase;
+        color:${riskC};border:1px solid ${riskC};padding:1px 6px;border-radius:8px">${esc(h.risk||"")}</span></td>
+      <td style="padding:8px 10px;color:${ok?"var(--green)":"var(--red)"};font-weight:700">${ok?"OK":"FAIL"}</td>
+      <td style="padding:8px 10px;font-size:11px;color:var(--muted)">${esc(h.message||"")}</td>
+    </tr>`;
+  }).join("");
+  table.style.display = "";
+  empty.style.display = "none";
+}
+
+function filterRemHistory() {
+  const q = (document.getElementById("rem-history-search").value||"").toLowerCase();
+  _remHistFilt = q
+    ? _remHistory.filter(h =>
+        (h.label||"").toLowerCase().includes(q) ||
+        (h.message||"").toLowerCase().includes(q) ||
+        (h.risk||"").toLowerCase().includes(q) ||
+        (h.id||"").toLowerCase().includes(q)
+      )
+    : _remHistory.slice();
+  renderRemHistory();
+}
+
 function loadArchitecture() {
   const iframe = document.getElementById("arch-iframe");
   iframe.src = "/architecture.html";
@@ -4160,6 +4368,49 @@ function renderSystemInfo(d) {
         </table>
       </div>
 
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       PAGE: REMEDIATION ENGINE
+  ══════════════════════════════════════════ -->
+  <div id="page-remediation" style="display:none">
+
+    <div style="display:flex;align-items:center;justify-content:space-between;margin:20px 0 16px">
+      <div>
+        <h2 style="margin:0;font-family:var(--font-head);font-size:20px">Remediation Engine</h2>
+        <div style="font-size:11px;color:var(--muted);margin-top:3px">One-click system fixes — all actions require confirmation</div>
+      </div>
+      <button class="btn-action" onclick="loadRemediation()" style="padding:6px 16px;font-size:12px">↺ Refresh</button>
+    </div>
+
+    <!-- Actions grid -->
+    <div id="rem-actions-loading" style="text-align:center;padding:40px;color:var(--muted)">Loading actions…</div>
+    <div id="rem-actions-grid" style="display:none;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:32px"></div>
+
+    <!-- History -->
+    <div style="margin-top:28px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)">Run History</div>
+        <input id="rem-history-search" type="text" placeholder="Search history…"
+          oninput="filterRemHistory()"
+          style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;
+                 background:var(--card);color:var(--fg);font-size:12px;width:200px;font-family:var(--font-mono)">
+      </div>
+      <div id="rem-history-loading" style="text-align:center;padding:20px;color:var(--muted)">Loading history…</div>
+      <table id="rem-history-table" style="display:none;width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">
+          <th style="padding:8px 10px">Timestamp</th>
+          <th style="padding:8px 10px">Action</th>
+          <th style="padding:8px 10px">Risk</th>
+          <th style="padding:8px 10px">Result</th>
+          <th style="padding:8px 10px">Message</th>
+        </tr></thead>
+        <tbody id="rem-history-tbody"></tbody>
+      </table>
+      <div id="rem-history-empty" style="display:none;text-align:center;padding:30px;color:var(--muted);font-size:12px">
+        No remediation history yet. Run an action above to get started.
+      </div>
     </div>
   </div>
 

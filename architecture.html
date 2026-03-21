@@ -184,7 +184,7 @@
       <div id="btn-simple" onclick="setView('simple')" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:var(--cyan);color:var(--bg);font-weight:700">Simple</div>
       <div id="btn-detail" onclick="setView('detail')" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);color:var(--muted)">Detailed</div>
     </div>
-    <div class="badge" style="color:var(--green);border-color:#00e67633">727 tests · 80% coverage</div>
+    <div class="badge" style="color:var(--green);border-color:#00e67633">780 tests · 80% coverage</div>
     <div class="badge">
       <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
     </div>
@@ -226,6 +226,7 @@
       <div class="tab-chip" id="tab-bios"><span class="tab-icon">🔩</span>BIOS</div>
       <div class="tab-chip" id="tab-creds"><span class="tab-icon">🔐</span>Credentials</div>
       <div class="tab-chip" id="tab-sysinfo" style="border-color:#00e67644;background:#00e6760d"><span class="tab-icon">🖥</span>System Info</div>
+      <div class="tab-chip" id="tab-remediation" style="border-color:#ff704344;background:#ff70430d"><span class="tab-icon">🔧</span>Remediation</div>
       <div class="tab-chip" id="tab-warranty" style="border-color:#ffd74044;background:#ffd7400d"><span class="tab-icon">🛡</span>Warranty</div>
     </div>
   </div>
@@ -271,12 +272,12 @@
       <span style="font-size:9px;color:var(--cyan);font-weight:700;letter-spacing:.08em">FETCH / POST</span>
       <svg width="12" height="20"><polygon points="1,6 6,0 11,6" fill="var(--purple)"/><line x1="6" y1="6" x2="6" y2="20" stroke="var(--purple)" stroke-width="2"/></svg>
     </div>
-    <span style="font-size:9px;color:var(--muted);margin-left:12px">HTTP JSON · 46 API endpoints · localhost:5000</span>
+    <span style="font-size:9px;color:var(--muted);margin-left:12px">HTTP JSON · 49 API endpoints · localhost:5000</span>
   </div>
 
   <!-- ── LAYER 2: FLASK BACKEND ───────────────────────────────── -->
   <div class="row row-flask" id="layer-flask">
-    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~7,660 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper</div>
+    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~8,100 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · Remediation Engine</div>
     <div style="margin-bottom:10px">
       <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes (46 endpoints)</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
@@ -323,6 +324,9 @@
         <div class="route-chip" id="rt-summary"><span class="method">POST</span>/api/summary/&lt;tab&gt;</div>
         <div class="route-chip" id="rt-dashsum"><span class="method">GET</span>/api/dashboard/summary</div>
         <div class="route-chip" id="rt-nlq" style="border-color:#a855f744;background:#a855f70d;color:var(--purple)"><span class="method">POST</span>/api/nlq/ask</div>
+        <div class="route-chip" id="rt-rem-actions" style="border-color:#ff704344;background:#ff70430d;color:var(--orange)"><span class="method">GET</span>/api/remediation/actions</div>
+        <div class="route-chip" style="border-color:#ff704344;background:#ff70430d;color:var(--orange)"><span class="method">GET</span>/api/remediation/history</div>
+        <div class="route-chip" style="border-color:#ff704344;background:#ff70430d;color:var(--orange)"><span class="method">POST</span>/api/remediation/run</div>
       </div>
     </div>
     <div>
@@ -553,7 +557,7 @@
       </div>
       <div class="ext-chip" style="border-color:#a855f744;background:#a855f70d">
         <div class="ext-title" style="color:var(--purple)">Claude API (Anthropic)</div>
-        <div class="ext-sub">api.anthropic.com · claude-sonnet-4-20250514<br>NLQ tool use loop · 16 data tools · natural language answers</div>
+        <div class="ext-sub">api.anthropic.com · claude-sonnet-4-20250514<br>NLQ tool use loop · 18 data tools · natural language answers</div>
         <span class="ext-badge" style="background:#a855f722;color:var(--purple)">per-query</span>
       </div>
     </div>
@@ -626,7 +630,7 @@
 
   <!-- ── LAYER 7: TEST SUITE ──────────────────────────────────── -->
   <div class="row row-tests" id="layer-tests">
-    <div class="row-label">🧪 Test Suite — 727 tests · pytest · 80% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray</div>
+    <div class="row-label">🧪 Test Suite — 780 tests · pytest · 80% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation</div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
       <div class="test-chip">
         <div class="test-title">test_routes.py</div>
@@ -663,6 +667,10 @@
       <div class="test-chip">
         <div class="test-title">test_tray.py</div>
         <div class="test-sub">32 tests · icon gen · HealthMonitor · polling loop · notifications · tooltips</div>
+      </div>
+      <div class="test-chip">
+        <div class="test-title">test_remediation.py</div>
+        <div class="test-sub">51 tests · 10 action functions · history logging · routes · NLQ integration · sanitization</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_headless.py</div>
@@ -755,7 +763,7 @@
       <div style="flex-shrink:0;width:150px;background:#b388ff0a;border:1px solid #b388ff33;border-radius:8px;padding:14px 12px;text-align:center">
         <div style="font-size:18px;margin-bottom:6px">🐍</div>
         <div style="color:var(--purple);font-weight:700;font-size:11px;margin-bottom:4px">FLASK ROUTE</div>
-        <div style="color:var(--muted);font-size:10px;line-height:1.4">Matches one of 45 API endpoints</div>
+        <div style="color:var(--muted);font-size:10px;line-height:1.4">Matches one of 49 API endpoints</div>
       </div>
       <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 6px;flex-shrink:0">
         <div style="font-size:10px;color:var(--purple);font-weight:700;white-space:nowrap">subprocess</div>
@@ -913,7 +921,7 @@
           <div style="color:var(--muted);font-size:12px">→</div>
           <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">pytest tests/</div>
           <div style="color:var(--muted);font-size:12px">→</div>
-          <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">528 tests in 0.7s</div>
+          <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">780 tests in 0.7s</div>
           <div style="color:var(--muted);font-size:12px">→</div>
           <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">git push main</div>
         </div>
@@ -1010,7 +1018,7 @@
 
 
 <div class="footer">
-  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 528 tests · ~17,800 lines</span>
+  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 780 tests · ~18,600 lines</span>
   <span>github.com/shigsdev/windesktopmgr · Updated 2026-03-20</span>
 </div>
 
