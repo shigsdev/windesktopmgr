@@ -3556,6 +3556,8 @@ function openCredModal(key, label) {
   document.getElementById("hn-cred-title").textContent = "Credentials — " + label;
   const userLabel = document.querySelector('label[for="hn-cred-user"]') || document.getElementById("hn-cred-user").previousElementSibling;
   const passLabel = document.querySelector('label[for="hn-cred-pass"]') || document.getElementById("hn-cred-pass").previousElementSibling;
+  // Show/hide Orbi SSID field
+  const ssidRow = document.getElementById("hn-cred-ssid-row");
   if (key === "tplink_switch") {
     // For SNMP: username = switch IP, password = community string
     document.getElementById("hn-cred-user").value = "auto";
@@ -3563,12 +3565,22 @@ function openCredModal(key, label) {
     document.getElementById("hn-cred-pass").placeholder = "SNMP community string (default: public)";
     if (userLabel) userLabel.textContent = "Switch IP Address";
     if (passLabel) passLabel.textContent = "SNMP Community String";
+    if (ssidRow) ssidRow.style.display = "none";
+  } else if (key === "orbi") {
+    document.getElementById("hn-cred-user").value = "admin";
+    document.getElementById("hn-cred-user").placeholder = "";
+    document.getElementById("hn-cred-pass").placeholder = "";
+    if (userLabel) userLabel.textContent = "Username";
+    if (passLabel) passLabel.textContent = "Password";
+    if (ssidRow) ssidRow.style.display = "block";
+    document.getElementById("hn-cred-ssid").value = "";
   } else {
     document.getElementById("hn-cred-user").value = "admin";
     document.getElementById("hn-cred-user").placeholder = "";
     document.getElementById("hn-cred-pass").placeholder = "";
     if (userLabel) userLabel.textContent = "Username";
     if (passLabel) passLabel.textContent = "Password";
+    if (ssidRow) ssidRow.style.display = "none";
   }
   document.getElementById("hn-cred-pass").value = "";
   document.getElementById("hn-cred-status").style.display = "none";
@@ -3584,10 +3596,15 @@ async function saveCredential() {
   const user = document.getElementById("hn-cred-user").value;
   const pass = document.getElementById("hn-cred-pass").value;
   if (!pass) { alert("Password is required"); return; }
+  const payload = {device_key: key, username: user, password: pass};
+  if (key === "orbi") {
+    const ssid = document.getElementById("hn-cred-ssid").value.trim();
+    if (ssid) payload.orbi_ssid = ssid;
+  }
   const r = await fetch("/api/homenet/credentials/save", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({device_key: key, username: user, password: pass})
+    body: JSON.stringify(payload)
   });
   const data = await r.json();
   if (data.ok) {
@@ -4960,6 +4977,12 @@ function renderSystemInfo(d) {
           <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Password</label>
           <input type="password" id="hn-cred-pass" style="width:100%;padding:6px 10px;border:1px solid var(--border);
                  border-radius:6px;background:var(--surface);color:var(--text);font-family:var(--font-mono);font-size:12px">
+        </div>
+        <div id="hn-cred-ssid-row" style="display:none;margin-bottom:16px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Orbi Wi-Fi SSID (for auto-connect during scan)</label>
+          <input type="text" id="hn-cred-ssid" placeholder="e.g. fitch" style="width:100%;padding:6px 10px;border:1px solid var(--border);
+                 border-radius:6px;background:var(--surface);color:var(--text);font-family:var(--font-mono);font-size:12px">
+          <span style="font-size:10px;color:var(--muted)">The primary Orbi SSID that assigns 10.x addresses</span>
         </div>
         <div id="hn-cred-status" style="display:none;padding:8px;border-radius:6px;margin-bottom:12px;font-size:12px"></div>
         <div style="display:flex;gap:8px;justify-content:flex-end">

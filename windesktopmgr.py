@@ -8198,14 +8198,17 @@ def _resolve_names_batch(devices: list) -> dict:
     if not ips_to_resolve:
         return results
 
-    # Use async DNS with 2-second timeout per device via BeginGetHostEntry
-    # Then fall back to NetBIOS only for local-subnet devices that DNS missed
-    ip_list_ps = ",".join(f"'{ip}'" for ip in ips_to_resolve[:50])
-    ps = f"""
+    # Split IPs by subnet — DNS only works for 192.x (wired/Verizon DHCP).
+    # 10.x devices are behind Orbi NAT so reverse DNS always times out.
+    wired_ips = [ip for ip in ips_to_resolve if ip.startswith("192.")]
+    wireless_ips = [ip for ip in ips_to_resolve if ip.startswith("10.")]
+
+    # Phase 1: Async DNS for 192.x (wired) devices — these resolve via Verizon router
+    if wired_ips:
+        ip_list_ps = ",".join(f"'{ip}'" for ip in wired_ips[:50])
+        ps = f"""
 $ips = @({ip_list_ps})
 $results = @{{}}
-
-# Phase 1: Async DNS — resolve all IPs in parallel with 2s timeout each
 $asyncOps = @{{}}
 foreach ($ip in $ips) {{
     try {{
@@ -8225,10 +8228,42 @@ foreach ($ip in $ips) {{
         }} catch {{ }}
     }}
 }}
+$output = @()
+foreach ($kv in $results.GetEnumerator()) {{
+    $output += [PSCustomObject]@{{ IP = $kv.Key; Name = $kv.Value }}
+}}
+$output | ConvertTo-Json -Depth 2
+"""
+        try:
+            r = subprocess.run(
+                ["powershell", "-NonInteractive", "-Command", ps],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            raw = r.stdout.strip()
+            if raw:
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    data = [data]
+                for entry in data:
+                    ip = entry.get("IP", "")
+                    name = entry.get("Name", "")
+                    if ip and name:
+                        results[ip] = name
+        except subprocess.TimeoutExpired:
+            print("[HomeNet] DNS resolution timed out for wired devices")
+        except Exception as e:
+            print(f"[HomeNet] DNS resolution error: {e}")
 
-# Phase 2: NetBIOS for remaining unresolved 192.x devices only (local subnet, faster)
-$unresolved = $ips | Where-Object {{ -not $results.ContainsKey($_) -and $_.StartsWith('192.') }}
-foreach ($ip in $unresolved) {{
+    # Phase 2: NetBIOS for wired devices that DNS missed
+    wired_unresolved = [ip for ip in wired_ips if ip not in results]
+    if wired_unresolved:
+        ip_list_ps = ",".join(f"'{ip}'" for ip in wired_unresolved[:20])
+        ps_nbt = f"""
+$ips = @({ip_list_ps})
+$results = @{{}}
+foreach ($ip in $ips) {{
     try {{
         $proc = Start-Process -FilePath 'nbtstat' -ArgumentList '-A',$ip -NoNewWindow -PassThru -RedirectStandardOutput "$env:TEMP\\nbt_$($ip.Replace('.','_')).txt" 2>$null
         if ($proc.WaitForExit(3000)) {{
@@ -8244,37 +8279,102 @@ foreach ($ip in $unresolved) {{
         }}
     }} catch {{ }}
 }}
-
-# Output as array of objects for JSON parsing
 $output = @()
 foreach ($kv in $results.GetEnumerator()) {{
     $output += [PSCustomObject]@{{ IP = $kv.Key; Name = $kv.Value }}
 }}
 $output | ConvertTo-Json -Depth 2
 """
-    try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps],
-            capture_output=True,
-            text=True,
-            timeout=120,  # Generous overall timeout
-        )
-        raw = r.stdout.strip()
-        if raw:
-            data = json.loads(raw)
-            if isinstance(data, dict):
-                data = [data]
-            for entry in data:
-                ip = entry.get("IP", "")
-                name = entry.get("Name", "")
-                if ip and name:
-                    results[ip] = name
-        if r.stderr.strip():
-            print(f"[HomeNet] Name resolution stderr: {r.stderr.strip()[:200]}")
-    except subprocess.TimeoutExpired:
-        print("[HomeNet] Name resolution timed out after 120s")
-    except Exception as e:
-        print(f"[HomeNet] Name resolution error: {e}")
+        try:
+            r = subprocess.run(
+                ["powershell", "-NonInteractive", "-Command", ps_nbt],
+                capture_output=True,
+                text=True,
+                timeout=90,
+            )
+            raw = r.stdout.strip()
+            if raw:
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    data = [data]
+                for entry in data:
+                    ip = entry.get("IP", "")
+                    name = entry.get("Name", "")
+                    if ip and name:
+                        results[ip] = name
+        except subprocess.TimeoutExpired:
+            print("[HomeNet] NetBIOS resolution timed out for wired devices")
+        except Exception as e:
+            print(f"[HomeNet] NetBIOS resolution error: {e}")
+
+    # Phase 3: For 10.x (wireless/Orbi) devices, hostnames come from Orbi SOAP API
+    # (populated during scan via _merge_device_data). DNS won't work for 10.x because
+    # they're behind Orbi NAT. Only try NetBIOS if Wi-Fi is connected to Orbi network.
+    if wireless_ips:
+        # Quick check: can we reach the Orbi subnet? If Wi-Fi is on 10.x, NetBIOS works.
+        ip_list_ps = ",".join(f"'{ip}'" for ip in wireless_ips[:30])
+        ps_wifi = f"""
+$ips = @({ip_list_ps})
+$results = @{{}}
+# Test if we can reach 10.x subnet (Wi-Fi connected to Orbi)
+$canReach = Test-Connection -ComputerName '10.0.0.1' -Count 1 -Quiet -TimeoutSeconds 1 2>$null
+if (-not $canReach) {{
+    # Wi-Fi not connected to Orbi — can't resolve 10.x names
+    Write-Host 'SKIP:wifi_disconnected'
+}} else {{
+    # Wi-Fi connected — try mDNS/NetBIOS for each device
+    foreach ($ip in $ips) {{
+        try {{
+            $proc = Start-Process -FilePath 'nbtstat' -ArgumentList '-A',$ip -NoNewWindow -PassThru -RedirectStandardOutput "$env:TEMP\\nbt_$($ip.Replace('.','_')).txt" 2>$null
+            if ($proc.WaitForExit(2000)) {{
+                $nbt = Get-Content "$env:TEMP\\nbt_$($ip.Replace('.','_')).txt" -ErrorAction SilentlyContinue
+                Remove-Item "$env:TEMP\\nbt_$($ip.Replace('.','_')).txt" -ErrorAction SilentlyContinue
+                $match = $nbt | Select-String '<00>\\s+UNIQUE' | Select-Object -First 1
+                if ($match) {{
+                    $name = ($match.Line -split '\\s+')[0].Trim()
+                    if ($name) {{ $results[$ip] = $name }}
+                }}
+            }} else {{
+                $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+            }}
+        }} catch {{ }}
+    }}
+}}
+$output = @()
+foreach ($kv in $results.GetEnumerator()) {{
+    $output += [PSCustomObject]@{{ IP = $kv.Key; Name = $kv.Value }}
+}}
+if ($output.Count -gt 0) {{
+    $output | ConvertTo-Json -Depth 2
+}}
+"""
+        try:
+            r = subprocess.run(
+                ["powershell", "-NonInteractive", "-Command", ps_wifi],
+                capture_output=True,
+                text=True,
+                timeout=90,
+            )
+            raw = r.stdout.strip()
+            if raw.startswith("SKIP:"):
+                print(
+                    "[HomeNet] Wi-Fi not connected to Orbi — "
+                    "skipping 10.x name resolution. "
+                    "Connect Wi-Fi to resolve wireless device names."
+                )
+            elif raw:
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    data = [data]
+                for entry in data:
+                    ip = entry.get("IP", "")
+                    name = entry.get("Name", "")
+                    if ip and name:
+                        results[ip] = name
+        except subprocess.TimeoutExpired:
+            print("[HomeNet] Name resolution timed out for wireless devices")
+        except Exception as e:
+            print(f"[HomeNet] Wireless name resolution error: {e}")
 
     return results
 
@@ -8469,54 +8569,252 @@ def _merge_device_data(inventory: dict, source: str, devices: list) -> dict:
     return inventory
 
 
+def _wifi_ensure_orbi_connected() -> tuple:
+    """
+    Ensure Wi-Fi is connected to the Orbi network for 10.x device access.
+    Returns (was_connected: bool, wifi_was_enabled: bool, original_ssid: str).
+    If Wi-Fi is already on a 10.x network, returns immediately.
+    If Wi-Fi is off or on a different network, enables it and tries to connect
+    to a saved Orbi Wi-Fi profile.
+    """
+    try:
+        # Check current Wi-Fi state
+        r = subprocess.run(
+            [
+                "powershell",
+                "-NonInteractive",
+                "-Command",
+                (
+                    "$wifi = Get-NetAdapter -Name 'Wi-Fi' -ErrorAction SilentlyContinue; "
+                    "if (-not $wifi) { Write-Host 'NO_ADAPTER'; exit } "
+                    "$status = $wifi.Status; "
+                    "$ip = (Get-NetIPAddress -InterfaceAlias 'Wi-Fi' -AddressFamily IPv4 "
+                    "-ErrorAction SilentlyContinue).IPAddress; "
+                    "$profile = (netsh wlan show interfaces | "
+                    "Select-String 'SSID\\s+:' | Select-Object -First 1); "
+                    "$ssid = if ($profile) { "
+                    "($profile -replace '.*SSID\\s+:\\s*','').Trim() } else { '' }; "
+                    'Write-Host "$status|$ip|$ssid"'
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        out = r.stdout.strip()
+        if out == "NO_ADAPTER":
+            return (False, False, "")
+
+        parts = out.split("|", 2)
+        status = parts[0] if len(parts) > 0 else ""
+        ip = parts[1] if len(parts) > 1 else ""
+        ssid = parts[2] if len(parts) > 2 else ""
+
+        # Already connected to 10.x network — good
+        if ip.startswith("10."):
+            return (True, True, ssid)
+
+        # Wi-Fi is up but not on 10.x, or Wi-Fi is disabled
+        # Try to enable adapter if needed, then connect to Orbi SSID
+        original_was_up = status == "Up"
+
+        if not original_was_up:
+            subprocess.run(
+                [
+                    "powershell",
+                    "-NonInteractive",
+                    "-Command",
+                    "Enable-NetAdapter -Name 'Wi-Fi' -Confirm:$false",
+                ],
+                capture_output=True,
+                timeout=10,
+            )
+            import time
+
+            time.sleep(3)
+
+        # Get the Orbi SSID from credentials (stored as extra field)
+        # or try all saved Wi-Fi profiles to find one that gives a 10.x IP
+        orbi_ssid = _get_orbi_ssid()
+        if orbi_ssid:
+            # Try to connect to the known Orbi SSID
+            subprocess.run(
+                ["netsh", "wlan", "connect", f"name={orbi_ssid}"],
+                capture_output=True,
+                timeout=10,
+            )
+            import time
+
+            time.sleep(5)
+
+            # Check if we got a 10.x IP
+            r2 = subprocess.run(
+                [
+                    "powershell",
+                    "-NonInteractive",
+                    "-Command",
+                    (
+                        "$ip = (Get-NetIPAddress -InterfaceAlias 'Wi-Fi' "
+                        "-AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress; "
+                        "Write-Host $ip"
+                    ),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            new_ip = r2.stdout.strip()
+            if new_ip.startswith("10."):
+                print(f"[HomeNet] Connected to Orbi Wi-Fi ({orbi_ssid})")
+                return (True, original_was_up, ssid)
+
+        # Auto-connect didn't work — check if we got 10.x from auto-connect
+        r3 = subprocess.run(
+            [
+                "powershell",
+                "-NonInteractive",
+                "-Command",
+                (
+                    "$ip = (Get-NetIPAddress -InterfaceAlias 'Wi-Fi' "
+                    "-AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress; "
+                    "Write-Host $ip"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        check_ip = r3.stdout.strip()
+        if check_ip.startswith("10."):
+            return (True, original_was_up, ssid)
+
+        return (False, original_was_up, ssid)
+
+    except Exception as e:
+        print(f"[HomeNet] Wi-Fi check error: {e}")
+        return (False, True, "")
+
+
+def _get_orbi_ssid() -> str:
+    """Get the Orbi Wi-Fi SSID from stored config or saved Wi-Fi profiles."""
+    # Check if user stored an SSID in the Orbi credential notes
+    try:
+        inv = _load_homenet_inventory()
+        orbi_ssid = inv.get("orbi_ssid", "")
+        if orbi_ssid:
+            return orbi_ssid
+    except Exception:
+        pass
+
+    # Fall back: look for saved Wi-Fi profiles that might be Orbi
+    try:
+        r = subprocess.run(
+            [
+                "powershell",
+                "-NonInteractive",
+                "-Command",
+                (
+                    "$profiles = netsh wlan show profiles | "
+                    "Select-String 'All User Profile\\s+:' | "
+                    "ForEach-Object { ($_ -replace '.*:\\s*','').Trim() }; "
+                    "$profiles -join '|'"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        profiles = [p.strip() for p in r.stdout.strip().split("|") if p.strip()]
+        if len(profiles) == 1:
+            return profiles[0]  # Only one profile — likely the Orbi
+    except Exception:
+        pass
+
+    return ""
+
+
+def _wifi_restore(was_enabled: bool):
+    """Restore Wi-Fi to its original state if we enabled it."""
+    if not was_enabled:
+        try:
+            subprocess.run(
+                [
+                    "powershell",
+                    "-NonInteractive",
+                    "-Command",
+                    "Disable-NetAdapter -Name 'Wi-Fi' -Confirm:$false",
+                ],
+                capture_output=True,
+                timeout=10,
+            )
+        except Exception:
+            pass
+
+
 def homenet_full_scan() -> dict:
     """
     Run a full network scan: ARP + Verizon + Orbi.
+    If Wi-Fi is not connected to Orbi, temporarily enables it to scan wireless devices.
     Returns merged inventory.
     """
     inventory = _load_homenet_inventory()
     errors = []
 
-    # 1. ARP scan (always works on local subnets)
-    arp_devices = _arp_scan()
-    arp_as_devices = [
-        {"mac": d.get("MAC", ""), "ip": d.get("IP", ""), "name": ""}
-        for d in arp_devices
-        if d.get("Type", "").lower() == "dynamic"
-    ]
-    inventory = _merge_device_data(inventory, "arp", arp_as_devices)
+    # Check if Wi-Fi can reach Orbi (10.x) network
+    wifi_connected, wifi_was_enabled, _orig_ssid = _wifi_ensure_orbi_connected()
 
-    # 2. Verizon CR1000A
-    verizon = _verizon_get_devices()
-    if verizon.get("ok"):
-        known = verizon.get("known_devices", {})
-        if isinstance(known, dict):
-            known = known.get("known_devices", [])
-        if isinstance(known, list):
-            vz_devices = [
-                {
-                    "mac": d.get("mac", ""),
-                    "ip": d.get("ip", ""),
-                    "name": d.get("hostname", d.get("device_name", "")),
-                    "dev_class": d.get("dev_class", ""),
-                    "device_os": d.get("device_os", ""),
-                    "activity": d.get("activity", 0),
-                }
-                for d in known
-            ]
-            inventory = _merge_device_data(inventory, "verizon", vz_devices)
-    elif "error" in verizon:
-        errors.append(f"Verizon: {verizon['error']}")
+    try:
+        # 1. ARP scan (always works on local subnets)
+        arp_devices = _arp_scan()
+        arp_as_devices = [
+            {"mac": d.get("MAC", ""), "ip": d.get("IP", ""), "name": ""}
+            for d in arp_devices
+            if d.get("Type", "").lower() == "dynamic"
+        ]
+        inventory = _merge_device_data(inventory, "arp", arp_as_devices)
 
-    # 3. Orbi
-    orbi = _orbi_get_devices()
-    if orbi.get("ok"):
-        inventory = _merge_device_data(inventory, "orbi", orbi.get("devices", []))
-    elif "error" in orbi:
-        errors.append(f"Orbi: {orbi['error']}")
+        # 2. Verizon CR1000A
+        verizon = _verizon_get_devices()
+        if verizon.get("ok"):
+            known = verizon.get("known_devices", {})
+            if isinstance(known, dict):
+                known = known.get("known_devices", [])
+            if isinstance(known, list):
+                vz_devices = [
+                    {
+                        "mac": d.get("mac", ""),
+                        "ip": d.get("ip", ""),
+                        "name": d.get("hostname", d.get("device_name", "")),
+                        "dev_class": d.get("dev_class", ""),
+                        "device_os": d.get("device_os", ""),
+                        "activity": d.get("activity", 0),
+                    }
+                    for d in known
+                ]
+                inventory = _merge_device_data(inventory, "verizon", vz_devices)
+        elif "error" in verizon:
+            errors.append(f"Verizon: {verizon['error']}")
 
-    # 4. Enrich with name resolution + auto-categorization
-    inventory = _enrich_device_names(inventory)
+        # 3. Orbi (needs Wi-Fi connected to 10.x network)
+        if wifi_connected:
+            orbi = _orbi_get_devices()
+            if orbi.get("ok"):
+                inventory = _merge_device_data(inventory, "orbi", orbi.get("devices", []))
+            elif "error" in orbi:
+                errors.append(f"Orbi: {orbi['error']}")
+        else:
+            errors.append(
+                "Orbi: Wi-Fi not connected to Orbi network — "
+                "wireless device names unavailable. "
+                "Enable Wi-Fi and connect to your Orbi network, then re-scan."
+            )
+
+        # 4. Enrich with name resolution + auto-categorization
+        inventory = _enrich_device_names(inventory)
+
+    finally:
+        # Restore Wi-Fi if we changed it
+        _wifi_restore(wifi_was_enabled)
 
     _save_homenet_inventory(inventory)
 
@@ -8559,6 +8857,18 @@ def homenet_credentials_save():
     if not device_key or not username or not password:
         return jsonify({"ok": False, "message": "device_key, username, and password required"}), 400
     ok = _set_homenet_cred(device_key, username, password)
+
+    # If saving Orbi creds, also save the Wi-Fi SSID for auto-connect
+    if device_key == "orbi":
+        orbi_ssid = str(body.get("orbi_ssid", "")).strip()
+        if orbi_ssid:
+            try:
+                inv = _load_homenet_inventory()
+                inv["orbi_ssid"] = orbi_ssid
+                _save_homenet_inventory(inv)
+            except Exception:
+                pass
+
     return jsonify({"ok": ok, "message": "Credentials saved" if ok else "Failed to save"})
 
 

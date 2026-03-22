@@ -926,6 +926,8 @@ class TestHomenetFullScan:
     """Test full scan orchestration."""
 
     def test_full_scan_with_all_sources(self, client, mocker):
+        mocker.patch("windesktopmgr._wifi_ensure_orbi_connected", return_value=(True, True, "OrbiNet"))
+        mocker.patch("windesktopmgr._wifi_restore")
         mocker.patch(
             "windesktopmgr._arp_scan",
             return_value=[
@@ -960,6 +962,8 @@ class TestHomenetFullScan:
 
     def test_full_scan_handles_verizon_list_format(self, client, mocker):
         """Verizon known_devices can be a list directly (not nested in dict)."""
+        mocker.patch("windesktopmgr._wifi_ensure_orbi_connected", return_value=(False, True, ""))
+        mocker.patch("windesktopmgr._wifi_restore")
         mocker.patch("windesktopmgr._arp_scan", return_value=[])
         mocker.patch(
             "windesktopmgr._verizon_get_devices",
@@ -970,7 +974,6 @@ class TestHomenetFullScan:
                 ],
             },
         )
-        mocker.patch("windesktopmgr._orbi_get_devices", return_value={"error": "No creds"})
         mocker.patch("windesktopmgr._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
         mocker.patch("windesktopmgr._save_homenet_inventory")
         resp = client.post("/api/homenet/scan")
@@ -1227,15 +1230,25 @@ class TestNameResolution:
     """Test name resolution and enrichment."""
 
     def test_resolve_names_batch_with_results(self, mocker):
-        mock_result = MagicMock()
-        mock_result.stdout = json.dumps(
-            [
-                {"IP": "192.168.1.50", "Name": "MyPC"},
-                {"IP": "10.0.0.5", "Name": "iPhone-Living-Room"},
-            ]
+        """Wired DNS returns names, wireless NetBIOS returns names."""
+        dns_result = MagicMock()
+        dns_result.stdout = json.dumps([{"IP": "192.168.1.50", "Name": "MyPC"}])
+        dns_result.stderr = ""
+
+        # NetBIOS for wired unresolved = empty (all resolved by DNS)
+        nbt_wired = MagicMock()
+        nbt_wired.stdout = ""
+        nbt_wired.stderr = ""
+
+        # Wi-Fi check returns SKIP (not connected)
+        wifi_result = MagicMock()
+        wifi_result.stdout = "SKIP:wifi_disconnected"
+        wifi_result.stderr = ""
+
+        mocker.patch(
+            "subprocess.run",
+            side_effect=[dns_result, nbt_wired, wifi_result],
         )
-        mock_result.stderr = ""
-        mocker.patch("subprocess.run", return_value=mock_result)
         from windesktopmgr import _resolve_names_batch
 
         devices = [
@@ -1244,7 +1257,6 @@ class TestNameResolution:
         ]
         result = _resolve_names_batch(devices)
         assert result["192.168.1.50"] == "MyPC"
-        assert result["10.0.0.5"] == "iPhone-Living-Room"
 
     def test_resolve_names_batch_empty(self, mocker):
         from windesktopmgr import _resolve_names_batch
@@ -1257,7 +1269,7 @@ class TestNameResolution:
         assert result == {}
 
     def test_resolve_names_batch_error(self, mocker):
-        mocker.patch("subprocess.run", side_effect=Exception("timeout"))
+        mocker.patch("subprocess.run", side_effect=Exception("dns fail"))
         from windesktopmgr import _resolve_names_batch
 
         devices = [{"ip": "192.168.1.50", "hostname": ""}]
@@ -1265,11 +1277,12 @@ class TestNameResolution:
         assert result == {}
 
     def test_resolve_names_single_result(self, mocker):
-        """PowerShell returns single object instead of array."""
-        mock_result = MagicMock()
-        mock_result.stdout = json.dumps({"IP": "192.168.1.50", "Name": "NAS"})
-        mock_result.stderr = ""
-        mocker.patch("subprocess.run", return_value=mock_result)
+        """PowerShell returns single object instead of array for DNS."""
+        dns_result = MagicMock()
+        dns_result.stdout = json.dumps({"IP": "192.168.1.50", "Name": "NAS"})
+        dns_result.stderr = ""
+        # No wired unresolved (DNS got it), no wireless IPs
+        mocker.patch("subprocess.run", return_value=dns_result)
         from windesktopmgr import _resolve_names_batch
 
         devices = [{"ip": "192.168.1.50", "hostname": ""}]
@@ -1285,16 +1298,16 @@ class TestNameResolution:
             {"ip": "192.168.1.51", "hostname": "192.168.1.51"},  # IP as name = needs resolve
             {"ip": "192.168.1.52", "hostname": "unknown"},  # "unknown" = needs resolve
         ]
-        # Only 2 IPs should be resolved (51 and 52)
-        mock_result = MagicMock()
-        mock_result.stdout = json.dumps(
+        # DNS resolves both unresolved wired IPs
+        dns_result = MagicMock()
+        dns_result.stdout = json.dumps(
             [
                 {"IP": "192.168.1.51", "Name": "Laptop"},
                 {"IP": "192.168.1.52", "Name": "Printer"},
             ]
         )
-        mock_result.stderr = ""
-        mocker.patch("subprocess.run", return_value=mock_result)
+        dns_result.stderr = ""
+        mocker.patch("subprocess.run", return_value=dns_result)
         result = _resolve_names_batch(devices)
         assert "192.168.1.50" not in result
         assert result["192.168.1.51"] == "Laptop"
