@@ -915,6 +915,55 @@ function fmtTs(ts) {
   } catch { return ts; }
 }
 
+// ── Server Heartbeat ─────────────────────────────────────────────────────────
+// Detects when Flask server is unavailable (e.g. during restart) and shows
+// a reconnection banner instead of letting fetches hang silently.
+let _serverAlive = true;
+let _heartbeatId = null;
+
+function _startHeartbeat() {
+  if (_heartbeatId) return;
+  _heartbeatId = setInterval(_checkServer, 3000);
+}
+
+function _checkServer() {
+  fetch("/api/health", {signal: AbortSignal.timeout(2000)})
+    .then(r => r.json())
+    .then(() => {
+      if (!_serverAlive) {
+        _serverAlive = true;
+        _hideReconnectBanner();
+        // Reload dashboard data after reconnect
+        if (typeof loadDashboard === "function") setTimeout(loadDashboard, 500);
+      }
+    })
+    .catch(() => {
+      if (_serverAlive) {
+        _serverAlive = false;
+        _showReconnectBanner();
+      }
+    });
+}
+
+function _showReconnectBanner() {
+  let banner = document.getElementById("reconnect-banner");
+  if (!banner) {
+    banner = document.createElement("div");
+    banner.id = "reconnect-banner";
+    banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:var(--orange,#f59e0b);color:#000;text-align:center;padding:8px;font-size:13px;font-family:var(--font-mono)";
+    banner.textContent = "Server restarting — reconnecting...";
+    document.body.prepend(banner);
+  }
+  banner.style.display = "block";
+}
+
+function _hideReconnectBanner() {
+  const banner = document.getElementById("reconnect-banner");
+  if (banner) banner.style.display = "none";
+}
+
+_startHeartbeat();
+
 // ── NLQ (Natural Language Query) ────────────────────────────────────────────
 function nlqAsk() {
   const input = document.getElementById("nlq-input");
@@ -929,10 +978,14 @@ function nlqAsk() {
   btn.disabled = true;
   btn.textContent = "...";
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60000);
+
   fetch("/api/nlq/ask", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({question: q}),
+    signal: controller.signal,
   })
   .then(r => r.json())
   .then(data => {
@@ -947,9 +1000,14 @@ function nlqAsk() {
     content.innerHTML = html;
   })
   .catch(err => {
-    content.innerHTML = `<div class="nlq-error">Request failed: ${esc(err.message)}</div>`;
+    if (err.name === "AbortError") {
+      content.innerHTML = '<div class="nlq-error">Request timed out — the server may be restarting. Please try again.</div>';
+    } else {
+      content.innerHTML = `<div class="nlq-error">Request failed: ${esc(err.message)}</div>`;
+    }
   })
   .finally(() => {
+    clearTimeout(timeoutId);
     btn.disabled = false;
     btn.textContent = "ASK";
   });
@@ -3131,8 +3189,16 @@ function renderDashboard(d) {
 
 // Auto-load dashboard when it's the active tab on startup
 document.addEventListener("DOMContentLoaded", () => {
-  // Small delay to let Flask render fully
-  setTimeout(loadDashboard, 400);
+  // Retry dashboard load if server is still starting (e.g. after tray restart)
+  function tryLoadDashboard(retries) {
+    fetch("/api/dashboard/summary", {signal: AbortSignal.timeout(5000)})
+      .then(() => loadDashboard())
+      .catch(() => {
+        if (retries > 0) setTimeout(() => tryLoadDashboard(retries - 1), 1000);
+        else loadDashboard(); // final attempt even if server seems down
+      });
+  }
+  setTimeout(() => tryLoadDashboard(3), 400);
 });
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -3480,6 +3546,7 @@ function renderHomeNet() {
       <td style="padding:6px 10px;font-size:11px;color:var(--muted)">${esc(d.mac)}</td>
       <td style="padding:6px 10px">${esc(d.vendor)}</td>
       <td style="padding:6px 10px"><span style="color:${netColor};font-size:11px;padding:1px 6px;border-radius:8px;border:1px solid ${netColor}">${netLabel}</span></td>
+      <td style="padding:6px 10px;font-size:11px;color:var(--muted)">${d.network === "wireless" && d.ssid ? esc(d.ssid) : '—'}</td>
       <td style="padding:6px 10px">${cat}</td>
       <td style="padding:6px 10px">
         <button onclick="openEditModal('${esc(d.mac)}')" style="padding:2px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--cyan);cursor:pointer;font-size:11px;font-family:var(--font-mono)">Edit</button>
@@ -4906,6 +4973,7 @@ function renderSystemInfo(d) {
         <th style="padding:8px 10px">MAC</th>
         <th style="padding:8px 10px">Vendor</th>
         <th style="padding:8px 10px">Network</th>
+        <th style="padding:8px 10px">SSID</th>
         <th style="padding:8px 10px">Category</th>
         <th style="padding:8px 10px">Actions</th>
       </tr></thead>
