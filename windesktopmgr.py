@@ -7866,14 +7866,17 @@ def _orbi_get_devices() -> dict:
     Uses direct SOAP calls (same protocol as pynetgear).
     """
     import requests
+    import urllib3
+
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     user, pw = _get_homenet_cred("orbi")
     if not user or not pw:
         return {"error": "No Orbi credentials configured. Add them in Network Settings."}
 
-    # Orbi SOAP endpoint
+    # Orbi SOAP endpoint — RBRE960 uses HTTPS on port 443 (not HTTP:5000)
     orbi_ip = "10.0.0.1"
-    url = f"http://{orbi_ip}:5000/soap/server_sa/"
+    url = f"https://{orbi_ip}/soap/server_sa/"
 
     headers = {
         "SOAPAction": "urn:NETGEAR-ROUTER:service:DeviceInfo:1#GetAttachDevice2",
@@ -7910,13 +7913,14 @@ def _orbi_get_devices() -> dict:
 </v:Envelope>"""
 
         session = requests.Session()
-        # Login
+        session.verify = False  # Orbi uses self-signed cert
+        # Login via SOAP authentication
         r = session.post(url, data=login_body, headers=login_headers, timeout=10)
         if r.status_code not in (200, 401):
             # 401 is expected first call, triggers auth
             pass
 
-        # Fetch devices
+        # Fetch devices (use HTTP Basic auth as fallback)
         r = session.post(url, data=soap_body, headers=headers, timeout=15, auth=(user, pw))
 
         if r.status_code == 200:
@@ -7926,9 +7930,11 @@ def _orbi_get_devices() -> dict:
             return {"error": f"Orbi SOAP returned HTTP {r.status_code}"}
 
     except requests.exceptions.ConnectTimeout:
-        return {"error": "Orbi unreachable (10.0.0.1:5000) — is Wi-Fi connected?"}
+        return {"error": "Orbi unreachable (10.0.0.1) — is Wi-Fi connected?"}
     except requests.exceptions.ConnectionError:
         return {"error": "Cannot connect to Orbi — ensure Wi-Fi is connected to Orbi network"}
+    except requests.exceptions.SSLError:
+        return {"error": "Orbi SSL error — router may need firmware update"}
     except Exception as e:
         return {"error": f"Orbi API error: {e}"}
     finally:
@@ -7936,10 +7942,46 @@ def _orbi_get_devices() -> dict:
 
 
 def _parse_orbi_soap(xml_text: str) -> list:
-    """Parse Orbi GetAttachDevice2 SOAP response into device list."""
+    """Parse Orbi GetAttachDevice2 SOAP response into device list.
+
+    RBRE960 returns XML with <Device> elements containing child tags:
+    <IP>, <Name>, <MAC>, <ConnectionType>, <Linkspeed>, <SignalStrength>,
+    <DeviceModel>, <DeviceBrand>, <DeviceTypeV2>, <SSID>, <ConnAPMAC>, etc.
+
+    Also supports legacy @-delimited format from older firmware.
+    """
     devices = []
-    # The response contains semicolon-delimited device strings
-    # Format: IP;Name;MAC;ConnectionType;LinkRate;SignalStrength;...
+
+    # Try XML <Device> format first (RBRE960 with current firmware)
+    device_blocks = re.findall(r"<Device>(.*?)</Device>", xml_text, re.DOTALL)
+    if device_blocks:
+        for block in device_blocks:
+
+            def _tag(name, _block=block):
+                m = re.search(rf"<{name}>(.*?)</{name}>", _block)
+                return m.group(1).strip() if m else ""
+
+            mac = _tag("MAC").upper().replace("-", ":")
+            if not mac:
+                continue
+            devices.append(
+                {
+                    "ip": _tag("IP"),
+                    "name": _tag("Name"),
+                    "mac": mac,
+                    "connection_type": _tag("ConnectionType"),
+                    "link_rate": _tag("Linkspeed"),
+                    "signal_strength": _tag("SignalStrength"),
+                    "device_type": _tag("DeviceTypeV2"),
+                    "device_model": _tag("DeviceModel"),
+                    "device_brand": _tag("DeviceBrand"),
+                    "ssid": _tag("SSID"),
+                    "device_name_user_set": _tag("NameUserSet") == "true",
+                }
+            )
+        return devices
+
+    # Fallback: legacy @-delimited format (older Orbi firmware)
     dev_match = re.search(r"<NewGetAttachDevice2>(.*?)</NewGetAttachDevice2>", xml_text, re.DOTALL)
     if not dev_match:
         return devices
@@ -8141,6 +8183,7 @@ def _resolve_names_batch(devices: list) -> dict:
     """
     Resolve hostnames for a batch of devices using multiple methods.
     Returns {ip: resolved_name} dict.
+    Uses async DNS with per-device timeouts to avoid hanging on unreachable hosts.
     """
     results = {}
     ips_to_resolve = []
@@ -8155,50 +8198,81 @@ def _resolve_names_batch(devices: list) -> dict:
     if not ips_to_resolve:
         return results
 
-    # Method 1: NetBIOS + reverse DNS via PowerShell (batch)
-    # nbtstat for NetBIOS, [System.Net.Dns] for reverse DNS
-    ip_list_ps = ",".join(f"'{ip}'" for ip in ips_to_resolve[:50])  # Cap at 50 to avoid timeout
+    # Use async DNS with 2-second timeout per device via BeginGetHostEntry
+    # Then fall back to NetBIOS only for local-subnet devices that DNS missed
+    ip_list_ps = ",".join(f"'{ip}'" for ip in ips_to_resolve[:50])
     ps = f"""
 $ips = @({ip_list_ps})
-$results = @()
+$results = @{{}}
+
+# Phase 1: Async DNS — resolve all IPs in parallel with 2s timeout each
+$asyncOps = @{{}}
 foreach ($ip in $ips) {{
-    $name = ""
-    # Try reverse DNS first (fastest)
     try {{
-        $dns = [System.Net.Dns]::GetHostEntry($ip)
-        if ($dns.HostName -and $dns.HostName -ne $ip) {{
-            $name = $dns.HostName
-        }}
+        $asyncOps[$ip] = [System.Net.Dns]::BeginGetHostEntry($ip, $null, $null)
     }} catch {{ }}
-    # Try NetBIOS if DNS failed
-    if (-not $name) {{
+}}
+foreach ($ip in $ips) {{
+    if ($asyncOps.ContainsKey($ip)) {{
         try {{
-            $nbt = nbtstat -A $ip 2>$null
-            $match = $nbt | Select-String '<00>\\s+UNIQUE' | Select-Object -First 1
-            if ($match) {{
-                $name = ($match.Line -split '\\s+')[0].Trim()
+            $ar = $asyncOps[$ip]
+            if ($ar.AsyncWaitHandle.WaitOne(2000)) {{
+                $dns = [System.Net.Dns]::EndGetHostEntry($ar)
+                if ($dns.HostName -and $dns.HostName -ne $ip) {{
+                    $results[$ip] = $dns.HostName
+                }}
             }}
         }} catch {{ }}
     }}
-    $results += [PSCustomObject]@{{ IP = $ip; Name = $name }}
 }}
-$results | ConvertTo-Json -Depth 2
+
+# Phase 2: NetBIOS for remaining unresolved 192.x devices only (local subnet, faster)
+$unresolved = $ips | Where-Object {{ -not $results.ContainsKey($_) -and $_.StartsWith('192.') }}
+foreach ($ip in $unresolved) {{
+    try {{
+        $proc = Start-Process -FilePath 'nbtstat' -ArgumentList '-A',$ip -NoNewWindow -PassThru -RedirectStandardOutput "$env:TEMP\\nbt_$($ip.Replace('.','_')).txt" 2>$null
+        if ($proc.WaitForExit(3000)) {{
+            $nbt = Get-Content "$env:TEMP\\nbt_$($ip.Replace('.','_')).txt" -ErrorAction SilentlyContinue
+            Remove-Item "$env:TEMP\\nbt_$($ip.Replace('.','_')).txt" -ErrorAction SilentlyContinue
+            $match = $nbt | Select-String '<00>\\s+UNIQUE' | Select-Object -First 1
+            if ($match) {{
+                $name = ($match.Line -split '\\s+')[0].Trim()
+                if ($name) {{ $results[$ip] = $name }}
+            }}
+        }} else {{
+            $proc | Stop-Process -Force -ErrorAction SilentlyContinue
+        }}
+    }} catch {{ }}
+}}
+
+# Output as array of objects for JSON parsing
+$output = @()
+foreach ($kv in $results.GetEnumerator()) {{
+    $output += [PSCustomObject]@{{ IP = $kv.Key; Name = $kv.Value }}
+}}
+$output | ConvertTo-Json -Depth 2
 """
     try:
         r = subprocess.run(
             ["powershell", "-NonInteractive", "-Command", ps],
             capture_output=True,
             text=True,
-            timeout=60,  # NetBIOS can be slow
+            timeout=120,  # Generous overall timeout
         )
-        data = json.loads(r.stdout.strip() or "[]")
-        if isinstance(data, dict):
-            data = [data]
-        for entry in data:
-            ip = entry.get("IP", "")
-            name = entry.get("Name", "")
-            if ip and name:
-                results[ip] = name
+        raw = r.stdout.strip()
+        if raw:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                data = [data]
+            for entry in data:
+                ip = entry.get("IP", "")
+                name = entry.get("Name", "")
+                if ip and name:
+                    results[ip] = name
+        if r.stderr.strip():
+            print(f"[HomeNet] Name resolution stderr: {r.stderr.strip()[:200]}")
+    except subprocess.TimeoutExpired:
+        print("[HomeNet] Name resolution timed out after 120s")
     except Exception as e:
         print(f"[HomeNet] Name resolution error: {e}")
 
@@ -8385,6 +8459,9 @@ def _merge_device_data(inventory: dict, source: str, devices: list) -> dict:
             "link_rate": dev.get("link_rate", existing.get("link_rate", "")),
             "device_type": dev.get("device_type", dev.get("dev_class", existing.get("device_type", ""))),
             "device_os": dev.get("device_os", existing.get("device_os", "")),
+            "device_model": dev.get("device_model", existing.get("device_model", "")),
+            "device_brand": dev.get("device_brand", existing.get("device_brand", "")),
+            "ssid": dev.get("ssid", existing.get("ssid", "")),
             "active": dev.get("activity", 1) == 1 if "activity" in dev else True,
         }
 

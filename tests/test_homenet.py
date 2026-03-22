@@ -410,7 +410,50 @@ class TestVerizonJsParsing:
 class TestOrbiSoapParsing:
     """Test Orbi SOAP response parsing."""
 
-    def test_parse_device_list(self):
+    def test_parse_xml_device_format(self):
+        """Test RBRE960 XML Device element parsing."""
+        from windesktopmgr import _parse_orbi_soap
+
+        xml = """<Device>
+        <IP>10.0.0.60</IP>
+        <Name>Fire TV</Name>
+        <MAC>44:3D:54:00:12:AC</MAC>
+        <ConnectionType>5GHz</ConnectionType>
+        <Linkspeed>72</Linkspeed>
+        <SignalStrength>56</SignalStrength>
+        <DeviceModel>Fire TV Stick 4K Max</DeviceModel>
+        <DeviceBrand>Amazon</DeviceBrand>
+        <DeviceTypeV2>GENERIC</DeviceTypeV2>
+        <SSID>mynet</SSID>
+        <NameUserSet>false</NameUserSet>
+        </Device>
+        <Device>
+        <IP>10.0.0.25</IP>
+        <Name>Ring-Front</Name>
+        <MAC>90:48:6C:F9:48:7A</MAC>
+        <ConnectionType>5GHz - IoT</ConnectionType>
+        <Linkspeed>40</Linkspeed>
+        <SignalStrength>70</SignalStrength>
+        <DeviceModel>Video Doorbell</DeviceModel>
+        <DeviceBrand>Ring</DeviceBrand>
+        <DeviceTypeV2>CAMERA</DeviceTypeV2>
+        <SSID>mynet-iot</SSID>
+        <NameUserSet>true</NameUserSet>
+        </Device>"""
+        devices = _parse_orbi_soap(xml)
+        assert len(devices) == 2
+        assert devices[0]["ip"] == "10.0.0.60"
+        assert devices[0]["name"] == "Fire TV"
+        assert devices[0]["mac"] == "44:3D:54:00:12:AC"
+        assert devices[0]["device_model"] == "Fire TV Stick 4K Max"
+        assert devices[0]["device_brand"] == "Amazon"
+        assert devices[0]["ssid"] == "mynet"
+        assert devices[0]["device_name_user_set"] is False
+        assert devices[1]["name"] == "Ring-Front"
+        assert devices[1]["device_name_user_set"] is True
+
+    def test_parse_legacy_delimited_format(self):
+        """Test legacy @-delimited format from older firmware."""
         from windesktopmgr import _parse_orbi_soap
 
         xml = """<NewGetAttachDevice2>10.0.0.2;MyPhone;AA:BB:CC:DD:EE:FF;5G;866Mbps;-45;Phone@10.0.0.3;Laptop;11:22:33:44:55:66;2.4G;72Mbps;-60;Computer</NewGetAttachDevice2>"""
@@ -426,6 +469,16 @@ class TestOrbiSoapParsing:
         xml = "<SomeOtherTag>nothing here</SomeOtherTag>"
         devices = _parse_orbi_soap(xml)
         assert devices == []
+
+    def test_parse_xml_skips_no_mac(self):
+        """Devices without MAC should be skipped."""
+        from windesktopmgr import _parse_orbi_soap
+
+        xml = """<Device><IP>10.0.0.1</IP><Name>NoMAC</Name></Device>
+        <Device><IP>10.0.0.2</IP><Name>HasMAC</Name><MAC>AA:BB:CC:DD:EE:FF</MAC></Device>"""
+        devices = _parse_orbi_soap(xml)
+        assert len(devices) == 1
+        assert devices[0]["name"] == "HasMAC"
 
 
 class TestArcMd5:
@@ -992,7 +1045,7 @@ class TestTpLinkMacVendor:
 class TestOrbiSoapParsingEdgeCases:
     """Additional Orbi SOAP parsing edge cases."""
 
-    def test_parse_single_device(self):
+    def test_parse_single_legacy_device(self):
         from windesktopmgr import _parse_orbi_soap
 
         xml = "<NewGetAttachDevice2>10.0.0.2;Phone;AA:BB:CC:DD:EE:FF;5G;866Mbps;-45;Phone</NewGetAttachDevice2>"
@@ -1000,19 +1053,30 @@ class TestOrbiSoapParsingEdgeCases:
         assert len(devices) == 1
         assert devices[0]["ip"] == "10.0.0.2"
 
-    def test_parse_short_entry(self):
+    def test_parse_short_legacy_entry(self):
         from windesktopmgr import _parse_orbi_soap
 
         xml = "<NewGetAttachDevice2>10.0.0.2;Phone;AA:BB:CC:DD:EE:FF;5G</NewGetAttachDevice2>"
         devices = _parse_orbi_soap(xml)
         assert len(devices) == 1
 
-    def test_parse_too_short_entry(self):
+    def test_parse_too_short_legacy_entry(self):
         from windesktopmgr import _parse_orbi_soap
 
         xml = "<NewGetAttachDevice2>10.0.0.2;Phone;MAC</NewGetAttachDevice2>"
         devices = _parse_orbi_soap(xml)
         assert len(devices) == 0
+
+    def test_parse_xml_missing_optional_fields(self):
+        from windesktopmgr import _parse_orbi_soap
+
+        xml = """<Device><IP>10.0.0.5</IP><MAC>AA:BB:CC:DD:EE:FF</MAC></Device>"""
+        devices = _parse_orbi_soap(xml)
+        assert len(devices) == 1
+        assert devices[0]["ip"] == "10.0.0.5"
+        assert devices[0]["name"] == ""
+        assert devices[0]["device_model"] == ""
+        assert devices[0]["device_brand"] == ""
 
 
 class TestVerizonApiEdgeCases:
@@ -1170,6 +1234,7 @@ class TestNameResolution:
                 {"IP": "10.0.0.5", "Name": "iPhone-Living-Room"},
             ]
         )
+        mock_result.stderr = ""
         mocker.patch("subprocess.run", return_value=mock_result)
         from windesktopmgr import _resolve_names_batch
 
@@ -1203,6 +1268,7 @@ class TestNameResolution:
         """PowerShell returns single object instead of array."""
         mock_result = MagicMock()
         mock_result.stdout = json.dumps({"IP": "192.168.1.50", "Name": "NAS"})
+        mock_result.stderr = ""
         mocker.patch("subprocess.run", return_value=mock_result)
         from windesktopmgr import _resolve_names_batch
 
@@ -1227,6 +1293,7 @@ class TestNameResolution:
                 {"IP": "192.168.1.52", "Name": "Printer"},
             ]
         )
+        mock_result.stderr = ""
         mocker.patch("subprocess.run", return_value=mock_result)
         result = _resolve_names_batch(devices)
         assert "192.168.1.50" not in result
@@ -1240,6 +1307,7 @@ class TestEnrichDeviceNames:
     def test_enrich_fills_names(self, mocker):
         mock_result = MagicMock()
         mock_result.stdout = json.dumps([{"IP": "192.168.1.50", "Name": "MyPC"}])
+        mock_result.stderr = ""
         mocker.patch("subprocess.run", return_value=mock_result)
         from windesktopmgr import _enrich_device_names
 
@@ -1263,7 +1331,7 @@ class TestEnrichDeviceNames:
         assert dev["category"] == "Computer"  # Intel vendor → Computer
 
     def test_enrich_preserves_user_category(self, mocker):
-        mocker.patch("subprocess.run", return_value=MagicMock(stdout="[]"))
+        mocker.patch("subprocess.run", return_value=MagicMock(stdout="[]", stderr=""))
         from windesktopmgr import _enrich_device_names
 
         inventory = {
@@ -1287,6 +1355,7 @@ class TestEnrichDeviceNames:
     def test_enrich_does_not_overwrite_good_hostname(self, mocker):
         mock_result = MagicMock()
         mock_result.stdout = json.dumps([{"IP": "192.168.1.50", "Name": "NewName"}])
+        mock_result.stderr = ""
         mocker.patch("subprocess.run", return_value=mock_result)
         from windesktopmgr import _enrich_device_names
 
