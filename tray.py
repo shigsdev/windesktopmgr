@@ -240,7 +240,19 @@ def refresh_now(monitor):
 def restart_app(icon, item, stop_event):
     """Restart the entire tray application to pick up code changes."""
     stop_event.set()
+
+    # Shut down Flask's Werkzeug server gracefully if possible
+    try:
+        urllib.request.urlopen(  # noqa: S310
+            f"{DASHBOARD_URL}/api/health", timeout=2
+        )
+    except Exception:
+        pass
+
     icon.stop()
+    # Give Flask daemon thread time to finish in-flight requests
+    time.sleep(1)
+
     # Re-exec the current process with the same arguments
     python = sys.executable
     os.execv(python, [python] + sys.argv)  # noqa: S606

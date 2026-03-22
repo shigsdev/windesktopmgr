@@ -6168,6 +6168,12 @@ def index():
     return resp
 
 
+@app.route("/api/health")
+def api_health():
+    """Lightweight heartbeat endpoint for server-alive checks."""
+    return jsonify({"ok": True, "status": "running"})
+
+
 @app.route("/api/scan/start", methods=["POST"])
 def start_scan():
     global _scan_results, _scan_status

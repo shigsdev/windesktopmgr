@@ -406,18 +406,23 @@ class TestRestartApp(unittest.TestCase):
     """Test restart_app function."""
 
     @patch("tray.os.execv")
-    def test_restart_stops_icon_and_reexecs(self, mock_execv):
+    @patch("tray.urllib.request.urlopen")
+    @patch("tray.time.sleep")
+    def test_restart_stops_icon_and_reexecs(self, mock_sleep, mock_urlopen, mock_execv):
         stop_event = threading.Event()
         mock_icon = MagicMock()
         tray.restart_app(mock_icon, None, stop_event)
         assert stop_event.is_set()
         mock_icon.stop.assert_called_once()
         mock_execv.assert_called_once()
+        mock_sleep.assert_called_once_with(1)
         # First arg is the python executable
         assert mock_execv.call_args[0][0] == sys.executable
 
     @patch("tray.os.execv")
-    def test_restart_preserves_sys_argv(self, mock_execv):
+    @patch("tray.urllib.request.urlopen")
+    @patch("tray.time.sleep")
+    def test_restart_preserves_sys_argv(self, mock_sleep, mock_urlopen, mock_execv):
         stop_event = threading.Event()
         mock_icon = MagicMock()
         original_argv = sys.argv[:]
@@ -426,6 +431,17 @@ class TestRestartApp(unittest.TestCase):
         args = mock_execv.call_args[0][1]
         assert args[0] == sys.executable
         assert args[1:] == original_argv
+
+    @patch("tray.os.execv")
+    @patch("tray.urllib.request.urlopen", side_effect=Exception("connection refused"))
+    @patch("tray.time.sleep")
+    def test_restart_handles_health_check_failure(self, mock_sleep, mock_urlopen, mock_execv):
+        """Restart should still proceed even if health check fails."""
+        stop_event = threading.Event()
+        mock_icon = MagicMock()
+        tray.restart_app(mock_icon, None, stop_event)
+        assert stop_event.is_set()
+        mock_execv.assert_called_once()
 
 
 if __name__ == "__main__":
