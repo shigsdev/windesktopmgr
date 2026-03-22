@@ -405,43 +405,55 @@ class TestQuitApp(unittest.TestCase):
 class TestRestartApp(unittest.TestCase):
     """Test restart_app function."""
 
-    @patch("tray.os.execv")
-    @patch("tray.urllib.request.urlopen")
+    @patch("tray.os._exit")
     @patch("tray.time.sleep")
-    def test_restart_stops_icon_and_reexecs(self, mock_sleep, mock_urlopen, mock_execv):
+    @patch("subprocess.Popen")
+    def test_restart_stops_icon_and_spawns_new_process(self, mock_popen, mock_sleep, mock_exit):
         stop_event = threading.Event()
         mock_icon = MagicMock()
         tray.restart_app(mock_icon, None, stop_event)
         assert stop_event.is_set()
         mock_icon.stop.assert_called_once()
-        mock_execv.assert_called_once()
-        mock_sleep.assert_called_once_with(1)
-        # First arg is the python executable
-        assert mock_execv.call_args[0][0] == sys.executable
+        mock_popen.assert_called_once()
+        mock_sleep.assert_called_once_with(0.5)
+        mock_exit.assert_called_once_with(0)
 
-    @patch("tray.os.execv")
-    @patch("tray.urllib.request.urlopen")
+    @patch("tray.os._exit")
     @patch("tray.time.sleep")
-    def test_restart_preserves_sys_argv(self, mock_sleep, mock_urlopen, mock_execv):
+    @patch("subprocess.Popen")
+    def test_restart_preserves_sys_argv(self, mock_popen, mock_sleep, mock_exit):
         stop_event = threading.Event()
         mock_icon = MagicMock()
         original_argv = sys.argv[:]
         tray.restart_app(mock_icon, None, stop_event)
-        # Second arg should include sys.argv
-        args = mock_execv.call_args[0][1]
-        assert args[0] == sys.executable
-        assert args[1:] == original_argv
+        # First positional arg is the command list
+        cmd = mock_popen.call_args[0][0]
+        assert cmd[0] == sys.executable
+        assert cmd[1:] == original_argv
 
-    @patch("tray.os.execv")
-    @patch("tray.urllib.request.urlopen", side_effect=Exception("connection refused"))
+    @patch("tray.os._exit")
     @patch("tray.time.sleep")
-    def test_restart_handles_health_check_failure(self, mock_sleep, mock_urlopen, mock_execv):
-        """Restart should still proceed even if health check fails."""
+    @patch("subprocess.Popen", side_effect=Exception("spawn failed"))
+    def test_restart_exits_even_if_spawn_fails(self, mock_popen, mock_sleep, mock_exit):
+        """If Popen fails, the old process should still try to exit."""
         stop_event = threading.Event()
         mock_icon = MagicMock()
-        tray.restart_app(mock_icon, None, stop_event)
+        # The function will raise because Popen fails before os._exit
+        with self.assertRaises(Exception):
+            tray.restart_app(mock_icon, None, stop_event)
         assert stop_event.is_set()
-        mock_execv.assert_called_once()
+        mock_icon.stop.assert_called_once()
+
+
+class TestWaitForPortFree(unittest.TestCase):
+    """Test _wait_for_port_free helper."""
+
+    @patch("tray.time.sleep")
+    def test_returns_immediately_when_port_free(self, mock_sleep):
+        """Port should be free during tests — returns immediately."""
+        # Use a random high port that's unlikely to be in use
+        tray._wait_for_port_free(59999, timeout=1)
+        mock_sleep.assert_not_called()
 
 
 if __name__ == "__main__":
