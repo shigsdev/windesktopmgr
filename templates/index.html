@@ -612,6 +612,7 @@
       <button class="page-tab" data-page="credentials">🔐 Credentials &amp; Network</button>
       <button class="page-tab" data-page="sysinfo">🖥 System Info</button>
       <button class="page-tab" data-page="remediation">🔧 Remediation</button>
+      <button class="page-tab" data-page="homenet">🏠 Home Network</button>
       <button class="page-tab" data-page="architecture">🏗 Architecture</button>
     </div>
   </nav>
@@ -1006,7 +1007,9 @@ document.querySelectorAll(".page-tab").forEach(btn => {
     document.querySelectorAll(".page-tab").forEach(t => t.classList.remove("active"));
     btn.classList.add("active");
     const page = btn.dataset.page;
-    ["dashboard","drivers","bsod","startup","disk","network","updates","events","processes","thermals","services","health-history","timeline","memory","bios","credentials","sysinfo","remediation","architecture"].forEach(function(p) {
+    // Stop home network polling when leaving the tab
+    if (page !== "homenet" && typeof _hnStopPolling === "function") _hnStopPolling();
+    ["dashboard","drivers","bsod","startup","disk","network","updates","events","processes","thermals","services","health-history","timeline","memory","bios","credentials","sysinfo","remediation","homenet","architecture"].forEach(function(p) {
       var el = document.getElementById("page-" + p);
       if (el) el.style.display = (p === page) ? "" : "none";
     });
@@ -1044,6 +1047,8 @@ document.querySelectorAll(".page-tab").forEach(btn => {
       if (!_tabLoaded["sysinfo"])        { _tabLoaded["sysinfo"]        = true; loadSystemInfo(); }
     } else if (page === "remediation") {
       if (!_tabLoaded["remediation"])    { _tabLoaded["remediation"]    = true; loadRemediation(); }
+    } else if (page === "homenet") {
+      if (!_tabLoaded["homenet"])        { _tabLoaded["homenet"]        = true; loadHomeNet(); }
     } else if (page === "architecture") {
       if (!_tabLoaded["architecture"])   { _tabLoaded["architecture"]   = true; loadArchitecture(); }
     }
@@ -3310,6 +3315,358 @@ function filterRemHistory() {
   renderRemHistory();
 }
 
+// ── Home Network Management ──────────────────────────────────────────────
+let _hnDevices = [];
+let _hnDevicesFilt = [];
+let _hnLightPollId = null;   // 60s ARP-only poll
+let _hnFullPollId = null;    // 5min full scan poll
+let _hnPollActive = false;   // true when tab is visible
+
+function _hnStartPolling() {
+  if (_hnPollActive) return;
+  _hnPollActive = true;
+  // Light poll every 60s (ARP only — fast)
+  _hnLightPollId = setInterval(() => _hnLightPoll(), 60000);
+  // Full scan every 5 min (ARP + routers)
+  _hnFullPollId = setInterval(() => _hnFullPoll(), 300000);
+}
+
+function _hnStopPolling() {
+  _hnPollActive = false;
+  if (_hnLightPollId) { clearInterval(_hnLightPollId); _hnLightPollId = null; }
+  if (_hnFullPollId)  { clearInterval(_hnFullPollId);  _hnFullPollId = null; }
+}
+
+async function _hnLightPoll() {
+  // Only poll when the homenet tab is visible
+  if (document.querySelector('.page-tab.active')?.dataset.page !== 'homenet') {
+    _hnStopPolling();
+    return;
+  }
+  try {
+    const r = await fetch("/api/homenet/scan/light", {method: "POST"});
+    const data = await r.json();
+    if (data.ok) _hnUpdateUI(data);
+  } catch(e) { console.error("light poll error:", e); }
+}
+
+async function _hnFullPoll() {
+  if (document.querySelector('.page-tab.active')?.dataset.page !== 'homenet') {
+    _hnStopPolling();
+    return;
+  }
+  try {
+    const btn = document.getElementById("hn-scan-btn");
+    btn.textContent = "Auto-scanning…";
+    const r = await fetch("/api/homenet/scan", {method: "POST"});
+    const data = await r.json();
+    if (data.errors && data.errors.length) {
+      const errDiv = document.getElementById("hn-errors");
+      errDiv.style.display = "block";
+      errDiv.textContent = data.errors.join(" | ");
+    }
+    if (data.ok) _hnUpdateUI(data);
+    btn.textContent = "🔍 Scan Network";
+  } catch(e) {
+    console.error("full poll error:", e);
+    document.getElementById("hn-scan-btn").textContent = "🔍 Scan Network";
+  }
+}
+
+function _hnUpdateUI(data) {
+  _hnDevices = data.devices || [];
+  document.getElementById("hn-total").textContent = data.device_count || 0;
+  document.getElementById("hn-online").textContent = _hnDevices.filter(d => d.active).length;
+  document.getElementById("hn-wired").textContent = _hnDevices.filter(d => d.network === "wired").length;
+  document.getElementById("hn-wireless").textContent = _hnDevices.filter(d => d.network === "wireless").length;
+  document.getElementById("hn-lastscan").textContent = data.last_scan
+    ? new Date(data.last_scan).toLocaleString() : "Never";
+  filterHomeNet(); // re-apply current filters
+}
+
+async function loadHomeNet() {
+  document.getElementById("hn-devices-loading").style.display = "block";
+  document.getElementById("hn-devices-table").style.display = "none";
+  document.getElementById("hn-devices-empty").style.display = "none";
+
+  // Load credentials
+  try {
+    const cr = await fetch("/api/homenet/credentials");
+    const creds = await cr.json();
+    renderCredentials(creds);
+  } catch(e) { console.error("creds load error:", e); }
+
+  // Load inventory
+  try {
+    const r = await fetch("/api/homenet/inventory");
+    const data = await r.json();
+    _hnUpdateUI(data);
+  } catch(e) {
+    console.error("inventory load error:", e);
+  }
+
+  document.getElementById("hn-devices-loading").style.display = "none";
+
+  // Start auto-polling
+  _hnStartPolling();
+}
+
+function renderCredentials(creds) {
+  const grid = document.getElementById("hn-creds-grid");
+  document.getElementById("hn-creds-loading").style.display = "none";
+  grid.style.display = "grid";
+  grid.innerHTML = creds.map(c => `
+    <div style="padding:12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <span style="font-weight:600;font-size:13px">${esc(c.label)}</span>
+        <span style="font-size:10px;padding:2px 8px;border-radius:10px;${
+          c.configured
+            ? 'background:var(--green-dim);color:var(--green)'
+            : 'background:var(--red-dim);color:var(--red)'
+        }">${c.configured ? 'Configured' : 'Not Set'}</span>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">IP: ${esc(c.ip)}</div>
+      ${c.configured
+        ? `<div style="font-size:11px;margin-bottom:8px">User: <span style="color:var(--cyan)">${esc(c.username)}</span> &nbsp; Pass: <span style="color:var(--muted)">${esc(c.password_hint)}</span></div>
+           <div style="display:flex;gap:6px">
+             <button onclick="testCredentialDirect('${c.key}')" style="padding:3px 10px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--cyan);cursor:pointer;font-size:11px;font-family:var(--font-mono)">Test</button>
+             <button onclick="openCredModal('${c.key}','${esc(c.label)}')" style="padding:3px 10px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--orange);cursor:pointer;font-size:11px;font-family:var(--font-mono)">Change</button>
+             <button onclick="deleteCredential('${c.key}')" style="padding:3px 10px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--red);cursor:pointer;font-size:11px;font-family:var(--font-mono)">Delete</button>
+           </div>`
+        : `<button onclick="openCredModal('${c.key}','${esc(c.label)}')" class="btn-action" style="padding:4px 12px;font-size:11px">Add Credentials</button>`
+      }
+    </div>
+  `).join("");
+}
+
+function renderHomeNet() {
+  const tbody = document.getElementById("hn-devices-tbody");
+  const table = document.getElementById("hn-devices-table");
+  const empty = document.getElementById("hn-devices-empty");
+
+  if (!_hnDevicesFilt.length) {
+    table.style.display = "none";
+    empty.style.display = "block";
+    return;
+  }
+
+  table.style.display = "table";
+  empty.style.display = "none";
+
+  // Sort: active first, then by IP
+  const sorted = _hnDevicesFilt.slice().sort((a, b) => {
+    if (a.active !== b.active) return b.active - a.active;
+    const aOctets = (a.ip||"0.0.0.0").split(".").map(Number);
+    const bOctets = (b.ip||"0.0.0.0").split(".").map(Number);
+    for (let i = 0; i < 4; i++) { if (aOctets[i] !== bOctets[i]) return aOctets[i] - bOctets[i]; }
+    return 0;
+  });
+
+  tbody.innerHTML = sorted.map(d => {
+    const displayName = d.friendly_name || d.hostname || d.vendor || "Unknown";
+    const netColor = d.network === "wired" ? "var(--orange)" : "var(--purple)";
+    const netLabel = d.network === "wired" ? "Wired" : "WiFi";
+    const statusDot = d.active
+      ? '<span style="color:var(--green);font-size:14px">●</span>'
+      : '<span style="color:var(--muted);font-size:14px">○</span>';
+    const cat = d.category || '<span style="color:var(--muted)">—</span>';
+    return `<tr style="border-bottom:1px solid var(--border)" class="hn-device-row"
+               data-name="${esc(displayName).toLowerCase()}" data-ip="${esc(d.ip)}"
+               data-mac="${esc(d.mac)}" data-vendor="${esc(d.vendor||'').toLowerCase()}"
+               data-network="${d.network}" data-category="${(d.category||'').toLowerCase()}">
+      <td style="padding:6px 10px">${statusDot}</td>
+      <td style="padding:6px 10px;color:var(--text-bright)">${esc(displayName)}${d.friendly_name && d.hostname ? '<br><span style="font-size:10px;color:var(--muted)">'+esc(d.hostname)+'</span>' : ''}</td>
+      <td style="padding:6px 10px;color:var(--cyan)">${esc(d.ip)}</td>
+      <td style="padding:6px 10px;font-size:11px;color:var(--muted)">${esc(d.mac)}</td>
+      <td style="padding:6px 10px">${esc(d.vendor)}</td>
+      <td style="padding:6px 10px"><span style="color:${netColor};font-size:11px;padding:1px 6px;border-radius:8px;border:1px solid ${netColor}">${netLabel}</span></td>
+      <td style="padding:6px 10px">${cat}</td>
+      <td style="padding:6px 10px">
+        <button onclick="openEditModal('${esc(d.mac)}')" style="padding:2px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--cyan);cursor:pointer;font-size:11px;font-family:var(--font-mono)">Edit</button>
+      </td>
+    </tr>`;
+  }).join("");
+}
+
+function filterHomeNet() {
+  const q = (document.getElementById("hn-search").value || "").toLowerCase();
+  const net = document.getElementById("hn-filter-network").value;
+  const cat = document.getElementById("hn-filter-category").value.toLowerCase();
+  _hnDevicesFilt = _hnDevices.filter(d => {
+    if (net && d.network !== net) return false;
+    if (cat && (d.category || "").toLowerCase() !== cat) return false;
+    if (q) {
+      const hay = [d.friendly_name, d.hostname, d.ip, d.mac, d.vendor, d.category, d.notes]
+        .filter(Boolean).join(" ").toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  renderHomeNet();
+}
+
+async function homenetScan() {
+  const btn = document.getElementById("hn-scan-btn");
+  btn.disabled = true;
+  btn.textContent = "Scanning…";
+  document.getElementById("hn-errors").style.display = "none";
+  try {
+    const r = await fetch("/api/homenet/scan", {method: "POST"});
+    const data = await r.json();
+    if (data.errors && data.errors.length) {
+      const errDiv = document.getElementById("hn-errors");
+      errDiv.style.display = "block";
+      errDiv.textContent = data.errors.join(" | ");
+    }
+    _hnUpdateUI(data);
+  } catch(e) {
+    console.error("scan error:", e);
+    document.getElementById("hn-errors").style.display = "block";
+    document.getElementById("hn-errors").textContent = "Scan failed: " + e.message;
+  }
+  btn.disabled = false;
+  btn.textContent = "🔍 Scan Network";
+}
+
+// ── Credential management ───
+function openCredModal(key, label) {
+  document.getElementById("hn-cred-key").value = key;
+  document.getElementById("hn-cred-title").textContent = "Credentials — " + label;
+  const userLabel = document.querySelector('label[for="hn-cred-user"]') || document.getElementById("hn-cred-user").previousElementSibling;
+  const passLabel = document.querySelector('label[for="hn-cred-pass"]') || document.getElementById("hn-cred-pass").previousElementSibling;
+  if (key === "tplink_switch") {
+    // For SNMP: username = switch IP, password = community string
+    document.getElementById("hn-cred-user").value = "auto";
+    document.getElementById("hn-cred-user").placeholder = "Switch IP or 'auto' (finds via MAC)";
+    document.getElementById("hn-cred-pass").placeholder = "SNMP community string (default: public)";
+    if (userLabel) userLabel.textContent = "Switch IP Address";
+    if (passLabel) passLabel.textContent = "SNMP Community String";
+  } else {
+    document.getElementById("hn-cred-user").value = "admin";
+    document.getElementById("hn-cred-user").placeholder = "";
+    document.getElementById("hn-cred-pass").placeholder = "";
+    if (userLabel) userLabel.textContent = "Username";
+    if (passLabel) passLabel.textContent = "Password";
+  }
+  document.getElementById("hn-cred-pass").value = "";
+  document.getElementById("hn-cred-status").style.display = "none";
+  document.getElementById("hn-cred-modal").style.display = "flex";
+}
+
+function closeCredModal() {
+  document.getElementById("hn-cred-modal").style.display = "none";
+}
+
+async function saveCredential() {
+  const key = document.getElementById("hn-cred-key").value;
+  const user = document.getElementById("hn-cred-user").value;
+  const pass = document.getElementById("hn-cred-pass").value;
+  if (!pass) { alert("Password is required"); return; }
+  const r = await fetch("/api/homenet/credentials/save", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({device_key: key, username: user, password: pass})
+  });
+  const data = await r.json();
+  if (data.ok) {
+    closeCredModal();
+    loadHomeNet();
+  } else {
+    const s = document.getElementById("hn-cred-status");
+    s.style.display = "block";
+    s.style.background = "var(--red-dim)";
+    s.style.color = "var(--red)";
+    s.textContent = data.message;
+  }
+}
+
+async function testCredential() {
+  const key = document.getElementById("hn-cred-key").value;
+  // Save first, then test
+  const user = document.getElementById("hn-cred-user").value;
+  const pass = document.getElementById("hn-cred-pass").value;
+  if (!pass) { alert("Password is required"); return; }
+  await fetch("/api/homenet/credentials/save", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({device_key: key, username: user, password: pass})
+  });
+  const s = document.getElementById("hn-cred-status");
+  s.style.display = "block";
+  s.style.background = "var(--cyan-dim)";
+  s.style.color = "var(--cyan)";
+  s.textContent = "Testing connection…";
+  const r = await fetch("/api/homenet/credentials/test", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({device_key: key})
+  });
+  const data = await r.json();
+  s.style.background = data.ok ? "var(--green-dim)" : "var(--red-dim)";
+  s.style.color = data.ok ? "var(--green)" : "var(--red)";
+  s.textContent = data.message;
+}
+
+async function testCredentialDirect(key) {
+  const r = await fetch("/api/homenet/credentials/test", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({device_key: key})
+  });
+  const data = await r.json();
+  alert(data.ok ? "✓ " + data.message : "✗ " + data.message);
+}
+
+async function deleteCredential(key) {
+  if (!confirm("Delete stored credentials for this device?")) return;
+  await fetch("/api/homenet/credentials/delete", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({device_key: key})
+  });
+  loadHomeNet();
+}
+
+// ── Device edit modal ───
+function openEditModal(mac) {
+  const dev = _hnDevices.find(d => d.mac === mac);
+  if (!dev) return;
+  document.getElementById("hn-edit-mac").value = mac;
+  document.getElementById("hn-edit-title").textContent = "Edit — " + (dev.friendly_name || dev.hostname || dev.ip);
+  document.getElementById("hn-edit-name").value = dev.friendly_name || "";
+  document.getElementById("hn-edit-category").value = dev.category || "";
+  document.getElementById("hn-edit-location").value = dev.location || "";
+  document.getElementById("hn-edit-notes").value = dev.notes || "";
+  document.getElementById("hn-edit-modal").style.display = "flex";
+}
+
+function closeEditModal() {
+  document.getElementById("hn-edit-modal").style.display = "none";
+}
+
+async function saveDeviceEdit() {
+  const mac = document.getElementById("hn-edit-mac").value;
+  const r = await fetch("/api/homenet/device/update", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      mac: mac,
+      friendly_name: document.getElementById("hn-edit-name").value,
+      category: document.getElementById("hn-edit-category").value,
+      location: document.getElementById("hn-edit-location").value,
+      notes: document.getElementById("hn-edit-notes").value
+    })
+  });
+  const data = await r.json();
+  if (data.ok) {
+    closeEditModal();
+    _tabLoaded["homenet"] = false;
+    loadHomeNet();
+  } else {
+    alert("Save failed: " + data.message);
+  }
+}
+
 function loadArchitecture() {
   const iframe = document.getElementById("arch-iframe");
   iframe.src = "/architecture.html";
@@ -4410,6 +4767,185 @@ function renderSystemInfo(d) {
       </table>
       <div id="rem-history-empty" style="display:none;text-align:center;padding:30px;color:var(--muted);font-size:12px">
         No remediation history yet. Run an action above to get started.
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       PAGE: HOME NETWORK MANAGEMENT
+  ══════════════════════════════════════════ -->
+  <div id="page-homenet" style="display:none">
+
+    <div style="display:flex;align-items:center;justify-content:space-between;margin:20px 0 16px">
+      <div>
+        <h2 style="margin:0;font-family:var(--font-head);font-size:20px">Home Network</h2>
+        <div style="font-size:11px;color:var(--muted);margin-top:3px">Device inventory across wired (192.x) and wireless (10.x) networks</div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn-action" onclick="homenetScan()" id="hn-scan-btn" style="padding:6px 16px;font-size:12px">🔍 Scan Network</button>
+        <button class="btn-action" onclick="loadHomeNet()" style="padding:6px 16px;font-size:12px">↺ Refresh</button>
+      </div>
+    </div>
+
+    <!-- Stats cards -->
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:20px">
+      <div class="stat-card s-cyan">
+        <div class="stat-label">Total Devices</div>
+        <div class="stat-value" id="hn-total">—</div>
+      </div>
+      <div class="stat-card s-green">
+        <div class="stat-label">Online</div>
+        <div class="stat-value" id="hn-online">—</div>
+      </div>
+      <div class="stat-card s-orange">
+        <div class="stat-label">Wired (192.x)</div>
+        <div class="stat-value" id="hn-wired">—</div>
+      </div>
+      <div class="stat-card s-purple">
+        <div class="stat-label">Wireless (10.x)</div>
+        <div class="stat-value" id="hn-wireless">—</div>
+      </div>
+      <div class="stat-card s-red">
+        <div class="stat-label">Last Scan</div>
+        <div class="stat-value" id="hn-lastscan" style="font-size:12px">—</div>
+        <div id="hn-poll-status" style="font-size:9px;margin-top:4px;color:var(--green)">
+          <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green);margin-right:4px;animation:pulse 2s infinite"></span>
+          Live — ARP 60s · Full 5m
+        </div>
+      </div>
+    </div>
+
+    <!-- Credential Settings -->
+    <div style="margin-bottom:24px;padding:16px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)">Router Credentials</div>
+      </div>
+      <div id="hn-creds-loading" style="text-align:center;padding:12px;color:var(--muted)">Loading credentials…</div>
+      <div id="hn-creds-grid" style="display:none;grid-template-columns:repeat(2,1fr);gap:12px"></div>
+    </div>
+
+    <!-- Errors banner -->
+    <div id="hn-errors" style="display:none;padding:10px 16px;background:var(--red-dim);border:1px solid var(--red);border-radius:var(--radius);margin-bottom:16px;font-size:12px;color:var(--red)"></div>
+
+    <!-- Device filters -->
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)">Device Inventory</div>
+      <input id="hn-search" type="text" placeholder="Search devices…"
+        oninput="filterHomeNet()"
+        style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;
+               background:var(--card);color:var(--text);font-size:12px;width:200px;font-family:var(--font-mono)">
+      <select id="hn-filter-network" onchange="filterHomeNet()"
+        style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;
+               background:var(--card);color:var(--text);font-size:12px;font-family:var(--font-mono)">
+        <option value="">All Networks</option>
+        <option value="wired">Wired (192.x)</option>
+        <option value="wireless">Wireless (10.x)</option>
+      </select>
+      <select id="hn-filter-category" onchange="filterHomeNet()"
+        style="padding:4px 10px;border:1px solid var(--border);border-radius:6px;
+               background:var(--card);color:var(--text);font-size:12px;font-family:var(--font-mono)">
+        <option value="">All Categories</option>
+        <option value="Computer">Computer</option>
+        <option value="Phone">Phone</option>
+        <option value="TV">TV</option>
+        <option value="IoT">IoT</option>
+        <option value="Printer">Printer</option>
+        <option value="Network">Network</option>
+        <option value="Storage">Storage</option>
+        <option value="Other">Other</option>
+      </select>
+    </div>
+
+    <!-- Device table -->
+    <div id="hn-devices-loading" style="text-align:center;padding:40px;color:var(--muted)">Loading inventory…</div>
+    <table id="hn-devices-table" style="display:none;width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">
+        <th style="padding:8px 10px">Status</th>
+        <th style="padding:8px 10px">Name</th>
+        <th style="padding:8px 10px">IP</th>
+        <th style="padding:8px 10px">MAC</th>
+        <th style="padding:8px 10px">Vendor</th>
+        <th style="padding:8px 10px">Network</th>
+        <th style="padding:8px 10px">Category</th>
+        <th style="padding:8px 10px">Actions</th>
+      </tr></thead>
+      <tbody id="hn-devices-tbody"></tbody>
+    </table>
+    <div id="hn-devices-empty" style="display:none;text-align:center;padding:30px;color:var(--muted);font-size:12px">
+      No devices found. Click "Scan Network" to discover devices.
+    </div>
+
+    <!-- Edit device modal -->
+    <div id="hn-edit-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;
+         display:none;align-items:center;justify-content:center">
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;
+           width:420px;max-width:90vw">
+        <h3 style="margin:0 0 16px;font-size:16px" id="hn-edit-title">Edit Device</h3>
+        <input type="hidden" id="hn-edit-mac">
+        <div style="margin-bottom:10px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Friendly Name</label>
+          <input type="text" id="hn-edit-name" style="width:100%;padding:6px 10px;border:1px solid var(--border);
+                 border-radius:6px;background:var(--surface);color:var(--text);font-family:var(--font-mono);font-size:12px">
+        </div>
+        <div style="margin-bottom:10px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Category</label>
+          <select id="hn-edit-category" style="width:100%;padding:6px 10px;border:1px solid var(--border);
+                  border-radius:6px;background:var(--surface);color:var(--text);font-family:var(--font-mono);font-size:12px">
+            <option value="">Uncategorized</option>
+            <option value="Computer">Computer</option>
+            <option value="Phone">Phone</option>
+            <option value="TV">TV</option>
+            <option value="IoT">IoT</option>
+            <option value="Printer">Printer</option>
+            <option value="Network">Network</option>
+            <option value="Storage">Storage</option>
+            <option value="Other">Other</option>
+          </select>
+        </div>
+        <div style="margin-bottom:10px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Location</label>
+          <input type="text" id="hn-edit-location" style="width:100%;padding:6px 10px;border:1px solid var(--border);
+                 border-radius:6px;background:var(--surface);color:var(--text);font-family:var(--font-mono);font-size:12px"
+                 placeholder="e.g. Living Room, Office, Basement">
+        </div>
+        <div style="margin-bottom:16px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Notes</label>
+          <textarea id="hn-edit-notes" rows="2" style="width:100%;padding:6px 10px;border:1px solid var(--border);
+                    border-radius:6px;background:var(--surface);color:var(--text);font-family:var(--font-mono);font-size:12px;resize:vertical"></textarea>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button onclick="closeEditModal()" style="padding:6px 16px;border:1px solid var(--border);border-radius:6px;
+                  background:var(--surface);color:var(--text);cursor:pointer;font-family:var(--font-mono);font-size:12px">Cancel</button>
+          <button onclick="saveDeviceEdit()" class="btn-action" style="padding:6px 16px;font-size:12px">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add credential modal -->
+    <div id="hn-cred-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;
+         align-items:center;justify-content:center">
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;
+           width:420px;max-width:90vw">
+        <h3 style="margin:0 0 16px;font-size:16px" id="hn-cred-title">Add Credentials</h3>
+        <input type="hidden" id="hn-cred-key">
+        <div style="margin-bottom:10px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Username</label>
+          <input type="text" id="hn-cred-user" value="admin" style="width:100%;padding:6px 10px;border:1px solid var(--border);
+                 border-radius:6px;background:var(--surface);color:var(--text);font-family:var(--font-mono);font-size:12px">
+        </div>
+        <div style="margin-bottom:16px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Password</label>
+          <input type="password" id="hn-cred-pass" style="width:100%;padding:6px 10px;border:1px solid var(--border);
+                 border-radius:6px;background:var(--surface);color:var(--text);font-family:var(--font-mono);font-size:12px">
+        </div>
+        <div id="hn-cred-status" style="display:none;padding:8px;border-radius:6px;margin-bottom:12px;font-size:12px"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button onclick="closeCredModal()" style="padding:6px 16px;border:1px solid var(--border);border-radius:6px;
+                  background:var(--surface);color:var(--text);cursor:pointer;font-family:var(--font-mono);font-size:12px">Cancel</button>
+          <button onclick="testCredential()" style="padding:6px 16px;border:1px solid var(--border);border-radius:6px;
+                  background:var(--surface);color:var(--cyan);cursor:pointer;font-family:var(--font-mono);font-size:12px">Test</button>
+          <button onclick="saveCredential()" class="btn-action" style="padding:6px 16px;font-size:12px">Save</button>
+        </div>
       </div>
     </div>
   </div>

@@ -5,6 +5,7 @@ Reads from Windows Event Log and existing SystemHealthDiag HTML reports.
 """
 
 import glob
+import hashlib
 import json
 import os
 import queue
@@ -7586,6 +7587,863 @@ def remediation_run():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#   HOME NETWORK MANAGEMENT — device inventory, router integration, credentials
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Credential service names used with keyring
+_HOMENET_CRED_PREFIX = "wdm-homenet"
+HOMENET_INVENTORY_FILE = os.path.join(APP_DIR, "homenet_inventory.json")
+HOMENET_SCAN_HISTORY_FILE = os.path.join(APP_DIR, "homenet_scan_history.json")
+_homenet_lock = threading.Lock()
+
+# ── MAC vendor OUI lookup (top entries for quick identification) ─────────────
+_MAC_VENDORS = {
+    "28:94:01": "Netgear",
+    "48:3F:DA": "Netgear",
+    "7C:87:CE": "Netgear",
+    "74:AB:93": "Netgear",
+    "9C:76:13": "Netgear",
+    "D0:C9:07": "Netgear",
+    "00:03:7F": "Actiontec",
+    "40:F5:20": "Verizon",
+    "60:74:F4": "Verizon",
+    "E0:E2:E6": "Roku",
+    "00:22:6C": "LinkSys",
+    "D8:28:C9": "Samsung",
+    "90:48:6C": "Samsung",
+    "64:33:DB": "Espressif (IoT)",
+    "34:6F:92": "Espressif (IoT)",
+    "A8:42:E3": "Alexa/Amazon",
+    "DC:A6:33": "Amazon",
+    "F8:F0:05": "Amazon",
+    "44:3D:54": "Amazon",
+    "00:06:78": "Marantz/Denon",
+    "80:6A:10": "Apple",
+    "AC:0B:FB": "Apple",
+    "34:20:03": "Apple",
+    "2C:05:47": "Apple",
+    "0C:EF:15": "Aruba/HPE",
+    "CC:A2:19": "TCL/Roku",
+    "28:C5:C8": "HP",
+    "70:77:81": "Brother",
+    "10:97:BD": "Honeywell",
+    "64:52:99": "Intel",
+    "FA:93:62": "Random MAC (Phone)",
+    "5A:95:23": "Random MAC (Phone)",
+    # TP-Link
+    "50:C7:BF": "TP-Link",
+    "74:DA:88": "TP-Link",
+    "FC:D7:33": "TP-Link",
+    "F8:D1:11": "TP-Link",
+    "F8:1A:67": "TP-Link",
+    "F4:F2:6D": "TP-Link",
+    "F4:EC:38": "TP-Link",
+    "F4:83:CD": "TP-Link",
+    "F0:F3:36": "TP-Link",
+    "EC:88:8F": "TP-Link",
+    "EC:26:CA": "TP-Link",
+    "EC:17:2F": "TP-Link",
+    "E8:DE:27": "TP-Link",
+    "E4:D3:32": "TP-Link",
+    "DC:FE:18": "TP-Link",
+    "D8:5D:4C": "TP-Link",
+    "D4:6E:0E": "TP-Link",
+    "14:E6:E4": "TP-Link",
+    "14:EB:B6": "TP-Link",
+    "3C:84:6A": "TP-Link",
+    "68:DD:B7": "TP-Link",
+    "14:D8:64": "TP-Link",
+    "40:ED:00": "TP-Link",
+    "30:B5:C2": "TP-Link",
+    "A0:F3:C1": "TP-Link",
+    "D8:F1:2E": "TP-Link",
+    "50:91:E3": "TP-Link",
+    "E8:48:B8": "TP-Link",
+    "F8:CE:21": "TP-Link",
+    "98:DA:C4": "TP-Link",
+    "B0:BE:76": "TP-Link",
+    "60:32:B1": "TP-Link",
+    "C0:06:C3": "TP-Link",
+    "1C:3B:F3": "TP-Link",
+    "54:AF:97": "TP-Link",
+    "AC:84:C6": "TP-Link",
+    "DC:62:79": "TP-Link",
+}
+
+
+def _mac_vendor(mac: str) -> str:
+    """Look up vendor from MAC OUI prefix."""
+    prefix = mac[:8].upper().replace("-", ":")
+    return _MAC_VENDORS.get(prefix, "Unknown")
+
+
+def _get_homenet_cred(device_key: str) -> tuple:
+    """Retrieve stored credentials from Windows Credential Manager."""
+    try:
+        import keyring
+
+        svc = f"{_HOMENET_CRED_PREFIX}-{device_key}"
+        pw = keyring.get_password(svc, "admin")
+        if pw:
+            return ("admin", pw)
+        # Try alternate username
+        cred = keyring.get_credential(svc, None)
+        if cred:
+            return (cred.username, cred.password)
+    except Exception as e:
+        print(f"[HomeNet] keyring error for {device_key}: {e}")
+    return (None, None)
+
+
+def _set_homenet_cred(device_key: str, username: str, password: str) -> bool:
+    """Store credentials in Windows Credential Manager."""
+    try:
+        import keyring
+
+        svc = f"{_HOMENET_CRED_PREFIX}-{device_key}"
+        keyring.set_password(svc, username, password)
+        return True
+    except Exception as e:
+        print(f"[HomeNet] keyring set error for {device_key}: {e}")
+        return False
+
+
+def _delete_homenet_cred(device_key: str) -> bool:
+    """Delete stored credentials from Windows Credential Manager."""
+    try:
+        import keyring
+
+        svc = f"{_HOMENET_CRED_PREFIX}-{device_key}"
+        user, _ = _get_homenet_cred(device_key)
+        if user:
+            keyring.delete_password(svc, user)
+        return True
+    except Exception as e:
+        print(f"[HomeNet] keyring delete error for {device_key}: {e}")
+        return False
+
+
+def _list_homenet_creds() -> list:
+    """List all configured device credentials (passwords masked)."""
+    devices = [
+        {"key": "verizon", "label": "Verizon CR1000A", "ip": "192.168.1.1"},
+        {"key": "orbi", "label": "Netgear Orbi RBRE960", "ip": "10.0.0.1"},
+        {"key": "tplink_switch", "label": "TP-Link TL-SG2218 Switch", "ip": "TBD"},
+    ]
+    result = []
+    for dev in devices:
+        user, pw = _get_homenet_cred(dev["key"])
+        result.append(
+            {
+                **dev,
+                "configured": user is not None,
+                "username": user or "",
+                "password_hint": ("••••" + pw[-2:]) if pw and len(pw) > 2 else ("••••" if pw else ""),
+            }
+        )
+    return result
+
+
+# ── Verizon CR1000A API (reverse-engineered from ha-verizonFiOS) ─────────────
+
+# Disable SSL warnings for self-signed router certs
+try:
+    import urllib3
+
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+except ImportError:
+    pass
+
+
+def _arc_md5(text: str) -> str:
+    """ArcMD5: SHA512(MD5(text).hex()) — Verizon's custom hash."""
+    md5_hex = hashlib.md5(text.encode()).hexdigest()  # noqa: S324
+    return hashlib.sha512(md5_hex.encode("ascii")).hexdigest()
+
+
+def _verizon_encode_password(password: str, token: str) -> str:
+    """SHA512(token + ArcMD5(password))."""
+    return hashlib.sha512((token + _arc_md5(password)).encode("ascii")).hexdigest()
+
+
+def _verizon_get_devices() -> dict:
+    """
+    Connect to Verizon CR1000A and pull device list + topology.
+    Uses the reverse-engineered auth flow from ha-verizonFiOS.
+    """
+    import requests
+
+    user, pw = _get_homenet_cred("verizon")
+    if not user or not pw:
+        return {"error": "No Verizon credentials configured. Add them in Network Settings."}
+
+    base = "https://192.168.1.1"
+    session = requests.Session()
+    session.verify = False
+    session.headers.update(
+        {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": f"{base}/",
+            "Origin": base,
+        }
+    )
+
+    try:
+        # Step 1: Get login token
+        r = session.get(f"{base}/loginStatus.cgi", timeout=10)
+        login_data = r.json()
+        token = login_data.get("loginToken", "")
+        if not token:
+            return {"error": "Could not get login token from Verizon router"}
+
+        # Step 2: Login with hashed credentials
+        payload = {
+            "luci_username": _arc_md5(user),
+            "luci_password": _verizon_encode_password(pw, token),
+            "luci_view": "Desktop",
+            "luci_token": token,
+            "luci_keep_login": "0",
+        }
+        r = session.post(f"{base}/login.cgi", data=payload, timeout=10, allow_redirects=False)
+        if r.status_code not in (200, 302):
+            return {"error": f"Verizon login failed (HTTP {r.status_code})"}
+
+        # Check session cookie
+        if "sysauth" not in session.cookies.get_dict():
+            return {"error": "Verizon login failed — bad credentials or auth changed"}
+
+        # Step 3: Fetch device data from cgi_basic.js
+        r = session.get(f"{base}/cgi/cgi_basic.js", timeout=15)
+        raw_js = r.text
+
+        # Parse addROD("key", value); calls from the JavaScript response
+        devices_raw = _parse_verizon_js(raw_js)
+
+        return {
+            "ok": True,
+            "router_name": devices_raw.get("router_name", "CR1000A"),
+            "hardware_model": devices_raw.get("hardware_model", ""),
+            "topology": devices_raw.get("dump_toplogy_map_info", {}),
+            "known_devices": devices_raw.get("known_device_list", {}),
+            "stations": devices_raw.get("dump_toplogy_station_info", {}),
+        }
+
+    except requests.exceptions.ConnectTimeout:
+        return {"error": "Verizon router unreachable (192.168.1.1) — check wired connection"}
+    except requests.exceptions.ConnectionError:
+        return {"error": "Cannot connect to Verizon router — check network"}
+    except Exception as e:
+        return {"error": f"Verizon API error: {e}"}
+    finally:
+        session.close()
+
+
+def _parse_verizon_js(raw_js: str) -> dict:
+    """Parse addROD('key', value); calls from Verizon's cgi_basic.js response."""
+    result = {}
+    # Match: addROD("key", value); or addROD("key", "string");
+    pattern = r'addROD\(\s*["\'](\w+)["\']\s*,\s*(.+?)\)\s*;'
+    for match in re.finditer(pattern, raw_js, re.DOTALL):
+        key = match.group(1)
+        val_str = match.group(2).strip()
+        # Try to parse as JSON (fix JS quirks: single quotes, trailing commas)
+        try:
+            cleaned = val_str.replace("'", '"')
+            cleaned = re.sub(r",\s*([}\]])", r"\1", cleaned)
+            result[key] = json.loads(cleaned)
+        except (json.JSONDecodeError, ValueError):
+            # Plain string value
+            result[key] = val_str.strip("\"'")
+    return result
+
+
+# ── Netgear Orbi SOAP API ────────────────────────────────────────────────────
+
+
+def _orbi_get_devices() -> dict:
+    """
+    Connect to Orbi RBRE960 via SOAP API and pull device list.
+    Uses direct SOAP calls (same protocol as pynetgear).
+    """
+    import requests
+
+    user, pw = _get_homenet_cred("orbi")
+    if not user or not pw:
+        return {"error": "No Orbi credentials configured. Add them in Network Settings."}
+
+    # Orbi SOAP endpoint
+    orbi_ip = "10.0.0.1"
+    url = f"http://{orbi_ip}:5000/soap/server_sa/"
+
+    headers = {
+        "SOAPAction": "urn:NETGEAR-ROUTER:service:DeviceInfo:1#GetAttachDevice2",
+        "Content-Type": "text/xml; charset=utf-8",
+    }
+
+    soap_body = """<?xml version="1.0" encoding="UTF-8"?>
+<v:Envelope xmlns:v="http://schemas.xmlsoap.org/soap/envelope/">
+  <v:Header>
+    <SessionID>DEF456</SessionID>
+  </v:Header>
+  <v:Body>
+    <M1:GetAttachDevice2 xmlns:M1="urn:NETGEAR-ROUTER:service:DeviceInfo:1"/>
+  </v:Body>
+</v:Envelope>"""
+
+    try:
+        # First try to log in via SOAP
+        login_headers = {
+            "SOAPAction": "urn:NETGEAR-ROUTER:service:ParentalControl:1#Authenticate",
+            "Content-Type": "text/xml; charset=utf-8",
+        }
+        login_body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<v:Envelope xmlns:v="http://schemas.xmlsoap.org/soap/envelope/">
+  <v:Header>
+    <SessionID>DEF456</SessionID>
+  </v:Header>
+  <v:Body>
+    <M1:Authenticate xmlns:M1="urn:NETGEAR-ROUTER:service:ParentalControl:1">
+      <NewUsername>{user}</NewUsername>
+      <NewPassword>{pw}</NewPassword>
+    </M1:Authenticate>
+  </v:Body>
+</v:Envelope>"""
+
+        session = requests.Session()
+        # Login
+        r = session.post(url, data=login_body, headers=login_headers, timeout=10)
+        if r.status_code not in (200, 401):
+            # 401 is expected first call, triggers auth
+            pass
+
+        # Fetch devices
+        r = session.post(url, data=soap_body, headers=headers, timeout=15, auth=(user, pw))
+
+        if r.status_code == 200:
+            devices = _parse_orbi_soap(r.text)
+            return {"ok": True, "devices": devices}
+        else:
+            return {"error": f"Orbi SOAP returned HTTP {r.status_code}"}
+
+    except requests.exceptions.ConnectTimeout:
+        return {"error": "Orbi unreachable (10.0.0.1:5000) — is Wi-Fi connected?"}
+    except requests.exceptions.ConnectionError:
+        return {"error": "Cannot connect to Orbi — ensure Wi-Fi is connected to Orbi network"}
+    except Exception as e:
+        return {"error": f"Orbi API error: {e}"}
+    finally:
+        session.close()
+
+
+def _parse_orbi_soap(xml_text: str) -> list:
+    """Parse Orbi GetAttachDevice2 SOAP response into device list."""
+    devices = []
+    # The response contains semicolon-delimited device strings
+    # Format: IP;Name;MAC;ConnectionType;LinkRate;SignalStrength;...
+    dev_match = re.search(r"<NewGetAttachDevice2>(.*?)</NewGetAttachDevice2>", xml_text, re.DOTALL)
+    if not dev_match:
+        return devices
+
+    raw = dev_match.group(1).strip()
+    for entry in raw.split("@"):
+        parts = entry.split(";")
+        if len(parts) >= 4:
+            devices.append(
+                {
+                    "ip": parts[0] if len(parts) > 0 else "",
+                    "name": parts[1] if len(parts) > 1 else "",
+                    "mac": parts[2] if len(parts) > 2 else "",
+                    "connection_type": parts[3] if len(parts) > 3 else "",
+                    "link_rate": parts[4] if len(parts) > 4 else "",
+                    "signal_strength": parts[5] if len(parts) > 5 else "",
+                    "device_type": parts[len(parts) - 1] if len(parts) > 6 else "",
+                }
+            )
+    return devices
+
+
+# ── TP-Link TL-SG2218 SNMP integration ──────────────────────────────────────
+
+
+def _tplink_snmp_query(switch_ip: str, community: str = "public") -> dict:
+    """
+    Query TP-Link TL-SG2218 switch via SNMP for port status, traffic stats,
+    and MAC address table.
+    Uses synchronous SNMP via pysnmp v7.
+    """
+    try:
+        import asyncio
+
+        from pysnmp.hlapi.v1arch.asyncio import (
+            CommunityData,
+            ObjectIdentity,
+            ObjectType,
+            SnmpEngine,
+            UdpTransportTarget,
+            bulkWalkCmd,
+        )
+    except ImportError:
+        return {"error": "pysnmp not installed. Run: pip install pysnmp"}
+
+    results = {"ports": [], "mac_table": [], "system_info": {}}
+
+    async def _query():  # pragma: no cover — requires live SNMP device
+        engine = SnmpEngine()
+        target = await UdpTransportTarget.create((switch_ip, 161))
+        creds = CommunityData(community)
+
+        # 1. System info (sysDescr, sysName, sysUpTime)
+        sys_oids = {
+            "sysDescr": "1.3.6.1.2.1.1.1.0",
+            "sysName": "1.3.6.1.2.1.1.5.0",
+            "sysUpTime": "1.3.6.1.2.1.1.3.0",
+        }
+        for name, oid in sys_oids.items():
+            try:
+                async for error_indication, error_status, _, var_binds in bulkWalkCmd(
+                    engine, creds, target, 0, 1, ObjectType(ObjectIdentity(oid))
+                ):
+                    if error_indication or error_status:
+                        break
+                    for _, val in var_binds:
+                        results["system_info"][name] = str(val)
+                    break  # Only need first result
+            except Exception:
+                pass
+
+        # 2. Port status (ifDescr, ifOperStatus, ifSpeed, ifInOctets, ifOutOctets)
+        port_data = {}
+        oid_map = {
+            "ifDescr": "1.3.6.1.2.1.2.2.1.2",
+            "ifOperStatus": "1.3.6.1.2.1.2.2.1.8",
+            "ifSpeed": "1.3.6.1.2.1.2.2.1.5",
+            "ifInOctets": "1.3.6.1.2.1.2.2.1.10",
+            "ifOutOctets": "1.3.6.1.2.1.2.2.1.16",
+        }
+
+        for field, base_oid in oid_map.items():
+            try:
+                async for error_indication, error_status, _, var_binds in bulkWalkCmd(
+                    engine, creds, target, 0, 25, ObjectType(ObjectIdentity(base_oid))
+                ):
+                    if error_indication or error_status:
+                        break
+                    for oid, val in var_binds:
+                        oid_str = str(oid)
+                        # Extract ifIndex from OID
+                        idx = oid_str.split(".")[-1]
+                        if idx not in port_data:
+                            port_data[idx] = {"ifIndex": idx}
+                        port_data[idx][field] = str(val) if field == "ifDescr" else int(val)
+            except Exception:
+                pass
+
+        # Convert to list, filter to physical ports
+        for _idx, pdata in sorted(port_data.items(), key=lambda x: int(x[0])):
+            desc = pdata.get("ifDescr", "")
+            if "gigabitEthernet" in desc.lower() or "sfp" in desc.lower():
+                status_val = pdata.get("ifOperStatus", 2)
+                results["ports"].append(
+                    {
+                        "port": desc,
+                        "ifIndex": pdata["ifIndex"],
+                        "status": "up" if status_val == 1 else "down",
+                        "speed_mbps": pdata.get("ifSpeed", 0) // 1_000_000,
+                        "in_bytes": pdata.get("ifInOctets", 0),
+                        "out_bytes": pdata.get("ifOutOctets", 0),
+                    }
+                )
+
+        # 3. MAC address table (Bridge MIB forwarding database)
+        try:
+            base_oid = "1.3.6.1.2.1.17.4.3.1.2"  # dot1dTpFdbPort
+            async for error_indication, error_status, _, var_binds in bulkWalkCmd(
+                engine, creds, target, 0, 50, ObjectType(ObjectIdentity(base_oid))
+            ):
+                if error_indication or error_status:
+                    break
+                for oid, val in var_binds:
+                    oid_str = str(oid)
+                    # MAC is encoded in the OID suffix as decimal octets
+                    parts = oid_str.replace(base_oid + ".", "").split(".")
+                    if len(parts) == 6:
+                        mac = ":".join(f"{int(p):02X}" for p in parts)
+                        results["mac_table"].append({"mac": mac, "port_index": int(val)})
+        except Exception:
+            pass
+
+        engine.close()
+
+    try:
+        asyncio.run(_query())
+    except Exception as e:
+        return {"error": f"SNMP query failed: {e}"}
+
+    return {"ok": True, **results}
+
+
+TPLINK_SWITCH_MAC = "DC:62:79:F3:52:5C"
+
+
+def _resolve_ip_from_mac(target_mac: str) -> str:
+    """Find current IP for a known MAC address via ARP table lookup."""
+    target = target_mac.upper().replace("-", ":")
+    arp_devices = _arp_scan()
+    for d in arp_devices:
+        mac = d.get("MAC", "").upper().replace("-", ":")
+        if mac == target:
+            return d.get("IP", "")
+    return ""
+
+
+def _tplink_get_data() -> dict:
+    """Fetch TP-Link switch data using stored credentials (SNMP community string)."""
+    user, pw = _get_homenet_cred("tplink_switch")
+    if not user or not pw:
+        return {"error": "No TP-Link switch credentials configured. Add SNMP community string in Network Settings."}
+
+    # user = switch IP (or "auto"), pw = SNMP community string
+    switch_ip = user
+    if not switch_ip or switch_ip.lower() == "auto":
+        # Auto-discover switch IP from known MAC
+        switch_ip = _resolve_ip_from_mac(TPLINK_SWITCH_MAC)
+        if not switch_ip:
+            return {"error": f"Cannot find TP-Link switch ({TPLINK_SWITCH_MAC}) on network. Is it powered on?"}
+
+    return _tplink_snmp_query(switch_ip, pw)
+
+
+# ── ARP scan for local subnet discovery ──────────────────────────────────────
+
+
+def _arp_scan() -> list:
+    """Run ARP scan on all connected network interfaces."""
+    ps = r"""
+$results = @()
+$arps = arp -a 2>$null
+$current_iface = ""
+foreach ($line in ($arps -split "`n")) {
+    if ($line -match "Interface:\s*([\d\.]+)") {
+        $current_iface = $Matches[1]
+    }
+    elseif ($line -match "^\s*([\d\.]+)\s+([\w-]{17})\s+(\w+)") {
+        $results += [PSCustomObject]@{
+            Interface = $current_iface
+            IP = $Matches[1]
+            MAC = $Matches[2].ToUpper().Replace("-",":")
+            Type = $Matches[3]
+        }
+    }
+}
+$results | ConvertTo-Json -Depth 2
+"""
+    try:
+        r = subprocess.run(
+            ["powershell", "-NonInteractive", "-Command", ps],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        data = json.loads(r.stdout.strip() or "[]")
+        if isinstance(data, dict):
+            data = [data]
+        return data
+    except Exception as e:
+        print(f"[HomeNet] ARP scan error: {e}")
+        return []
+
+
+# ── Unified device inventory ─────────────────────────────────────────────────
+
+
+def _load_homenet_inventory() -> dict:
+    """Load persisted device inventory."""
+    try:
+        if os.path.exists(HOMENET_INVENTORY_FILE):
+            with open(HOMENET_INVENTORY_FILE, encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {"devices": {}, "last_scan": None}
+
+
+def _save_homenet_inventory(inventory: dict) -> None:
+    """Persist device inventory to disk."""
+    with _homenet_lock:
+        try:
+            with open(HOMENET_INVENTORY_FILE, "w", encoding="utf-8") as f:
+                json.dump(inventory, f, indent=2)
+        except Exception as e:
+            print(f"[HomeNet] save error: {e}")
+
+
+def _merge_device_data(inventory: dict, source: str, devices: list) -> dict:
+    """Merge discovered devices into inventory, preserving user labels."""
+    for dev in devices:
+        mac = dev.get("mac", dev.get("MAC", "")).upper().replace("-", ":")
+        if not mac or mac == "FF:FF:FF:FF:FF:FF":
+            continue
+
+        existing = inventory["devices"].get(mac, {})
+        ip = dev.get("ip", dev.get("IP", ""))
+        name = dev.get("name", dev.get("Name", "")) or existing.get("hostname", "")
+
+        inventory["devices"][mac] = {
+            "mac": mac,
+            "ip": ip,
+            "hostname": name,
+            "vendor": _mac_vendor(mac),
+            "network": "wireless" if ip.startswith("10.") else "wired",
+            "source": source,
+            "last_seen": datetime.now(timezone.utc).isoformat(),
+            # Preserve user-set fields
+            "friendly_name": existing.get("friendly_name", ""),
+            "category": existing.get("category", ""),
+            "location": existing.get("location", ""),
+            "notes": existing.get("notes", ""),
+            # Merge extra fields from routers
+            "connection_type": dev.get("connection_type", existing.get("connection_type", "")),
+            "signal_strength": dev.get("signal_strength", existing.get("signal_strength", "")),
+            "link_rate": dev.get("link_rate", existing.get("link_rate", "")),
+            "device_type": dev.get("device_type", dev.get("dev_class", existing.get("device_type", ""))),
+            "device_os": dev.get("device_os", existing.get("device_os", "")),
+            "active": dev.get("activity", 1) == 1 if "activity" in dev else True,
+        }
+
+    inventory["last_scan"] = datetime.now(timezone.utc).isoformat()
+    return inventory
+
+
+def homenet_full_scan() -> dict:
+    """
+    Run a full network scan: ARP + Verizon + Orbi.
+    Returns merged inventory.
+    """
+    inventory = _load_homenet_inventory()
+    errors = []
+
+    # 1. ARP scan (always works on local subnets)
+    arp_devices = _arp_scan()
+    arp_as_devices = [
+        {"mac": d.get("MAC", ""), "ip": d.get("IP", ""), "name": ""}
+        for d in arp_devices
+        if d.get("Type", "").lower() == "dynamic"
+    ]
+    inventory = _merge_device_data(inventory, "arp", arp_as_devices)
+
+    # 2. Verizon CR1000A
+    verizon = _verizon_get_devices()
+    if verizon.get("ok"):
+        known = verizon.get("known_devices", {})
+        if isinstance(known, dict):
+            known = known.get("known_devices", [])
+        if isinstance(known, list):
+            vz_devices = [
+                {
+                    "mac": d.get("mac", ""),
+                    "ip": d.get("ip", ""),
+                    "name": d.get("hostname", d.get("device_name", "")),
+                    "dev_class": d.get("dev_class", ""),
+                    "device_os": d.get("device_os", ""),
+                    "activity": d.get("activity", 0),
+                }
+                for d in known
+            ]
+            inventory = _merge_device_data(inventory, "verizon", vz_devices)
+    elif "error" in verizon:
+        errors.append(f"Verizon: {verizon['error']}")
+
+    # 3. Orbi
+    orbi = _orbi_get_devices()
+    if orbi.get("ok"):
+        inventory = _merge_device_data(inventory, "orbi", orbi.get("devices", []))
+    elif "error" in orbi:
+        errors.append(f"Orbi: {orbi['error']}")
+
+    _save_homenet_inventory(inventory)
+
+    return {
+        "ok": True,
+        "device_count": len(inventory["devices"]),
+        "last_scan": inventory["last_scan"],
+        "errors": errors,
+        "devices": list(inventory["devices"].values()),
+    }
+
+
+def homenet_get_inventory() -> dict:
+    """Return current inventory without scanning."""
+    inventory = _load_homenet_inventory()
+    return {
+        "ok": True,
+        "device_count": len(inventory["devices"]),
+        "last_scan": inventory.get("last_scan"),
+        "devices": list(inventory["devices"].values()),
+    }
+
+
+# ── Flask Routes ─────────────────────────────────────────────────────────────
+
+
+@app.route("/api/homenet/credentials")
+def homenet_credentials():
+    """List configured device credentials (passwords masked)."""
+    return jsonify(_list_homenet_creds())
+
+
+@app.route("/api/homenet/credentials/save", methods=["POST"])
+def homenet_credentials_save():
+    """Save credentials for a device."""
+    body = request.get_json() or {}
+    device_key = re.sub(r"[^a-z0-9_]", "", str(body.get("device_key", ""))).strip()
+    username = str(body.get("username", "")).strip()
+    password = str(body.get("password", "")).strip()
+    if not device_key or not username or not password:
+        return jsonify({"ok": False, "message": "device_key, username, and password required"}), 400
+    ok = _set_homenet_cred(device_key, username, password)
+    return jsonify({"ok": ok, "message": "Credentials saved" if ok else "Failed to save"})
+
+
+@app.route("/api/homenet/credentials/delete", methods=["POST"])
+def homenet_credentials_delete():
+    """Delete stored credentials for a device."""
+    body = request.get_json() or {}
+    device_key = re.sub(r"[^a-z0-9_]", "", str(body.get("device_key", ""))).strip()
+    if not device_key:
+        return jsonify({"ok": False, "message": "device_key required"}), 400
+    ok = _delete_homenet_cred(device_key)
+    return jsonify({"ok": ok, "message": "Credentials deleted" if ok else "Failed to delete"})
+
+
+@app.route("/api/homenet/credentials/test", methods=["POST"])
+def homenet_credentials_test():
+    """Test connection to a device with stored credentials."""
+    body = request.get_json() or {}
+    device_key = re.sub(r"[^a-z0-9_]", "", str(body.get("device_key", ""))).strip()
+    if device_key == "verizon":
+        result = _verizon_get_devices()
+        if result.get("ok"):
+            count = len(result.get("known_devices", {}).get("known_devices", []))
+            return jsonify({"ok": True, "message": f"Connected! Found {count} devices."})
+        return jsonify({"ok": False, "message": result.get("error", "Connection failed")})
+    elif device_key == "orbi":
+        result = _orbi_get_devices()
+        if result.get("ok"):
+            return jsonify({"ok": True, "message": f"Connected! Found {len(result.get('devices', []))} devices."})
+        return jsonify({"ok": False, "message": result.get("error", "Connection failed")})
+    elif device_key == "tplink_switch":
+        result = _tplink_get_data()
+        if result.get("ok"):
+            up = sum(1 for p in result.get("ports", []) if p["status"] == "up")
+            total = len(result.get("ports", []))
+            return jsonify(
+                {
+                    "ok": True,
+                    "message": f"Connected! {up}/{total} ports up, {len(result.get('mac_table', []))} MACs learned.",
+                }
+            )
+        return jsonify({"ok": False, "message": result.get("error", "Connection failed")})
+    return jsonify({"ok": False, "message": f"Unknown device: {device_key}"}), 400
+
+
+@app.route("/api/homenet/scan", methods=["POST"])
+def homenet_scan():
+    """Run full network scan (ARP + routers)."""
+    return jsonify(homenet_full_scan())
+
+
+@app.route("/api/homenet/scan/light", methods=["POST"])
+def homenet_scan_light():
+    """Light scan: ARP only — fast (~2s), updates online/offline status."""
+    inventory = _load_homenet_inventory()
+    arp_devices = _arp_scan()
+    # Build set of currently-visible MACs
+    live_macs = set()
+    for d in arp_devices:
+        mac = d.get("MAC", "").upper().replace("-", ":")
+        if mac and d.get("Type", "").lower() == "dynamic":
+            live_macs.add(mac)
+            # Update IP if device already known
+            if mac in inventory["devices"]:
+                inventory["devices"][mac]["ip"] = d.get("IP", inventory["devices"][mac].get("ip", ""))
+                inventory["devices"][mac]["last_seen"] = datetime.now(timezone.utc).isoformat()
+                inventory["devices"][mac]["active"] = True
+            else:
+                # New device from ARP
+                ip = d.get("IP", "")
+                inventory["devices"][mac] = {
+                    "mac": mac,
+                    "ip": ip,
+                    "hostname": "",
+                    "vendor": _mac_vendor(mac),
+                    "network": "wireless" if ip.startswith("10.") else "wired",
+                    "source": "arp",
+                    "last_seen": datetime.now(timezone.utc).isoformat(),
+                    "friendly_name": "",
+                    "category": "",
+                    "location": "",
+                    "notes": "",
+                    "connection_type": "",
+                    "signal_strength": "",
+                    "link_rate": "",
+                    "device_type": "",
+                    "device_os": "",
+                    "active": True,
+                }
+
+    # Mark devices not seen in ARP as potentially offline
+    # Only mark inactive if they were on a subnet we can ARP (same interface)
+    for mac, dev in inventory["devices"].items():
+        if mac not in live_macs:
+            dev["active"] = False
+
+    inventory["last_scan"] = datetime.now(timezone.utc).isoformat()
+    _save_homenet_inventory(inventory)
+
+    return jsonify(
+        {
+            "ok": True,
+            "device_count": len(inventory["devices"]),
+            "last_scan": inventory["last_scan"],
+            "devices": list(inventory["devices"].values()),
+        }
+    )
+
+
+@app.route("/api/homenet/inventory")
+def homenet_inventory():
+    """Get current device inventory (no scan)."""
+    return jsonify(homenet_get_inventory())
+
+
+@app.route("/api/homenet/device/update", methods=["POST"])
+def homenet_device_update():
+    """Update user-editable fields for a device (friendly_name, category, location, notes)."""
+    body = request.get_json() or {}
+    mac = str(body.get("mac", "")).upper().replace("-", ":")
+    if not mac:
+        return jsonify({"ok": False, "message": "MAC address required"}), 400
+
+    inventory = _load_homenet_inventory()
+    if mac not in inventory["devices"]:
+        return jsonify({"ok": False, "message": f"Device {mac} not in inventory"}), 404
+
+    for field in ("friendly_name", "category", "location", "notes"):
+        if field in body:
+            inventory["devices"][mac][field] = str(body[field])
+
+    _save_homenet_inventory(inventory)
+    return jsonify({"ok": True, "message": "Device updated"})
+
+
+@app.route("/api/homenet/switch")
+def homenet_switch_data():
+    """Get TP-Link switch port status, traffic stats, and MAC table."""
+    result = _tplink_get_data()
+    return jsonify(result)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #   NATURAL LANGUAGE QUERY (NLQ) — ask questions about your system in English
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -7816,6 +8674,16 @@ _NLQ_TOOLS = [
             "required": ["action_id"],
         },
     },
+    {
+        "name": "get_homenet_inventory",
+        "description": (
+            "Get the home network device inventory. Returns all discovered devices across "
+            "both the wired (192.x) and wireless (10.x) networks, including device names, "
+            "IPs, MACs, vendors, categories, and online status. Use for questions about "
+            "network devices, what's connected, or home network status."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
 ]
 
 # Map tool names → Python functions
@@ -7838,6 +8706,7 @@ _NLQ_DISPATCH = {
     "navigate_to_tab": lambda params: {"navigated": True, "tab": params.get("tab", "dashboard")},
     "get_remediation_history": lambda params: _nlq_get_remediation_history(),
     "run_remediation_action": lambda params: _nlq_run_remediation(params),
+    "get_homenet_inventory": lambda params: homenet_get_inventory(),
 }
 
 

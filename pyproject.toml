@@ -78,6 +78,7 @@ ignore = [
 "tests/*" = [
     "S101",   # allow assert in tests
     "S104",   # allow 0.0.0.0 in test data
+    "S105",   # allow hardcoded password assignments in test data
     "S106",   # allow hardcoded passwords in test data
     "E402",   # allow imports after sys.path setup in conftest
     "B017",   # allow assertRaises(Exception)

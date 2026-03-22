@@ -34,6 +34,11 @@ start-windesktopmgr.bat
 # BIOS cache
 bios_cache.json
 
+# Home network & remediation runtime data
+homenet_inventory.json
+homenet_scan_history.json
+remediation_history.json
+
 # ── Sensitive / personal ───────────────────────────────────────────────────
 # Gmail credentials (encrypted, but best not committed)
 gmail_credentials.json
