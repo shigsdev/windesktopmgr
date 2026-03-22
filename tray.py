@@ -202,12 +202,29 @@ def polling_loop(monitor: HealthMonitor, stop_event: threading.Event):
 # ── Flask server thread ──────────────────────────────────────────────────────
 
 
+def _wait_for_port_free(port: int, timeout: int = 10):
+    """Wait until the given TCP port is free (previous instance released it)."""
+    import socket
+
+    for _ in range(timeout * 4):  # check every 250ms
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", port))
+                return  # port is free
+            except OSError:
+                time.sleep(0.25)
+    print(f"[Tray] Warning: port {port} still in use after {timeout}s")
+
+
 def start_flask():
     """Start the Flask server in a background thread."""
     # Add project root to path
     project_root = os.path.dirname(os.path.abspath(__file__))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
+
+    # Wait for port 5000 to be free (handles restart race condition)
+    _wait_for_port_free(5000)
 
     import windesktopmgr
 
@@ -239,23 +256,26 @@ def refresh_now(monitor):
 
 def restart_app(icon, item, stop_event):
     """Restart the entire tray application to pick up code changes."""
+    import subprocess as _sp
+
     stop_event.set()
-
-    # Shut down Flask's Werkzeug server gracefully if possible
-    try:
-        urllib.request.urlopen(  # noqa: S310
-            f"{DASHBOARD_URL}/api/health", timeout=2
-        )
-    except Exception:
-        pass
-
     icon.stop()
-    # Give Flask daemon thread time to finish in-flight requests
-    time.sleep(1)
 
-    # Re-exec the current process with the same arguments
+    # Spawn the new process BEFORE exiting so the tray comes back reliably.
+    # On Windows os.execv is unreliable with pythonw.exe — it spawns a child
+    # and terminates the parent, but the child may fail silently.
+    # Using subprocess.Popen + sys.exit is the safe Windows pattern.
     python = sys.executable
-    os.execv(python, [python] + sys.argv)  # noqa: S606
+    _sp.Popen(  # noqa: S603
+        [python] + sys.argv,
+        creationflags=_sp.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
+
+    # Give the new process a moment to start, then exit the old one.
+    # The old Flask server (daemon thread) dies with this process,
+    # freeing port 5000 for the new instance.
+    time.sleep(0.5)
+    os._exit(0)  # noqa: SLF001  — hard exit kills daemon threads immediately
 
 
 def quit_app(icon, item, stop_event):
