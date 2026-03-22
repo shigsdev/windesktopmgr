@@ -1103,3 +1103,240 @@ class TestVerizonParsing:
         result = _parse_verizon_js(js)
         assert result["router_name"] == "HomeRouter"
         assert result["hardware_model"] == "CR1000A"
+
+
+class TestAutoCategorizee:
+    """Test auto-categorization by vendor/hostname/device type."""
+
+    def test_categorize_by_vendor(self):
+        from windesktopmgr import _auto_categorize
+
+        assert _auto_categorize("Roku", "", "", "") == "TV"
+        assert _auto_categorize("Apple", "", "", "") == "Phone"
+        assert _auto_categorize("Brother", "", "", "") == "Printer"
+        assert _auto_categorize("Netgear", "", "", "") == "Network"
+        assert _auto_categorize("Intel", "", "", "") == "Computer"
+        assert _auto_categorize("Alexa/Amazon", "", "", "") == "IoT"
+
+    def test_categorize_by_device_type(self):
+        from windesktopmgr import _auto_categorize
+
+        assert _auto_categorize("Unknown", "", "Phone", "") == "Phone"
+        assert _auto_categorize("Unknown", "", "Computer", "") == "Computer"
+        assert _auto_categorize("Unknown", "", "TV", "") == "TV"
+        assert _auto_categorize("Unknown", "", "Printer", "") == "Printer"
+        assert _auto_categorize("Unknown", "", "Tablet", "") == "Phone"
+
+    def test_categorize_by_os(self):
+        from windesktopmgr import _auto_categorize
+
+        assert _auto_categorize("Unknown", "", "", "iOS") == "Phone"
+        assert _auto_categorize("Unknown", "", "", "Android") == "Phone"
+        assert _auto_categorize("Unknown", "", "", "Windows 11") == "Computer"
+        assert _auto_categorize("Unknown", "", "", "macOS") == "Computer"
+
+    def test_categorize_by_hostname(self):
+        from windesktopmgr import _auto_categorize
+
+        assert _auto_categorize("Unknown", "BRW707781CBB5A5", "", "") == "Printer"
+        assert _auto_categorize("Unknown", "Roku-Streaming-Stick", "", "") == "TV"
+        assert _auto_categorize("Unknown", "iPhone-John", "", "") == "Phone"
+        assert _auto_categorize("Unknown", "Echo-Dot-Kitchen", "", "") == "IoT"
+        assert _auto_categorize("Unknown", "shigs78-pc24", "", "") == "Computer"
+        assert _auto_categorize("Unknown", "Synology-NAS", "", "") == "Storage"
+
+    def test_categorize_device_type_takes_precedence(self):
+        """Device type from router should override vendor guess."""
+        from windesktopmgr import _auto_categorize
+
+        # Samsung makes TVs but also phones
+        assert _auto_categorize("Samsung", "", "Phone", "") == "Phone"
+
+    def test_categorize_unknown(self):
+        from windesktopmgr import _auto_categorize
+
+        assert _auto_categorize("Unknown", "", "", "") == ""
+        assert _auto_categorize("Random MAC (Phone)", "", "", "") == ""
+
+
+class TestNameResolution:
+    """Test name resolution and enrichment."""
+
+    def test_resolve_names_batch_with_results(self, mocker):
+        mock_result = MagicMock()
+        mock_result.stdout = json.dumps(
+            [
+                {"IP": "192.168.1.50", "Name": "MyPC"},
+                {"IP": "10.0.0.5", "Name": "iPhone-Living-Room"},
+            ]
+        )
+        mocker.patch("subprocess.run", return_value=mock_result)
+        from windesktopmgr import _resolve_names_batch
+
+        devices = [
+            {"ip": "192.168.1.50", "hostname": ""},
+            {"ip": "10.0.0.5", "hostname": ""},
+        ]
+        result = _resolve_names_batch(devices)
+        assert result["192.168.1.50"] == "MyPC"
+        assert result["10.0.0.5"] == "iPhone-Living-Room"
+
+    def test_resolve_names_batch_empty(self, mocker):
+        from windesktopmgr import _resolve_names_batch
+
+        # All devices already have names
+        devices = [
+            {"ip": "192.168.1.50", "hostname": "MyPC"},
+        ]
+        result = _resolve_names_batch(devices)
+        assert result == {}
+
+    def test_resolve_names_batch_error(self, mocker):
+        mocker.patch("subprocess.run", side_effect=Exception("timeout"))
+        from windesktopmgr import _resolve_names_batch
+
+        devices = [{"ip": "192.168.1.50", "hostname": ""}]
+        result = _resolve_names_batch(devices)
+        assert result == {}
+
+    def test_resolve_names_single_result(self, mocker):
+        """PowerShell returns single object instead of array."""
+        mock_result = MagicMock()
+        mock_result.stdout = json.dumps({"IP": "192.168.1.50", "Name": "NAS"})
+        mocker.patch("subprocess.run", return_value=mock_result)
+        from windesktopmgr import _resolve_names_batch
+
+        devices = [{"ip": "192.168.1.50", "hostname": ""}]
+        result = _resolve_names_batch(devices)
+        assert result["192.168.1.50"] == "NAS"
+
+    def test_resolve_skips_already_named(self, mocker):
+        """Devices with good hostnames should not be re-resolved."""
+        from windesktopmgr import _resolve_names_batch
+
+        devices = [
+            {"ip": "192.168.1.50", "hostname": "GoodName"},
+            {"ip": "192.168.1.51", "hostname": "192.168.1.51"},  # IP as name = needs resolve
+            {"ip": "192.168.1.52", "hostname": "unknown"},  # "unknown" = needs resolve
+        ]
+        # Only 2 IPs should be resolved (51 and 52)
+        mock_result = MagicMock()
+        mock_result.stdout = json.dumps(
+            [
+                {"IP": "192.168.1.51", "Name": "Laptop"},
+                {"IP": "192.168.1.52", "Name": "Printer"},
+            ]
+        )
+        mocker.patch("subprocess.run", return_value=mock_result)
+        result = _resolve_names_batch(devices)
+        assert "192.168.1.50" not in result
+        assert result["192.168.1.51"] == "Laptop"
+        assert result["192.168.1.52"] == "Printer"
+
+
+class TestEnrichDeviceNames:
+    """Test the full enrichment pipeline."""
+
+    def test_enrich_fills_names(self, mocker):
+        mock_result = MagicMock()
+        mock_result.stdout = json.dumps([{"IP": "192.168.1.50", "Name": "MyPC"}])
+        mocker.patch("subprocess.run", return_value=mock_result)
+        from windesktopmgr import _enrich_device_names
+
+        inventory = {
+            "devices": {
+                "AA:BB:CC:DD:EE:FF": {
+                    "mac": "AA:BB:CC:DD:EE:FF",
+                    "ip": "192.168.1.50",
+                    "hostname": "",
+                    "vendor": "Intel",
+                    "category": "",
+                    "device_type": "",
+                    "device_os": "",
+                },
+            },
+            "last_scan": None,
+        }
+        result = _enrich_device_names(inventory)
+        dev = result["devices"]["AA:BB:CC:DD:EE:FF"]
+        assert dev["hostname"] == "MyPC"
+        assert dev["category"] == "Computer"  # Intel vendor → Computer
+
+    def test_enrich_preserves_user_category(self, mocker):
+        mocker.patch("subprocess.run", return_value=MagicMock(stdout="[]"))
+        from windesktopmgr import _enrich_device_names
+
+        inventory = {
+            "devices": {
+                "AA:BB:CC:DD:EE:FF": {
+                    "mac": "AA:BB:CC:DD:EE:FF",
+                    "ip": "192.168.1.50",
+                    "hostname": "MyDevice",
+                    "vendor": "Roku",
+                    "category": "Other",  # User already set this
+                    "device_type": "",
+                    "device_os": "",
+                },
+            },
+            "last_scan": None,
+        }
+        result = _enrich_device_names(inventory)
+        # Should NOT overwrite user-set category
+        assert result["devices"]["AA:BB:CC:DD:EE:FF"]["category"] == "Other"
+
+    def test_enrich_does_not_overwrite_good_hostname(self, mocker):
+        mock_result = MagicMock()
+        mock_result.stdout = json.dumps([{"IP": "192.168.1.50", "Name": "NewName"}])
+        mocker.patch("subprocess.run", return_value=mock_result)
+        from windesktopmgr import _enrich_device_names
+
+        inventory = {
+            "devices": {
+                "AA:BB:CC:DD:EE:FF": {
+                    "mac": "AA:BB:CC:DD:EE:FF",
+                    "ip": "192.168.1.50",
+                    "hostname": "GoodExistingName",
+                    "vendor": "Unknown",
+                    "category": "",
+                    "device_type": "",
+                    "device_os": "",
+                },
+            },
+            "last_scan": None,
+        }
+        result = _enrich_device_names(inventory)
+        assert result["devices"]["AA:BB:CC:DD:EE:FF"]["hostname"] == "GoodExistingName"
+
+
+class TestResolveNamesRoute:
+    """Test the resolve names API endpoint."""
+
+    def test_resolve_names_endpoint(self, client, mocker):
+        mocker.patch(
+            "windesktopmgr._load_homenet_inventory",
+            return_value={
+                "devices": {
+                    "AA:BB:CC:DD:EE:FF": {
+                        "mac": "AA:BB:CC:DD:EE:FF",
+                        "ip": "192.168.1.50",
+                        "hostname": "",
+                        "vendor": "Intel",
+                        "category": "",
+                        "device_type": "",
+                        "device_os": "",
+                    },
+                },
+                "last_scan": None,
+            },
+        )
+        mock_result = MagicMock()
+        mock_result.stdout = json.dumps([{"IP": "192.168.1.50", "Name": "MyPC"}])
+        mocker.patch("subprocess.run", return_value=mock_result)
+        mocker.patch("windesktopmgr._save_homenet_inventory")
+
+        resp = client.post("/api/homenet/resolve-names")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["resolved"] == 1
+        assert data["total_named"] == 1

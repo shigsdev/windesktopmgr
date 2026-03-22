@@ -3528,6 +3528,28 @@ async function homenetScan() {
   btn.textContent = "🔍 Scan Network";
 }
 
+async function homenetResolveNames() {
+  const btn = document.getElementById("hn-resolve-btn");
+  btn.disabled = true;
+  btn.textContent = "Resolving…";
+  try {
+    const r = await fetch("/api/homenet/resolve-names", {method: "POST"});
+    const data = await r.json();
+    if (data.ok) {
+      _hnUpdateUI(data);
+      const msg = data.resolved > 0
+        ? `Resolved ${data.resolved} new name(s). ${data.total_named}/${data.total_devices} devices named.`
+        : `No new names found. ${data.total_named}/${data.total_devices} devices already named.`;
+      alert(msg);
+    }
+  } catch(e) {
+    console.error("resolve error:", e);
+    alert("Name resolution failed: " + e.message);
+  }
+  btn.disabled = false;
+  btn.textContent = "🏷 Resolve Names";
+}
+
 // ── Credential management ───
 function openCredModal(key, label) {
   document.getElementById("hn-cred-key").value = key;
@@ -4783,6 +4805,7 @@ function renderSystemInfo(d) {
       </div>
       <div style="display:flex;gap:8px">
         <button class="btn-action" onclick="homenetScan()" id="hn-scan-btn" style="padding:6px 16px;font-size:12px">🔍 Scan Network</button>
+        <button class="btn-action" onclick="homenetResolveNames()" id="hn-resolve-btn" style="padding:6px 16px;font-size:12px">🏷 Resolve Names</button>
         <button class="btn-action" onclick="loadHomeNet()" style="padding:6px 16px;font-size:12px">↺ Refresh</button>
       </div>
     </div>

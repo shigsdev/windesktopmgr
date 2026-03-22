@@ -8113,6 +8113,184 @@ def _tplink_get_data() -> dict:
     return _tplink_snmp_query(switch_ip, pw)
 
 
+# ── Device Name Resolution ────────────────────────────────────────────────────
+
+# Auto-categorize devices by vendor name
+_VENDOR_CATEGORY_MAP = {
+    "Roku": "TV",
+    "TCL/Roku": "TV",
+    "Samsung": "TV",
+    "Apple": "Phone",
+    "Alexa/Amazon": "IoT",
+    "Amazon": "IoT",
+    "Espressif (IoT)": "IoT",
+    "Honeywell": "IoT",
+    "Brother": "Printer",
+    "HP": "Printer",
+    "Netgear": "Network",
+    "TP-Link": "Network",
+    "Actiontec": "Network",
+    "Verizon": "Network",
+    "Aruba/HPE": "Network",
+    "LinkSys": "Network",
+    "Intel": "Computer",
+}
+
+
+def _resolve_names_batch(devices: list) -> dict:
+    """
+    Resolve hostnames for a batch of devices using multiple methods.
+    Returns {ip: resolved_name} dict.
+    """
+    results = {}
+    ips_to_resolve = []
+
+    for dev in devices:
+        ip = dev.get("ip", "")
+        # Skip if already has a good hostname (not empty, not just an IP)
+        hostname = dev.get("hostname", "")
+        if ip and (not hostname or hostname == ip or hostname.lower() == "unknown"):
+            ips_to_resolve.append(ip)
+
+    if not ips_to_resolve:
+        return results
+
+    # Method 1: NetBIOS + reverse DNS via PowerShell (batch)
+    # nbtstat for NetBIOS, [System.Net.Dns] for reverse DNS
+    ip_list_ps = ",".join(f"'{ip}'" for ip in ips_to_resolve[:50])  # Cap at 50 to avoid timeout
+    ps = f"""
+$ips = @({ip_list_ps})
+$results = @()
+foreach ($ip in $ips) {{
+    $name = ""
+    # Try reverse DNS first (fastest)
+    try {{
+        $dns = [System.Net.Dns]::GetHostEntry($ip)
+        if ($dns.HostName -and $dns.HostName -ne $ip) {{
+            $name = $dns.HostName
+        }}
+    }} catch {{ }}
+    # Try NetBIOS if DNS failed
+    if (-not $name) {{
+        try {{
+            $nbt = nbtstat -A $ip 2>$null
+            $match = $nbt | Select-String '<00>\\s+UNIQUE' | Select-Object -First 1
+            if ($match) {{
+                $name = ($match.Line -split '\\s+')[0].Trim()
+            }}
+        }} catch {{ }}
+    }}
+    $results += [PSCustomObject]@{{ IP = $ip; Name = $name }}
+}}
+$results | ConvertTo-Json -Depth 2
+"""
+    try:
+        r = subprocess.run(
+            ["powershell", "-NonInteractive", "-Command", ps],
+            capture_output=True,
+            text=True,
+            timeout=60,  # NetBIOS can be slow
+        )
+        data = json.loads(r.stdout.strip() or "[]")
+        if isinstance(data, dict):
+            data = [data]
+        for entry in data:
+            ip = entry.get("IP", "")
+            name = entry.get("Name", "")
+            if ip and name:
+                results[ip] = name
+    except Exception as e:
+        print(f"[HomeNet] Name resolution error: {e}")
+
+    return results
+
+
+def _auto_categorize(vendor: str, hostname: str, device_type: str, device_os: str) -> str:
+    """Auto-assign a category based on vendor, hostname, and device metadata."""
+    # Explicit category from router data
+    if device_type:
+        dt_lower = device_type.lower()
+        if dt_lower in ("phone", "smartphone", "mobile"):
+            return "Phone"
+        if dt_lower in ("computer", "pc", "laptop", "desktop"):
+            return "Computer"
+        if dt_lower in ("tv", "stb", "media", "streaming"):
+            return "TV"
+        if dt_lower in ("printer",):
+            return "Printer"
+        if dt_lower in ("tablet", "ipad"):
+            return "Phone"
+        if dt_lower in ("gaming", "console", "game console"):
+            return "Other"
+
+    # Category from OS
+    if device_os:
+        os_lower = device_os.lower()
+        if "ios" in os_lower or "android" in os_lower:
+            return "Phone"
+        if "windows" in os_lower or "macos" in os_lower or "linux" in os_lower:
+            return "Computer"
+
+    # Category from vendor
+    if vendor in _VENDOR_CATEGORY_MAP:
+        return _VENDOR_CATEGORY_MAP[vendor]
+
+    # Category from hostname patterns
+    if hostname:
+        hn = hostname.lower()
+        if any(k in hn for k in ("printer", "brw", "hp", "epson", "canon")):
+            return "Printer"
+        if any(k in hn for k in ("roku", "firestick", "chromecast", "appletv", "tv")):
+            return "TV"
+        if any(k in hn for k in ("iphone", "ipad", "galaxy", "pixel", "android")):
+            return "Phone"
+        if any(k in hn for k in ("echo", "alexa", "nest", "ring", "smartthings")):
+            return "IoT"
+        if any(k in hn for k in ("-pc", "desktop", "laptop", "macbook", "surface")):
+            return "Computer"
+        if any(k in hn for k in ("nas", "synology", "qnap", "readynas")):
+            return "Storage"
+
+    return ""
+
+
+def _enrich_device_names(inventory: dict) -> dict:
+    """
+    Enrich device inventory with resolved names and auto-categories.
+    Called after scan to fill in missing names.
+    """
+    devices_needing_names = []
+    for _mac, dev in inventory["devices"].items():
+        hostname = dev.get("hostname", "")
+        if not hostname or hostname == dev.get("ip", "") or hostname.lower() == "unknown":
+            devices_needing_names.append(dev)
+
+    # Batch resolve names
+    if devices_needing_names:
+        resolved = _resolve_names_batch(devices_needing_names)
+        for _mac, dev in inventory["devices"].items():
+            ip = dev.get("ip", "")
+            if ip in resolved and resolved[ip]:
+                # Only update if no existing good hostname
+                existing = dev.get("hostname", "")
+                if not existing or existing == ip or existing.lower() == "unknown":
+                    dev["hostname"] = resolved[ip]
+
+    # Auto-categorize all devices that don't have a user-set category
+    for _mac, dev in inventory["devices"].items():
+        if not dev.get("category"):
+            auto_cat = _auto_categorize(
+                dev.get("vendor", ""),
+                dev.get("hostname", ""),
+                dev.get("device_type", ""),
+                dev.get("device_os", ""),
+            )
+            if auto_cat:
+                dev["category"] = auto_cat
+
+    return inventory
+
+
 # ── ARP scan for local subnet discovery ──────────────────────────────────────
 
 
@@ -8259,6 +8437,9 @@ def homenet_full_scan() -> dict:
         inventory = _merge_device_data(inventory, "orbi", orbi.get("devices", []))
     elif "error" in orbi:
         errors.append(f"Orbi: {orbi['error']}")
+
+    # 4. Enrich with name resolution + auto-categorization
+    inventory = _enrich_device_names(inventory)
 
     _save_homenet_inventory(inventory)
 
@@ -8414,6 +8595,25 @@ def homenet_scan_light():
 def homenet_inventory():
     """Get current device inventory (no scan)."""
     return jsonify(homenet_get_inventory())
+
+
+@app.route("/api/homenet/resolve-names", methods=["POST"])
+def homenet_resolve_names():
+    """Run name resolution on all devices with missing names."""
+    inventory = _load_homenet_inventory()
+    before = sum(1 for d in inventory["devices"].values() if d.get("hostname"))
+    inventory = _enrich_device_names(inventory)
+    after = sum(1 for d in inventory["devices"].values() if d.get("hostname"))
+    _save_homenet_inventory(inventory)
+    return jsonify(
+        {
+            "ok": True,
+            "resolved": after - before,
+            "total_named": after,
+            "total_devices": len(inventory["devices"]),
+            "devices": list(inventory["devices"].values()),
+        }
+    )
 
 
 @app.route("/api/homenet/device/update", methods=["POST"])
