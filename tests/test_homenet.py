@@ -66,12 +66,30 @@ class TestHomeNetCredentialRoutes:
         assert resp.status_code == 200
         assert resp.get_json()["ok"] is True
 
+    def test_save_empty_body_returns_400(self, client):
+        resp = client.post(
+            "/api/homenet/credentials/save",
+            json={},
+        )
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert data["ok"] is False
+
     def test_delete_credential_missing_key(self, client):
         resp = client.post(
             "/api/homenet/credentials/delete",
             json={},
         )
         assert resp.status_code == 400
+
+    def test_delete_empty_body_returns_400(self, client):
+        resp = client.post(
+            "/api/homenet/credentials/delete",
+            json={},
+        )
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert data["ok"] is False
 
     def test_test_credential_verizon(self, client, mocker):
         mocker.patch(
@@ -690,6 +708,19 @@ class TestOrbiApi:
         result = _orbi_get_devices()
         assert "error" in result
         assert "credentials" in result["error"].lower()
+
+    def test_orbi_ssl_error_returns_error(self, mocker):
+        import requests as req
+
+        mocker.patch("windesktopmgr._get_homenet_cred", return_value=("admin", "password"))
+        mock_session = MagicMock()
+        mock_session.post.side_effect = req.exceptions.SSLError("SSL certificate verify failed")
+        mocker.patch("windesktopmgr.requests.Session", return_value=mock_session)
+        from windesktopmgr import _orbi_get_devices
+
+        result = _orbi_get_devices()
+        assert "error" in result
+        assert "ssl" in result["error"].lower()
 
 
 class TestArpScan:

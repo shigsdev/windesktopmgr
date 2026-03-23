@@ -18,7 +18,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import requests
-from flask import Flask, jsonify, render_template, request, send_from_directory
+from flask import Flask, jsonify, make_response, render_template, request, send_from_directory
 
 try:
     import anthropic
@@ -87,7 +87,6 @@ CATEGORY_NOTES = {
     ),
 }
 
-DELL_API = "https://www.dell.com/support/driver/en-us/ips/api/driverlist/fetchdriversbyproduct"
 
 # ─── BSOD constants ───────────────────────────────────────────────────────────
 REPORT_DIR = os.path.join(
@@ -6131,7 +6130,6 @@ def summarize_credentials_network(data: dict) -> dict:
         )
 
     token_stale = data.get("msal_token_stale", False)
-    token_stale = data.get("msal_token_stale", False)
     od_suspended = data.get("onedrive_suspended", False)
     status = (
         "critical"
@@ -6161,8 +6159,6 @@ def summarize_credentials_network(data: dict) -> dict:
 
 @app.route("/")
 def index():
-    from flask import make_response
-
     resp = make_response(render_template("index.html"))
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
     resp.headers["Pragma"] = "no-cache"
@@ -7768,14 +7764,6 @@ def _list_homenet_creds() -> list:
 
 # ── Verizon CR1000A API (reverse-engineered from ha-verizonFiOS) ─────────────
 
-# Disable SSL warnings for self-signed router certs
-try:
-    import urllib3
-
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-except ImportError:
-    pass
-
 
 def _arc_md5(text: str) -> str:
     """ArcMD5: SHA512(MD5(text).hex()) — Verizon's custom hash."""
@@ -7793,6 +7781,9 @@ def _verizon_get_devices() -> dict:
     Connect to Verizon CR1000A and pull device list + topology.
     Uses the reverse-engineered auth flow from ha-verizonFiOS.
     """
+    import urllib3
+
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     user, pw = _get_homenet_cred("verizon")
     if not user or not pw:
@@ -7953,10 +7944,10 @@ def _orbi_get_devices() -> dict:
 
     except requests.exceptions.ConnectTimeout:
         return {"error": "Orbi unreachable (10.0.0.1) — is Wi-Fi connected?"}
-    except requests.exceptions.ConnectionError:
-        return {"error": "Cannot connect to Orbi — ensure Wi-Fi is connected to Orbi network"}
     except requests.exceptions.SSLError:
         return {"error": "Orbi SSL error — router may need firmware update"}
+    except requests.exceptions.ConnectionError:
+        return {"error": "Cannot connect to Orbi — ensure Wi-Fi is connected to Orbi network"}
     except Exception as e:
         return {"error": f"Orbi API error: {e}"}
     finally:

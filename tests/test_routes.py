@@ -298,6 +298,42 @@ class TestStartupCacheRoute:
 
 
 class TestStartupToggleRoute:
+    def test_missing_name_returns_400(self, client):
+        resp = client.post(
+            "/api/startup/toggle",
+            json={"type": "registry_hklm", "enable": True},
+        )
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert data["ok"] is False
+
+    def test_missing_type_returns_400(self, client):
+        resp = client.post(
+            "/api/startup/toggle",
+            json={"name": "foo", "enable": True},
+        )
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert data["ok"] is False
+
+    def test_missing_enable_returns_400(self, client):
+        resp = client.post(
+            "/api/startup/toggle",
+            json={"name": "foo", "type": "registry_hklm"},
+        )
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert data["ok"] is False
+
+    def test_empty_body_returns_400(self, client):
+        resp = client.post(
+            "/api/startup/toggle",
+            json={},
+        )
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert data["ok"] is False
+
     def test_unsupported_type_returns_error(self, client):
         resp = client.post(
             "/api/startup/toggle",
@@ -609,6 +645,14 @@ class TestProcessKillRoute:
         assert data["ok"] is False
         assert "Invalid PID" in data["error"]
 
+    def test_string_pid_returns_400(self, client, mocker):
+        _mock_ps(mocker)
+        resp = client.post("/api/processes/kill", json={"pid": "not-a-number"})
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert "pid must be an integer" in data["error"]
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GET  /api/thermals/data
@@ -742,6 +786,13 @@ class TestServicesToggleRoute:
         _mock_ps(mocker)
         resp = client.post("/api/services/toggle", json={"action": "stop"})
         assert resp.status_code == 200
+
+    def test_empty_body_handled(self, client, mocker):
+        _mock_ps(mocker)
+        resp = client.post("/api/services/toggle", json={})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is False
 
 
 # ══════════════════════════════════════════════════════════════════════════════
