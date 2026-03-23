@@ -6265,8 +6265,13 @@ def startup_cache_status():
 
 @app.route("/api/startup/toggle", methods=["POST"])
 def startup_toggle():
-    data = request.get_json()
-    return jsonify(toggle_startup_item(data["name"], data["type"], data["enable"]))
+    data = request.get_json() or {}
+    name = data.get("name")
+    item_type = data.get("type")
+    enable = data.get("enable")
+    if not name or not item_type or enable is None:
+        return jsonify({"ok": False, "error": "Missing required fields: name, type, enable"}), 400
+    return jsonify(toggle_startup_item(name, item_type, enable))
 
 
 @app.route("/api/disk/data")
@@ -7871,6 +7876,8 @@ def _orbi_get_devices() -> dict:
     Connect to Orbi RBRE960 via SOAP API and pull device list.
     Uses direct SOAP calls (same protocol as pynetgear).
     """
+    from xml.sax.saxutils import escape as xml_escape
+
     import requests
     import urllib3
 
@@ -7912,8 +7919,8 @@ def _orbi_get_devices() -> dict:
   </v:Header>
   <v:Body>
     <M1:Authenticate xmlns:M1="urn:NETGEAR-ROUTER:service:ParentalControl:1">
-      <NewUsername>{user}</NewUsername>
-      <NewPassword>{pw}</NewPassword>
+      <NewUsername>{xml_escape(user)}</NewUsername>
+      <NewPassword>{xml_escape(pw)}</NewPassword>
     </M1:Authenticate>
   </v:Body>
 </v:Envelope>"""

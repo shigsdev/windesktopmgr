@@ -3459,7 +3459,7 @@ async function loadHomeNet() {
   try {
     const cr = await fetch("/api/homenet/credentials");
     const creds = await cr.json();
-    renderCredentials(creds);
+    renderHomeNetCredentials(creds);
   } catch(e) { console.error("creds load error:", e); }
 
   // Load inventory
@@ -3477,7 +3477,7 @@ async function loadHomeNet() {
   _hnStartPolling();
 }
 
-function renderCredentials(creds) {
+function renderHomeNetCredentials(creds) {
   const grid = document.getElementById("hn-creds-grid");
   document.getElementById("hn-creds-loading").style.display = "none";
   grid.style.display = "grid";
