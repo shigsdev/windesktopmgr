@@ -585,13 +585,29 @@ class TestProcessKillRoute:
         data = resp.get_json()
         assert data["ok"] is False
 
-    def test_missing_pid_defaults_to_zero(self, client, mocker):
-        mock_run = _mock_ps(mocker)
+    def test_missing_pid_defaults_to_zero_rejected(self, client, mocker):
+        _mock_ps(mocker)
         resp = client.post("/api/processes/kill", json={})
-        assert resp.status_code == 200
-        # Should have called with PID 0 (from default)
-        cmd = mock_run.call_args[0][0][-1]
-        assert "0" in cmd
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert "Invalid PID" in data["error"]
+
+    def test_non_integer_pid_rejected(self, client, mocker):
+        _mock_ps(mocker)
+        resp = client.post("/api/processes/kill", json={"pid": "abc"})
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert "pid must be an integer" in data["error"]
+
+    def test_negative_pid_rejected(self, client, mocker):
+        _mock_ps(mocker)
+        resp = client.post("/api/processes/kill", json={"pid": -5})
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert "Invalid PID" in data["error"]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1601,6 +1617,18 @@ class TestWarrantyRoute:
         d = r.get_json()
         assert d["status"] == "error"
         assert "message" in d
+
+    def test_warranty_timeout_handled(self, client, mocker):
+        import subprocess
+
+        mocker.patch(
+            "windesktopmgr.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=15),
+        )
+        r = client.get("/api/warranty/data")
+        assert r.status_code == 200
+        d = r.get_json()
+        assert d["status"] == "error"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

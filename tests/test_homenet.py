@@ -672,7 +672,7 @@ class TestVerizonApi:
         mock_session = MagicMock()
         mock_session.cookies.get_dict.return_value = {}
         mock_session.get.side_effect = requests.exceptions.ConnectTimeout()
-        mocker.patch("requests.Session", return_value=mock_session)
+        mocker.patch("windesktopmgr.requests.Session", return_value=mock_session)
         from windesktopmgr import _verizon_get_devices
 
         result = _verizon_get_devices()
@@ -1092,7 +1092,7 @@ class TestVerizonApiEdgeCases:
         mock_session = MagicMock()
         mock_session.cookies.get_dict.return_value = {}
         mock_session.get.side_effect = requests.exceptions.ConnectionError()
-        mocker.patch("requests.Session", return_value=mock_session)
+        mocker.patch("windesktopmgr.requests.Session", return_value=mock_session)
         from windesktopmgr import _verizon_get_devices
 
         result = _verizon_get_devices()
@@ -1103,7 +1103,7 @@ class TestVerizonApiEdgeCases:
         mocker.patch("windesktopmgr._get_homenet_cred", return_value=("admin", "pw"))
         mock_session = MagicMock()
         mock_session.get.side_effect = Exception("weird error")
-        mocker.patch("requests.Session", return_value=mock_session)
+        mocker.patch("windesktopmgr.requests.Session", return_value=mock_session)
         from windesktopmgr import _verizon_get_devices
 
         result = _verizon_get_devices()
@@ -1115,7 +1115,7 @@ class TestVerizonApiEdgeCases:
         mocker.patch("windesktopmgr._get_homenet_cred", return_value=("admin", "pw"))
         mock_session = MagicMock()
         mock_session.post.side_effect = requests.exceptions.ConnectTimeout()
-        mocker.patch("requests.Session", return_value=mock_session)
+        mocker.patch("windesktopmgr.requests.Session", return_value=mock_session)
         from windesktopmgr import _orbi_get_devices
 
         result = _orbi_get_devices()
@@ -1128,7 +1128,7 @@ class TestVerizonApiEdgeCases:
         mocker.patch("windesktopmgr._get_homenet_cred", return_value=("admin", "pw"))
         mock_session = MagicMock()
         mock_session.post.side_effect = requests.exceptions.ConnectionError()
-        mocker.patch("requests.Session", return_value=mock_session)
+        mocker.patch("windesktopmgr.requests.Session", return_value=mock_session)
         from windesktopmgr import _orbi_get_devices
 
         result = _orbi_get_devices()
@@ -1139,7 +1139,7 @@ class TestVerizonApiEdgeCases:
         mocker.patch("windesktopmgr._get_homenet_cred", return_value=("admin", "pw"))
         mock_session = MagicMock()
         mock_session.post.side_effect = Exception("generic")
-        mocker.patch("requests.Session", return_value=mock_session)
+        mocker.patch("windesktopmgr.requests.Session", return_value=mock_session)
         from windesktopmgr import _orbi_get_devices
 
         result = _orbi_get_devices()
