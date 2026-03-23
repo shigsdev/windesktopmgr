@@ -126,6 +126,35 @@ def test_summarizer_critical_when_threshold_exceeded(self):
 
 ---
 
+## Boundary Safety Rules (MANDATORY)
+
+### Format Boundary Escaping
+When user data crosses format boundaries, escape it:
+
+| Source -> Target | Escaping method |
+|-----------------|----------------|
+| Python -> PowerShell | `re.sub(r"[^a-zA-Z0-9\-_. ]", "", value)` |
+| Python -> XML/SOAP | `xml.sax.saxutils.escape(value)` |
+| Python -> HTML | Jinja2 auto-escape or `markupsafe.escape()` |
+| JS -> innerHTML | `esc(value)` shared helper |
+
+### POST Route Validation Pattern
+```python
+data = request.get_json() or {}
+name = data.get("name")
+if not name:
+    return jsonify({"ok": False, "error": "Missing required field: name"}), 400
+```
+
+### JavaScript Function Naming
+Prefix all tab-specific functions with tab abbreviation to prevent global scope collisions:
+`hn` = Home Network, `cred` = Credentials, `rem` = Remediation, `db` = Dashboard,
+`drv` = Drivers, `bsod` = BSOD, `su` = Startup, `dk` = Disk, `net` = Network,
+`upd` = Updates, `ev` = Events, `proc` = Processes, `th` = Thermals, `svc` = Services,
+`hh` = Health History, `tl` = Timeline, `mem` = Memory, `bios` = BIOS, `si` = SysInfo.
+
+---
+
 ## File Structure
 
 ```

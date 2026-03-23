@@ -703,7 +703,7 @@ class TestArpScan:
         )
         mock_result = MagicMock()
         mock_result.stdout = arp_json
-        mocker.patch("subprocess.run", return_value=mock_result)
+        mocker.patch("windesktopmgr.subprocess.run", return_value=mock_result)
         from windesktopmgr import _arp_scan
 
         result = _arp_scan()
@@ -717,14 +717,14 @@ class TestArpScan:
         )
         mock_result = MagicMock()
         mock_result.stdout = arp_json
-        mocker.patch("subprocess.run", return_value=mock_result)
+        mocker.patch("windesktopmgr.subprocess.run", return_value=mock_result)
         from windesktopmgr import _arp_scan
 
         result = _arp_scan()
         assert len(result) == 1
 
     def test_arp_scan_error(self, mocker):
-        mocker.patch("subprocess.run", side_effect=Exception("fail"))
+        mocker.patch("windesktopmgr.subprocess.run", side_effect=Exception("fail"))
         from windesktopmgr import _arp_scan
 
         result = _arp_scan()
@@ -733,7 +733,7 @@ class TestArpScan:
     def test_arp_scan_empty(self, mocker):
         mock_result = MagicMock()
         mock_result.stdout = "[]"
-        mocker.patch("subprocess.run", return_value=mock_result)
+        mocker.patch("windesktopmgr.subprocess.run", return_value=mock_result)
         from windesktopmgr import _arp_scan
 
         result = _arp_scan()
@@ -1269,7 +1269,7 @@ class TestNameResolution:
         assert result == {}
 
     def test_resolve_names_batch_error(self, mocker):
-        mocker.patch("subprocess.run", side_effect=Exception("dns fail"))
+        mocker.patch("windesktopmgr.subprocess.run", side_effect=Exception("dns fail"))
         from windesktopmgr import _resolve_names_batch
 
         devices = [{"ip": "192.168.1.50", "hostname": ""}]
@@ -1282,7 +1282,7 @@ class TestNameResolution:
         dns_result.stdout = json.dumps({"IP": "192.168.1.50", "Name": "NAS"})
         dns_result.stderr = ""
         # No wired unresolved (DNS got it), no wireless IPs
-        mocker.patch("subprocess.run", return_value=dns_result)
+        mocker.patch("windesktopmgr.subprocess.run", return_value=dns_result)
         from windesktopmgr import _resolve_names_batch
 
         devices = [{"ip": "192.168.1.50", "hostname": ""}]
@@ -1307,7 +1307,7 @@ class TestNameResolution:
             ]
         )
         dns_result.stderr = ""
-        mocker.patch("subprocess.run", return_value=dns_result)
+        mocker.patch("windesktopmgr.subprocess.run", return_value=dns_result)
         result = _resolve_names_batch(devices)
         assert "192.168.1.50" not in result
         assert result["192.168.1.51"] == "Laptop"
@@ -1321,7 +1321,7 @@ class TestEnrichDeviceNames:
         mock_result = MagicMock()
         mock_result.stdout = json.dumps([{"IP": "192.168.1.50", "Name": "MyPC"}])
         mock_result.stderr = ""
-        mocker.patch("subprocess.run", return_value=mock_result)
+        mocker.patch("windesktopmgr.subprocess.run", return_value=mock_result)
         from windesktopmgr import _enrich_device_names
 
         inventory = {
@@ -1344,7 +1344,7 @@ class TestEnrichDeviceNames:
         assert dev["category"] == "Computer"  # Intel vendor → Computer
 
     def test_enrich_preserves_user_category(self, mocker):
-        mocker.patch("subprocess.run", return_value=MagicMock(stdout="[]", stderr=""))
+        mocker.patch("windesktopmgr.subprocess.run", return_value=MagicMock(stdout="[]", stderr=""))
         from windesktopmgr import _enrich_device_names
 
         inventory = {
@@ -1369,7 +1369,7 @@ class TestEnrichDeviceNames:
         mock_result = MagicMock()
         mock_result.stdout = json.dumps([{"IP": "192.168.1.50", "Name": "NewName"}])
         mock_result.stderr = ""
-        mocker.patch("subprocess.run", return_value=mock_result)
+        mocker.patch("windesktopmgr.subprocess.run", return_value=mock_result)
         from windesktopmgr import _enrich_device_names
 
         inventory = {
@@ -1413,7 +1413,7 @@ class TestResolveNamesRoute:
         )
         mock_result = MagicMock()
         mock_result.stdout = json.dumps([{"IP": "192.168.1.50", "Name": "MyPC"}])
-        mocker.patch("subprocess.run", return_value=mock_result)
+        mocker.patch("windesktopmgr.subprocess.run", return_value=mock_result)
         mocker.patch("windesktopmgr._save_homenet_inventory")
 
         resp = client.post("/api/homenet/resolve-names")
