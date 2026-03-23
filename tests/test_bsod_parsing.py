@@ -9,6 +9,7 @@ import windesktopmgr as wdm
 # parse_event(evt)
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestParseEvent:
     # ── Event ID 1001 (Windows Error Reporting / BugCheck) ──────────────────
 
@@ -128,6 +129,7 @@ class TestParseEvent:
 # parse_report_crashes(report_path)
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestParseReportCrashes:
     def _write_report(self, tmp_path, filename, content):
         p = tmp_path / filename
@@ -221,6 +223,7 @@ class TestParseReportCrashes:
 # build_recommendations(crashes)
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestBuildRecommendations:
     def test_zero_crashes_system_stable(self):
         recs = wdm.build_recommendations([])
@@ -229,17 +232,13 @@ class TestBuildRecommendations:
         assert "stable" in recs[0]["title"].lower()
 
     def test_more_than_ten_crashes_critical_rec(self):
-        crashes = [
-            {"error_code": "HYPERVISOR_ERROR", "faulty_driver": "intelppm.sys"}
-        ] * 12
+        crashes = [{"error_code": "HYPERVISOR_ERROR", "faulty_driver": "intelppm.sys"}] * 12
         recs = wdm.build_recommendations(crashes)
         priorities = [r["priority"] for r in recs]
         assert "critical" in priorities
 
     def test_three_to_ten_crashes_high_rec(self):
-        crashes = [
-            {"error_code": "HYPERVISOR_ERROR", "faulty_driver": "intelppm.sys"}
-        ] * 5
+        crashes = [{"error_code": "HYPERVISOR_ERROR", "faulty_driver": "intelppm.sys"}] * 5
         recs = wdm.build_recommendations(crashes)
         # Should have a "Recurring crashes" or "High crash frequency" rec
         titles = " ".join(r["title"] for r in recs)
@@ -260,9 +259,7 @@ class TestBuildRecommendations:
         assert len(titles) == len(set(titles)), "Duplicate recommendation titles found"
 
     def test_sorted_critical_before_high_before_info(self):
-        crashes = [
-            {"error_code": "HYPERVISOR_ERROR", "faulty_driver": "intelppm.sys"}
-        ] * 12
+        crashes = [{"error_code": "HYPERVISOR_ERROR", "faulty_driver": "intelppm.sys"}] * 12
         recs = wdm.build_recommendations(crashes)
         order = {"critical": 0, "high": 1, "medium": 2, "info": 3}
         priorities = [order.get(r.get("priority", "info"), 3) for r in recs]

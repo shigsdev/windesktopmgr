@@ -11,6 +11,7 @@ import windesktopmgr as wdm
 # categorize(name, device_class)
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestCategorize:
     def test_display_by_name(self):
         assert wdm.categorize("NVIDIA GeForce RTX 4090", "") == "Display"
@@ -57,6 +58,7 @@ class TestCategorize:
 # find_wu_match(name, wu_updates)
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestFindWuMatch:
     def _wu(self, title):
         """Helper: build a minimal WU update dict."""
@@ -98,7 +100,7 @@ class TestFindWuMatch:
         # Entry A: "intel realtek" → overlap 2
         # Entry B: "intel realtek samsung" → overlap 3 → wins
         wu = {
-            "intel realtek":         {"Title": "Intel Realtek",         "DriverVersion": "1.0"},
+            "intel realtek": {"Title": "Intel Realtek", "DriverVersion": "1.0"},
             "intel realtek samsung": {"Title": "Intel Realtek Samsung", "DriverVersion": "2.0"},
         }
         result = wdm.find_wu_match("Intel Realtek Samsung", wu)
@@ -109,6 +111,7 @@ class TestFindWuMatch:
 # ══════════════════════════════════════════════════════════════════════════════
 # _normalise_stop_code(code)
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestNormaliseStopCode:
     def test_hypervisor_error(self):
@@ -139,6 +142,7 @@ class TestNormaliseStopCode:
 # _parse_ts(ts_str)
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestParseTs:
     def test_iso_with_utc_offset(self):
         dt = wdm._parse_ts("2026-03-01T10:00:00+00:00")
@@ -168,6 +172,7 @@ class TestParseTs:
 # ══════════════════════════════════════════════════════════════════════════════
 # _insight(level, text, action)
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestInsight:
     def test_returns_dict_with_level(self):

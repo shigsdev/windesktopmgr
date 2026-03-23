@@ -17,6 +17,7 @@ import urllib.request
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
+import requests
 from flask import Flask, jsonify, render_template, request, send_from_directory
 
 try:
@@ -2628,7 +2629,7 @@ def _lookup_via_windows_provider(event_id: int, source: str) -> dict | None:
     This is always up to date — it reads whatever Windows has installed.
     Works offline. Returns None if the provider/event isn't registered.
     """
-    safe_source = re.sub(r"[^\w\s\-]", "", source)
+    safe_source = re.sub(r"[^\w \-]", "", source)
     ps = f"""
 try {{
     # Try exact source name first
@@ -6356,7 +6357,13 @@ def process_lookup_status():
 @app.route("/api/processes/kill", methods=["POST"])
 def process_kill():
     data = request.get_json() or {}
-    return jsonify(kill_process(int(data.get("pid", 0))))
+    try:
+        pid = int(data.get("pid", 0))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "pid must be an integer"}), 400
+    if pid <= 0:
+        return jsonify({"ok": False, "error": "Invalid PID"}), 400
+    return jsonify(kill_process(pid))
 
 
 @app.route("/api/thermals/data")
@@ -6537,11 +6544,15 @@ $results | ConvertTo-Json -Depth 2
 
 
 @app.route("/api/credentials/fix-fast-startup", methods=["POST"])
-def fix_fast_startup():
+def fix_fast_startup_route():
     """Toggle Fast Startup on or off via registry."""
-    from flask import request as freq
+    data = request.get_json() or {}
+    enable = data.get("enable", False)
+    return jsonify(fix_fast_startup(enable))
 
-    enable = freq.json.get("enable", False) if freq.is_json else False
+
+def fix_fast_startup(enable):
+    """Execute the Fast Startup registry toggle."""
     value = 1 if enable else 0
     label = "enabled" if enable else "disabled"
     ps = f"""
@@ -6556,9 +6567,9 @@ try {{
             ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=10
         )
         ok = "OK" in r.stdout
-        return jsonify({"ok": ok, "enabled": enable, "message": f"Fast Startup {label}." if ok else r.stdout.strip()})
+        return {"ok": ok, "enabled": enable, "message": f"Fast Startup {label}." if ok else r.stdout.strip()}
     except Exception as e:
-        return jsonify({"ok": False, "enabled": enable, "message": str(e)})
+        return {"ok": False, "enabled": enable, "message": str(e)}
 
 
 @app.route("/api/bios/status")
@@ -7782,7 +7793,6 @@ def _verizon_get_devices() -> dict:
     Connect to Verizon CR1000A and pull device list + topology.
     Uses the reverse-engineered auth flow from ha-verizonFiOS.
     """
-    import requests
 
     user, pw = _get_homenet_cred("verizon")
     if not user or not pw:
@@ -7878,7 +7888,6 @@ def _orbi_get_devices() -> dict:
     """
     from xml.sax.saxutils import escape as xml_escape
 
-    import requests
     import urllib3
 
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)

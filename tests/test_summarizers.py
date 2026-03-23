@@ -7,6 +7,7 @@ import windesktopmgr as wdm
 
 # ── Helper builders ────────────────────────────────────────────────────────────
 
+
 def _driver(name, status, category="Display", low_priority=False):
     return {
         "name": name,
@@ -93,6 +94,7 @@ def _process(name, mem_mb, cpu=0, flag=None, info=None):
 # summarize_drivers
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestSummarizeDrivers:
     def test_empty_list_returns_idle(self):
         result = wdm.summarize_drivers([])
@@ -139,6 +141,7 @@ class TestSummarizeDrivers:
 # ══════════════════════════════════════════════════════════════════════════════
 # summarize_bsod
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestSummarizeBsod:
     def test_zero_crashes_returns_ok(self):
@@ -198,6 +201,7 @@ class TestSummarizeBsod:
 # summarize_startup
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestSummarizeStartup:
     def test_empty_list_ok(self):
         result = wdm.summarize_startup([])
@@ -234,6 +238,7 @@ class TestSummarizeStartup:
 # ══════════════════════════════════════════════════════════════════════════════
 # summarize_disk
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestSummarizeDisk:
     def test_all_healthy_ok(self):
@@ -283,6 +288,7 @@ class TestSummarizeDisk:
 # summarize_network
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestSummarizeNetwork:
     def _base_data(self, established=None, adapters=None, top_procs=None):
         return {
@@ -326,6 +332,7 @@ class TestSummarizeNetwork:
 # summarize_updates
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestSummarizeUpdates:
     def test_empty_list_info(self):
         result = wdm.summarize_updates([])
@@ -366,6 +373,7 @@ class TestSummarizeUpdates:
 # ══════════════════════════════════════════════════════════════════════════════
 # summarize_services
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestSummarizeServices:
     def test_empty_list_ok(self):
@@ -410,6 +418,7 @@ class TestSummarizeServices:
 # summarize_processes
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestSummarizeProcesses:
     def _data(self, procs, flagged=None):
         total_mem = sum(p.get("MemMB", 0) for p in procs)
@@ -425,32 +434,44 @@ class TestSummarizeProcesses:
         assert result["status"] == "ok"
 
     def test_critical_memory_hog_critical_status(self):
-        hog = _process("memoryhog.exe", mem_mb=2000, flag="critical",
-                        info={"plain": "Memory Hog", "what": "Uses lots of RAM",
-                              "publisher": "Unknown", "safe_kill": True})
+        hog = _process(
+            "memoryhog.exe",
+            mem_mb=2000,
+            flag="critical",
+            info={"plain": "Memory Hog", "what": "Uses lots of RAM", "publisher": "Unknown", "safe_kill": True},
+        )
         result = wdm.summarize_processes(self._data([hog], flagged=[hog]))
         assert result["status"] == "critical"
 
     def test_critical_safe_kill_false_action(self):
-        hog = _process("windefend.exe", mem_mb=2000, flag="critical",
-                        info={"plain": "Windows Defender", "what": "Security",
-                              "publisher": "Microsoft", "safe_kill": False})
+        hog = _process(
+            "windefend.exe",
+            mem_mb=2000,
+            flag="critical",
+            info={"plain": "Windows Defender", "what": "Security", "publisher": "Microsoft", "safe_kill": False},
+        )
         result = wdm.summarize_processes(self._data([hog], flagged=[hog]))
         actions = " ".join(i["action"] for i in result["insights"])
         assert "do not kill" in actions.lower() or "system" in actions.lower()
 
     def test_critical_safe_kill_true_action(self):
-        hog = _process("chrome.exe", mem_mb=2000, flag="critical",
-                        info={"plain": "Chrome", "what": "Browser",
-                              "publisher": "Google", "safe_kill": True})
+        hog = _process(
+            "chrome.exe",
+            mem_mb=2000,
+            flag="critical",
+            info={"plain": "Chrome", "what": "Browser", "publisher": "Google", "safe_kill": True},
+        )
         result = wdm.summarize_processes(self._data([hog], flagged=[hog]))
         actions = " ".join(i["action"] for i in result["insights"])
         assert "safe to kill" in actions.lower()
 
     def test_warning_level_process(self):
-        warn = _process("slack.exe", mem_mb=600, flag="warning",
-                        info={"plain": "Slack", "what": "Chat app",
-                              "publisher": "Slack", "safe_kill": True})
+        warn = _process(
+            "slack.exe",
+            mem_mb=600,
+            flag="warning",
+            info={"plain": "Slack", "what": "Chat app", "publisher": "Slack", "safe_kill": True},
+        )
         result = wdm.summarize_processes(self._data([warn], flagged=[warn]))
         assert result["status"] == "warning"
 
@@ -464,6 +485,7 @@ class TestSummarizeProcesses:
 # ══════════════════════════════════════════════════════════════════════════════
 # summarize_thermals
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestSummarizeThermals:
     def _data(self, temps=None, cpu_pct=20, mem_used=8000, mem_total=32000, has_rich=False):
@@ -519,15 +541,27 @@ class TestSummarizeThermals:
 # summarize_sysinfo
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestSummarizeSysinfo:
     """Tests for the summarize_sysinfo function."""
 
     @staticmethod
-    def _data(ram_gb=32, uptime="01.05:30:00", cpu_name="Intel(R) Core(TM) i9-14900K",
-              cores=24, logical=32, os_name="Microsoft Windows 11 Pro",
-              build="22631", install_date="2024-01-15",
-              manufacturer="Dell Inc.", model="XPS 8960",
-              memory=None, gpu=None, sound=None, nic_hw=None):
+    def _data(
+        ram_gb=32,
+        uptime="01.05:30:00",
+        cpu_name="Intel(R) Core(TM) i9-14900K",
+        cores=24,
+        logical=32,
+        os_name="Microsoft Windows 11 Pro",
+        build="22631",
+        install_date="2024-01-15",
+        manufacturer="Dell Inc.",
+        model="XPS 8960",
+        memory=None,
+        gpu=None,
+        sound=None,
+        nic_hw=None,
+    ):
         d = {
             "Computer": {"Manufacturer": manufacturer, "Model": model, "TotalRAM_GB": ram_gb},
             "OS": {"Name": os_name, "Uptime": uptime, "Build": build, "InstallDate": install_date},
@@ -627,8 +661,14 @@ class TestSummarizeSysinfo:
         assert mem_insights[0]["level"] == "info"
 
     def test_gpu_manufacturer_in_insight(self):
-        gpu = [{"Name": "GeForce RTX 4060 Ti", "AdapterCompatibility": "NVIDIA",
-                "DriverVersion": "32.0", "AdapterRAM": 8589934592}]
+        gpu = [
+            {
+                "Name": "GeForce RTX 4060 Ti",
+                "AdapterCompatibility": "NVIDIA",
+                "DriverVersion": "32.0",
+                "AdapterRAM": 8589934592,
+            }
+        ]
         result = wdm.summarize_sysinfo(self._data(gpu=gpu))
         texts = " ".join(i["text"] for i in result["insights"])
         assert "NVIDIA" in texts
@@ -651,19 +691,28 @@ class TestSummarizeSysinfo:
 # summarize_credentials_network
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestSummarizeCredentialsNetwork:
 
+class TestSummarizeCredentialsNetwork:
     def _data(self, **overrides):
         base = {
-            "drives": [], "drives_down": [],
+            "drives": [],
+            "drives_down": [],
             "email_creds": [{"Target": "MicrosoftOffice16_Data:live:user@example.com"}],
-            "fast_startup": False, "cred_failures": [], "fw_blocking": [],
-            "smb_config": None, "nfs_drives": [],
-            "msal_token_stale": False, "msal_token_age_h": None,
-            "onedrive_running": True, "onedrive_connected": True,
-            "onedrive_account": "user@example.com", "office_errors": [],
-            "onedrive_suspended": False, "onedrive_priority": "",
-            "suspended_auth_procs": [], "total_creds": 5,
+            "fast_startup": False,
+            "cred_failures": [],
+            "fw_blocking": [],
+            "smb_config": None,
+            "nfs_drives": [],
+            "msal_token_stale": False,
+            "msal_token_age_h": None,
+            "onedrive_running": True,
+            "onedrive_connected": True,
+            "onedrive_account": "user@example.com",
+            "office_errors": [],
+            "onedrive_suspended": False,
+            "onedrive_priority": "",
+            "suspended_auth_procs": [],
+            "total_creds": 5,
         }
         base.update(overrides)
         return base
@@ -711,15 +760,15 @@ class TestSummarizeCredentialsNetwork:
         assert "auth-related" in texts.lower()
 
     def test_token_stale_critical(self):
-        result = wdm.summarize_credentials_network(self._data(
-            msal_token_stale=True, msal_token_age_h=48.0))
+        result = wdm.summarize_credentials_network(self._data(msal_token_stale=True, msal_token_age_h=48.0))
         assert result["status"] == "critical"
         assert "token expired" in result["headline"].lower()
 
     def test_token_stale_not_shown_when_suspended(self):
         """When OneDrive is suspended, the suspension insight takes priority."""
-        result = wdm.summarize_credentials_network(self._data(
-            onedrive_suspended=True, msal_token_stale=True, msal_token_age_h=48.0))
+        result = wdm.summarize_credentials_network(
+            self._data(onedrive_suspended=True, msal_token_stale=True, msal_token_age_h=48.0)
+        )
         assert "SUSPENDED" in result["headline"]
 
     def test_onedrive_not_connected_warning(self):
@@ -728,20 +777,19 @@ class TestSummarizeCredentialsNetwork:
         assert "not connected" in texts.lower()
 
     def test_onedrive_not_running_warning(self):
-        result = wdm.summarize_credentials_network(self._data(
-            onedrive_running=False, onedrive_connected=True))
+        result = wdm.summarize_credentials_network(self._data(onedrive_running=False, onedrive_connected=True))
         texts = " ".join(i["text"] for i in result["insights"])
         assert "not running" in texts.lower()
 
     def test_onedrive_connected_ok(self):
-        result = wdm.summarize_credentials_network(self._data(
-            onedrive_connected=True, onedrive_running=True, msal_token_age_h=2.0))
+        result = wdm.summarize_credentials_network(
+            self._data(onedrive_connected=True, onedrive_running=True, msal_token_age_h=2.0)
+        )
         texts = " ".join(i["text"] for i in result["insights"])
         assert "connected" in texts.lower()
 
     def test_office_errors_warning(self):
-        result = wdm.summarize_credentials_network(self._data(
-            office_errors=[{"Id": 1}]))
+        result = wdm.summarize_credentials_network(self._data(office_errors=[{"Id": 1}]))
         texts = " ".join(i["text"] for i in result["insights"])
         assert "error event" in texts.lower()
 
@@ -780,8 +828,7 @@ class TestSummarizeCredentialsNetwork:
         assert "Block" in texts or "firewall" in texts.lower()
 
     def test_smb_signing_required_info(self):
-        result = wdm.summarize_credentials_network(self._data(
-            smb_config={"RequireSecuritySignature": True}))
+        result = wdm.summarize_credentials_network(self._data(smb_config={"RequireSecuritySignature": True}))
         texts = " ".join(i["text"] for i in result["insights"])
         assert "SMB" in texts and "signing" in texts.lower()
 
@@ -789,3 +836,58 @@ class TestSummarizeCredentialsNetwork:
         result = wdm.summarize_credentials_network({})
         assert "status" in result
         assert "insights" in result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# summarize_events
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _event(event_id, level="Information", source="TestSource", message="Test message"):
+    return {
+        "Time": "2026-03-10T08:00:00",
+        "Id": event_id,
+        "Level": level,
+        "Source": source,
+        "Message": message,
+    }
+
+
+class TestSummarizeEvents:
+    def test_empty_list_returns_ok(self):
+        result = wdm.summarize_events([])
+        assert result["status"] == "ok"
+        assert result["insights"] == []
+
+    def test_normal_info_events_returns_ok(self):
+        events = [_event(7036, "Information"), _event(7040, "Information")]
+        result = wdm.summarize_events(events)
+        assert result["status"] == "ok"
+        assert "headline" in result
+        assert "insights" in result
+
+    def test_error_events_return_warning_or_critical(self):
+        events = [_event(1001, "Error", "Microsoft-Windows-WER-SystemErrorReporting")]
+        result = wdm.summarize_events(events)
+        assert result["status"] in ("warning", "critical")
+
+    def test_many_errors_returns_critical(self):
+        # More than 10 real errors should trigger critical status
+        events = [_event(9999, "Error", f"UnknownSource{i}", f"Error message {i}") for i in range(12)]
+        result = wdm.summarize_events(events)
+        assert result["status"] == "critical"
+
+    def test_missing_keys_does_not_crash(self):
+        # Events with missing keys should not raise
+        events = [{"Id": 100}, {}, {"Level": "Error"}]
+        result = wdm.summarize_events(events)
+        assert "status" in result
+        assert "insights" in result
+
+    def test_result_has_expected_structure(self):
+        events = [_event(7036, "Warning")]
+        result = wdm.summarize_events(events)
+        assert "status" in result
+        assert "headline" in result
+        assert "insights" in result
+        assert "actions" in result

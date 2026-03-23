@@ -147,7 +147,7 @@ class TestCheckIntelCPU:
     def test_i9_14900k_detected(self, mock_winreg):
         mock_key = MagicMock()
         mock_winreg.OpenKey.return_value = mock_key
-        mock_winreg.QueryValueEx.return_value = (b'\x00\x00\x00\x00\x29\x01\x00\x00', 1)
+        mock_winreg.QueryValueEx.return_value = (b"\x00\x00\x00\x00\x29\x01\x00\x00", 1)
         mock_winreg.HKEY_LOCAL_MACHINE = 0x80000002
 
         sys_info = {"CPUName": "Intel(R) Core(TM) i9-14900K", "BIOSDate": "2025-01-10"}
@@ -160,7 +160,7 @@ class TestCheckIntelCPU:
     @patch.object(shd, "winreg")
     def test_old_bios_triggers_critical(self, mock_winreg):
         mock_winreg.OpenKey.return_value = MagicMock()
-        mock_winreg.QueryValueEx.return_value = (b'\x00\x00\x00\x00\x00\x00\x00\x00', 1)
+        mock_winreg.QueryValueEx.return_value = (b"\x00\x00\x00\x00\x00\x00\x00\x00", 1)
         mock_winreg.HKEY_LOCAL_MACHINE = 0x80000002
 
         sys_info = {"CPUName": "Intel(R) Core(TM) i9-14900K", "BIOSDate": "2024-03-15"}
@@ -172,7 +172,7 @@ class TestCheckIntelCPU:
     @patch.object(shd, "winreg")
     def test_mid_range_bios_triggers_warning(self, mock_winreg):
         mock_winreg.OpenKey.return_value = MagicMock()
-        mock_winreg.QueryValueEx.return_value = (b'\x00\x00\x00\x00\x00\x00\x00\x00', 1)
+        mock_winreg.QueryValueEx.return_value = (b"\x00\x00\x00\x00\x00\x00\x00\x00", 1)
         mock_winreg.HKEY_LOCAL_MACHINE = 0x80000002
 
         sys_info = {"CPUName": "Intel(R) Core(TM) i7-14700K", "BIOSDate": "2024-09-15"}
@@ -203,7 +203,7 @@ class TestCheckIntelCPU:
         sys_info = {"CPUName": "Intel(R) Core(TM) i9-14900K", "BIOSDate": "not-a-date"}
         with patch.object(shd, "winreg") as mock_winreg:
             mock_winreg.OpenKey.return_value = MagicMock()
-            mock_winreg.QueryValueEx.return_value = (b'\x00', 1)
+            mock_winreg.QueryValueEx.return_value = (b"\x00", 1)
             mock_winreg.HKEY_LOCAL_MACHINE = 0x80000002
             intel_check, crit, warn, info = shd.check_intel_cpu(sys_info)
         assert len(crit) == 1  # 2020-01-01 < 2024-08-01
@@ -242,6 +242,7 @@ class TestPSHelper:
     def _run_ps_with_mock(self, stdout="", as_json=False, side_effect=None):
         """Run shd.ps() with real subprocess module but mocked subprocess.run."""
         import subprocess as real_sp
+
         original = shd.subprocess
         shd.subprocess = real_sp  # restore real subprocess temporarily
         try:
@@ -257,7 +258,7 @@ class TestPSHelper:
             shd.subprocess = original
 
     def test_returns_stdout(self):
-        result, _ = self._run_ps_with_mock(stdout='  hello world  ')
+        result, _ = self._run_ps_with_mock(stdout="  hello world  ")
         assert result == "hello world"
 
     def test_json_parsing(self):
@@ -266,24 +267,26 @@ class TestPSHelper:
 
     def test_timeout_returns_empty_string(self):
         import subprocess as real_sp
+
         result, _ = self._run_ps_with_mock(side_effect=real_sp.TimeoutExpired("cmd", 30))
         assert result == ""
 
     def test_json_timeout_returns_empty_list(self):
         import subprocess as real_sp
+
         result, _ = self._run_ps_with_mock(side_effect=real_sp.TimeoutExpired("cmd", 30), as_json=True)
         assert result == []
 
     def test_bad_json_returns_empty_list(self):
-        result, _ = self._run_ps_with_mock(stdout='not valid json {{{', as_json=True)
+        result, _ = self._run_ps_with_mock(stdout="not valid json {{{", as_json=True)
         assert result == []
 
     def test_empty_output_no_json_parse(self):
-        result, _ = self._run_ps_with_mock(stdout='', as_json=True)
+        result, _ = self._run_ps_with_mock(stdout="", as_json=True)
         assert result == ""
 
     def test_command_construction(self):
-        _, mock_run = self._run_ps_with_mock(stdout='')
+        _, mock_run = self._run_ps_with_mock(stdout="")
         call_args = mock_run.call_args[0][0]
         assert call_args[0] == "powershell"
         assert "-NoProfile" in call_args
@@ -438,8 +441,10 @@ class TestAnalyzeDrivers:
 
     @patch.object(shd, "ps")
     def test_many_old_drivers_warning(self, mock_ps):
-        old = [{"DeviceName": f"Dev{i}", "Provider": "X", "Version": "1.0",
-                "Date": "2022-01-01", "IsSigned": True} for i in range(5)]
+        old = [
+            {"DeviceName": f"Dev{i}", "Provider": "X", "Version": "1.0", "Date": "2022-01-01", "IsSigned": True}
+            for i in range(5)
+        ]
         mock_ps.return_value = {"Total": 100, "ThirdParty": old, "Old": old, "Problematic": []}
         driver_data, crit, warn, info = shd.analyze_drivers()
         assert any("over 2 years old" in w for w in warn)
@@ -461,8 +466,7 @@ class TestCheckDiskHealth:
     @patch.object(shd, "ps")
     def test_unhealthy_disk_critical(self, mock_ps):
         mock_ps.return_value = {
-            "Disks": [{"FriendlyName": "Bad SSD", "HealthStatus": "Warning",
-                       "ReadErrors": 0, "WriteErrors": 0}],
+            "Disks": [{"FriendlyName": "Bad SSD", "HealthStatus": "Warning", "ReadErrors": 0, "WriteErrors": 0}],
             "Volumes": [],
         }
         disk_data, crit, warn, info = shd.check_disk_health()
@@ -472,8 +476,7 @@ class TestCheckDiskHealth:
     @patch.object(shd, "ps")
     def test_disk_errors_warning(self, mock_ps):
         mock_ps.return_value = {
-            "Disks": [{"FriendlyName": "SSD", "HealthStatus": "Healthy",
-                       "ReadErrors": 5, "WriteErrors": 0}],
+            "Disks": [{"FriendlyName": "SSD", "HealthStatus": "Healthy", "ReadErrors": 5, "WriteErrors": 0}],
             "Volumes": [],
         }
         disk_data, crit, warn, info = shd.check_disk_health()
@@ -491,8 +494,7 @@ class TestCheckDiskHealth:
     @patch.object(shd, "ps")
     def test_healthy_system(self, mock_ps):
         mock_ps.return_value = {
-            "Disks": [{"FriendlyName": "Good SSD", "HealthStatus": "Healthy",
-                       "ReadErrors": 0, "WriteErrors": 0}],
+            "Disks": [{"FriendlyName": "Good SSD", "HealthStatus": "Healthy", "ReadErrors": 0, "WriteErrors": 0}],
             "Volumes": [{"DriveLetter": "C:", "PercentFree": 55.0}],
         }
         disk_data, crit, warn, info = shd.check_disk_health()
@@ -522,8 +524,10 @@ class TestAnalyzeMemory:
     @patch.object(shd, "ps")
     def test_mismatched_speeds_warning(self, mock_ps):
         mock_ps.return_value = {
-            "Sticks": [], "TotalGB": 48.0,
-            "Speeds": [5600, 4800], "Sizes": [34359738368, 34359738368],
+            "Sticks": [],
+            "TotalGB": 48.0,
+            "Speeds": [5600, 4800],
+            "Sizes": [34359738368, 34359738368],
         }
         mem_data, crit, warn, info = shd.analyze_memory()
         assert mem_data["MismatchWarning"] is True
@@ -532,8 +536,10 @@ class TestAnalyzeMemory:
     @patch.object(shd, "ps")
     def test_xmp_warning_over_5600(self, mock_ps):
         mock_ps.return_value = {
-            "Sticks": [], "TotalGB": 32.0,
-            "Speeds": [6400], "Sizes": [34359738368],
+            "Sticks": [],
+            "TotalGB": 32.0,
+            "Speeds": [6400],
+            "Sizes": [34359738368],
         }
         mem_data, crit, warn, info = shd.analyze_memory()
         assert mem_data["XMPWarning"] is True
@@ -554,7 +560,8 @@ class TestAnalyzeMemory:
     @patch.object(shd, "ps")
     def test_mismatched_sizes_warning(self, mock_ps):
         mock_ps.return_value = {
-            "Sticks": [], "TotalGB": 48.0,
+            "Sticks": [],
+            "TotalGB": 48.0,
             "Speeds": [5600, 5600],
             "Sizes": [34359738368, 17179869184],
         }
@@ -571,7 +578,8 @@ class TestCheckThermals:
     @patch.object(shd, "ps")
     def test_normal_temps(self, mock_ps):
         mock_ps.return_value = {
-            "PowerPlan": "Balanced", "CPUPerformancePct": 95.0,
+            "PowerPlan": "Balanced",
+            "CPUPerformancePct": 95.0,
             "CPUThrottling": False,
             "Temperatures": [{"Zone": "TZ00", "TempC": 45.0, "TempF": 113.0}],
         }
@@ -582,7 +590,8 @@ class TestCheckThermals:
     @patch.object(shd, "ps")
     def test_critical_temp(self, mock_ps):
         mock_ps.return_value = {
-            "PowerPlan": "High Performance", "CPUPerformancePct": 100.0,
+            "PowerPlan": "High Performance",
+            "CPUPerformancePct": 100.0,
             "CPUThrottling": False,
             "Temperatures": [{"Zone": "TZ00", "TempC": 95.0, "TempF": 203.0}],
         }
@@ -593,7 +602,8 @@ class TestCheckThermals:
     @patch.object(shd, "ps")
     def test_elevated_temp_warning(self, mock_ps):
         mock_ps.return_value = {
-            "PowerPlan": "Balanced", "CPUPerformancePct": 90.0,
+            "PowerPlan": "Balanced",
+            "CPUPerformancePct": 90.0,
             "CPUThrottling": False,
             "Temperatures": [{"Zone": "TZ00", "TempC": 85.0, "TempF": 185.0}],
         }
@@ -603,8 +613,10 @@ class TestCheckThermals:
     @patch.object(shd, "ps")
     def test_throttling_warning(self, mock_ps):
         mock_ps.return_value = {
-            "PowerPlan": "Balanced", "CPUPerformancePct": 72.0,
-            "CPUThrottling": True, "Temperatures": [],
+            "PowerPlan": "Balanced",
+            "CPUPerformancePct": 72.0,
+            "CPUThrottling": True,
+            "Temperatures": [],
         }
         thermal_data, crit, warn, info = shd.check_thermals()
         assert any("throttling" in w for w in warn)
@@ -612,7 +624,8 @@ class TestCheckThermals:
     @patch.object(shd, "ps")
     def test_wmi_unavailable(self, mock_ps):
         mock_ps.return_value = {
-            "PowerPlan": "Unknown", "CPUPerformancePct": "N/A",
+            "PowerPlan": "Unknown",
+            "CPUPerformancePct": "N/A",
             "CPUThrottling": False,
             "Temperatures": [{"Zone": "N/A", "TempC": "WMI unavailable", "TempF": "Install HWiNFO64"}],
         }
@@ -748,10 +761,22 @@ class TestHTMLBuilders:
         assert result == ""
 
     def test_build_disk_cards(self):
-        disk_data = {"Disks": [{"FriendlyName": "SSD", "HealthStatus": "Healthy",
-                                "MediaType": "SSD", "Size_GB": 1000, "BusType": "NVMe",
-                                "Wear": "2%", "Temperature": "38C", "PowerOnHours": 4500,
-                                "ReadErrors": 0, "WriteErrors": 0}]}
+        disk_data = {
+            "Disks": [
+                {
+                    "FriendlyName": "SSD",
+                    "HealthStatus": "Healthy",
+                    "MediaType": "SSD",
+                    "Size_GB": 1000,
+                    "BusType": "NVMe",
+                    "Wear": "2%",
+                    "Temperature": "38C",
+                    "PowerOnHours": 4500,
+                    "ReadErrors": 0,
+                    "WriteErrors": 0,
+                }
+            ]
+        }
         result = shd.build_disk_cards(disk_data)
         assert "SSD" in result
         assert "status-ok" in result
@@ -797,6 +822,7 @@ class TestConvertToPDF:
 
     def test_file_uri_encoding(self):
         from urllib.parse import quote
+
         path = r"C:\shigsapps\windesktopmgr\System Health Reports\report.html"
         file_uri = "file:///" + quote(path.replace("\\", "/"), safe=":/")
         assert "System%20Health%20Reports" in file_uri
@@ -825,8 +851,17 @@ class TestSendEmailReport:
     def test_no_cred_file_returns_false(self):
         with patch("os.path.isfile", return_value=False):
             result = shd.send_email_report(
-                "/fake/report.html", None, {}, {"BugCheckCodes": [], "RecentCrashes": 0, "UnexpectedShutdowns": 0},
-                {"WHEAErrors": []}, {"ProblematicDrivers": []}, [], [], 100, "Good", "2026-03-19"
+                "/fake/report.html",
+                None,
+                {},
+                {"BugCheckCodes": [], "RecentCrashes": 0, "UnexpectedShutdowns": 0},
+                {"WHEAErrors": []},
+                {"ProblematicDrivers": []},
+                [],
+                [],
+                100,
+                "Good",
+                "2026-03-19",
             )
         assert result is False
 
@@ -844,25 +879,54 @@ class TestBuildHTMLReport:
 
     def _minimal_args(self):
         return dict(
-            sys_info={"ComputerName": "TEST", "Manufacturer": "Dell", "Model": "XPS",
-                       "CPUName": "i9-14900K", "TotalRAM_GB": 64, "OSName": "Windows 11",
-                       "OSVersion": "10.0", "OSBuild": "22631", "CPUCores": 24,
-                       "CPULogical": 32, "CPUMaxClock": "6000", "BIOSVersion": "2.18",
-                       "BIOSDate": "2025-01", "Baseboard": "Dell", "LastBoot": "2026-03-18",
-                       "Uptime": "1.00:00:00"},
-            intel_check={"IsAffectedCPU": False, "CPUFamily": "", "MicrocodeVersion": "",
-                         "Recommendation": "", "Details": "", "BIOSDate": ""},
-            bsod_data={"MinidumpFiles": [], "BugCheckCodes": [], "RecentCrashes": 0,
-                       "CrashSummary": [], "UnexpectedShutdowns": 0, "UnexpectedShutdownDetails": []},
+            sys_info={
+                "ComputerName": "TEST",
+                "Manufacturer": "Dell",
+                "Model": "XPS",
+                "CPUName": "i9-14900K",
+                "TotalRAM_GB": 64,
+                "OSName": "Windows 11",
+                "OSVersion": "10.0",
+                "OSBuild": "22631",
+                "CPUCores": 24,
+                "CPULogical": 32,
+                "CPUMaxClock": "6000",
+                "BIOSVersion": "2.18",
+                "BIOSDate": "2025-01",
+                "Baseboard": "Dell",
+                "LastBoot": "2026-03-18",
+                "Uptime": "1.00:00:00",
+            },
+            intel_check={
+                "IsAffectedCPU": False,
+                "CPUFamily": "",
+                "MicrocodeVersion": "",
+                "Recommendation": "",
+                "Details": "",
+                "BIOSDate": "",
+            },
+            bsod_data={
+                "MinidumpFiles": [],
+                "BugCheckCodes": [],
+                "RecentCrashes": 0,
+                "CrashSummary": [],
+                "UnexpectedShutdowns": 0,
+                "UnexpectedShutdownDetails": [],
+            },
             event_data={"SystemCritical": [], "SystemErrors": [], "WHEAErrors": []},
             driver_data={"TotalDrivers": 0, "ThirdPartyDrivers": [], "OldDrivers": [], "ProblematicDrivers": []},
             disk_data={"Disks": [], "Volumes": []},
             mem_data={"Sticks": [], "TotalGB": 64, "XMPWarning": False, "MismatchWarning": False},
             thermal_data={"PowerPlan": "Balanced", "CPUPerformancePct": 95, "Temperatures": []},
             update_history=[],
-            app_crashes=[], app_hangs=[],
-            critical=[], warnings=[], info=[],
-            score=100, score_label="Good", score_color="#22c55e",
+            app_crashes=[],
+            app_hangs=[],
+            critical=[],
+            warnings=[],
+            info=[],
+            score=100,
+            score_label="Good",
+            score_color="#22c55e",
         )
 
     def test_report_contains_required_sections(self):
@@ -939,11 +1003,15 @@ class TestEdgeCases:
 class TestCollectWarrantyData:
     """Test the collect_warranty_data function."""
 
-    def _make_inputs(self, cpu_name="Intel(R) Core(TM) i9-14900K", bsod_count=3,
-                     whea_count=5, shutdowns=2, bugcheck_codes=None):
+    def _make_inputs(
+        self, cpu_name="Intel(R) Core(TM) i9-14900K", bsod_count=3, whea_count=5, shutdowns=2, bugcheck_codes=None
+    ):
         sys_info = {
-            "CPUName": cpu_name, "BIOSVersion": "2.18.0", "BIOSDate": "2025-01-10",
-            "Manufacturer": "Dell Inc.", "Model": "XPS 8960",
+            "CPUName": cpu_name,
+            "BIOSVersion": "2.18.0",
+            "BIOSDate": "2025-01-10",
+            "Manufacturer": "Dell Inc.",
+            "Model": "XPS 8960",
         }
         intel_check = {
             "IsAffectedCPU": bool(re.search(r"i[579]-1[34]\d{3}", cpu_name)),
@@ -967,10 +1035,21 @@ class TestCollectWarrantyData:
             "ABC1234",
         ]
         warranty = shd.collect_warranty_data(*self._make_inputs())
-        required = ["CPUModel", "CPUSerial", "IsAffectedCPU", "MicrocodeVersion",
-                     "BIOSVersion", "BIOSDate", "DellServiceTag", "BSODCount30Days",
-                     "WHEAErrorCount", "BugCheckCodes", "IntelWarrantyURL",
-                     "DellSupportURL", "EvidenceSummary"]
+        required = [
+            "CPUModel",
+            "CPUSerial",
+            "IsAffectedCPU",
+            "MicrocodeVersion",
+            "BIOSVersion",
+            "BIOSDate",
+            "DellServiceTag",
+            "BSODCount30Days",
+            "WHEAErrorCount",
+            "BugCheckCodes",
+            "IntelWarrantyURL",
+            "DellSupportURL",
+            "EvidenceSummary",
+        ]
         for field in required:
             assert field in warranty, f"Missing field: {field}"
 
@@ -1012,8 +1091,7 @@ class TestCollectWarrantyData:
     @patch.object(shd, "ps")
     def test_hw_codes_highlighted_in_evidence(self, mock_ps):
         mock_ps.side_effect = [{"ProcessorId": "TEST", "SerialNumber": "N/A"}, "TAG"]
-        warranty = shd.collect_warranty_data(
-            *self._make_inputs(bugcheck_codes=["0x00000124", "0x0000003B"]))
+        warranty = shd.collect_warranty_data(*self._make_inputs(bugcheck_codes=["0x00000124", "0x0000003B"]))
         evidence = warranty["EvidenceSummary"]
         assert "Hardware-related codes: 0x00000124" in evidence
 
@@ -1052,8 +1130,7 @@ class TestCollectWarrantyData:
 class TestBuildWarrantySection:
     """Test the build_warranty_section HTML builder."""
 
-    def _make_warranty(self, affected=True, bsod=3, whea=5, shutdowns=2,
-                       codes=None, tag="SVC123"):
+    def _make_warranty(self, affected=True, bsod=3, whea=5, shutdowns=2, codes=None, tag="SVC123"):
         return {
             "IsAffectedCPU": affected,
             "CPUModel": "Intel(R) Core(TM) i9-14900K",

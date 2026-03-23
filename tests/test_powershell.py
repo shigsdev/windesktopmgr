@@ -1186,20 +1186,48 @@ class TestGetBsodEvents:
         result = wdm.get_bsod_events()
         assert isinstance(result, list)
 
+    def test_happy_path_returns_correct_count(self, mocker):
+        _mock_run(mocker, stdout=self.SAMPLE)
+        result = wdm.get_bsod_events()
+        assert len(result) == 2
+
+    def test_happy_path_has_expected_fields(self, mocker):
+        _mock_run(mocker, stdout=self.SAMPLE)
+        result = wdm.get_bsod_events()
+        for item in result:
+            assert "Id" in item or "EventId" in item
+            assert "TimeCreated" in item
+            assert "Message" in item
+
+    def test_command_queries_correct_event_ids(self, mocker):
+        m = _mock_run(mocker, stdout="[]")
+        wdm.get_bsod_events()
+        ps_cmd = m.call_args[0][0][-1]
+        assert "1001" in ps_cmd
+        assert "41" in ps_cmd
+        assert "6008" in ps_cmd
+
+    def test_single_object_normalized_to_list(self, mocker):
+        single = json.dumps({"Id": 1001, "TimeCreated": "2026-03-10T08:00:00", "Message": "crash"})
+        _mock_run(mocker, stdout=single)
+        result = wdm.get_bsod_events()
+        assert isinstance(result, list)
+        assert len(result) == 1
+
     def test_empty_returns_empty_list(self, mocker):
         _mock_run(mocker, stdout="")
         result = wdm.get_bsod_events()
-        assert isinstance(result, list)
+        assert result == []
 
     def test_malformed_json_returns_empty_list(self, mocker):
         _mock_run(mocker, stdout="<bad/>")
         result = wdm.get_bsod_events()
-        assert isinstance(result, list)
+        assert result == []
 
     def test_timeout_returns_empty_list(self, mocker):
         _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=30))
         result = wdm.get_bsod_events()
-        assert isinstance(result, list)
+        assert result == []
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1267,6 +1295,107 @@ class TestGetStartupItems:
         ]
         result = wdm.get_startup_items()
         assert isinstance(result, list)
+
+    def test_timeout_returns_empty_list(self, mocker):
+        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=30))
+        result = wdm.get_startup_items()
+        assert result == []
+
+    def test_nonzero_returncode_handled(self, mocker):
+        _mock_run(mocker, stdout="[]", returncode=1, stderr="error")
+        result = wdm.get_startup_items()
+        assert isinstance(result, list)
+
+    def test_command_queries_registry_run_keys(self, mocker):
+        m = _mock_run(mocker, stdout="[]")
+        wdm.get_startup_items()
+        ps_cmd = m.call_args[0][0][-1]
+        assert "CurrentVersion\\Run" in ps_cmd or "Get-ScheduledTask" in ps_cmd
+
+    def test_single_object_normalized(self, mocker):
+        single = json.dumps(
+            {"Name": "OneDrive", "Command": "onedrive.exe", "Location": "HKCU Run", "Type": "registry_hkcu"}
+        )
+        _mock_run(mocker, stdout=single)
+        result = wdm.get_startup_items()
+        assert isinstance(result, list)
+        assert len(result) == 1
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# query_event_log — PowerShell event log queries
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestQueryEventLog:
+    SAMPLE = json.dumps(
+        [
+            {
+                "Time": "2026-03-10T08:00:00",
+                "Id": 7036,
+                "Level": "Information",
+                "Source": "Service Control Manager",
+                "Message": "The Windows Update service entered the stopped state.",
+            },
+            {
+                "Time": "2026-03-10T07:55:00",
+                "Id": 1001,
+                "Level": "Error",
+                "Source": "Microsoft-Windows-WER-SystemErrorReporting",
+                "Message": "The computer has rebooted from a bugcheck.",
+            },
+        ]
+    )
+
+    def test_happy_path_returns_list(self, mocker):
+        _mock_run(mocker, stdout=self.SAMPLE)
+        result = wdm.query_event_log({"log": "System"})
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert result[0]["Id"] == 7036
+
+    def test_empty_output_returns_empty_list(self, mocker):
+        _mock_run(mocker, stdout="")
+        result = wdm.query_event_log({"log": "System"})
+        assert result == []
+
+    def test_malformed_json_returns_empty_list(self, mocker):
+        _mock_run(mocker, stdout="not json at all!!!")
+        result = wdm.query_event_log({"log": "System"})
+        assert result == []
+
+    def test_timeout_returns_empty_list(self, mocker):
+        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=30))
+        result = wdm.query_event_log({"log": "System"})
+        assert result == []
+
+    def test_nonzero_returncode_handled(self, mocker):
+        _mock_run(mocker, stdout="[]", returncode=1, stderr="access denied")
+        result = wdm.query_event_log({"log": "System"})
+        assert isinstance(result, list)
+
+    def test_command_uses_get_winevent(self, mocker):
+        m = _mock_run(mocker, stdout="[]")
+        wdm.query_event_log({"log": "System"})
+        ps_cmd = m.call_args[0][0][-1]
+        assert "Get-WinEvent" in ps_cmd
+
+    def test_input_sanitization(self, mocker):
+        m = _mock_run(mocker, stdout="[]")
+        wdm.query_event_log({"log": '"; rm -rf /'})
+        ps_cmd = m.call_args[0][0][-1]
+        # Semicolons and quotes should be stripped by re.sub(r"[^\w\s\-/]", "", log)
+        assert '";' not in ps_cmd
+        assert "rm -rf" in ps_cmd  # letters/spaces survive, but dangerous chars don't
+
+    def test_single_object_normalized(self, mocker):
+        single = json.dumps(
+            {"Time": "2026-03-10T08:00:00", "Id": 7036, "Level": "Information", "Source": "SCM", "Message": "test"}
+        )
+        _mock_run(mocker, stdout=single)
+        result = wdm.query_event_log({"log": "System"})
+        assert isinstance(result, list)
+        assert len(result) == 1
 
 
 # ══════════════════════════════════════════════════════════════════════════════
