@@ -228,6 +228,7 @@
       <div class="tab-chip" id="tab-sysinfo" style="border-color:#00e67644;background:#00e6760d"><span class="tab-icon">🖥</span>System Info</div>
       <div class="tab-chip" id="tab-remediation" style="border-color:#ff704344;background:#ff70430d"><span class="tab-icon">🔧</span>Remediation</div>
       <div class="tab-chip" id="tab-warranty" style="border-color:#ffd74044;background:#ffd7400d"><span class="tab-icon">🛡</span>Warranty</div>
+      <div class="tab-chip" id="tab-homenet" style="border-color:#448aff44;background:#448aff0d"><span class="tab-icon">🏠</span>Home Network</div>
     </div>
   </div>
 
@@ -272,14 +273,14 @@
       <span style="font-size:9px;color:var(--cyan);font-weight:700;letter-spacing:.08em">FETCH / POST</span>
       <svg width="12" height="20"><polygon points="1,6 6,0 11,6" fill="var(--purple)"/><line x1="6" y1="6" x2="6" y2="20" stroke="var(--purple)" stroke-width="2"/></svg>
     </div>
-    <span style="font-size:9px;color:var(--muted);margin-left:12px">HTTP JSON · 49 API endpoints · localhost:5000</span>
+    <span style="font-size:9px;color:var(--muted);margin-left:12px">HTTP JSON · 58 API endpoints · localhost:5000</span>
   </div>
 
   <!-- ── LAYER 2: FLASK BACKEND ───────────────────────────────── -->
   <div class="row row-flask" id="layer-flask">
-    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~8,100 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · Remediation Engine</div>
+    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~9,560 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · Remediation Engine</div>
     <div style="margin-bottom:10px">
-      <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes (46 endpoints)</div>
+      <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes (58 endpoints)</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
         <div class="route-chip" id="rt-index"><span class="method">GET</span>/</div>
         <div class="route-chip" id="rt-scan"><span class="method">POST</span>/api/scan/start</div>
@@ -327,6 +328,16 @@
         <div class="route-chip" id="rt-rem-actions" style="border-color:#ff704344;background:#ff70430d;color:var(--orange)"><span class="method">GET</span>/api/remediation/actions</div>
         <div class="route-chip" style="border-color:#ff704344;background:#ff70430d;color:var(--orange)"><span class="method">GET</span>/api/remediation/history</div>
         <div class="route-chip" style="border-color:#ff704344;background:#ff70430d;color:var(--orange)"><span class="method">POST</span>/api/remediation/run</div>
+        <div class="route-chip" id="rt-homenet-creds" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">GET</span>/api/homenet/credentials</div>
+        <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">POST</span>/api/homenet/credentials/save</div>
+        <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">POST</span>/api/homenet/credentials/delete</div>
+        <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">POST</span>/api/homenet/credentials/test</div>
+        <div class="route-chip" id="rt-homenet-scan" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">POST</span>/api/homenet/scan</div>
+        <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">POST</span>/api/homenet/scan/light</div>
+        <div class="route-chip" id="rt-homenet-inv" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">GET</span>/api/homenet/inventory</div>
+        <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">POST</span>/api/homenet/resolve-names</div>
+        <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">POST</span>/api/homenet/device/update</div>
+        <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">GET</span>/api/homenet/switch</div>
       </div>
     </div>
     <div>
@@ -413,6 +424,7 @@
         <div class="cache-chip" id="ch-services">services_item_cache.json</div>
         <div class="cache-chip" id="ch-process">process_cache.json</div>
         <div class="cache-chip" id="ch-bios">bios_cache.json</div>
+        <div class="cache-chip" id="ch-homenet" style="border-color:#448aff44;color:var(--blue)">homenet_inventory.json</div>
       </div>
     </div>
   </div>
@@ -515,6 +527,14 @@
         <div class="wmi-title">cmdkey + Get-SmbConnection</div>
         <div class="wmi-sub">Credential Manager · SMB drives · NAS health</div>
       </div>
+      <div class="wmi-chip" id="wmi-arp" style="border-color:#448aff44">
+        <div class="wmi-title" style="color:var(--blue)">arp -a + DNS + NetBIOS</div>
+        <div class="wmi-sub">ARP table scan · reverse DNS · nbtstat · name resolution</div>
+      </div>
+      <div class="wmi-chip" id="wmi-keyring" style="border-color:#448aff44">
+        <div class="wmi-title" style="color:var(--blue)">keyring (DPAPI)</div>
+        <div class="wmi-sub">Windows Credential Manager · encrypted router/switch passwords</div>
+      </div>
     </div>
   </div>
 
@@ -557,8 +577,23 @@
       </div>
       <div class="ext-chip" style="border-color:#a855f744;background:#a855f70d">
         <div class="ext-title" style="color:var(--purple)">Claude API (Anthropic)</div>
-        <div class="ext-sub">api.anthropic.com · claude-sonnet-4-20250514<br>NLQ tool use loop · 18 data tools · natural language answers</div>
+        <div class="ext-sub">api.anthropic.com · claude-sonnet-4-20250514<br>NLQ tool use loop · 20 data tools · natural language answers</div>
         <span class="ext-badge" style="background:#a855f722;color:var(--purple)">per-query</span>
+      </div>
+      <div class="ext-chip" style="border-color:#448aff44;background:#448aff0d">
+        <div class="ext-title" style="color:var(--blue)">Verizon CR1000A Router</div>
+        <div class="ext-sub">192.168.1.1 · ArcMD5 auth (SHA512)<br>Device list · DHCP leases · connected clients</div>
+        <span class="ext-badge" style="background:#448aff22;color:var(--blue)">LAN API</span>
+      </div>
+      <div class="ext-chip" style="border-color:#448aff44;background:#448aff0d">
+        <div class="ext-title" style="color:var(--blue)">Orbi RBRE960 Router</div>
+        <div class="ext-sub">10.0.0.1 · SOAP XML over HTTPS<br>GetAttachDevice2 · wireless clients · mesh nodes</div>
+        <span class="ext-badge" style="background:#448aff22;color:var(--blue)">LAN SOAP</span>
+      </div>
+      <div class="ext-chip" style="border-color:#448aff44;background:#448aff0d">
+        <div class="ext-title" style="color:var(--blue)">TP-Link TL-SG2218 Switch</div>
+        <div class="ext-sub">Dynamic IP (MAC: DC:62:79:F3:52:5C) · SNMPv2c<br>Port status · MAC table · Bridge MIB</div>
+        <span class="ext-badge" style="background:#448aff22;color:var(--blue)">LAN SNMP</span>
       </div>
     </div>
   </div>
@@ -572,15 +607,15 @@
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <div class="fs-chip">
             <div class="fs-title">windesktopmgr.py</div>
-            <div class="fs-sub">Flask backend · ~7,640 lines</div>
+            <div class="fs-sub">Flask backend · ~9,560 lines</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">templates/index.html</div>
-            <div class="fs-sub">Single-page frontend · ~4,180 lines</div>
+            <div class="fs-sub">Single-page frontend · ~5,080 lines</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">tray.py</div>
-            <div class="fs-sub">System tray mode · ~312 lines · pystray + Pillow</div>
+            <div class="fs-sub">System tray mode · ~354 lines · pystray + Pillow</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">SystemHealthDiag.py</div>
