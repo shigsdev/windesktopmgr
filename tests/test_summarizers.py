@@ -137,6 +137,19 @@ class TestSummarizeDrivers:
         result = wdm.summarize_drivers(drivers)
         assert result["status"] == "critical"
 
+    def test_all_unknown_headline_not_up_to_date(self):
+        """When all drivers are unknown (WU failed), headline should NOT say 'up to date'."""
+        drivers = [_driver("Device A", "unknown"), _driver("Device B", "unknown")]
+        result = wdm.summarize_drivers(drivers)
+        assert "up to date" not in result["headline"].lower()
+        assert "could not be verified" in result["headline"] or "unknown" in result["headline"]
+
+    def test_mixed_ok_and_unknown_headline(self):
+        drivers = [_driver("Intel NIC", "up_to_date"), _driver("Mystery", "unknown")]
+        result = wdm.summarize_drivers(drivers)
+        assert "1" in result["headline"]  # at least mentions count
+        assert "up to date" not in result["headline"].lower() or "unknown" in result["headline"]
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # summarize_bsod

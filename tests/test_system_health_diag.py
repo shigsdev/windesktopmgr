@@ -572,7 +572,7 @@ class TestAnalyzeDrivers:
     """Test the analyze_drivers function."""
 
     @patch.object(shd, "ps")
-    def test_problematic_drivers_warning(self, mock_ps):
+    def test_problematic_drivers_critical(self, mock_ps):
         mock_ps.return_value = {
             "Total": 100,
             "ThirdParty": [],
@@ -581,7 +581,7 @@ class TestAnalyzeDrivers:
         }
         driver_data, crit, warn, info = shd.analyze_drivers()
         assert len(driver_data["ProblematicDrivers"]) == 1
-        assert any("driver errors" in w for w in warn)
+        assert any("driver errors" in c for c in crit)
 
     @patch.object(shd, "ps")
     def test_many_old_drivers_warning(self, mock_ps):

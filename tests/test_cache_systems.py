@@ -966,29 +966,47 @@ class TestBuildBsodAnalysis:
 
 
 class TestRunScan:
-    def test_completes_scan(self, mocker):
+    _DEFAULT_INSTALLED = [
+        {
+            "DeviceName": "Intel NIC",
+            "DriverVersion": "1.0",
+            "DriverDate": "",
+            "DeviceClass": "Network",
+            "Manufacturer": "Intel",
+        }
+    ]
+    _SENTINEL = object()
+
+    def _mock_scan_deps(self, mocker, installed=_SENTINEL, wu=_SENTINEL, nvidia=None):
+        """Helper to mock all run_scan dependencies."""
         mocker.patch(
             "windesktopmgr.get_installed_drivers",
-            return_value=[
-                {
-                    "DeviceName": "Intel NIC",
-                    "DriverVersion": "1.0",
-                    "DriverDate": "",
-                    "DeviceClass": "Network",
-                    "Manufacturer": "Intel",
-                }
-            ],
+            return_value=self._DEFAULT_INSTALLED if installed is self._SENTINEL else installed,
         )
-        mocker.patch("windesktopmgr.get_windows_update_drivers", return_value={})
+        mocker.patch(
+            "windesktopmgr.get_windows_update_drivers",
+            return_value={} if wu is self._SENTINEL else wu,
+        )
+        mocker.patch("windesktopmgr.get_nvidia_update_info", return_value=nvidia)
+
+    def test_completes_scan_wu_success_no_updates(self, mocker):
+        self._mock_scan_deps(mocker, wu={})
         wdm.run_scan()
         assert wdm._scan_status["status"] == "complete"
         assert len(wdm._scan_results) == 1
-        assert wdm._scan_results[0]["status"] == "unknown"  # empty WU → unknown
+        assert wdm._scan_results[0]["status"] == "up_to_date"  # WU success, 0 updates
+
+    def test_completes_scan_wu_failure(self, mocker):
+        self._mock_scan_deps(mocker, wu=None)
+        wdm.run_scan()
+        assert wdm._scan_status["status"] == "complete"
+        assert len(wdm._scan_results) == 1
+        assert wdm._scan_results[0]["status"] == "unknown"  # WU failed → unknown
 
     def test_with_wu_match(self, mocker):
-        mocker.patch(
-            "windesktopmgr.get_installed_drivers",
-            return_value=[
+        self._mock_scan_deps(
+            mocker,
+            installed=[
                 {
                     "DeviceName": "Intel Ethernet Controller",
                     "DriverVersion": "1.0",
@@ -997,10 +1015,7 @@ class TestRunScan:
                     "Manufacturer": "Intel",
                 }
             ],
-        )
-        mocker.patch(
-            "windesktopmgr.get_windows_update_drivers",
-            return_value={
+            wu={
                 "intel ethernet controller update": {
                     "Title": "Intel Ethernet Controller Update",
                     "DriverVersion": "2.0",
@@ -1011,9 +1026,9 @@ class TestRunScan:
         assert wdm._scan_results[0]["status"] == "update_available"
 
     def test_results_sorted(self, mocker):
-        mocker.patch(
-            "windesktopmgr.get_installed_drivers",
-            return_value=[
+        self._mock_scan_deps(
+            mocker,
+            installed=[
                 {
                     "DeviceName": "Zzz Device",
                     "DriverVersion": "1.0",
@@ -1029,11 +1044,108 @@ class TestRunScan:
                     "Manufacturer": "",
                 },
             ],
-        )
-        mocker.patch(
-            "windesktopmgr.get_windows_update_drivers",
-            return_value={"aaa device update": {"Title": "Aaa Device Update", "DriverVersion": "2.0"}},
+            wu={"aaa device update": {"Title": "Aaa Device Update", "DriverVersion": "2.0"}},
         )
         wdm.run_scan()
         # update_available sorts before unknown/up_to_date
         assert wdm._scan_results[0]["name"] == "Aaa Device"
+
+    def test_nvidia_update_detected_in_scan(self, mocker):
+        """NVIDIA driver with pending update shows update_available via NVIDIA App."""
+        self._mock_scan_deps(
+            mocker,
+            installed=[
+                {
+                    "DeviceName": "NVIDIA GeForce RTX 4060 Ti",
+                    "DriverVersion": "32.0.15.9174",
+                    "DriverDate": "2025-01-15",
+                    "DeviceClass": "Display",
+                    "Manufacturer": "NVIDIA",
+                }
+            ],
+            wu={},  # WU has no NVIDIA update — but NVIDIA App does
+            nvidia={
+                "Name": "NVIDIA GeForce RTX 4060 Ti",
+                "InstalledVersion": "91.74",
+                "LatestVersion": "595.79",
+                "UpdateAvailable": True,
+            },
+        )
+        wdm.run_scan()
+        nv = wdm._scan_results[0]
+        assert nv["status"] == "update_available"
+        assert nv["latest_version"] == "595.79"
+        assert nv["download_url"] == "nvidia-app:"
+
+    def test_nvidia_current_shows_up_to_date(self, mocker):
+        """NVIDIA driver that is current shows up_to_date (not unknown)."""
+        self._mock_scan_deps(
+            mocker,
+            installed=[
+                {
+                    "DeviceName": "NVIDIA GeForce RTX 4060 Ti",
+                    "DriverVersion": "32.0.15.9579",
+                    "DriverDate": "2026-03-10",
+                    "DeviceClass": "Display",
+                    "Manufacturer": "NVIDIA",
+                }
+            ],
+            wu={},
+            nvidia={
+                "Name": "NVIDIA GeForce RTX 4060 Ti",
+                "InstalledVersion": "595.79",
+                "LatestVersion": "595.79",
+                "UpdateAvailable": False,
+            },
+        )
+        wdm.run_scan()
+        nv = wdm._scan_results[0]
+        assert nv["status"] == "up_to_date"
+
+    def test_nvidia_none_does_not_crash(self, mocker):
+        """When no NVIDIA GPU exists, scan still works normally."""
+        self._mock_scan_deps(
+            mocker,
+            installed=[
+                {
+                    "DeviceName": "NVIDIA High Definition Audio",
+                    "DriverVersion": "1.4.5.7",
+                    "DriverDate": "",
+                    "DeviceClass": "Audio",
+                    "Manufacturer": "Microsoft",
+                }
+            ],
+            wu={},
+            nvidia=None,
+        )
+        wdm.run_scan()
+        # WU success with 0 updates + no nvidia_info → up_to_date
+        assert wdm._scan_results[0]["status"] == "up_to_date"
+
+    def test_wu_match_takes_precedence_over_nvidia_app(self, mocker):
+        """If Windows Update has an NVIDIA update, it takes precedence."""
+        self._mock_scan_deps(
+            mocker,
+            installed=[
+                {
+                    "DeviceName": "NVIDIA GeForce RTX 4060 Ti",
+                    "DriverVersion": "32.0.15.9174",
+                    "DriverDate": "",
+                    "DeviceClass": "Display",
+                    "Manufacturer": "NVIDIA",
+                }
+            ],
+            wu={
+                "nvidia geforce rtx 4060 ti update": {
+                    "Title": "NVIDIA GeForce RTX 4060 Ti Update",
+                    "DriverVersion": "32.0.15.9579",
+                }
+            },
+            nvidia={"UpdateAvailable": True, "LatestVersion": "595.79"},
+        )
+        wdm.run_scan()
+        nv = wdm._scan_results[0]
+        assert nv["status"] == "update_available"
+        # WU match version, not NVIDIA App version
+        assert nv["latest_version"] == "32.0.15.9579"
+        assert nv["download_url"] == "ms-settings:windowsupdate"

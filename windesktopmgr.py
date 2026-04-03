@@ -355,10 +355,50 @@ if ($gpu) {
         return {"old_drivers": [], "problematic_drivers": [], "nvidia": None}
 
 
-def get_windows_update_drivers() -> dict:
+def get_nvidia_update_info() -> dict | None:
+    """Check NVIDIA App registry for pending GPU driver update.
+
+    Returns dict with InstalledVersion, LatestVersion, UpdateAvailable, Name
+    or None if no NVIDIA GPU found.
+    """
+    ps = r"""
+$gpu = Get-CimInstance Win32_VideoController -EA SilentlyContinue | Where-Object { $_.Name -like '*NVIDIA*' } | Select-Object -First 1
+if (-not $gpu) { Write-Output ''; exit 0 }
+$nvVer = $gpu.DriverVersion
+$parts = $nvVer -split '\.'
+$nvShort = ''
+if ($parts.Count -ge 4) { $nvShort = $parts[2].Substring($parts[2].Length - 2) + '.' + $parts[3].Substring($parts[3].Length - 2) }
+$nvLatest = ''
+foreach ($regPath in @(
+    'HKLM:\SOFTWARE\NVIDIA Corporation\Global\GFExperience',
+    'HKLM:\SOFTWARE\NVIDIA Corporation\Global\GridLicensing'
+)) {
+    if (Test-Path $regPath) {
+        $reg = Get-ItemProperty $regPath -EA SilentlyContinue
+        if ($reg.DriverRecommendedVersion) { $nvLatest = $reg.DriverRecommendedVersion; break }
+    }
+}
+$updateAvail = $false
+if ($nvLatest -and $nvLatest -ne $nvShort -and $nvLatest -ne $nvVer) { $updateAvail = $true }
+@{Name=$gpu.Name;InstalledVersion=$nvShort;WindowsVersion=$nvVer;LatestVersion=$nvLatest;UpdateAvailable=$updateAvail} | ConvertTo-Json
+"""
+    try:
+        r = subprocess.run(
+            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=15
+        )
+        raw = r.stdout.strip()
+        if not raw:
+            return None
+        return json.loads(raw)
+    except Exception as e:
+        print(f"[NVIDIA check] {e}")
+        return None
+
+
+def get_windows_update_drivers() -> dict | None:
     """
     Use Windows Update API via PowerShell to find available driver updates.
-    Returns a dict keyed by driver title (lowercase) -> update info.
+    Returns a dict keyed by driver title (lowercase) -> update info, or None on failure.
     """
     global _dell_cache
     if _dell_cache is not None:
@@ -401,12 +441,14 @@ try {
         return lookup
     except Exception as e:
         print(f"[WU error] {e}")
-        _dell_cache = {}
-        return {}
+        _dell_cache = None  # None = failure; {} = success with 0 updates
+        return None
 
 
-def find_wu_match(name: str, wu_updates: dict) -> dict | None:
+def find_wu_match(name: str, wu_updates: dict | None) -> dict | None:
     """Fuzzy-match an installed driver name against Windows Update results."""
+    if not wu_updates:
+        return None
     name_clean = re.sub(r"[®™()\[\]]", "", name).lower()
     name_words = set(name_clean.split()) - {
         "the",
@@ -450,8 +492,14 @@ def run_scan():
     wu_updates = get_windows_update_drivers()
     _scan_status = {
         "status": "scanning",
-        "progress": 70,
-        "message": f"Found {len(wu_updates)} WU driver update(s) — comparing…",
+        "progress": 60,
+        "message": f"Found {len(wu_updates or {})} WU driver update(s) — checking NVIDIA App…",
+    }
+    nvidia_info = get_nvidia_update_info()
+    _scan_status = {
+        "status": "scanning",
+        "progress": 75,
+        "message": "Comparing installed drivers against available updates…",
     }
     results = []
     for drv in installed:
@@ -471,7 +519,15 @@ def run_scan():
         if match:
             status = "update_available"
             latest_ver = match.get("DriverVersion") or match.get("Title", "")
-        elif not wu_updates:
+        elif nvidia_info and "nvidia" in name.lower() and nvidia_info.get("UpdateAvailable"):
+            # NVIDIA App detected a pending Studio/Game Ready driver update
+            status = "update_available"
+            latest_ver = nvidia_info.get("LatestVersion", "")
+            download_url = "nvidia-app:"  # signals UI to show "Open NVIDIA App"
+        elif nvidia_info and "nvidia" in name.lower() and not nvidia_info.get("UpdateAvailable"):
+            # NVIDIA App confirms driver is current
+            status = "up_to_date"
+        elif wu_updates is None:
             # WU query failed entirely — fall back to unknown
             status = "unknown"
 
@@ -1929,7 +1985,14 @@ def summarize_drivers(results: list) -> dict:
         if any(i["level"] == "warning" for i in insights)
         else "ok"
     )
-    headline = f"{len(updates)} update(s) need attention" if updates else f"All {len(results)} drivers up to date"
+    if updates:
+        headline = f"{len(updates)} update(s) need attention"
+    elif unknown and not ok:
+        headline = f"{len(unknown)} driver(s) could not be verified"
+    elif unknown:
+        headline = f"{len(ok)} driver(s) verified, {len(unknown)} unknown"
+    else:
+        headline = f"All {len(results)} drivers up to date"
     return {"status": status, "headline": headline, "insights": insights, "actions": actions}
 
 

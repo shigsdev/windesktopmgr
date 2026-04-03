@@ -455,8 +455,9 @@ $prob = @(Get-CimInstance Win32_PnPEntity | Where-Object { $_.ConfigManagerError
     }
 
     if len(driver_data["ProblematicDrivers"]) > 0:
-        warnings.append(
-            f"{len(driver_data['ProblematicDrivers'])} device(s) reporting driver errors. These could contribute to system instability."
+        critical.append(
+            f"{len(driver_data['ProblematicDrivers'])} device(s) reporting driver errors (ConfigManagerErrorCode != 0). "
+            "These devices may not function correctly and could contribute to system instability."
         )
     if len(driver_data["OldDrivers"]) > 3:
         warnings.append(

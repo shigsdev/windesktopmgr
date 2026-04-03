@@ -157,15 +157,15 @@ class TestGetWindowsUpdateDrivers:
         result = wdm.get_windows_update_drivers()
         assert result == {}
 
-    def test_malformed_json_returns_empty_dict(self, mocker):
+    def test_malformed_json_returns_none(self, mocker):
         _mock_run(mocker, stdout="<html>error page</html>")
         result = wdm.get_windows_update_drivers()
-        assert result == {}
+        assert result is None
 
-    def test_timeout_returns_empty_dict(self, mocker):
+    def test_timeout_returns_none(self, mocker):
         _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=60))
         result = wdm.get_windows_update_drivers()
-        assert result == {}
+        assert result is None
 
     def test_command_searches_for_drivers(self, mocker):
         m = _mock_run(mocker, stdout=self.SAMPLE)
@@ -2389,3 +2389,74 @@ class TestGetDriverHealth:
         wdm.get_driver_health()
         cmd = m.call_args[0][0][-1]
         assert "ConfigManagerErrorCode" in cmd
+
+
+class TestGetNvidiaUpdateInfo:
+    """Tests for get_nvidia_update_info() — NVIDIA App registry check for Driver Manager tab."""
+
+    SAMPLE = json.dumps(
+        {
+            "Name": "NVIDIA GeForce RTX 4060 Ti",
+            "InstalledVersion": "91.74",
+            "WindowsVersion": "32.0.15.9174",
+            "LatestVersion": "595.79",
+            "UpdateAvailable": True,
+        }
+    )
+
+    SAMPLE_CURRENT = json.dumps(
+        {
+            "Name": "NVIDIA GeForce RTX 4060 Ti",
+            "InstalledVersion": "595.79",
+            "WindowsVersion": "32.0.15.9579",
+            "LatestVersion": "595.79",
+            "UpdateAvailable": False,
+        }
+    )
+
+    def test_happy_path_update_available(self, mocker):
+        _mock_run(mocker, stdout=self.SAMPLE)
+        result = wdm.get_nvidia_update_info()
+        assert result is not None
+        assert result["UpdateAvailable"] is True
+        assert result["LatestVersion"] == "595.79"
+        assert result["InstalledVersion"] == "91.74"
+        assert "RTX 4060" in result["Name"]
+
+    def test_no_nvidia_gpu_returns_none(self, mocker):
+        _mock_run(mocker, stdout="")
+        result = wdm.get_nvidia_update_info()
+        assert result is None
+
+    def test_driver_current_no_update(self, mocker):
+        _mock_run(mocker, stdout=self.SAMPLE_CURRENT)
+        result = wdm.get_nvidia_update_info()
+        assert result is not None
+        assert result["UpdateAvailable"] is False
+
+    def test_timeout_returns_none(self, mocker):
+        mocker.patch(
+            "windesktopmgr.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=15),
+        )
+        result = wdm.get_nvidia_update_info()
+        assert result is None
+
+    def test_malformed_json_returns_none(self, mocker):
+        _mock_run(mocker, stdout="not json at all")
+        result = wdm.get_nvidia_update_info()
+        assert result is None
+
+    def test_command_queries_nvidia_gpu(self, mocker):
+        m = _mock_run(mocker, stdout="")
+        wdm.get_nvidia_update_info()
+        cmd = m.call_args[0][0][-1]
+        assert "NVIDIA" in cmd
+        assert "Win32_VideoController" in cmd
+
+    def test_command_checks_gfexperience_registry(self, mocker):
+        m = _mock_run(mocker, stdout="")
+        wdm.get_nvidia_update_info()
+        cmd = m.call_args[0][0][-1]
+        assert "GFExperience" in cmd
+        assert "DriverRecommendedVersion" in cmd
