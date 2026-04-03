@@ -98,6 +98,47 @@ class TestScanStartRoute:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# POST /api/launch/nvidia-app
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestLaunchNvidiaApp:
+    def test_launched_when_app_found(self, client, mocker):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.return_value.stdout = "launched\n"
+        m.return_value.returncode = 0
+        m.return_value.stderr = ""
+        resp = client.post("/api/launch/nvidia-app")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["launched"] is True
+
+    def test_fallback_when_not_installed(self, client, mocker):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.return_value.stdout = "not_found\n"
+        m.return_value.returncode = 0
+        m.return_value.stderr = ""
+        resp = client.post("/api/launch/nvidia-app")
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["launched"] is False
+        assert "nvidia.com" in data["fallback_url"]
+
+    def test_timeout_returns_fallback(self, client, mocker):
+        import subprocess
+
+        mocker.patch(
+            "windesktopmgr.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=10),
+        )
+        resp = client.post("/api/launch/nvidia-app")
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["launched"] is False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # GET  /api/bsod/data
 # ══════════════════════════════════════════════════════════════════════════════
 

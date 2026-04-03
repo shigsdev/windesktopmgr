@@ -1223,6 +1223,19 @@ function renderGrid() {
   grid.innerHTML = filtered.map((d, i) => buildDriverCard(d, i)).join("");
 }
 
+async function drvOpenNvidiaApp(e) {
+  e.preventDefault();
+  try {
+    const r = await fetch("/api/launch/nvidia-app", {method:"POST"});
+    const data = await r.json();
+    if (data.launched) return; // App opened successfully
+    // Not installed — open download page
+    window.open(data.fallback_url || "https://www.nvidia.com/en-us/software/nvidia-app/", "_blank");
+  } catch {
+    window.open("https://www.nvidia.com/en-us/software/nvidia-app/", "_blank");
+  }
+}
+
 function buildDriverCard(d, i) {
   const isLow   = d.low_priority && d.status === "update_available";
   const labels  = { update_available:"Update Available", up_to_date:"Up to Date", unknown:"Unknown" };
@@ -1232,7 +1245,7 @@ function buildDriverCard(d, i) {
   const isNvidiaApp = d.download_url && d.download_url.startsWith("nvidia-app:");
   const dlBtn = (!isLow && d.status==="update_available" && d.download_url)
     ? (isNvidiaApp
-        ? `<a class="btn-dl" href="https://www.nvidia.com/en-us/software/nvidia-app/" target="_blank">🟢 Update via NVIDIA App</a>`
+        ? `<a class="btn-dl" href="#" onclick="drvOpenNvidiaApp(event)">🟢 Update via NVIDIA App</a>`
         : `<a class="btn-dl" href="${escHtml(d.download_url)}" target="_blank">↓ Download Update</a>`)
     : "";
   const latestBlock = d.latest_version
@@ -1483,7 +1496,7 @@ function renderSummary(containerId, summary) {
   const chipsHtml = (summary.actions || []).length
     ? `<div class="summary-actions">${(summary.actions||[]).map(a=>{
       if (a === "Open Windows Update") return `<a class="action-chip action-link" href="ms-settings:windowsupdate" target="_blank">${a}</a>`;
-      if (a === "Update via NVIDIA App") return `<a class="action-chip action-link" href="https://www.nvidia.com/en-us/software/nvidia-app/" target="_blank">${a}</a>`;
+      if (a === "Update via NVIDIA App") return `<a class="action-chip action-link" href="#" onclick="drvOpenNvidiaApp(event)">${a}</a>`;
       return `<span class="action-chip">${a}</span>`;
     }).join("")}</div>` : "";
   el.className = `summary-banner loaded s-${s}`;

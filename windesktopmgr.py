@@ -6461,6 +6461,43 @@ def api_health():
     return jsonify({"ok": True, "status": "running"})
 
 
+@app.route("/api/launch/nvidia-app", methods=["POST"])
+def launch_nvidia_app():
+    """Try to open the NVIDIA App on the local machine.
+
+    Checks common install paths and the Start Menu shortcut.
+    Returns {"ok": True, "launched": True} if found and started,
+    or {"ok": True, "launched": False, "fallback_url": "..."} if not installed.
+    """
+    fallback = "https://www.nvidia.com/en-us/software/nvidia-app/"
+    ps = r"""
+$paths = @(
+    "$env:LOCALAPPDATA\NVIDIA Corporation\NVIDIA app\NVIDIAapp\NVIDIA app.exe",
+    "$env:ProgramFiles\NVIDIA Corporation\NVIDIA app\NVIDIAapp\NVIDIA app.exe",
+    "${env:ProgramFiles(x86)}\NVIDIA Corporation\NVIDIA app\NVIDIAapp\NVIDIA app.exe"
+)
+foreach ($p in $paths) {
+    if (Test-Path $p) { Start-Process $p; Write-Output 'launched'; exit 0 }
+}
+# Try Start Menu shortcut
+$shortcut = Get-ChildItem "$env:ProgramData\Microsoft\Windows\Start Menu\Programs" -Recurse -Filter "NVIDIA*app*.lnk" -EA SilentlyContinue | Select-Object -First 1
+if ($shortcut) { Start-Process $shortcut.FullName; Write-Output 'launched'; exit 0 }
+Write-Output 'not_found'
+"""
+    try:
+        r = subprocess.run(
+            ["powershell", "-NonInteractive", "-Command", ps],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if "launched" in r.stdout:
+            return jsonify({"ok": True, "launched": True})
+    except Exception:
+        pass
+    return jsonify({"ok": True, "launched": False, "fallback_url": fallback})
+
+
 @app.route("/api/scan/start", methods=["POST"])
 def start_scan():
     global _scan_results, _scan_status
