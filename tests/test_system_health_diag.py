@@ -134,6 +134,37 @@ class TestCountRecentEvents:
 
 
 # ===========================================================================
+# TEST CLASS: _most_recent_event_age_days
+# ===========================================================================
+class TestMostRecentEventAgeDays:
+    """Test the helper that finds age of most recent event."""
+
+    def test_event_from_today(self):
+        today = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        assert shd._most_recent_event_age_days([{"Date": today}]) == 0
+
+    def test_event_from_10_days_ago(self):
+        date = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d %H:%M:%S")
+        assert shd._most_recent_event_age_days([{"Date": date}]) == 10
+
+    def test_picks_most_recent(self):
+        recent = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
+        old = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
+        assert shd._most_recent_event_age_days([{"Date": old}, {"Date": recent}]) == 3
+
+    def test_empty_list_returns_none(self):
+        assert shd._most_recent_event_age_days([]) is None
+
+    def test_unparseable_dates_returns_none(self):
+        assert shd._most_recent_event_age_days([{"Date": "not-a-date"}]) is None
+
+    def test_missing_date_skipped(self):
+        recent = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        result = shd._most_recent_event_age_days([{}, {"Date": recent}])
+        assert result == 0
+
+
+# ===========================================================================
 # TEST CLASS: calculate_score
 # ===========================================================================
 class TestCalculateScore:
@@ -425,7 +456,8 @@ class TestAnalyzeBSOD:
         assert "0x00000139" in bsod_data["BugCheckCodes"]
 
     @patch.object(shd, "ps_events")
-    def test_unexpected_shutdowns_critical_when_recent(self, mock_events):
+    def test_unexpected_shutdowns_critical_when_very_recent(self, mock_events):
+        """8 KP events from today = critical (within 7-day active window)."""
         recent_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         mock_events.side_effect = [
             [],  # WER events
@@ -435,6 +467,21 @@ class TestAnalyzeBSOD:
             bsod_data, crit, warn, info = shd.analyze_bsod()
         assert bsod_data["UnexpectedShutdowns"] == 8
         assert any("unexpected shutdowns" in c for c in crit)
+        assert any("Active" in c for c in crit)
+
+    @patch.object(shd, "ps_events")
+    def test_many_shutdowns_aging_out_become_warning(self, mock_events):
+        """8 KP events from 12 days ago = warning (within 30d but >7d = aging out)."""
+        aging_date = (datetime.now() - timedelta(days=12)).strftime("%Y-%m-%d %H:%M:%S")
+        mock_events.side_effect = [
+            [],  # WER events
+            [{"Date": aging_date, "Message": "shutdown"} for _ in range(8)],  # Kernel-Power
+        ]
+        with patch("os.path.isdir", return_value=False):
+            bsod_data, crit, warn, info = shd.analyze_bsod()
+        assert bsod_data["UnexpectedShutdowns"] == 8
+        assert len(crit) == 0
+        assert any("resolving" in w.lower() for w in warn)
 
     @patch.object(shd, "ps_events")
     def test_old_shutdowns_become_info(self, mock_events):
@@ -469,7 +516,8 @@ class TestScanEventLogs:
     """Test the scan_event_logs function."""
 
     @patch.object(shd, "ps_events")
-    def test_recent_whea_events_trigger_critical(self, mock_events):
+    def test_very_recent_whea_events_trigger_critical(self, mock_events):
+        """WHEA event from today = critical (within 7-day active window)."""
         recent_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         mock_events.side_effect = [
             [],  # SystemCritical
@@ -480,6 +528,21 @@ class TestScanEventLogs:
         assert len(event_data["WHEAErrors"]) == 1
         assert len(crit) == 1
         assert "WHEA" in crit[0]
+        assert "Active" in crit[0]
+
+    @patch.object(shd, "ps_events")
+    def test_whea_aging_out_becomes_warning(self, mock_events):
+        """WHEA event from 15 days ago = warning (within 30d but >7d)."""
+        aging_date = (datetime.now() - timedelta(days=15)).strftime("%Y-%m-%d %H:%M:%S")
+        mock_events.side_effect = [
+            [],  # SystemCritical
+            [],  # SystemErrors
+            [{"Date": aging_date, "EventID": 18, "Source": "WHEA", "Level": "Error", "Message": "hw error"}],
+        ]
+        event_data, crit, warn, info = shd.scan_event_logs()
+        assert len(event_data["WHEAErrors"]) == 1
+        assert len(crit) == 0
+        assert any("WHEA" in w and "resolved" in w.lower() for w in warn)
 
     @patch.object(shd, "ps_events")
     def test_old_whea_events_become_info(self, mock_events):
