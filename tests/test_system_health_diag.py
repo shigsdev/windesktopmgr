@@ -1338,20 +1338,38 @@ class TestAnalyzeMemoryUsage:
     """Test memory usage warnings/criticals in analyze_memory."""
 
     @patch.object(shd, "ps")
-    def test_high_usage_warning(self, mock_ps):
+    def test_high_usage_warning_at_92(self, mock_ps):
         mock_ps.return_value = {
             "Sticks": [],
             "TotalGB": 64.0,
             "Speeds": [5600],
             "Sizes": [34359738368],
             "UsageTotalMB": 65536,
-            "UsageFreeMB": 6554,
-            "UsageUsedMB": 58982,
-            "UsagePctUsed": 90.0,
+            "UsageFreeMB": 5243,
+            "UsageUsedMB": 60293,
+            "UsagePctUsed": 92.0,
         }
         mem_data, crit, warn, info = shd.analyze_memory()
-        assert any("90.0%" in w for w in warn)
+        assert any("92.0%" in w for w in warn)
         assert len(crit) == 0
+
+    @patch.object(shd, "ps")
+    def test_85_pct_usage_is_info_not_warning(self, mock_ps):
+        """85% should be info, not warning — diagnostic tool inflates usage."""
+        mock_ps.return_value = {
+            "Sticks": [],
+            "TotalGB": 64.0,
+            "Speeds": [5600],
+            "Sizes": [34359738368],
+            "UsageTotalMB": 65536,
+            "UsageFreeMB": 9830,
+            "UsageUsedMB": 55706,
+            "UsagePctUsed": 85.0,
+        }
+        mem_data, crit, warn, info = shd.analyze_memory()
+        assert len(crit) == 0
+        assert len(warn) == 0
+        assert any("85.0%" in i for i in info)
 
     @patch.object(shd, "ps")
     def test_critical_usage(self, mock_ps):
@@ -1494,11 +1512,11 @@ class TestCheckNetworkHealth:
         assert any("no active" in c.lower() for c in crit)
 
     @patch.object(shd, "ps")
-    def test_disconnected_adapter_warning(self, mock_ps):
+    def test_disconnected_physical_adapter_warning(self, mock_ps):
         mock_ps.return_value = {
             "Adapters": [
-                {"Name": "Ethernet", "Status": "Up"},
-                {"Name": "Wi-Fi", "Status": "Disconnected"},
+                {"Name": "Ethernet", "InterfaceDescription": "Intel I225-V", "Status": "Up"},
+                {"Name": "Wi-Fi", "InterfaceDescription": "Intel AX211", "Status": "Disconnected"},
             ],
             "DNSWorking": True,
             "DNSLatencyMs": 10,
@@ -1507,6 +1525,36 @@ class TestCheckNetworkHealth:
         }
         net_data, crit, warn, info = shd.check_network_health()
         assert any("wi-fi" in w.lower() for w in warn)
+
+    @patch.object(shd, "ps")
+    def test_virtual_adapters_not_warned(self, mock_ps):
+        """Bluetooth, virtual NICs, and VPN adapters should not trigger warnings."""
+        mock_ps.return_value = {
+            "Adapters": [
+                {"Name": "Ethernet", "InterfaceDescription": "Intel I225-V", "Status": "Up"},
+                {
+                    "Name": "Bluetooth Network Connection",
+                    "InterfaceDescription": "Bluetooth Device (Personal Area Network)",
+                    "Status": "Disconnected",
+                },
+                {
+                    "Name": "Ethernet 2",
+                    "InterfaceDescription": "Hyper-V Virtual Ethernet Adapter",
+                    "Status": "Disconnected",
+                },
+                {
+                    "Name": "Local Area Connection",
+                    "InterfaceDescription": "VMware Virtual Ethernet Adapter",
+                    "Status": "Disconnected",
+                },
+            ],
+            "DNSWorking": True,
+            "DNSLatencyMs": 10,
+            "InternetReachable": True,
+            "PingLatencyMs": 10,
+        }
+        net_data, crit, warn, info = shd.check_network_health()
+        assert len(warn) == 0
 
     @patch.object(shd, "ps")
     def test_empty_ps_response(self, mock_ps):

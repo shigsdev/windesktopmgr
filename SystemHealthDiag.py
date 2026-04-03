@@ -562,7 +562,7 @@ $pctUsed = if($totalMB -gt 0){[math]::Round(($usedMB/$totalMB)*100,1)}else{0}
         critical.append(
             f"RAM usage critically high at {pct_used}% ({free_gb} GB free). System may become unresponsive."
         )
-    elif pct_used >= 85:
+    elif pct_used >= 90:
         warnings.append(f"RAM usage elevated at {pct_used}% ({free_gb} GB free). Consider closing unused applications.")
     elif pct_used > 0:
         info.append(f"RAM usage at {pct_used}% ({free_gb} GB free).")
@@ -711,14 +711,24 @@ try {
         "PingLatencyMs": net_raw.get("PingLatencyMs", 0),
     }
 
+    # Filter out virtual/non-physical adapters that are normally disconnected
+    _virtual_keywords = ("bluetooth", "virtual", "loopback", "vmware", "hyper-v", "vpn", "tunnel")
+
+    def _is_physical(adapter):
+        desc = (adapter.get("InterfaceDescription") or "").lower()
+        name = (adapter.get("Name") or "").lower()
+        return not any(kw in desc or kw in name for kw in _virtual_keywords)
+
     up_adapters = [a for a in network_data["Adapters"] if a.get("Status") == "Up"]
-    down_adapters = [a for a in network_data["Adapters"] if a.get("Status") not in ("Up", "Disabled")]
+    physical_down = [
+        a for a in network_data["Adapters"] if a.get("Status") not in ("Up", "Disabled") and _is_physical(a)
+    ]
 
     if not up_adapters:
         critical.append("No active network adapters found. Network connectivity is unavailable.")
-    if down_adapters:
-        names = ", ".join(a.get("Name", "Unknown") for a in down_adapters)
-        warnings.append(f"Network adapter(s) not connected: {names}.")
+    if physical_down:
+        names = ", ".join(a.get("Name", "Unknown") for a in physical_down)
+        warnings.append(f"Physical network adapter(s) not connected: {names}.")
 
     if not network_data["InternetReachable"]:
         critical.append("Internet is unreachable (ping to 8.8.8.8 failed).")
