@@ -278,7 +278,7 @@
 
   <!-- ── LAYER 2: FLASK BACKEND ───────────────────────────────── -->
   <div class="row row-flask" id="layer-flask">
-    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~9,560 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · Remediation Engine</div>
+    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~8,170 lines + homenet.py Blueprint · ~1,460 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · Remediation Engine</div>
     <div style="margin-bottom:10px">
       <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes (58 endpoints)</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
@@ -328,6 +328,8 @@
         <div class="route-chip" id="rt-rem-actions" style="border-color:#ff704344;background:#ff70430d;color:var(--orange)"><span class="method">GET</span>/api/remediation/actions</div>
         <div class="route-chip" style="border-color:#ff704344;background:#ff70430d;color:var(--orange)"><span class="method">GET</span>/api/remediation/history</div>
         <div class="route-chip" style="border-color:#ff704344;background:#ff70430d;color:var(--orange)"><span class="method">POST</span>/api/remediation/run</div>
+        <!-- homenet.py Blueprint (10 routes) -->
+        <div style="display:inline-flex;align-items:center;gap:4px;background:#448aff15;border:1px dashed #448aff44;border-radius:5px;padding:2px 8px;font-size:9px;color:var(--blue);font-weight:700;letter-spacing:.06em;text-transform:uppercase" title="Served by homenet.py Flask Blueprint">BLUEPRINT: homenet.py</div>
         <div class="route-chip" id="rt-homenet-creds" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">GET</span>/api/homenet/credentials</div>
         <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">POST</span>/api/homenet/credentials/save</div>
         <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">POST</span>/api/homenet/credentials/delete</div>
@@ -607,7 +609,11 @@
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <div class="fs-chip">
             <div class="fs-title">windesktopmgr.py</div>
-            <div class="fs-sub">Flask backend · ~9,560 lines</div>
+            <div class="fs-sub">Flask backend · ~8,170 lines</div>
+          </div>
+          <div class="fs-chip" style="border-color:#448aff33">
+            <div class="fs-title" style="color:var(--blue)">homenet.py</div>
+            <div class="fs-sub">Home Network Blueprint · ~1,460 lines · Flask Blueprint</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">templates/index.html</div>
@@ -619,11 +625,15 @@
           </div>
           <div class="fs-chip">
             <div class="fs-title">SystemHealthDiag.py</div>
-            <div class="fs-sub">Daily health diagnostic · ~1,310 lines · 29 functions</div>
+            <div class="fs-sub">Daily health diagnostic · ~1,880 lines · 13 checks · PDF + email</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">setup-startup.ps1</div>
             <div class="fs-sub">Task Scheduler → tray mode (pythonw.exe)</div>
+          </div>
+          <div class="fs-chip">
+            <div class="fs-title">dev.py</div>
+            <div class="fs-sub">Quality gate runner · ~107 lines · lint + format + test</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">architecture.html</div>
