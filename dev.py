@@ -15,6 +15,7 @@ import time
 
 TARGETS = [
     "windesktopmgr.py",
+    "homenet.py",
     "tray.py",
     "SystemHealthDiag.py",
     "tests/",
