@@ -619,6 +619,14 @@ def run_scan():
         category = categorize(name, dev_class)
 
         is_nvidia = "nvidia" in name.lower()
+        # GPU driver has a 4-part Windows version like 32.0.15.9579;
+        # companion drivers (HD Audio, Virtual Audio) have different schemes.
+        is_nvidia_gpu = (
+            is_nvidia
+            and len(version.split(".")) == 4
+            and version.split(".")[0].isdigit()
+            and int(version.split(".")[0]) >= 20
+        )
         match = find_wu_match(name, wu_updates)
         status = "up_to_date"  # default: assume current if WU has no update
         latest_ver = None
@@ -626,16 +634,20 @@ def run_scan():
         download_url = "ms-settings:windowsupdate"
 
         if is_nvidia and nvidia_info:
-            # NVIDIA API is authoritative for NVIDIA drivers (WU doesn't
-            # distinguish Studio vs Game Ready, so its version may be wrong).
+            # NVIDIA API is authoritative for all NVIDIA drivers. The entire
+            # driver package (GPU + HD Audio + Virtual Audio) ships together,
+            # so if the GPU driver is current, companion drivers are too.
+            # WU doesn't distinguish Studio vs Game Ready, so skip WU for NVIDIA.
             if nvidia_info.get("UpdateAvailable"):
                 status = "update_available"
-                latest_ver = nvidia_info.get("LatestVersion", "")
+                # Only show GPU version comparison for the GPU driver itself
+                if is_nvidia_gpu:
+                    latest_ver = nvidia_info.get("LatestVersion", "")
                 download_url = "nvidia-app:"
             else:
                 status = "up_to_date"
-            # Show NVIDIA short version instead of Windows format
-            if version and "." in version:
+            # Convert version to NVIDIA short format only for GPU drivers
+            if is_nvidia_gpu and version:
                 nv_ver = _win_to_nvidia_version(version)
                 if nv_ver != version:
                     version = nv_ver

@@ -1147,6 +1147,70 @@ class TestRunScan:
         # WU success with 0 updates + no nvidia_info → up_to_date
         assert wdm._scan_results[0]["status"] == "up_to_date"
 
+    def test_nvidia_audio_not_version_converted(self, mocker):
+        """NVIDIA companion drivers (audio) should NOT have version converted."""
+        self._mock_scan_deps(
+            mocker,
+            installed=[
+                {
+                    "DeviceName": "NVIDIA High Definition Audio",
+                    "DriverVersion": "1.4.5.7",
+                    "DriverDate": "",
+                    "DeviceClass": "Audio",
+                    "Manufacturer": "Microsoft",
+                }
+            ],
+            wu={},
+            nvidia={
+                "Name": "NVIDIA GeForce RTX 4060 Ti",
+                "InstalledVersion": "595.79",
+                "LatestVersion": "595.79",
+                "UpdateAvailable": False,
+            },
+        )
+        wdm.run_scan()
+        drv = wdm._scan_results[0]
+        assert drv["version"] == "1.4.5.7"  # NOT converted
+        assert drv["status"] == "up_to_date"
+
+    def test_nvidia_audio_no_gpu_version_as_latest(self, mocker):
+        """When NVIDIA update is available, companion drivers should NOT show
+        GPU version as their latest_version (different version schemes)."""
+        self._mock_scan_deps(
+            mocker,
+            installed=[
+                {
+                    "DeviceName": "NVIDIA High Definition Audio",
+                    "DriverVersion": "1.4.5.7",
+                    "DriverDate": "",
+                    "DeviceClass": "Audio",
+                    "Manufacturer": "Microsoft",
+                },
+                {
+                    "DeviceName": "NVIDIA Virtual Audio Device (Wave Extensible) (WDM)",
+                    "DriverVersion": "4.65.0.12",
+                    "DriverDate": "",
+                    "DeviceClass": "Audio",
+                    "Manufacturer": "Microsoft",
+                },
+            ],
+            wu={},
+            nvidia={
+                "Name": "NVIDIA GeForce RTX 4060 Ti",
+                "InstalledVersion": "591.74",
+                "LatestVersion": "595.79",
+                "UpdateAvailable": True,
+            },
+        )
+        wdm.run_scan()
+        for drv in wdm._scan_results:
+            assert drv["status"] == "update_available"
+            assert drv["download_url"] == "nvidia-app:"
+            # Companion drivers should NOT show GPU version as latest
+            assert drv["latest_version"] is None
+            # Versions should NOT be mangled
+            assert drv["version"] in ("1.4.5.7", "4.65.0.12")
+
     def test_nvidia_api_takes_precedence_over_wu(self, mocker):
         """NVIDIA API is authoritative for NVIDIA drivers — WU may report
         Game Ready version when user is on Studio driver."""
