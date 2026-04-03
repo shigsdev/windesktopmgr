@@ -618,23 +618,30 @@ def run_scan():
         mfr = drv.get("Manufacturer", "")
         category = categorize(name, dev_class)
 
+        is_nvidia = "nvidia" in name.lower()
         match = find_wu_match(name, wu_updates)
         status = "up_to_date"  # default: assume current if WU has no update
         latest_ver = None
         latest_date = None
         download_url = "ms-settings:windowsupdate"
 
-        if match:
+        if is_nvidia and nvidia_info:
+            # NVIDIA API is authoritative for NVIDIA drivers (WU doesn't
+            # distinguish Studio vs Game Ready, so its version may be wrong).
+            if nvidia_info.get("UpdateAvailable"):
+                status = "update_available"
+                latest_ver = nvidia_info.get("LatestVersion", "")
+                download_url = "nvidia-app:"
+            else:
+                status = "up_to_date"
+            # Show NVIDIA short version instead of Windows format
+            if version and "." in version:
+                nv_ver = _win_to_nvidia_version(version)
+                if nv_ver != version:
+                    version = nv_ver
+        elif match:
             status = "update_available"
             latest_ver = match.get("DriverVersion") or match.get("Title", "")
-        elif nvidia_info and "nvidia" in name.lower() and nvidia_info.get("UpdateAvailable"):
-            # NVIDIA App detected a pending Studio/Game Ready driver update
-            status = "update_available"
-            latest_ver = nvidia_info.get("LatestVersion", "")
-            download_url = "nvidia-app:"  # signals UI to show "Open NVIDIA App"
-        elif nvidia_info and "nvidia" in name.lower() and not nvidia_info.get("UpdateAvailable"):
-            # NVIDIA App confirms driver is current
-            status = "up_to_date"
         elif wu_updates is None:
             # WU query failed entirely — fall back to unknown
             status = "unknown"
@@ -4634,7 +4641,7 @@ Get-WmiObject Win32_Service | ForEach-Object {
 """
     try:
         r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=30
+            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=60
         )
         data = json.loads(r.stdout.strip() or "[]")
         svcs = data if isinstance(data, list) else [data]

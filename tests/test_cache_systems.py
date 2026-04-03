@@ -1063,7 +1063,7 @@ class TestRunScan:
                     "Manufacturer": "NVIDIA",
                 }
             ],
-            wu={},  # WU has no NVIDIA update — but NVIDIA App does
+            wu={},  # WU has no NVIDIA update — but NVIDIA API does
             nvidia={
                 "Name": "NVIDIA GeForce RTX 4060 Ti",
                 "InstalledVersion": "591.74",
@@ -1076,6 +1076,31 @@ class TestRunScan:
         assert nv["status"] == "update_available"
         assert nv["latest_version"] == "595.79"
         assert nv["download_url"] == "nvidia-app:"
+
+    def test_nvidia_version_converted_to_short_format(self, mocker):
+        """NVIDIA driver version should show NVIDIA format, not Windows format."""
+        self._mock_scan_deps(
+            mocker,
+            installed=[
+                {
+                    "DeviceName": "NVIDIA GeForce RTX 4060 Ti",
+                    "DriverVersion": "32.0.15.9579",
+                    "DriverDate": "2026-03-10",
+                    "DeviceClass": "Display",
+                    "Manufacturer": "NVIDIA",
+                }
+            ],
+            wu={},
+            nvidia={
+                "Name": "NVIDIA GeForce RTX 4060 Ti",
+                "InstalledVersion": "595.79",
+                "LatestVersion": "595.79",
+                "UpdateAvailable": False,
+            },
+        )
+        wdm.run_scan()
+        nv = wdm._scan_results[0]
+        assert nv["version"] == "595.79"  # NVIDIA short format, not 32.0.15.9579
 
     def test_nvidia_current_shows_up_to_date(self, mocker):
         """NVIDIA driver that is current shows up_to_date (not unknown)."""
@@ -1122,15 +1147,16 @@ class TestRunScan:
         # WU success with 0 updates + no nvidia_info → up_to_date
         assert wdm._scan_results[0]["status"] == "up_to_date"
 
-    def test_wu_match_takes_precedence_over_nvidia_app(self, mocker):
-        """If Windows Update has an NVIDIA update, it takes precedence."""
+    def test_nvidia_api_takes_precedence_over_wu(self, mocker):
+        """NVIDIA API is authoritative for NVIDIA drivers — WU may report
+        Game Ready version when user is on Studio driver."""
         self._mock_scan_deps(
             mocker,
             installed=[
                 {
                     "DeviceName": "NVIDIA GeForce RTX 4060 Ti",
-                    "DriverVersion": "32.0.15.9174",
-                    "DriverDate": "",
+                    "DriverVersion": "32.0.15.9579",
+                    "DriverDate": "2026-03-10",
                     "DeviceClass": "Display",
                     "Manufacturer": "NVIDIA",
                 }
@@ -1138,14 +1164,17 @@ class TestRunScan:
             wu={
                 "nvidia geforce rtx 4060 ti update": {
                     "Title": "NVIDIA GeForce RTX 4060 Ti Update",
-                    "DriverVersion": "32.0.15.9579",
+                    "DriverVersion": "32.0.15.9597",  # Game Ready version from WU
                 }
             },
-            nvidia={"UpdateAvailable": True, "LatestVersion": "595.79"},
+            nvidia={
+                "Name": "NVIDIA GeForce RTX 4060 Ti",
+                "InstalledVersion": "595.79",
+                "LatestVersion": "595.79",
+                "UpdateAvailable": False,  # Studio driver is current
+            },
         )
         wdm.run_scan()
         nv = wdm._scan_results[0]
-        assert nv["status"] == "update_available"
-        # WU match version, not NVIDIA App version
-        assert nv["latest_version"] == "32.0.15.9579"
-        assert nv["download_url"] == "ms-settings:windowsupdate"
+        # NVIDIA API says current — should be up_to_date, not update_available from WU
+        assert nv["status"] == "up_to_date"
