@@ -278,7 +278,10 @@ $prob = @(Get-CimInstance Win32_PnPEntity -EA SilentlyContinue | Where-Object { 
 """
     try:
         r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=30
+            ["powershell", "-NonInteractive", "-Command", ps],
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         data = json.loads(r.stdout.strip() or "{}")
         old = data.get("OldDrivers") or []
