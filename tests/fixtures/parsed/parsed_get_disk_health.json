@@ -1,0 +1,189 @@
+{
+  "_captured_at": "2026-04-03T18:34:45.815897",
+  "_hostname": "shigs78-pc24",
+  "_python": "3.14.3",
+  "data": {
+    "drives": [
+      {
+        "Letter": "C",
+        "Label": "OS",
+        "UsedGB": 772.78,
+        "FreeGB": 138.9,
+        "TotalGB": 911.68,
+        "PctUsed": 84.8
+      },
+      {
+        "Letter": "D",
+        "Label": "",
+        "UsedGB": 38.75,
+        "FreeGB": 892.74,
+        "TotalGB": 931.5,
+        "PctUsed": 4.2
+      },
+      {
+        "Letter": "E",
+        "Label": "Storage space",
+        "UsedGB": 2788.78,
+        "FreeGB": 2147.1,
+        "TotalGB": 4935.87,
+        "PctUsed": 56.5
+      },
+      {
+        "Letter": "N",
+        "Label": "",
+        "UsedGB": 34470.78,
+        "FreeGB": 12896.58,
+        "TotalGB": 47367.36,
+        "PctUsed": 72.8
+      },
+      {
+        "Letter": "O",
+        "Label": "",
+        "UsedGB": 138.94,
+        "FreeGB": 480.5,
+        "TotalGB": 619.45,
+        "PctUsed": 22.4
+      },
+      {
+        "Letter": "P",
+        "Label": "",
+        "UsedGB": 75392.31,
+        "FreeGB": 35343.55,
+        "TotalGB": 110735.85,
+        "PctUsed": 68.1
+      },
+      {
+        "Letter": "Q",
+        "Label": "",
+        "UsedGB": 18042.23,
+        "FreeGB": 13462.76,
+        "TotalGB": 31504.99,
+        "PctUsed": 57.3
+      },
+      {
+        "Letter": "R",
+        "Label": "",
+        "UsedGB": 28261.88,
+        "FreeGB": 20902.14,
+        "TotalGB": 49164.02,
+        "PctUsed": 57.5
+      }
+    ],
+    "physical": [
+      {
+        "Name": "Samsung SSD 970 EVO Plus 2TB",
+        "MediaType": "SSD",
+        "SizeGB": 1863,
+        "Health": "Healthy",
+        "Status": "OK",
+        "BusType": "NVMe"
+      },
+      {
+        "Name": "Samsung SSD 970 EVO Plus 2TB",
+        "MediaType": "SSD",
+        "SizeGB": 1863,
+        "Health": "Healthy",
+        "Status": "OK",
+        "BusType": "NVMe"
+      },
+      {
+        "Name": "NVMe Samsung SSD 990 PRO with Heatsink 1TB",
+        "MediaType": "SSD",
+        "SizeGB": 931.5,
+        "Health": "Healthy",
+        "Status": "OK",
+        "BusType": "NVMe"
+      },
+      {
+        "Name": "Samsung SSD 990 PRO 2TB",
+        "MediaType": "SSD",
+        "SizeGB": 1863,
+        "Health": "Healthy",
+        "Status": "OK",
+        "BusType": "NVMe"
+      },
+      {
+        "Name": "Samsung SSD 990 PRO 2TB",
+        "MediaType": "SSD",
+        "SizeGB": 1863,
+        "Health": "Healthy",
+        "Status": "OK",
+        "BusType": "NVMe"
+      },
+      {
+        "Name": "NVMe PC811 SK hynix 1024GB",
+        "MediaType": "SSD",
+        "SizeGB": 953.9,
+        "Health": "Healthy",
+        "Status": "OK",
+        "BusType": "NVMe"
+      }
+    ],
+    "io": [
+      {
+        "Counter": "\\\\shigs78-pc24\\physicaldisk(0)\\disk read bytes/sec",
+        "Value": 0
+      },
+      {
+        "Counter": "\\\\shigs78-pc24\\physicaldisk(1 c:)\\disk read bytes/sec",
+        "Value": 0
+      },
+      {
+        "Counter": "\\\\shigs78-pc24\\physicaldisk(2)\\disk read bytes/sec",
+        "Value": 0
+      },
+      {
+        "Counter": "\\\\shigs78-pc24\\physicaldisk(3)\\disk read bytes/sec",
+        "Value": 0
+      },
+      {
+        "Counter": "\\\\shigs78-pc24\\physicaldisk(4)\\disk read bytes/sec",
+        "Value": 0
+      },
+      {
+        "Counter": "\\\\shigs78-pc24\\physicaldisk(5)\\disk read bytes/sec",
+        "Value": 0
+      },
+      {
+        "Counter": "\\\\shigs78-pc24\\physicaldisk(6 e:)\\disk read bytes/sec",
+        "Value": 0
+      },
+      {
+        "Counter": "\\\\shigs78-pc24\\physicaldisk(_total)\\disk read bytes/sec",
+        "Value": 0
+      },
+      {
+        "Counter": "\\\\shigs78-pc24\\physicaldisk(0)\\disk write bytes/sec",
+        "Value": 0
+      },
+      {
+        "Counter": "\\\\shigs78-pc24\\physicaldisk(1 c:)\\disk write bytes/sec",
+        "Value": 6850.5
+      },
+      {
+        "Counter": "\\\\shigs78-pc24\\physicaldisk(2)\\disk write bytes/sec",
+        "Value": 0
+      },
+      {
+        "Counter": "\\\\shigs78-pc24\\physicaldisk(3)\\disk write bytes/sec",
+        "Value": 0
+      },
+      {
+        "Counter": "\\\\shigs78-pc24\\physicaldisk(4)\\disk write bytes/sec",
+        "Value": 0
+      },
+      {
+        "Counter": "\\\\shigs78-pc24\\physicaldisk(5)\\disk write bytes/sec",
+        "Value": 0
+      },
+      {
+        "Counter": "\\\\shigs78-pc24\\physicaldisk(6 e:)\\disk write bytes/sec",
+        "Value": 0
+      },
+      {
+        "Counter": "\\\\shigs78-pc24\\physicaldisk(_total)\\disk write bytes/sec",
+        "Value": 6850.5
+      }
+    ]
+  }
+}

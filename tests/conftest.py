@@ -11,8 +11,10 @@ Key design decisions:
   between every test, preventing bleed-through.
 """
 
+import json
 import os
 import sys
+from dataclasses import dataclass
 
 # Make sure the project root is on sys.path so `import windesktopmgr` works
 # regardless of where pytest is invoked from.
@@ -23,6 +25,37 @@ if PROJECT_ROOT not in sys.path:
 import pytest
 
 import windesktopmgr as wdm
+
+# ── Fixture loading helpers ───────────────────────────────────────────────────
+
+FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
+
+
+def load_fixture(relative_path: str):
+    """Load a JSON fixture file and return the 'data' field.
+
+    Args:
+        relative_path: path relative to tests/fixtures/ (e.g. "powershell/ps_disk_health.json")
+
+    Returns the 'data' field from the fixture, or the full contents if no 'data' key.
+    Raises pytest.skip if the fixture file doesn't exist.
+    """
+    path = os.path.join(FIXTURES_DIR, relative_path)
+    if not os.path.exists(path):
+        pytest.skip(f"Fixture not found: {relative_path} — run capture_fixtures.py")
+    with open(path, encoding="utf-8") as f:
+        obj = json.load(f)
+    return obj.get("data", obj)
+
+
+@dataclass
+class MockResult:
+    """Simulate subprocess.CompletedProcess for snapshot/E2E tests."""
+
+    stdout: str = ""
+    returncode: int = 0
+    stderr: str = ""
+
 
 # ── App / client fixtures ──────────────────────────────────────────────────────
 

@@ -1,0 +1,129 @@
+{
+  "_captured_at": "2026-04-03T18:35:01.883708",
+  "_hostname": "shigs78-pc24",
+  "_python": "3.14.3",
+  "data": {
+    "total_mb": 30370,
+    "used_mb": 19980,
+    "free_mb": 10390,
+    "categories": {
+      "security": 2739.0,
+      "browser": 3013.0,
+      "microsoft": 3506.0,
+      "office": 460.0,
+      "comms": 448.0,
+      "gpu_driver": 256.0,
+      "this_app": 167.0,
+      "games": 0.0,
+      "cloud": 334.0,
+      "other": 11574.0
+    },
+    "top_procs": [
+      {
+        "name": "Memory Compression",
+        "mem": 3708.2,
+        "category": "other"
+      },
+      {
+        "name": "mc-fw-host",
+        "mem": 2490.3,
+        "category": "security"
+      },
+      {
+        "name": "claude",
+        "mem": 1146.4,
+        "category": "other"
+      },
+      {
+        "name": "explorer",
+        "mem": 436.1,
+        "category": "microsoft"
+      },
+      {
+        "name": "claude",
+        "mem": 412.6,
+        "category": "other"
+      },
+      {
+        "name": "msedgewebview2",
+        "mem": 355.2,
+        "category": "browser"
+      },
+      {
+        "name": "PhoneExperienceHost",
+        "mem": 340.9,
+        "category": "other"
+      },
+      {
+        "name": "OneDrive",
+        "mem": 334.3,
+        "category": "cloud"
+      },
+      {
+        "name": "chrome",
+        "mem": 258.1,
+        "category": "browser"
+      },
+      {
+        "name": "EXCEL",
+        "mem": 257.8,
+        "category": "office"
+      },
+      {
+        "name": "chrome",
+        "mem": 198.3,
+        "category": "browser"
+      },
+      {
+        "name": "claude",
+        "mem": 192.6,
+        "category": "other"
+      },
+      {
+        "name": "Killer",
+        "mem": 188.1,
+        "category": "other"
+      },
+      {
+        "name": "msedgewebview2",
+        "mem": 183.8,
+        "category": "browser"
+      },
+      {
+        "name": "WhatsApp.Root",
+        "mem": 176.5,
+        "category": "other"
+      },
+      {
+        "name": "ServiceShell",
+        "mem": 175,
+        "category": "security"
+      },
+      {
+        "name": "Dell.TechHub.Instrumentation.SubAgent",
+        "mem": 174.9,
+        "category": "other"
+      },
+      {
+        "name": "dwm",
+        "mem": 172.8,
+        "category": "microsoft"
+      },
+      {
+        "name": "ONENOTE",
+        "mem": 167.1,
+        "category": "office"
+      },
+      {
+        "name": "mstsc",
+        "mem": 160,
+        "category": "other"
+      }
+    ],
+    "mcafee_mb": 2684.0,
+    "defender_mb": 22.0,
+    "defender_baseline": 150,
+    "mcafee_saving_mb": 2534.0,
+    "has_mcafee": true
+  }
+}

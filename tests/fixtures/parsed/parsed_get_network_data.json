@@ -1,0 +1,1415 @@
+{
+  "_captured_at": "2026-04-03T18:34:51.896461",
+  "_hostname": "shigs78-pc24",
+  "_python": "3.14.3",
+  "data": {
+    "established": [
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 65391,
+        "RemoteAddress": "172.64.150.82",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 64586,
+        "RemoteAddress": "192.168.1.13",
+        "RemotePort": 32400,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 64368,
+        "RemoteAddress": "98.91.50.4",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 64319,
+        "RemoteAddress": "160.79.104.10",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 47108,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 63988,
+        "RemoteAddress": "3.228.204.222",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 63412,
+        "RemoteAddress": "45.79.146.139",
+        "RemotePort": 8443,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 63321,
+        "RemoteAddress": "160.79.104.10",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 47188,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 63319,
+        "RemoteAddress": "104.18.36.51",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 63290,
+        "RemoteAddress": "52.110.2.192",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 64380,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 62841,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 32401,
+        "State": "Established",
+        "PID": 23016,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 62840,
+        "RemoteAddress": "45.79.146.139",
+        "RemotePort": 8443,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 62770,
+        "RemoteAddress": "160.79.104.10",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 68964,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 61954,
+        "RemoteAddress": "151.101.45.55",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 61884,
+        "RemoteAddress": "76.223.92.165",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 33432,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 61883,
+        "RemoteAddress": "76.223.31.44",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 18824,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 61836,
+        "RemoteAddress": "20.150.179.224",
+        "RemotePort": 8883,
+        "State": "Established",
+        "PID": 35116,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "10.0.0.89",
+        "LocalPort": 61713,
+        "RemoteAddress": "10.0.0.39",
+        "RemotePort": 8008,
+        "State": "Established",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 61515,
+        "RemoteAddress": "45.79.146.139",
+        "RemotePort": 8443,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 61485,
+        "RemoteAddress": "13.32.241.11",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 61338,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 32401,
+        "State": "Established",
+        "PID": 23016,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 61337,
+        "RemoteAddress": "45.79.146.139",
+        "RemotePort": 8443,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 61318,
+        "RemoteAddress": "13.223.19.204",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 6792,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 61317,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 61316,
+        "State": "Established",
+        "PID": 6792,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 61316,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 61317,
+        "State": "Established",
+        "PID": 6792,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "10.0.0.89",
+        "LocalPort": 60922,
+        "RemoteAddress": "10.0.0.39",
+        "RemotePort": 8009,
+        "State": "Established",
+        "PID": 33336,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 60720,
+        "RemoteAddress": "40.104.16.226",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 12284,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 60336,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 32400,
+        "State": "Established",
+        "PID": 20288,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 59707,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 59706,
+        "State": "Established",
+        "PID": 18824,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 59706,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 59707,
+        "State": "Established",
+        "PID": 18824,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 59400,
+        "RemoteAddress": "13.32.241.11",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 40624,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 59161,
+        "RemoteAddress": "160.79.104.10",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 68964,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 59114,
+        "RemoteAddress": "192.168.1.160",
+        "RemotePort": 3389,
+        "State": "Established",
+        "PID": 54612,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "10.0.0.89",
+        "LocalPort": 58952,
+        "RemoteAddress": "10.0.0.39",
+        "RemotePort": 8009,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 58745,
+        "RemoteAddress": "172.104.218.101",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 58235,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 32401,
+        "State": "Established",
+        "PID": 23016,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 58228,
+        "RemoteAddress": "66.175.212.202",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 23016,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 58163,
+        "RemoteAddress": "72.154.7.104",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 21188,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 57736,
+        "RemoteAddress": "17.57.144.12",
+        "RemotePort": 5223,
+        "State": "Established",
+        "PID": 36772,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 57730,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 57729,
+        "State": "Established",
+        "PID": 36632,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 57729,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 57730,
+        "State": "Established",
+        "PID": 36632,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 57722,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 57721,
+        "State": "Established",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 57721,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 57722,
+        "State": "Established",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 57667,
+        "RemoteAddress": "52.168.112.66",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 36664,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 57489,
+        "RemoteAddress": "172.64.151.205",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 57441,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 5000,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 57305,
+        "RemoteAddress": "13.35.107.110",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 55738,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 32401,
+        "State": "Established",
+        "PID": 23016,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 55677,
+        "RemoteAddress": "192.178.155.188",
+        "RemotePort": 5228,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 55613,
+        "RemoteAddress": "3.33.235.18",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 55470,
+        "RemoteAddress": "52.110.2.157",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 14500,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 55347,
+        "RemoteAddress": "160.79.104.10",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 54933,
+        "RemoteAddress": "172.215.132.17",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 28492,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "10.0.0.89",
+        "LocalPort": 54912,
+        "RemoteAddress": "10.0.0.39",
+        "RemotePort": 8009,
+        "State": "Established",
+        "PID": 63700,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 54640,
+        "RemoteAddress": "18.97.36.65",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 47108,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 54605,
+        "RemoteAddress": "160.79.104.10",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 47108,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 54557,
+        "RemoteAddress": "52.149.246.247",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 54209,
+        "RemoteAddress": "172.183.7.192",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 36664,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 53475,
+        "RemoteAddress": "185.93.1.245",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 52881,
+        "RemoteAddress": "72.25.64.32",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 63700,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 52665,
+        "RemoteAddress": "192.168.1.13",
+        "RemotePort": 32400,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 52425,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 52424,
+        "State": "Established",
+        "PID": 30700,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 52424,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 52425,
+        "State": "Established",
+        "PID": 30700,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 52422,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 52421,
+        "State": "Established",
+        "PID": 13276,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 52421,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 52422,
+        "State": "Established",
+        "PID": 13276,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 52003,
+        "RemoteAddress": "52.110.2.136",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 8664,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 51758,
+        "RemoteAddress": "45.79.197.109",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 51645,
+        "RemoteAddress": "45.79.146.139",
+        "RemotePort": 8443,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 51443,
+        "RemoteAddress": "52.96.111.98",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 8664,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 51196,
+        "RemoteAddress": "142.251.163.188",
+        "RemotePort": 5228,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 51152,
+        "RemoteAddress": "40.99.232.210",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 16676,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 51151,
+        "RemoteAddress": "13.107.137.11",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 36664,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 50766,
+        "RemoteAddress": "54.209.58.198",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 50522,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 32401,
+        "State": "Established",
+        "PID": 23016,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 50518,
+        "RemoteAddress": "34.149.66.137",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 68964,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 50513,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 32401,
+        "State": "Established",
+        "PID": 23016,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 50508,
+        "RemoteAddress": "34.149.66.154",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 47108,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 50479,
+        "RemoteAddress": "151.101.64.223",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 21188,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 50478,
+        "RemoteAddress": "18.238.55.70",
+        "RemotePort": 80,
+        "State": "Established",
+        "PID": 5144,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 50477,
+        "RemoteAddress": "204.79.197.203",
+        "RemotePort": 80,
+        "State": "Established",
+        "PID": 5144,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 50247,
+        "RemoteAddress": "172.64.151.205",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 50244,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 32401,
+        "State": "Established",
+        "PID": 23016,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 50243,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 32401,
+        "State": "Established",
+        "PID": 23016,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 50242,
+        "RemoteAddress": "45.79.146.139",
+        "RemotePort": 8443,
+        "State": "Established",
+        "PID": 37040,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 49836,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 2021,
+        "State": "Established",
+        "PID": 18824,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 49814,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 49813,
+        "State": "Established",
+        "PID": 6720,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 49813,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 49814,
+        "State": "Established",
+        "PID": 6720,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 49729,
+        "RemoteAddress": "192.168.1.98",
+        "RemotePort": 445,
+        "State": "Established",
+        "PID": 4,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 49727,
+        "RemoteAddress": "192.168.1.13",
+        "RemotePort": 445,
+        "State": "Established",
+        "PID": 4,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 49719,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 49718,
+        "State": "Established",
+        "PID": 6792,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 49718,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 49719,
+        "State": "Established",
+        "PID": 6792,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 49712,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 49711,
+        "State": "Established",
+        "PID": 2412,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 49711,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 49712,
+        "State": "Established",
+        "PID": 2412,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 49709,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 49708,
+        "State": "Established",
+        "PID": 6944,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 49708,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 49709,
+        "State": "Established",
+        "PID": 6944,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 49707,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 49706,
+        "State": "Established",
+        "PID": 6944,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 49706,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 49707,
+        "State": "Established",
+        "PID": 6944,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 49705,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 49704,
+        "State": "Established",
+        "PID": 2072,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 49704,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 49705,
+        "State": "Established",
+        "PID": 2072,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 49680,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 32401,
+        "State": "Established",
+        "PID": 23016,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 49412,
+        "RemoteAddress": "172.183.7.192",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 6952,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 49321,
+        "RemoteAddress": "23.195.100.63",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 21188,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 49319,
+        "RemoteAddress": "23.195.102.148",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 21188,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 49314,
+        "RemoteAddress": "151.101.64.223",
+        "RemotePort": 443,
+        "State": "Established",
+        "PID": 67260,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 32401,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 55738,
+        "State": "Established",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 32401,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 50244,
+        "State": "Established",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 32401,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 50243,
+        "State": "Established",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 32401,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 50513,
+        "State": "Established",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 32401,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 49680,
+        "State": "Established",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 32401,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 58235,
+        "State": "Established",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 32401,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 62841,
+        "State": "Established",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 32401,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 61338,
+        "State": "Established",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 32401,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 50522,
+        "State": "Established",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 32400,
+        "RemoteAddress": "91.196.221.84",
+        "RemotePort": 15553,
+        "State": "Established",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 32400,
+        "RemoteAddress": "71.187.33.219",
+        "RemotePort": 63685,
+        "State": "Established",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 32400,
+        "RemoteAddress": "192.168.1.154",
+        "RemotePort": 37176,
+        "State": "Established",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 32400,
+        "RemoteAddress": "192.168.1.165",
+        "RemotePort": 34118,
+        "State": "Established",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 32400,
+        "RemoteAddress": "192.168.1.165",
+        "RemotePort": 34122,
+        "State": "Established",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 32400,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 60336,
+        "State": "Established",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 5000,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 57441,
+        "State": "Established",
+        "PID": 73680,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 2021,
+        "RemoteAddress": "127.0.0.1",
+        "RemotePort": 49836,
+        "State": "Established",
+        "PID": 6668,
+        "Process": "Unknown"
+      }
+    ],
+    "listening": [
+      {
+        "LocalAddress": "::",
+        "LocalPort": 49815,
+        "RemoteAddress": "::",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 1864,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "::1",
+        "LocalPort": 49673,
+        "RemoteAddress": "::",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 6712,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "::",
+        "LocalPort": 49672,
+        "RemoteAddress": "::",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 6088,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "::",
+        "LocalPort": 49670,
+        "RemoteAddress": "::",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 4640,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "::",
+        "LocalPort": 49669,
+        "RemoteAddress": "::",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 4568,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "::",
+        "LocalPort": 49668,
+        "RemoteAddress": "::",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 2848,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "::",
+        "LocalPort": 49665,
+        "RemoteAddress": "::",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 1788,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "::",
+        "LocalPort": 49664,
+        "RemoteAddress": "::",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 1892,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "::",
+        "LocalPort": 32400,
+        "RemoteAddress": "::",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "::",
+        "LocalPort": 7680,
+        "RemoteAddress": "::",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 21188,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "::",
+        "LocalPort": 5357,
+        "RemoteAddress": "::",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 4,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "::",
+        "LocalPort": 3389,
+        "RemoteAddress": "::",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 2520,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "::",
+        "LocalPort": 445,
+        "RemoteAddress": "::",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 4,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "::",
+        "LocalPort": 135,
+        "RemoteAddress": "::",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 2096,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 59703,
+        "RemoteAddress": "0.0.0.0",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 18824,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 57728,
+        "RemoteAddress": "0.0.0.0",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 36632,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "0.0.0.0",
+        "LocalPort": 49815,
+        "RemoteAddress": "0.0.0.0",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 1864,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 49811,
+        "RemoteAddress": "0.0.0.0",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 6764,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "0.0.0.0",
+        "LocalPort": 49672,
+        "RemoteAddress": "0.0.0.0",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 6088,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "0.0.0.0",
+        "LocalPort": 49670,
+        "RemoteAddress": "0.0.0.0",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 4640,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "0.0.0.0",
+        "LocalPort": 49669,
+        "RemoteAddress": "0.0.0.0",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 4568,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "0.0.0.0",
+        "LocalPort": 49668,
+        "RemoteAddress": "0.0.0.0",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 2848,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "0.0.0.0",
+        "LocalPort": 49665,
+        "RemoteAddress": "0.0.0.0",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 1788,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "0.0.0.0",
+        "LocalPort": 49664,
+        "RemoteAddress": "0.0.0.0",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 1892,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 32600,
+        "RemoteAddress": "0.0.0.0",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 35960,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 32401,
+        "RemoteAddress": "0.0.0.0",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 15708,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 9656,
+        "RemoteAddress": "0.0.0.0",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 15948,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 8884,
+        "RemoteAddress": "0.0.0.0",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 4,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "0.0.0.0",
+        "LocalPort": 5040,
+        "RemoteAddress": "0.0.0.0",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 15588,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 5000,
+        "RemoteAddress": "0.0.0.0",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 73680,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "0.0.0.0",
+        "LocalPort": 3389,
+        "RemoteAddress": "0.0.0.0",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 2520,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "127.0.0.1",
+        "LocalPort": 2021,
+        "RemoteAddress": "0.0.0.0",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 6668,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "192.168.1.159",
+        "LocalPort": 139,
+        "RemoteAddress": "0.0.0.0",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 4,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "10.0.0.89",
+        "LocalPort": 139,
+        "RemoteAddress": "0.0.0.0",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 4,
+        "Process": "Unknown"
+      },
+      {
+        "LocalAddress": "0.0.0.0",
+        "LocalPort": 135,
+        "RemoteAddress": "0.0.0.0",
+        "RemotePort": 0,
+        "State": "Listen",
+        "PID": 2096,
+        "Process": "Unknown"
+      }
+    ],
+    "adapters": [],
+    "top_processes": [
+      {
+        "process": "Unknown",
+        "connections": 120
+      }
+    ],
+    "total_connections": 120,
+    "total_listening": 35
+  }
+}

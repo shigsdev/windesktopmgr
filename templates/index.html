@@ -1624,7 +1624,7 @@ function renderStartup() {
         "<div style='color:var(--muted);font-size:11px;font-style:italic'>Looking up&hellip;</div>";
 
     const srcTag = info && info.source && info.source !== "static_kb"
-      ? " <span style='font-size:10px;color:#555'>[" + esc(info.source) + "]</span>" : "";
+      ? " <span style='font-size:10px;color:#8a8aa0'>[" + esc(info.source) + "]</span>" : "";
 
     const detail = info
       ? "<div style='font-size:12px'>" + esc(info.what) + "</div>" +
@@ -1999,14 +1999,14 @@ function renderProcesses() {
     const what    = info ? info.what    : null;
     const safeKill= info ? info.safe_kill : true;
     const srcTag  = info && info.source && info.source !== "static_kb"
-      ? ` <span style="font-size:10px;color:#555">[${esc(info.source)}]</span>` : "";
+      ? ` <span style="font-size:10px;color:#8a8aa0">[${esc(info.source)}]</span>` : "";
     const rowBg   = p.flag ? `background:${flagBg(p.flag)}` : "";
 
     // Name cell: plain name + raw name below + publisher
     const nameCell =
       `<div style="font-weight:700;font-size:12px">${esc(plain)}${srcTag}</div>` +
       `<div style="color:var(--muted);font-size:10px">${esc(p.Name)} · PID ${p.PID}</div>` +
-      (pub && pub !== "Unknown" ? `<div style="color:#666;font-size:10px">${esc(pub)}</div>` : "");
+      (pub && pub !== "Unknown" ? `<div style="color:#8a8aa0;font-size:10px">${esc(pub)}</div>` : "");
 
     // What it does cell
     const whatCell = what
@@ -2241,7 +2241,7 @@ function renderServices() {
       ? "<span style='color:var(--cyan);font-size:11px'>&#10003; Safe</span>"
       : "<span style='color:var(--muted);font-size:11px'>Looking up…</span>";
     const srcTag = info && info.source && info.source !== "static_kb"
-      ? ` <span style='font-size:10px;color:#555'>[${esc(info.source)}]</span>` : "";
+      ? ` <span style='font-size:10px;color:#8a8aa0'>[${esc(info.source)}]</span>` : "";
 
     const running  = s.Status === "Running";
     const disabled = s.StartMode === "Disabled";

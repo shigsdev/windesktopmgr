@@ -1,0 +1,2226 @@
+{
+  "_captured_at": "2026-04-03T18:34:31.674342",
+  "_hostname": "shigs78-pc24",
+  "_python": "3.14.3",
+  "data": [
+    {
+      "DeviceName": "WAN Miniport (Network Monitor)",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "NET",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "WAN Miniport (IPv6)",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "NET",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "WAN Miniport (IP)",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "NET",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "WAN Miniport (PPPOE)",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "NET",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "WAN Miniport (PPTP)",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "NET",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "WAN Miniport (L2TP)",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "NET",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "WAN Miniport (IKEv2)",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "NET",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "WAN Miniport (SSTP)",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "NET",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Generic software device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SOFTWAREDEVICE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Generic software device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SOFTWAREDEVICE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Generic software device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SOFTWAREDEVICE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Generic software device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SOFTWAREDEVICE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Generic software device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SOFTWAREDEVICE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Generic software device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SOFTWAREDEVICE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Generic software device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SOFTWAREDEVICE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Local Print Queue",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "PRINTQUEUE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Local Print Queue",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "PRINTQUEUE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Local Print Queue",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "PRINTQUEUE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Local Print Queue",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "PRINTQUEUE",
+      "Manufacturer": "AMYUNI Technologies"
+    },
+    {
+      "DeviceName": "Local Print Queue",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "PRINTQUEUE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Local Print Queue",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "PRINTQUEUE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Generic software device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SOFTWAREDEVICE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Generic software device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SOFTWAREDEVICE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Generic software device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SOFTWAREDEVICE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Generic software device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SOFTWAREDEVICE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "WSD Scan Device",
+      "DriverVersion": "10.0.26100.7309",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "IMAGE",
+      "Manufacturer": "Brother"
+    },
+    {
+      "DeviceName": "WSD Print Device",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "WSDPRINTDEVICE",
+      "Manufacturer": "Brother"
+    },
+    {
+      "DeviceName": "Generic software device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SOFTWAREDEVICE",
+      "Manufacturer": "Brother"
+    },
+    {
+      "DeviceName": "Generic software device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SOFTWAREDEVICE",
+      "Manufacturer": "HP"
+    },
+    {
+      "DeviceName": "WSD Scan Device",
+      "DriverVersion": "10.0.26100.7309",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "IMAGE",
+      "Manufacturer": "HP"
+    },
+    {
+      "DeviceName": "HP Smart Universal Printing",
+      "DriverVersion": "5.6.1.3861",
+      "DriverDate": "20251205000000.******+***",
+      "DeviceClass": "PRINTER",
+      "Manufacturer": "HP"
+    },
+    {
+      "DeviceName": "WSD Print Device",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "WSDPRINTDEVICE",
+      "Manufacturer": "HP"
+    },
+    {
+      "DeviceName": "Generic software device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SOFTWAREDEVICE",
+      "Manufacturer": "HP"
+    },
+    {
+      "DeviceName": "Generic software device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SOFTWAREDEVICE",
+      "Manufacturer": "Plex, Inc."
+    },
+    {
+      "DeviceName": "Generic software device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SOFTWAREDEVICE",
+      "Manufacturer": "ARRIS"
+    },
+    {
+      "DeviceName": "Generic software device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SOFTWAREDEVICE",
+      "Manufacturer": "HP"
+    },
+    {
+      "DeviceName": "WSD Scan Device",
+      "DriverVersion": "10.0.26100.7309",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "IMAGE",
+      "Manufacturer": "HP"
+    },
+    {
+      "DeviceName": "WSD Print Device",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "WSDPRINTDEVICE",
+      "Manufacturer": "HP"
+    },
+    {
+      "DeviceName": "Generic software device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SOFTWAREDEVICE",
+      "Manufacturer": "HP"
+    },
+    {
+      "DeviceName": "Local Print Queue",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "PRINTQUEUE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft IPP Class Driver",
+      "DriverVersion": "10.0.26100.8036",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "PRINTER",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Brother MFC-L2740DW series",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SOFTWAREDEVICE",
+      "Manufacturer": "Brother"
+    },
+    {
+      "DeviceName": "Local Print Queue",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "PRINTQUEUE",
+      "Manufacturer": "HP"
+    },
+    {
+      "DeviceName": "HP OfficeJet Pro 9020 series PCL-3",
+      "DriverVersion": "29.117.2.7675",
+      "DriverDate": "20190617000000.******+***",
+      "DeviceClass": "PRINTER",
+      "Manufacturer": "HP"
+    },
+    {
+      "DeviceName": "HP OfficeJet Pro 9020 series [FAEB74]",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SOFTWAREDEVICE",
+      "Manufacturer": "HP"
+    },
+    {
+      "DeviceName": "HP OfficeJet Pro 9020 series [FAEB74]",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "IMAGE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Generic software device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SOFTWAREDEVICE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Computer Device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "COMPUTER",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Remote Desktop Device Redirector Bus",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft Streaming Service Proxy",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "MEDIA",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Plug and Play Software Device Enumerator",
+      "DriverVersion": "10.0.26100.4202",
+      "DriverDate": "20250523000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "Microsoft System Management BIOS Driver",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "NDIS Virtual Network Adapter Enumerator",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "NVIDIA Virtual Audio Device (Wave Extensible) (WDM)",
+      "DriverVersion": "4.65.0.12",
+      "DriverDate": "20250513000000.******+***",
+      "DeviceClass": "MEDIA",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft Hyper-V Virtual Disk Server",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "DellInstrumentation Device",
+      "DriverVersion": "2.9.2.0",
+      "DriverDate": "20250905000000.******+***",
+      "DeviceClass": "DELLINSTRUMENTATION",
+      "Manufacturer": "Dell Technologies"
+    },
+    {
+      "DeviceName": "Microsoft Basic Render Driver",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft Hyper-V PCI Server",
+      "DriverVersion": "10.0.26100.3037",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Device Firmware",
+      "DriverVersion": "10.0.26100.4768",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "FIRMWARE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Device Firmware",
+      "DriverVersion": "10.0.26100.4768",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "FIRMWARE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Device Firmware",
+      "DriverVersion": "10.0.26100.4768",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "FIRMWARE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "System Firmware 02.11.00",
+      "DriverVersion": "0.2.11.0",
+      "DriverDate": "20240906000000.******+***",
+      "DeviceClass": "FIRMWARE",
+      "Manufacturer": "Dell Inc."
+    },
+    {
+      "DeviceName": "Device Firmware",
+      "DriverVersion": "10.0.26100.4768",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "FIRMWARE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft UEFI-Compliant System",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "ACPI Fixed Feature Button",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "Motherboard resources",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "ACPI Thermal Zone",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "ACPI Fan",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "ACPI Fan",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "ACPI Fan",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "Intel(R) Innovation Platform Framework Manager",
+      "DriverVersion": "2.2.10203.4",
+      "DriverDate": "20241010000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Microsoft Windows Management Interface for ACPI",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft Windows Management Interface for ACPI",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Trusted Platform Module 2.0",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SECURITYDEVICES",
+      "Manufacturer": "(Standard)"
+    },
+    {
+      "DeviceName": "ACPI Power Button",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "Intel(R) Power Engine Plug-in",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Intel Corporation"
+    },
+    {
+      "DeviceName": "Microsoft Windows Management Interface for ACPI",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft Windows Management Interface for ACPI",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "ACPI Processor Aggregator",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel Processor",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20090421000000.******+***",
+      "DeviceClass": "PROCESSOR",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "ACPI Sleep Button",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "Motherboard resources",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "Intel(R) Serial IO GPIO Host Controller - INTC1056",
+      "DriverVersion": "30.100.2531.31",
+      "DriverDate": "20250730000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Intel Corporation"
+    },
+    {
+      "DeviceName": "Motherboard resources",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "Motherboard resources",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "ACPI Wake Alarm",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "Motherboard resources",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "Intel(R) SPI (flash) Controller - 7AA4",
+      "DriverVersion": "10.1.37.7",
+      "DriverDate": "19680718000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "INTEL"
+    },
+    {
+      "DeviceName": "Intel(R) SMBus - 7AA3",
+      "DriverVersion": "10.1.37.7",
+      "DriverDate": "19680718000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "INTEL"
+    },
+    {
+      "DeviceName": "Audio Endpoint",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20240331000000.******+***",
+      "DeviceClass": "AUDIOENDPOINT",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Realtek Audio Universal Service",
+      "DriverVersion": "1.0.818.0",
+      "DriverDate": "20241226000000.******+***",
+      "DeviceClass": "SOFTWARECOMPONENT",
+      "Manufacturer": "Realtek"
+    },
+    {
+      "DeviceName": "Realtek Asio Component",
+      "DriverVersion": "1.0.13.1",
+      "DriverDate": "20240828000000.******+***",
+      "DeviceClass": "SOFTWARECOMPONENT",
+      "Manufacturer": "Realtek"
+    },
+    {
+      "DeviceName": "Realtek Audio Effects Component",
+      "DriverVersion": "13.0.6000.1505",
+      "DriverDate": "20241204000000.******+***",
+      "DeviceClass": "AUDIOPROCESSINGOBJECT",
+      "Manufacturer": "Realtek"
+    },
+    {
+      "DeviceName": "Waves APO",
+      "DriverVersion": "8.2.0.16933",
+      "DriverDate": "20250115000000.******+***",
+      "DeviceClass": "AUDIOPROCESSINGOBJECT",
+      "Manufacturer": "Waves"
+    },
+    {
+      "DeviceName": "Realtek Audio",
+      "DriverVersion": "6.0.9780.1",
+      "DriverDate": "20241227000000.******+***",
+      "DeviceClass": "MEDIA",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "High Definition Audio Controller",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20260216000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Intel(R) Watchdog Timer Driver (Intel(R) WDT)",
+      "DriverVersion": "11.7.0.1019",
+      "DriverDate": "20240825000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "System timer",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "Motherboard resources",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "Programmable interrupt controller",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "High precision event timer",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "Intel(R) Innovation Platform Framework Generic Participant",
+      "DriverVersion": "2.2.10203.4",
+      "DriverDate": "20241010000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Microsoft ACPI-Compliant Embedded Controller",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "Intel(R) LPC Controller/eSPI Controller (Z690) - 7A84",
+      "DriverVersion": "10.1.37.7",
+      "DriverDate": "19680718000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "INTEL"
+    },
+    {
+      "DeviceName": "PCI Express Downstream Switch Port",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "PCI Express Downstream Switch Port",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "Disk drive",
+      "DriverVersion": "10.0.26100.7705",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "DISKDRIVE",
+      "Manufacturer": "(Standard disk drives)"
+    },
+    {
+      "DeviceName": "Standard NVM Express Controller",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SCSIADAPTER",
+      "Manufacturer": "Standard NVM Express Controller"
+    },
+    {
+      "DeviceName": "PCI Express Downstream Switch Port",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "PCI Express Downstream Switch Port",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "PCI Express Downstream Switch Port",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "Disk drive",
+      "DriverVersion": "10.0.26100.7705",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "DISKDRIVE",
+      "Manufacturer": "(Standard disk drives)"
+    },
+    {
+      "DeviceName": "Standard NVM Express Controller",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SCSIADAPTER",
+      "Manufacturer": "Standard NVM Express Controller"
+    },
+    {
+      "DeviceName": "PCI Express Downstream Switch Port",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "PCI Express Downstream Switch Port",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "PCI Express Downstream Switch Port",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "Disk drive",
+      "DriverVersion": "10.0.26100.7705",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "DISKDRIVE",
+      "Manufacturer": "(Standard disk drives)"
+    },
+    {
+      "DeviceName": "Standard NVM Express Controller",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SCSIADAPTER",
+      "Manufacturer": "Standard NVM Express Controller"
+    },
+    {
+      "DeviceName": "PCI Express Downstream Switch Port",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "PCI Express Downstream Switch Port",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "PCI Express Downstream Switch Port",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "Disk drive",
+      "DriverVersion": "10.0.26100.7705",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "DISKDRIVE",
+      "Manufacturer": "(Standard disk drives)"
+    },
+    {
+      "DeviceName": "Standard NVM Express Controller",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SCSIADAPTER",
+      "Manufacturer": "Standard NVM Express Controller"
+    },
+    {
+      "DeviceName": "PCI Express Downstream Switch Port",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "PCI Express Upstream Switch Port",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "Intel(R) PCI Express Root Port #9 - 7AB0",
+      "DriverVersion": "10.1.37.7",
+      "DriverDate": "19680718000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "INTEL"
+    },
+    {
+      "DeviceName": "Killer Networking Software",
+      "DriverVersion": "40.26.107.202",
+      "DriverDate": "20260107000000.******+***",
+      "DeviceClass": "SOFTWARECOMPONENT",
+      "Manufacturer": "Intel Corporation"
+    },
+    {
+      "DeviceName": "Killer E3100G 2.5 Gigabit Ethernet Controller",
+      "DriverVersion": "1125.27.50.919",
+      "DriverDate": "20250919000000.******+***",
+      "DeviceClass": "NET",
+      "Manufacturer": "Killer"
+    },
+    {
+      "DeviceName": "Intel(R) PCI Express Root Port #5 - 7ABC",
+      "DriverVersion": "10.1.37.7",
+      "DriverDate": "19680718000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "INTEL"
+    },
+    {
+      "DeviceName": "Realtek PCIE CardReader",
+      "DriverVersion": "10.0.26100.21374",
+      "DriverDate": "20240629000000.******+***",
+      "DeviceClass": "MTD",
+      "Manufacturer": "Realtek Semiconductor Corp."
+    },
+    {
+      "DeviceName": "Intel(R) PCI Express Root Port #20 - 7AC3",
+      "DriverVersion": "10.1.37.7",
+      "DriverDate": "19680718000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "INTEL"
+    },
+    {
+      "DeviceName": "Intel RST VMD Managed Controller 09AB",
+      "DriverVersion": "20.2.6.1025",
+      "DriverDate": "20250411000000.******+***",
+      "DeviceClass": "SCSIADAPTER",
+      "Manufacturer": "Intel Corporation"
+    },
+    {
+      "DeviceName": "Intel RST VMD Managed Controller 09AB",
+      "DriverVersion": "20.2.6.1025",
+      "DriverDate": "20250411000000.******+***",
+      "DeviceClass": "SCSIADAPTER",
+      "Manufacturer": "Intel Corporation"
+    },
+    {
+      "DeviceName": "Intel(R) Management Engine WMI Provider",
+      "DriverVersion": "2428.6.4.0",
+      "DriverDate": "20240710000000.******+***",
+      "DeviceClass": "SOFTWARECOMPONENT",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel(R) iCLS Client",
+      "DriverVersion": "1.74.210.0",
+      "DriverDate": "20240801000000.******+***",
+      "DeviceClass": "SOFTWARECOMPONENT",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel(R) Dynamic Application Loader Host Interface",
+      "DriverVersion": "1.46.2024.221",
+      "DriverDate": "20240331000000.******+***",
+      "DeviceClass": "SOFTWARECOMPONENT",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel(R) Management Engine Interface #1",
+      "DriverVersion": "2433.6.3.0",
+      "DriverDate": "20240815000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel(R) Serial IO I2C Host Controller - 7ACC",
+      "DriverVersion": "30.100.2531.31",
+      "DriverDate": "20250730000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Intel Corporation"
+    },
+    {
+      "DeviceName": "Microsoft Wi-Fi Direct Virtual Adapter",
+      "DriverVersion": "10.0.26100.7019",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "NET",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft Wi-Fi Direct Virtual Adapter",
+      "DriverVersion": "10.0.26100.7019",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "NET",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Killer Networking Software",
+      "DriverVersion": "40.26.107.202",
+      "DriverDate": "20260107000000.******+***",
+      "DeviceClass": "SOFTWARECOMPONENT",
+      "Manufacturer": "Intel Corporation"
+    },
+    {
+      "DeviceName": "Intelr PROSet/Wireless WiFi Software extension",
+      "DriverVersion": "23.1160.0.1",
+      "DriverDate": "20250721000000.******+***",
+      "DeviceClass": "SOFTWARECOMPONENT",
+      "Manufacturer": "Intel Corporation"
+    },
+    {
+      "DeviceName": "Killer(R) Wi-Fi 6E AX1675i 160MHz Wireless Network Adapter (211NGW)",
+      "DriverVersion": "23.160.0.4",
+      "DriverDate": "20250721000000.******+***",
+      "DeviceClass": "NET",
+      "Manufacturer": "Intel Corporation"
+    },
+    {
+      "DeviceName": "Intel(R) Shared SRAM - 7AA7",
+      "DriverVersion": "10.1.37.7",
+      "DriverDate": "19680718000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "INTEL"
+    },
+    {
+      "DeviceName": "HID-compliant consumer control device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "HIDCLASS",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "USB Input Device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "HIDCLASS",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "Audio Endpoint",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20240331000000.******+***",
+      "DeviceClass": "AUDIOENDPOINT",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "USB Audio Device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20260216000000.******+***",
+      "DeviceClass": "MEDIA",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "USB Composite Device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "USB",
+      "Manufacturer": "(Standard USB Host Controller)"
+    },
+    {
+      "DeviceName": "APC UPS",
+      "DriverVersion": "1.2.0.0",
+      "DriverDate": "20091103000000.******+***",
+      "DeviceClass": "BATTERY",
+      "Manufacturer": "APC by Schneider Electric"
+    },
+    {
+      "DeviceName": "American Power Conversion USB UPS",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "HIDCLASS",
+      "Manufacturer": "American Power Conversion"
+    },
+    {
+      "DeviceName": "Bluetooth LE Generic Attribute Service",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Bluetooth LE Generic Attribute Service",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Bluetooth LE Generic Attribute Service",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Bluetooth LE Generic Attribute Service",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Bluetooth LE Generic Attribute Service",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Bluetooth LE Generic Attribute Service",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Device Information Service",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Generic Attribute Profile",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Generic Access Profile",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Bluetooth LE Device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Bluetooth LE Generic Attribute Service",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Bluetooth LE Generic Attribute Service",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Bluetooth LE Generic Attribute Service",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Bluetooth LE Generic Attribute Service",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Bluetooth LE Generic Attribute Service",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Bluetooth LE Generic Attribute Service",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Device Information Service",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Generic Attribute Profile",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Generic Access Profile",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Bluetooth LE Device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft Bluetooth LE Enumerator",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Bluetooth Device (Personal Area Network)",
+      "DriverVersion": "10.0.26100.5074",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "NET",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Bluetooth Device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Bluetooth Device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Phonebook Access Pse Service",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Phonebook Access Pse Service",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft Bluetooth Hands-Free Audio device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20260216000000.******+***",
+      "DeviceClass": "MEDIA",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft Bluetooth Hands-Free Profile Handsfree role",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20240331000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft Bluetooth Hands-Free Audio device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20260216000000.******+***",
+      "DeviceClass": "MEDIA",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft Bluetooth Hands-Free Profile Handsfree role",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20240331000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Personal Area Network NAP Service",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Personal Area Network NAP Service",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft Bluetooth Avrcp Transport Driver",
+      "DriverVersion": "10.0.26100.7705",
+      "DriverDate": "20260126000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft Bluetooth Avrcp Transport Driver",
+      "DriverVersion": "10.0.26100.7705",
+      "DriverDate": "20260126000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft Bluetooth Avrcp Transport Driver",
+      "DriverVersion": "10.0.26100.7705",
+      "DriverDate": "20260126000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft Bluetooth Avrcp Transport Driver",
+      "DriverVersion": "10.0.26100.7705",
+      "DriverDate": "20260126000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft Bluetooth A2dp Sink",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20240331000000.******+***",
+      "DeviceClass": "MEDIA",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft Bluetooth A2dp Sink",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20240331000000.******+***",
+      "DeviceClass": "MEDIA",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Service Discovery Service",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Service Discovery Service",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft Bluetooth Enumerator",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Bluetooth Device (RFCOMM Protocol TDI)",
+      "DriverVersion": "10.0.26100.8036",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Intel(R) Wireless Bluetooth(R)",
+      "DriverVersion": "23.160.0.9",
+      "DriverDate": "20250720000000.******+***",
+      "DeviceClass": "BLUETOOTH",
+      "Manufacturer": "Intel Corporation"
+    },
+    {
+      "DeviceName": "HID-compliant touch pad",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "HIDCLASS",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "USB Input Device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "HIDCLASS",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "HID-compliant vendor-defined device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "HIDCLASS",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "HID-compliant vendor-defined device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "HIDCLASS",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "USB Input Device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "HIDCLASS",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "HID-compliant device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "HIDCLASS",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "HID-compliant system controller",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "HIDCLASS",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "HID-compliant consumer control device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "HIDCLASS",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "HID-compliant mouse",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "MOUSE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "USB Input Device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "HIDCLASS",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "HID Keyboard Device",
+      "DriverVersion": "10.0.26100.1882",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "KEYBOARD",
+      "Manufacturer": "(Standard keyboards)"
+    },
+    {
+      "DeviceName": "Logitech USB Input Device",
+      "DriverVersion": "1.10.80.0",
+      "DriverDate": "20210824000000.******+***",
+      "DeviceClass": "HIDCLASS",
+      "Manufacturer": "Logitech (x64)"
+    },
+    {
+      "DeviceName": "USB Composite Device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "USB",
+      "Manufacturer": "(Standard USB Host Controller)"
+    },
+    {
+      "DeviceName": "Audio Endpoint",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20240331000000.******+***",
+      "DeviceClass": "AUDIOENDPOINT",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "USB Audio Device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20260216000000.******+***",
+      "DeviceClass": "MEDIA",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "c922 Pro Stream Webcam",
+      "DriverVersion": "1.4.40.0",
+      "DriverDate": "20210427000000.******+***",
+      "DeviceClass": "IMAGE",
+      "Manufacturer": "Logitech"
+    },
+    {
+      "DeviceName": "USB Composite Device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "USB",
+      "Manufacturer": "(Standard USB Host Controller)"
+    },
+    {
+      "DeviceName": "HID-compliant vendor-defined device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "HIDCLASS",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "HID-compliant vendor-defined device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "HIDCLASS",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "HID-compliant vendor-defined device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "HIDCLASS",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "USB Input Device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "HIDCLASS",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "HID-compliant vendor-defined device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "HIDCLASS",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "HID-compliant system controller",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "HIDCLASS",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "HID-compliant consumer control device",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "HIDCLASS",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "HID-compliant mouse",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "MOUSE",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "USB Input Device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "HIDCLASS",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "HID Keyboard Device",
+      "DriverVersion": "10.0.26100.1882",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "KEYBOARD",
+      "Manufacturer": "(Standard keyboards)"
+    },
+    {
+      "DeviceName": "Logitech USB Input Device",
+      "DriverVersion": "1.10.80.0",
+      "DriverDate": "20210824000000.******+***",
+      "DeviceClass": "HIDCLASS",
+      "Manufacturer": "Logitech (x64)"
+    },
+    {
+      "DeviceName": "USB Composite Device",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "USB",
+      "Manufacturer": "(Standard USB Host Controller)"
+    },
+    {
+      "DeviceName": "USB Root Hub (USB 3.0)",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20260216000000.******+***",
+      "DeviceClass": "USB",
+      "Manufacturer": "(Standard USB HUBs)"
+    },
+    {
+      "DeviceName": "USB xHCI Compliant Host Controller",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20260216000000.******+***",
+      "DeviceClass": "USB",
+      "Manufacturer": "Generic USB xHCI Host Controller"
+    },
+    {
+      "DeviceName": "Intel(R) Optane(TM) Memory and Storage Management Component",
+      "DriverVersion": "20.2.6.1025",
+      "DriverDate": "20250411000000.******+***",
+      "DeviceClass": "SOFTWARECOMPONENT",
+      "Manufacturer": "Intel Corporation"
+    },
+    {
+      "DeviceName": "Disk drive",
+      "DriverVersion": "10.0.26100.7705",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "DISKDRIVE",
+      "Manufacturer": "(Standard disk drives)"
+    },
+    {
+      "DeviceName": "Disk drive",
+      "DriverVersion": "10.0.26100.7705",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "DISKDRIVE",
+      "Manufacturer": "(Standard disk drives)"
+    },
+    {
+      "DeviceName": "Intel RST VMD Controller A77F",
+      "DriverVersion": "20.2.6.1025",
+      "DriverDate": "20250411000000.******+***",
+      "DeviceClass": "SCSIADAPTER",
+      "Manufacturer": "Intel Corporation"
+    },
+    {
+      "DeviceName": "Intel(R) GNA Scoring Accelerator module",
+      "DriverVersion": "3.5.0.1578",
+      "DriverDate": "20231114000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Intel Corporation"
+    },
+    {
+      "DeviceName": "Intel(R) Dynamic Tuning Technology Updater Component",
+      "DriverVersion": "9.0.11703.48565",
+      "DriverDate": "20240729000000.******+***",
+      "DeviceClass": "SOFTWARECOMPONENT",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel(R) Dynamic Tuning Technology",
+      "DriverVersion": "9.0.11703.48565",
+      "DriverDate": "20240729000000.******+***",
+      "DeviceClass": "SOFTWARECOMPONENT",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel(R) SoC Thermal IPF Extension Provider",
+      "DriverVersion": "3.2.1002.0",
+      "DriverDate": "20241022000000.******+***",
+      "DeviceClass": "SOFTWARECOMPONENT",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel(R) GPU IPF Providers",
+      "DriverVersion": "16.0.0.730",
+      "DriverDate": "20241122000000.******+***",
+      "DeviceClass": "SOFTWARECOMPONENT",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel(R) Innovation Platform Framework Extensible Framework",
+      "DriverVersion": "2.2.10203.4",
+      "DriverDate": "20241010000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Generic software component",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SOFTWARECOMPONENT",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Intel(R) GPU IPF Providers",
+      "DriverVersion": "16.0.0.730",
+      "DriverDate": "20241122000000.******+***",
+      "DeviceClass": "SOFTWARECOMPONENT",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel(R) Innovation Platform Framework Extensible Framework",
+      "DriverVersion": "2.2.10203.4",
+      "DriverDate": "20241010000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel(R) Innovation Platform Framework Processor Participant",
+      "DriverVersion": "2.2.10203.4",
+      "DriverDate": "20241010000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Intel"
+    },
+    {
+      "DeviceName": "Intel(R) UHD Graphics 770",
+      "DriverVersion": "32.0.101.7077",
+      "DriverDate": "20250916000000.******+***",
+      "DeviceClass": "DISPLAY",
+      "Manufacturer": "Intel Corporation"
+    },
+    {
+      "DeviceName": "Audio Endpoint",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20240331000000.******+***",
+      "DeviceClass": "AUDIOENDPOINT",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "NVIDIA High Definition Audio",
+      "DriverVersion": "1.4.5.7",
+      "DriverDate": "20251201000000.******+***",
+      "DeviceClass": "MEDIA",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "High Definition Audio Controller",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20260216000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "HP Pavilion 22cw IPS LED Backlit Monitor",
+      "DriverVersion": "1.0.0.1",
+      "DriverDate": "20140925000000.******+***",
+      "DeviceClass": "MONITOR",
+      "Manufacturer": "HP"
+    },
+    {
+      "DeviceName": "Generic PnP Monitor",
+      "DriverVersion": "10.0.26100.7309",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "MONITOR",
+      "Manufacturer": "(Standard monitor types)"
+    },
+    {
+      "DeviceName": "NVIDIA GeForce RTX 4060 Ti",
+      "DriverVersion": "32.0.15.9579",
+      "DriverDate": "20260304000000.******+***",
+      "DeviceClass": "DISPLAY",
+      "Manufacturer": "NVIDIA"
+    },
+    {
+      "DeviceName": "Intel(R) PCIe RC 010 G5 - A70D",
+      "DriverVersion": "10.1.49.9",
+      "DriverDate": "19680718000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "INTEL"
+    },
+    {
+      "DeviceName": "PCI standard host CPU bridge",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "PCI Express Root Complex",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "Microsoft ACPI-Compliant System",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "ACPI x64-based PC",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "COMPUTER",
+      "Manufacturer": "(Standard computers)"
+    },
+    {
+      "DeviceName": "UMBus Enumerator",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Remote Desktop USB Hub",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard system devices)"
+    },
+    {
+      "DeviceName": "UMBus Enumerator",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "UMBus Enumerator",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "UMBus Enumerator",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "UMBus Root Bus Enumerator",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft Kernel Debug Network Adapter",
+      "DriverVersion": "10.0.26100.8036",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "NET",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Disk drive",
+      "DriverVersion": "10.0.26100.7705",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "DISKDRIVE",
+      "Manufacturer": "(Standard disk drives)"
+    },
+    {
+      "DeviceName": "Microsoft Storage Spaces Controller",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SCSIADAPTER",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft VHD Loopback Controller",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SCSIADAPTER",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft Virtual Drive Enumerator",
+      "DriverVersion": "10.0.26100.1591",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Composite Bus Enumerator",
+      "DriverVersion": "10.0.26100.1150",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft Hyper-V Virtualization Infrastructure Driver",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "OpenVPN Data Channel Offload for ExpressVPN",
+      "DriverVersion": "1.4.0.0",
+      "DriverDate": "20250127000000.******+***",
+      "DeviceClass": "NET",
+      "Manufacturer": "ExpressVPN"
+    },
+    {
+      "DeviceName": "ExpressVPN TUN Driver",
+      "DriverVersion": "0.8.0.0",
+      "DriverDate": "20210928000000.******+***",
+      "DeviceClass": "NET",
+      "Manufacturer": "ExpressVPN"
+    },
+    {
+      "DeviceName": "ExpressVPN TAP Adapter",
+      "DriverVersion": "9.24.2.45",
+      "DriverDate": "20190430000000.******+***",
+      "DeviceClass": "NET",
+      "Manufacturer": "ExpressVPN"
+    },
+    {
+      "DeviceName": "Microsoft Hypervisor Service",
+      "DriverVersion": "10.0.26100.7309",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Microsoft Basic Display Driver",
+      "DriverVersion": "10.0.26100.4202",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "(Standard display types)"
+    },
+    {
+      "DeviceName": "Microsoft Hyper-V Virtual Machine Bus Provider",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Volume",
+      "DriverVersion": "10.0.26100.5074",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "VOLUME",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Storage Space",
+      "DriverVersion": "10.0.26100.5074",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "WPD",
+      "Manufacturer": "Msft"
+    },
+    {
+      "DeviceName": "Generic volume shadow copy",
+      "DriverVersion": "10.0.26100.1",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "VOLUMESNAPSHOT",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Volume",
+      "DriverVersion": "10.0.26100.5074",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "VOLUME",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Volume",
+      "DriverVersion": "10.0.26100.5074",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "VOLUME",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Volume",
+      "DriverVersion": "10.0.26100.5074",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "VOLUME",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Volume",
+      "DriverVersion": "10.0.26100.5074",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "VOLUME",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Volume",
+      "DriverVersion": "10.0.26100.5074",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "VOLUME",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Volume",
+      "DriverVersion": "10.0.26100.5074",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "VOLUME",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Volume",
+      "DriverVersion": "10.0.26100.5074",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "VOLUME",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Volume",
+      "DriverVersion": "10.0.26100.5074",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "VOLUME",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Volume",
+      "DriverVersion": "10.0.26100.5074",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "VOLUME",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Volume",
+      "DriverVersion": "10.0.26100.5074",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "VOLUME",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Volume",
+      "DriverVersion": "10.0.26100.5074",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "VOLUME",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Volume",
+      "DriverVersion": "10.0.26100.5074",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "VOLUME",
+      "Manufacturer": "Microsoft"
+    },
+    {
+      "DeviceName": "Volume Manager",
+      "DriverVersion": "10.0.26100.7920",
+      "DriverDate": "20060621000000.******+***",
+      "DeviceClass": "SYSTEM",
+      "Manufacturer": "Microsoft"
+    }
+  ]
+}

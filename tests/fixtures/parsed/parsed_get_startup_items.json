@@ -1,0 +1,709 @@
+{
+  "_captured_at": "2026-04-03T18:34:54.547581",
+  "_hostname": "shigs78-pc24",
+  "_python": "3.14.3",
+  "data": [
+    {
+      "Name": "com.squirrel.slack.slack",
+      "Command": "\"C:\\Users\\higs7\\AppData\\Local\\slack\\slack.exe\" --process-start-args --startup",
+      "Location": "HKCU Run",
+      "Type": "registry_hkcu",
+      "Enabled": false,
+      "suspicious": false,
+      "info": {
+        "plain_name": "Slack",
+        "publisher": "Slack Technologies",
+        "what": "Starts the Slack messaging app in the background on login.",
+        "impact": "medium",
+        "safe_to_disable": true,
+        "recommendation": "optional",
+        "reason": "Safe to disable if you don't need Slack notifications immediately on login.",
+        "source": "static_kb"
+      }
+    },
+    {
+      "Name": "MsCtfMonitor",
+      "Command": "MsCtfMonitor",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": {
+        "plain_name": "CTF Loader (Text Input Processor)",
+        "publisher": "Microsoft",
+        "what": "Supports alternative text input methods \u2014 handwriting, speech, on-screen keyboard, and IME language bars.",
+        "impact": "low",
+        "safe_to_disable": true,
+        "recommendation": "optional",
+        "reason": "Safe to disable if you only use a standard keyboard and don't use speech input, handwriting, or non-English IME.",
+        "source": "static_kb"
+      }
+    },
+    {
+      "Name": "SecurityHealth",
+      "Command": "C:\\WINDOWS\\system32\\SecurityHealthSystray.exe",
+      "Location": "HKLM Run",
+      "Type": "registry_hklm",
+      "Enabled": true,
+      "suspicious": false,
+      "info": {
+        "plain_name": "Windows Security tray icon",
+        "publisher": "Microsoft",
+        "what": "Shows the Windows Security shield icon in the system tray. Does not affect actual security protection.",
+        "impact": "low",
+        "safe_to_disable": true,
+        "recommendation": "optional",
+        "reason": "Removing the tray icon doesn't disable Windows Defender \u2014 protection still runs. Safe to disable if you prefer a cleaner tray.",
+        "source": "static_kb"
+      }
+    },
+    {
+      "Name": "OneDrive",
+      "Command": "\"C:\\Program Files\\Microsoft OneDrive\\OneDrive.exe\" /background",
+      "Location": "HKCU Run",
+      "Type": "registry_hkcu",
+      "Enabled": true,
+      "suspicious": false,
+      "info": {
+        "plain_name": "Microsoft OneDrive",
+        "publisher": "Microsoft",
+        "what": "Keeps your OneDrive folder synced with the cloud. Required if you store files in OneDrive (your health reports live there).",
+        "impact": "medium",
+        "safe_to_disable": false,
+        "recommendation": "keep",
+        "reason": "Your SystemHealthDiag reports save to OneDrive \u2014 disabling sync could mean reports don't back up properly.",
+        "source": "static_kb"
+      }
+    },
+    {
+      "Name": "OneDrive Startup Task-S-1-5-21-1386757434-3509894437-3212693725-1001",
+      "Command": "C:\\Program Files\\Microsoft OneDrive\\26.045.0308.0001\\OneDriveLauncher.exe /startInstances",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": {
+        "plain_name": "Microsoft OneDrive",
+        "publisher": "Microsoft",
+        "what": "Keeps your OneDrive folder synced with the cloud. Required if you store files in OneDrive (your health reports live there).",
+        "impact": "medium",
+        "safe_to_disable": false,
+        "recommendation": "keep",
+        "reason": "Your SystemHealthDiag reports save to OneDrive \u2014 disabling sync could mean reports don't back up properly.",
+        "source": "static_kb"
+      }
+    },
+    {
+      "Name": "WinDesktopMgr",
+      "Command": "C:\\shigsapps\\windesktopmgr\\start-windesktopmgr.bat",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": {
+        "plain_name": "WinDesktopMgr (this app)",
+        "publisher": "Local",
+        "what": "Your Windows system management tool \u2014 driver checker, BSOD dashboard, disk health, network monitor, and more.",
+        "impact": "low",
+        "safe_to_disable": false,
+        "recommendation": "keep",
+        "reason": "This is WinDesktopMgr itself. Keep enabled to have your dashboard ready at login.",
+        "source": "static_kb"
+      }
+    },
+    {
+      "Name": "AD RMS Rights Policy Template Management (Automated)",
+      "Command": "AD RMS Rights Policy Template Management (Automated)",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": false,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "AD RMS Rights Policy Template Management (Manual)",
+      "Command": "AD RMS Rights Policy Template Management (Manual)",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Adobe Acrobat Synchronizer",
+      "Command": "\"C:\\Program Files\\Adobe\\Acrobat DC\\Acrobat\\AdobeCollabSync.exe\"",
+      "Location": "HKCU Run",
+      "Type": "registry_hkcu",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Adobe Acrobat Update Task",
+      "Command": "C:\\Program Files (x86)\\Common Files\\Adobe\\ARM\\1.0\\AdobeARM.exe",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": false,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "APC UPS Status",
+      "Command": "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\APC UPS Status.lnk",
+      "Location": "Startup Folder (All Users)",
+      "Type": "folder",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Automatic-Device-Join",
+      "Command": "%SystemRoot%\\System32\\dsregcmd.exe $(Arg0) $(Arg1) $(Arg2)",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": false,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "AutomaticOfflineMemoryDiagnostic",
+      "Command": "AutomaticOfflineMemoryDiagnostic",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "CacheTask",
+      "Command": "CacheTask",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Calibration Loader",
+      "Command": "Calibration Loader",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "CAMTray",
+      "Command": "\"C:\\Program Files\\CyberLink\\AppManager\\CAMTray.exe\" /AutoRun",
+      "Location": "HKLM Run",
+      "Type": "registry_hklm",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "CLToastRun",
+      "Command": "\"C:\\Program Files (x86)\\CyberLink\\Shared files\\CLToast.exe\" -UpdateScheduleRun",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Data Integrity Check And Scan",
+      "Command": "Data Integrity Check And Scan",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Device Install Reboot Required",
+      "Command": "Device Install Reboot Required",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Device User",
+      "Command": "%windir%\\system32\\devicecensus.exe UserCxt",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "deviceTRUST Client User",
+      "Command": "\"C:\\PROGRA~2\\Citrix\\DEVICE~1\\Bin64\\DTCLIE~1.EXE\"",
+      "Location": "HKLM Run",
+      "Type": "registry_hklm",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "DirectXDatabaseUpdater",
+      "Command": "%windir%\\system32\\directxdatabaseupdater.exe",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Driver Recovery on Reboot",
+      "Command": "Driver Recovery on Reboot",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": false,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "DXGIAdapterCache",
+      "Command": "%windir%\\system32\\dxgiadaptercache.exe",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "ExploitGuard MDM policy Refresh",
+      "Command": "ExploitGuard MDM policy Refresh",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "GoogleChromeAutoLaunch_17133C5CC50CB0752985B8D814A27AC9",
+      "Command": "\"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\" --no-startup-window /prefetch:5",
+      "Location": "HKCU Run",
+      "Type": "registry_hkcu",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Installation",
+      "Command": "Installation",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "iSCSIAgentAutoStartup",
+      "Command": "\"C:\\Program Files (x86)\\QNAP\\Qfinder\\iSCSIAgent.exe\"",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "JetBrains Toolbox",
+      "Command": "\"C:\\Users\\higs7\\AppData\\Local\\JetBrains\\Toolbox\\bin\\jetbrains-toolbox.exe\" --minimize",
+      "Location": "HKCU Run",
+      "Type": "registry_hkcu",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Logitech Download Assistant",
+      "Command": "C:\\Windows\\system32\\rundll32.exe C:\\Windows\\System32\\LogiLDA.dll,LogiFetch",
+      "Location": "HKLM Run",
+      "Type": "registry_hklm",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Logon",
+      "Command": "%windir%\\system32\\ProvTool.exe /turn 5 /source LogonIdleTask",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Logon Synchronization",
+      "Command": "Logon Synchronization",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": false,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "McAfee Windows Notification Token",
+      "Command": "\"\\\\?\\C:\\Program Files\\McAfee\\WPS\\1.37.173.1\\mc-wns-client\\mc-wns-client.exe\" /mc_wns_task",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "MdmDiagnosticsCleanup",
+      "Command": "%windir%\\system32\\MdmDiagnosticsTool.exe /clean",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": false,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Microsoft-Windows-DiskDiagnosticResolver",
+      "Command": "%windir%\\system32\\DFDWiz.exe",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": false,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Monitoring",
+      "Command": "%systemroot%\\system32\\cmd.exe /d /c %systemroot%\\system32\\hpatchmonTask.cmd",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "NcsiIdentifyUserProxies",
+      "Command": "NcsiIdentifyUserProxies",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Office Actions Server",
+      "Command": "C:\\Program Files\\Microsoft Office\\root\\VFS\\ProgramFilesCommonX64\\Microsoft Shared\\Office16\\ActionsServer\\ActionsServer.exe availabilitycheck",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Office Automatic Updates 2.0",
+      "Command": "C:\\Program Files\\Common Files\\Microsoft Shared\\ClickToRun\\OfficeC2RClient.exe /frequentupdate SCHEDULEDTASK displaylevel=False",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Office Background Push Maintenance",
+      "Command": "C:\\Program Files\\Microsoft Office\\root\\vfs\\ProgramFilesCommonx64\\Microsoft Shared\\Office16\\opushutil.exe /pushregistration",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Office Feature Updates Logon",
+      "Command": "C:\\Program Files\\Microsoft Office\\root\\Office16\\sdxhelper.exe /onlogon",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Office Startup Maintenance",
+      "Command": "C:\\Program Files\\Microsoft Office\\root\\VFS\\ProgramFilesCommonX64\\Microsoft Shared\\Office16\\ActionsServer\\ActionsServer.exe wacheck",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "org.whispersystems.signal-desktop",
+      "Command": "C:\\Users\\higs7\\AppData\\Local\\Programs\\signal-desktop\\Signal.exe --start-in-tray",
+      "Location": "HKCU Run",
+      "Type": "registry_hkcu",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "PITRTask",
+      "Command": "PITRTask",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Plex Media Server",
+      "Command": "\"C:\\Program Files\\Plex\\Plex Media Server\\Plex Media Server.exe\"",
+      "Location": "HKCU Run",
+      "Type": "registry_hkcu",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "PowerDirectorStyleAgent",
+      "Command": "C:\\Program Files (x86)\\CyberLink\\Shared files\\PDStyleAgent\\PDStyleAgent.exe",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Pre-staged app cleanup",
+      "Command": "%windir%\\system32\\rundll32.exe %windir%\\system32\\AppxDeploymentClient.dll,AppxPreStageCleanupRunTask",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": false,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Printer Health Monitor Logon",
+      "Command": "C:\\Program Files\\HPPrintScanDoctor\\HPPrinterHealthMonitor.exe",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Proxy",
+      "Command": "%windir%\\system32\\rundll32.exe /d acproxy.dll,PerformAutochkOperations",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "QueueReporting",
+      "Command": "%windir%\\system32\\wermgr.exe -upload",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "RecommendedTroubleshootingScanner",
+      "Command": "RecommendedTroubleshootingScanner",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "ReconcileLanguageResources",
+      "Command": "ReconcileLanguageResources",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Recovery-Check",
+      "Command": "%SystemRoot%\\System32\\dsregcmd.exe /checkrecovery",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": false,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "RemediateHardwareChange",
+      "Command": "RemediateHardwareChange",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": false,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Retry",
+      "Command": "%windir%\\system32\\ProvTool.exe /turn 5 /source ProvRetryTask",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": false,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "RtkAudUService",
+      "Command": "\"C:\\WINDOWS\\System32\\DriverStore\\FileRepository\\realtekservice.inf_amd64_434f4faf6aa034b3\\RtkAudUService64.exe\" -background",
+      "Location": "HKLM Run",
+      "Type": "registry_hklm",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "RunOnReboot",
+      "Command": "%windir%\\system32\\ProvTool.exe /turn 5 /source ContinueSessionTask",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": false,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "SamsungMagician",
+      "Command": "\"C:\\Program Files (x86)\\Samsung\\Samsung Magician\\SamsungMagician.exe\" /AUTOHIDE",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Send to OneNote",
+      "Command": "C:\\Users\\higs7\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\Send to OneNote.lnk",
+      "Location": "Startup Folder (User)",
+      "Type": "folder",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "SpaceAgentTask",
+      "Command": "%windir%\\system32\\SpaceAgent.exe",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "SpaceManagerTask",
+      "Command": "%windir%\\system32\\spaceman.exe /Work",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "SvcRestartTaskLogon",
+      "Command": "SvcRestartTaskLogon",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": false,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Synchronize Language Settings",
+      "Command": "Synchronize Language Settings",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "SystemHealthDiagnostic",
+      "Command": "powershell.exe -NonInteractive -ExecutionPolicy Bypass -File \"C:\\shigsapps\\windesktopmgr\\Run-DiagnosticWrapper.ps1\"",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "SystemSoundsService",
+      "Command": "SystemSoundsService",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "UniConverterUpdateHelper",
+      "Command": "C:\\Program Files (x86)\\Wondershare\\Wondershare UniConverter 14 for Windows (CPC)\\WSVCUUpdateHelper.exe",
+      "Location": "HKLM Run",
+      "Type": "registry_hklm",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "UserTask",
+      "Command": "UserTask",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "VerifiedPublisherCertStoreCheck",
+      "Command": "%windir%\\system32\\appidcertstorecheck.exe",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": false,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "WavesSvc",
+      "Command": "\"C:\\WINDOWS\\System32\\DriverStore\\FileRepository\\wavesapo11de.inf_amd64_c6cd4cf632788a8e\\WavesSvc64.exe\" -Jack",
+      "Location": "HKLM Run",
+      "Type": "registry_hklm",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Windows Backup Monitor",
+      "Command": "%systemroot%\\system32\\sdclt.exe /CHECKSKIPPED",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Work Folders Logon Synchronization",
+      "Command": "Work Folders Logon Synchronization",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    },
+    {
+      "Name": "Work Folders Maintenance Work",
+      "Command": "Work Folders Maintenance Work",
+      "Location": "Task Scheduler",
+      "Type": "task",
+      "Enabled": true,
+      "suspicious": false,
+      "info": null
+    }
+  ]
+}

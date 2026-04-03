@@ -1,0 +1,1207 @@
+{
+  "_captured_at": "2026-04-03T18:34:52.437969",
+  "_hostname": "shigs78-pc24",
+  "_python": "3.14.3",
+  "data": [
+    {
+      "Title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "Date": "2026-04-03T08:06:26.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "Date": "2026-04-03T08:06:00.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "Date": "2026-04-02T21:12:14.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "Date": "2026-04-02T02:05:18.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "Date": "2026-03-31T23:13:07.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "HP Printer Driver Update (5.6.1.3861)",
+      "Date": "2026-03-30T11:40:23.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "Date": "2026-03-28T20:05:07.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "Date": "2026-03-28T09:04:34.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "Date": "2026-03-26T01:12:11.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "PowerShell v7.5.5 (x64)",
+      "Date": "2026-03-25T12:48:31.0000000",
+      "ResultCode": 2,
+      "Categories": "PowerShell - x64",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "Date": "2026-03-25T02:06:38.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "Date": "2026-03-24T02:12:05.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "Date": "2026-03-22T13:05:24.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "Date": "2026-03-15T10:04:35.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "2026-03 Security Update (KB5079473) (26200.8037)",
+      "Date": "2026-03-11T11:42:21.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "KB5079473",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "2026-03 .NET 9.0.14 Security Update for x64 Client (KB5081278)",
+      "Date": "2026-03-11T11:36:48.0000000",
+      "ResultCode": 2,
+      "Categories": ".NET 9.0",
+      "KB": "KB5081278",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "2026-03 .NET 8.0.25 Security Update for x64 Client (KB5081277)",
+      "Date": "2026-03-11T11:36:26.0000000",
+      "ResultCode": 2,
+      "Categories": ".NET 8.0",
+      "KB": "KB5081277",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "Update for Windows Security platform - KB5007651 (Version 10.0.29510.1001)",
+      "Date": "2026-02-12T23:37:08.0000000",
+      "ResultCode": 2,
+      "Categories": "Windows Security platform",
+      "KB": "KB5007651",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "2026-02 Security Update (KB5077181) (26200.7840)",
+      "Date": "2026-02-11T10:37:15.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "KB5077181",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "Windows Malicious Software Removal Tool x64 - v5.139 (KB890830)",
+      "Date": "2026-02-11T10:30:15.0000000",
+      "ResultCode": 2,
+      "Categories": "EU Browser Choice Update-For Europe Only, Windows 10, Windows 10 LTSB, Windows 10, version 1903 and later, Windows 11",
+      "KB": "KB890830",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "2026-02 .NET 9.0.13 Security Update for x64 Client (KB5077864)",
+      "Date": "2026-02-11T08:20:36.0000000",
+      "ResultCode": 2,
+      "Categories": ".NET 9.0",
+      "KB": "KB5077864",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "2026-02 .NET 8.0.24 Security Update for x64 Client (KB5077863)",
+      "Date": "2026-02-10T20:16:09.0000000",
+      "ResultCode": 2,
+      "Categories": ".NET 8.0",
+      "KB": "KB5077863",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "Intel Corporation Driver Update (32.0.101.7077)",
+      "Date": "2026-02-04T03:24:44.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "Intel Corporation Driver Update (32.0.101.7077)",
+      "Date": "2026-01-21T01:47:16.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "2026-01 .NET 9.0.12 Update for x64 Client (KB5074753)",
+      "Date": "2026-01-13T20:39:32.0000000",
+      "ResultCode": 2,
+      "Categories": ".NET 9.0",
+      "KB": "KB5074753",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "2026-01 Security Update (KB5074109) (26200.7623)",
+      "Date": "2026-01-13T20:37:24.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "KB5074109",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "2026-01 .NET 8.0.23 Update for x64 Client (KB5074752)",
+      "Date": "2026-01-13T19:35:45.0000000",
+      "ResultCode": 2,
+      "Categories": ".NET 8.0",
+      "KB": "KB5074752",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "Update for Microsoft Defender Antivirus antimalware platform - KB4052623 (Version 4.18.25110.6) - Current Channel (Broad)",
+      "Date": "2026-01-08T16:49:33.0000000",
+      "ResultCode": 2,
+      "Categories": "Microsoft Defender Antivirus",
+      "KB": "KB4052623",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "Security Intelligence Update for Microsoft Defender Antivirus - KB2267602 (Version 1.443.563.0) - Current Channel (Broad)",
+      "Date": "2026-01-08T16:49:21.0000000",
+      "ResultCode": 2,
+      "Categories": "Microsoft Defender Antivirus",
+      "KB": "KB2267602",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "Security Intelligence Update for Microsoft Defender Antivirus - KB2267602 (Version 1.443.561.0) - Current Channel (Broad)",
+      "Date": "2026-01-08T16:43:06.0000000",
+      "ResultCode": 2,
+      "Categories": "Microsoft Defender Antivirus",
+      "KB": "KB2267602",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "HP Inc. - Extension - 1.0.0.5",
+      "Date": "2026-01-03T02:33:44.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "HP - Printer - 5.3.1.3642",
+      "Date": "2026-01-03T02:33:36.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "Intel Corporation Driver Update (20.2.6.1025)",
+      "Date": "2025-12-11T23:20:20.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "Windows Malicious Software Removal Tool x64 - v5.138 (KB890830)",
+      "Date": "2025-12-10T02:53:15.0000000",
+      "ResultCode": 2,
+      "Categories": "EU Browser Choice Update-For Europe Only, Windows 10, Windows 10 LTSB, Windows 10, version 1903 and later, Windows 11",
+      "KB": "KB890830",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "2025-12 Security Update (KB5072033) (26200.7462)",
+      "Date": "2025-12-10T02:33:37.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "KB5072033",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "Intel Corporation Driver Update (20.2.6.1025)",
+      "Date": "2025-12-04T01:19:01.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "Intel Corporation Driver Update (32.0.101.7026)",
+      "Date": "2025-12-04T01:18:57.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "Intel Corporation Driver Update (20.2.6.1025)",
+      "Date": "2025-11-21T02:38:20.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "Intel Corporation Driver Update (32.0.101.7026)",
+      "Date": "2025-11-19T09:33:37.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "Windows Malicious Software Removal Tool x64 - v5.137 (KB890830)",
+      "Date": "2025-11-12T03:10:11.0000000",
+      "ResultCode": 2,
+      "Categories": "EU Browser Choice Update-For Europe Only, Windows 10, Windows 10 LTSB, Windows 10, version 1903 and later, Windows 11",
+      "KB": "KB890830",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "2025-11 .NET 9.0.11 Update for x64 Client (KB5071067)",
+      "Date": "2025-11-12T03:06:51.0000000",
+      "ResultCode": 2,
+      "Categories": ".NET 9.0",
+      "KB": "KB5071067",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "2025-11 .NET 8.0.22 Update for x64 Client (KB5071066)",
+      "Date": "2025-11-12T03:03:37.0000000",
+      "ResultCode": 2,
+      "Categories": ".NET 8.0",
+      "KB": "KB5071066",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "2025-11 Security Update (KB5068861) (26200.7171)",
+      "Date": "2025-11-12T02:45:31.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "KB5068861",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "PowerShell v7.5.4 (x64)",
+      "Date": "2025-10-31T06:15:26.0000000",
+      "ResultCode": 2,
+      "Categories": "PowerShell - x64",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "9WZDNCRFJ3P2-MICROSOFT.ZUNEVIDEO",
+      "Date": "2025-10-28T10:11:54.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFJ3P2-MICROSOFT.ZUNEVIDEO",
+      "Date": "2025-10-22T07:47:09.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFJ3P2-MICROSOFT.ZUNEVIDEO",
+      "Date": "2025-10-21T06:46:48.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "Realtek Semiconductor Corp. - MTD - 10.0.26100.21374",
+      "Date": "2025-10-21T00:45:28.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "9WZDNCRFJ3P2-MICROSOFT.ZUNEVIDEO",
+      "Date": "2025-10-20T06:11:31.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFJ3P2-MICROSOFT.ZUNEVIDEO",
+      "Date": "2025-10-19T06:02:15.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFJ3P2-MICROSOFT.ZUNEVIDEO",
+      "Date": "2025-10-17T05:16:23.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "Windows 11, version 25H2",
+      "Date": "2025-10-17T00:46:50.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "Windows Malicious Software Removal Tool x64 - v5.136 (KB890830)",
+      "Date": "2025-10-15T02:20:16.0000000",
+      "ResultCode": 2,
+      "Categories": "EU Browser Choice Update-For Europe Only, Windows 10, Windows 10 LTSB, Windows 10, version 1903 and later, Windows 11",
+      "KB": "KB890830",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "2025-10 Cumulative Update for Windows 11 Version 24H2 for x64-based Systems (KB5066835) (26100.6899)",
+      "Date": "2025-10-15T02:18:13.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "KB5066835",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "2025-10 Cumulative Update for .NET Framework 3.5 and 4.8.1 for Windows 11, version 24H2 for x64 (KB5066131)",
+      "Date": "2025-10-15T02:09:15.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "KB5066131",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "2025-10 .NET 9.0.10 Security Update for x64 Client (KB5068332)",
+      "Date": "2025-10-15T02:08:59.0000000",
+      "ResultCode": 2,
+      "Categories": ".NET 9.0",
+      "KB": "KB5068332",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "2025-10 .NET 8.0.21 Security Update for x64 Client (KB5068331)",
+      "Date": "2025-10-15T00:32:44.0000000",
+      "ResultCode": 2,
+      "Categories": ".NET 8.0",
+      "KB": "KB5068331",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "Update for Windows Security platform - KB5007651 (Version 10.0.29429.1000)",
+      "Date": "2025-10-15T00:19:24.0000000",
+      "ResultCode": 2,
+      "Categories": "Windows Security platform",
+      "KB": "KB5007651",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "9WZDNCRFJ3P2-MICROSOFT.ZUNEVIDEO",
+      "Date": "2025-10-14T05:01:46.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFJ3P2-MICROSOFT.ZUNEVIDEO",
+      "Date": "2025-10-13T04:25:25.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFJ3P2-MICROSOFT.ZUNEVIDEO",
+      "Date": "2025-10-12T04:17:12.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFJ3P2-MICROSOFT.ZUNEVIDEO",
+      "Date": "2025-10-11T04:04:26.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFJ3P2-MICROSOFT.ZUNEVIDEO",
+      "Date": "2025-10-09T03:35:52.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFJ3P2-MICROSOFT.ZUNEVIDEO",
+      "Date": "2025-10-08T02:46:23.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFJ3P2-MICROSOFT.ZUNEVIDEO",
+      "Date": "2025-10-06T02:21:34.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFJ3P2-MICROSOFT.ZUNEVIDEO",
+      "Date": "2025-10-02T01:12:34.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "Realtek Semiconductor Corp. - MTD - 10.0.26100.21374",
+      "Date": "2025-09-19T19:47:08.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "PowerShell v7.5.3 (x64)",
+      "Date": "2025-09-12T12:00:32.0000000",
+      "ResultCode": 2,
+      "Categories": "PowerShell - x64",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "2025-09 Cumulative Update for .NET Framework 3.5 and 4.8.1 for Windows 11, version 24H2 for x64 (KB5064401)",
+      "Date": "2025-09-11T03:27:39.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "KB5064401",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "2025-09 .NET 8.0.20 Update for x64 Client (KB5066233)",
+      "Date": "2025-09-11T03:25:49.0000000",
+      "ResultCode": 2,
+      "Categories": ".NET 8.0",
+      "KB": "KB5066233",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "2025-09 .NET 9.0.9 Update for x64 Client (KB5066234)",
+      "Date": "2025-09-11T03:16:19.0000000",
+      "ResultCode": 2,
+      "Categories": ".NET 9.0",
+      "KB": "KB5066234",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "2025-09 Cumulative Update for Windows 11 Version 24H2 for x64-based Systems (KB5065426) (26100.6584)",
+      "Date": "2025-09-11T03:14:14.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "KB5065426",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-09-10T05:16:30.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-09-08T16:22:08.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-09-07T04:04:46.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-09-06T16:01:42.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-09-06T03:03:06.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-09-05T14:25:31.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-09-04T13:28:13.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-09-04T01:04:34.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-09-03T12:27:32.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-09-02T23:39:52.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-09-02T11:30:09.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-09-01T22:29:58.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-31T22:03:25.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-30T21:33:14.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-29T20:03:06.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9NZKPSTSNW4P-Microsoft.XboxGamingOverlay",
+      "Date": "2025-08-29T07:42:39.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-28T19:14:14.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-27T17:40:09.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-26T16:28:42.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "2025-08 .NET 9.0.8 Update for x64 Client (KB5064837)",
+      "Date": "2025-08-26T12:15:40.0000000",
+      "ResultCode": 2,
+      "Categories": ".NET 9.0",
+      "KB": "KB5064837",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "9P8K5G2MWW6Z-AppUp.IntelArcSoftware",
+      "Date": "2025-08-26T01:21:00.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "9NBLGGH4RV3K-Microsoft.VCLibs.140.00.UWPDesktop",
+      "Date": "2025-08-26T01:21:00.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "9NBLGGH3FRZM-Microsoft.VCLibs.140.00",
+      "Date": "2025-08-26T01:21:00.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-25T15:52:52.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-24T15:41:08.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFJ3P2-MICROSOFT.ZUNEVIDEO",
+      "Date": "2025-08-24T02:41:10.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-23T00:41:08.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-22T12:39:16.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFJ3P2-MICROSOFT.ZUNEVIDEO",
+      "Date": "2025-08-21T23:53:00.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "Killer - Net - 1125.13.424.2023",
+      "Date": "2025-08-20T02:13:40.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "Realtek Semiconductor Corp. - MTD - 10.0.26100.21374",
+      "Date": "2025-08-19T17:28:05.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-18T20:56:07.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "Killer - Net - 1125.13.424.2023",
+      "Date": "2025-08-18T20:12:03.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-18T08:48:26.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-17T20:12:24.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "Intel Corporation - Extension - 20.2.4.1019",
+      "Date": "2025-08-17T20:11:01.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "Killer - Net - 1125.13.424.2023",
+      "Date": "2025-08-17T14:10:08.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "Realtek Semiconductor Corp. - MTD - 10.0.26100.21374",
+      "Date": "2025-08-17T05:10:06.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-16T19:20:22.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "Killer - Net - 1125.13.424.2023",
+      "Date": "2025-08-16T08:09:32.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-16T07:10:50.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-15T18:32:06.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-15T06:29:18.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-14T04:59:35.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-13T16:38:37.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "Realtek Semiconductor Corp. - MTD - 10.0.26100.21374",
+      "Date": "2025-08-13T10:55:26.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "Killer - Net - 1125.13.424.2023",
+      "Date": "2025-08-13T10:55:25.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "Windows Malicious Software Removal Tool x64 - v5.135 (KB890830)",
+      "Date": "2025-08-13T10:55:24.0000000",
+      "ResultCode": 2,
+      "Categories": "EU Browser Choice Update-For Europe Only, Windows 10, Windows 10 LTSB, Windows 10, version 1903 and later, Windows 11",
+      "KB": "KB890830",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "2025-08 Cumulative Update for Windows 11 Version 24H2 for x64-based Systems (KB5063878) (26100.4946)",
+      "Date": "2025-08-13T10:52:31.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "KB5063878",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-13T04:28:48.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-12T16:01:46.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-12T03:35:17.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "Intel - net - 23.110.0.5",
+      "Date": "2025-08-12T03:33:52.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-11T15:02:23.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFJ3P2-MICROSOFT.ZUNEVIDEO",
+      "Date": "2025-08-11T02:02:12.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "Killer - Net - 1125.13.424.2023",
+      "Date": "2025-08-10T22:00:55.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-10T00:44:31.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-08T23:33:30.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-08T11:14:57.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-07T23:09:17.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-07T11:05:49.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "2025-08 .NET 8.0.19 Update for x64 Client (KB5064838)",
+      "Date": "2025-08-07T00:27:53.0000000",
+      "ResultCode": 2,
+      "Categories": ".NET 8.0",
+      "KB": "KB5064838",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-06T10:34:35.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-05T22:07:33.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-05T10:04:03.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFJ3P2-MICROSOFT.ZUNEVIDEO",
+      "Date": "2025-08-04T17:39:39.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "Intel - net - 23.110.0.5",
+      "Date": "2025-08-04T13:37:46.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFHWD2-Microsoft.MicrosoftSolitaireCollection",
+      "Date": "2025-08-03T04:31:17.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "Realtek Semiconductor Corp. - MTD - 10.0.26100.21374",
+      "Date": "2025-08-03T02:22:13.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "9WZDNCRFJ3P2-MICROSOFT.ZUNEVIDEO",
+      "Date": "2025-08-02T04:15:45.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "Realtek Semiconductor Corp. - MTD - 10.0.26100.21374",
+      "Date": "2025-07-29T20:37:09.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "Killer - Net - 1125.13.424.2023",
+      "Date": "2025-07-29T20:37:08.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "NVIDIA - Display - 32.0.15.6624",
+      "Date": "2025-07-29T01:47:52.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "Intel Corporation - Display - 32.0.101.6078",
+      "Date": "2025-07-29T01:44:26.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "Realtek Semiconductor Corp. - MTD - 10.0.26100.21374",
+      "Date": "2025-07-29T01:42:12.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "HP Inc. - Extension - 1.0.0.5",
+      "Date": "2025-07-28T13:34:39.0000000",
+      "ResultCode": 2,
+      "Categories": "",
+      "KB": "",
+      "result": "Succeeded"
+    },
+    {
+      "Title": "9NZKPSTSNW4P-Microsoft.XboxGamingOverlay",
+      "Date": "2025-07-22T07:58:55.0000000",
+      "ResultCode": 4,
+      "Categories": "",
+      "KB": "",
+      "result": "Failed"
+    },
+    {
+      "Title": "PowerShell v7.5.2 (x64)",
+      "Date": "2025-07-20T01:12:49.0000000",
+      "ResultCode": 2,
+      "Categories": "PowerShell - x64",
+      "KB": "",
+      "result": "Succeeded"
+    }
+  ]
+}

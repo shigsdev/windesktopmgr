@@ -1,0 +1,126 @@
+{
+  "_captured_at": "2026-04-03T18:34:38.249054",
+  "_hostname": "shigs78-pc24",
+  "_python": "3.14.3",
+  "data": {
+    "old_drivers": [
+      {
+        "Date": "2019-06-16",
+        "Provider": "HP",
+        "DeviceName": "HP OfficeJet Pro 9020 series PCL-3",
+        "Version": "29.117.2.7675"
+      },
+      {
+        "Date": "1968-07-17",
+        "Provider": "INTEL",
+        "DeviceName": "Intel(R) SPI (flash) Controller - 7AA4",
+        "Version": "10.1.37.7"
+      },
+      {
+        "Date": "1968-07-17",
+        "Provider": "INTEL",
+        "DeviceName": "Intel(R) SMBus - 7AA3",
+        "Version": "10.1.37.7"
+      },
+      {
+        "Date": "1968-07-17",
+        "Provider": "INTEL",
+        "DeviceName": "Intel(R) LPC Controller/eSPI Controller (Z690) - 7A84",
+        "Version": "10.1.37.7"
+      },
+      {
+        "Date": "1968-07-17",
+        "Provider": "INTEL",
+        "DeviceName": "Intel(R) PCI Express Root Port #9 - 7AB0",
+        "Version": "10.1.37.7"
+      },
+      {
+        "Date": "1968-07-17",
+        "Provider": "INTEL",
+        "DeviceName": "Intel(R) PCI Express Root Port #5 - 7ABC",
+        "Version": "10.1.37.7"
+      },
+      {
+        "Date": "1968-07-17",
+        "Provider": "INTEL",
+        "DeviceName": "Intel(R) PCI Express Root Port #20 - 7AC3",
+        "Version": "10.1.37.7"
+      },
+      {
+        "Date": "2024-03-30",
+        "Provider": "Intel",
+        "DeviceName": "Intel(R) Dynamic Application Loader Host Interface",
+        "Version": "1.46.2024.221"
+      },
+      {
+        "Date": "1968-07-17",
+        "Provider": "INTEL",
+        "DeviceName": "Intel(R) Shared SRAM - 7AA7",
+        "Version": "10.1.37.7"
+      },
+      {
+        "Date": "2009-11-02",
+        "Provider": "APC by Schneider Electric",
+        "DeviceName": "APC UPS",
+        "Version": "1.2.0.0"
+      },
+      {
+        "Date": "2021-08-23",
+        "Provider": "Logitech",
+        "DeviceName": "Logitech USB Input Device",
+        "Version": "1.10.80.0"
+      },
+      {
+        "Date": "2021-04-26",
+        "Provider": "Logitech",
+        "DeviceName": "c922 Pro Stream Webcam",
+        "Version": "1.4.40.0"
+      },
+      {
+        "Date": "2021-08-23",
+        "Provider": "Logitech",
+        "DeviceName": "Logitech USB Input Device",
+        "Version": "1.10.80.0"
+      },
+      {
+        "Date": "2023-11-13",
+        "Provider": "Intel Corporation",
+        "DeviceName": "Intel(R) GNA Scoring Accelerator module",
+        "Version": "3.5.0.1578"
+      },
+      {
+        "Date": "2014-09-24",
+        "Provider": "HP",
+        "DeviceName": "HP Pavilion 22cw IPS LED Backlit Monitor",
+        "Version": "1.0.0.1"
+      },
+      {
+        "Date": "1968-07-17",
+        "Provider": "INTEL",
+        "DeviceName": "Intel(R) PCIe RC 010 G5 - A70D",
+        "Version": "10.1.49.9"
+      },
+      {
+        "Date": "2021-09-27",
+        "Provider": "ExpressVPN",
+        "DeviceName": "ExpressVPN TUN Driver",
+        "Version": "0.8.0.0"
+      },
+      {
+        "Date": "2019-04-29",
+        "Provider": "ExpressVPN",
+        "DeviceName": "ExpressVPN TAP Adapter",
+        "Version": "9.24.2.45"
+      }
+    ],
+    "problematic_drivers": [],
+    "nvidia": {
+      "Name": "NVIDIA GeForce RTX 4060 Ti",
+      "InstalledVersion": "595.79",
+      "WindowsVersion": "32.0.15.9579",
+      "LatestVersion": "",
+      "UpdateAvailable": false,
+      "UpdateSource": "none"
+    }
+  }
+}

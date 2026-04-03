@@ -1,0 +1,1351 @@
+{
+  "_captured_at": "2026-04-03T18:35:04.585911",
+  "_hostname": "shigs78-pc24",
+  "_python": "3.14.3",
+  "data": [
+    {
+      "ts": "2026-04-03T12:00:00.572552-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-04-03T08:06:26+00:00",
+      "type": "update",
+      "category": "update",
+      "title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd04",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-04-03T08:06:00+00:00",
+      "type": "update",
+      "category": "update",
+      "title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd04",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-04-02T21:48:49.569445-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-04-02T21:48:30.301680-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-04-02T21:48:30.301680-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-04-02T21:12:14+00:00",
+      "type": "update",
+      "category": "update",
+      "title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd04",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-04-02T12:00:00.293221-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-04-02T02:05:18+00:00",
+      "type": "update",
+      "category": "update",
+      "title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd04",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-04-01T12:00:00.992856-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-31T23:13:07+00:00",
+      "type": "update",
+      "category": "update",
+      "title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd04",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-31T12:00:00.735821-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-30T12:00:00.621177-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-30T11:40:23+00:00",
+      "type": "driver_install",
+      "category": "update",
+      "title": "HP Printer Driver Update (5.6.1.3861)",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd27",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-29T12:00:00.330087-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-28T20:05:07+00:00",
+      "type": "update",
+      "category": "update",
+      "title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd04",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-28T12:00:00.837432-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-28T09:04:34+00:00",
+      "type": "update",
+      "category": "update",
+      "title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd04",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-27T12:00:00.059725-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-26T12:00:00.048234-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-26T01:12:11+00:00",
+      "type": "update",
+      "category": "update",
+      "title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd04",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-25T12:48:31+00:00",
+      "type": "update",
+      "category": "update",
+      "title": "PowerShell v7.5.5 (x64)",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd04",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-25T12:00:00.394141-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-25T02:06:38+00:00",
+      "type": "update",
+      "category": "update",
+      "title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd04",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-24T12:00:00.165630-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-24T11:22:45.159278-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-24T11:22:26.579840-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-24T11:22:26.577835-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-24T02:12:05+00:00",
+      "type": "update",
+      "category": "update",
+      "title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd04",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-23T12:00:00.559800-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-22T13:05:24+00:00",
+      "type": "update",
+      "category": "update",
+      "title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd04",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-22T12:00:00.557035-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-22T10:54:27.550508-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-22T10:54:08.869353-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-22T10:54:08.869353-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-21T12:00:00.406265-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-21T10:53:25.397643-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-21T10:53:06.917257-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-21T10:53:06.917257-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-21T09:37:56.829043-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-21T09:37:56.828245-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Windows Error Reporting crash",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-21T09:37:56.312647-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Stop code: 0x0000003b",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-21T09:37:42.439858-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Kernel power loss",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-21T09:37:42.280653-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-21T09:37:42.280653-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-21T09:33:18.139474-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-21T09:33:05.052916-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-21T09:33:05.052916-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-20T12:00:00.074081-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-20T10:58:21.082434-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-20T10:58:21.081764-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Windows Error Reporting crash",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-20T10:58:20.566027-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Stop code: 0x000000f7",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-20T10:58:08.443061-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Kernel power loss",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-20T10:58:08.286116-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-20T10:58:08.284101-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-19T12:00:00.468849-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-18T12:00:00.462513-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-18T04:06:06.108751-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-18T04:06:06.108197-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Windows Error Reporting crash",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-18T04:06:05.634167-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Stop code: 0x0000001e",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-18T04:05:51.845519-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Kernel power loss",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-18T04:05:51.688525-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-18T04:05:51.688525-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-18T04:03:26.353800-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-18T04:03:26.352776-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Windows Error Reporting crash",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-18T04:03:25.847438-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Stop code: 0x00020001",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-18T04:03:13.433051-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Kernel power loss",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-18T04:03:13.276072-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-18T04:03:13.276072-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-17T12:00:00.712616-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-16T12:00:00.978454-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-16T07:34:45.971414-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-16T07:34:45.970432-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Windows Error Reporting crash",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-16T07:34:45.463531-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Stop code: 0x00020001",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-16T07:34:31.519542-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Kernel power loss",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-16T07:34:31.360610-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-16T07:34:31.358606-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-15T16:30:22.679237-04:00",
+      "type": "reboot",
+      "category": "reboot",
+      "title": "System started / rebooted",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd01",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-15T16:30:08.263610-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-15T16:30:08.263610-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-15T10:04:35+00:00",
+      "type": "update",
+      "category": "update",
+      "title": "9PLJQ12FQ3CV-MicrosoftCorporationII.WinAppRuntime.Main.1.8",
+      "detail": "",
+      "severity": "info",
+      "icon": "\ud83d\udd04",
+      "near_crash": true,
+      "crash_gap_h": 3.8
+    },
+    {
+      "ts": "2026-03-15T02:16:27.098665-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Windows Error Reporting crash",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-15T02:16:26.638615-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Stop code: 0x0000003b",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-15T02:16:14.094420-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Kernel power loss",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-15T02:16:13.865595-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-15T02:16:13.865595-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-13T18:26:30.346493-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-13T18:26:30.344490-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-12T06:21:20.706016-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Windows Error Reporting crash",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-12T06:21:20.227904-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Stop code: 0x0000003b",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-12T06:21:05.499865-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Kernel power loss",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-12T06:21:05.337867-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-12T06:21:05.337867-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-12T06:20:38.040984-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Windows Error Reporting crash",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-12T06:20:22.315671-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Kernel power loss",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-12T06:20:21.733642-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-12T06:20:21.733642-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-11T18:24:47.765607-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-11T18:24:47.763603-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-11T18:23:34.825782-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-11T18:23:34.825782-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-11T11:42:21+00:00",
+      "type": "update",
+      "category": "update",
+      "title": "2026-03 Security Update (KB5079473) (26200.8037)",
+      "detail": "KB5079473",
+      "severity": "info",
+      "icon": "\ud83d\udd04",
+      "near_crash": true,
+      "crash_gap_h": 0.3
+    },
+    {
+      "ts": "2026-03-11T11:36:48+00:00",
+      "type": "update",
+      "category": "update",
+      "title": "2026-03 .NET 9.0.14 Security Update for x64 Client (KB5081278)",
+      "detail": "KB5081278",
+      "severity": "info",
+      "icon": "\ud83d\udd04",
+      "near_crash": true,
+      "crash_gap_h": 0.2
+    },
+    {
+      "ts": "2026-03-11T11:36:26+00:00",
+      "type": "update",
+      "category": "update",
+      "title": "2026-03 .NET 8.0.25 Security Update for x64 Client (KB5081277)",
+      "detail": "KB5081277",
+      "severity": "info",
+      "icon": "\ud83d\udd04",
+      "near_crash": true,
+      "crash_gap_h": 0.2
+    },
+    {
+      "ts": "2026-03-11T07:25:28.749002-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Windows Error Reporting crash",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-11T07:25:15.558877-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Kernel power loss",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-11T07:25:15.402742-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-11T07:25:15.402742-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-10T07:17:46.596147-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Windows Error Reporting crash",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-10T07:17:27.741631-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Kernel power loss",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-10T07:17:27.582562-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-10T07:17:27.580559-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-09T17:46:50.735118-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-09T17:46:50.735118-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-09T06:12:33.377846-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Windows Error Reporting crash",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-09T06:12:20.968320-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Kernel power loss",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-09T06:12:20.811511-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-09T06:12:20.811511-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-08T09:48:24.442937-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Windows Error Reporting crash",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-08T09:48:10.526834-04:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Kernel power loss",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-08T09:48:10.372250-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-08T09:48:10.372250-04:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-06T21:24:08.122473-05:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Windows Error Reporting crash",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-06T21:23:55.537706-05:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Kernel power loss",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-06T21:23:55.379561-05:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-06T21:23:55.377558-05:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-05T06:58:55.743741-05:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Windows Error Reporting crash",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-05T06:58:42.571367-05:00",
+      "type": "bsod",
+      "category": "crash",
+      "title": "System Crash / Unexpected Shutdown",
+      "detail": "Kernel power loss",
+      "severity": "critical",
+      "icon": "\ud83d\udc80",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-05T06:58:42.413117-05:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-05T06:58:42.413117-05:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-04T22:35:49.964636-05:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-04T22:35:49.964636-05:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-04T22:34:40.981369-05:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load complete state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    },
+    {
+      "ts": "2026-03-04T22:34:40.981369-05:00",
+      "type": "service_change",
+      "category": "service",
+      "title": "The  service entered the Driver load start state.",
+      "detail": "",
+      "severity": "info",
+      "icon": "\u2699",
+      "near_crash": false
+    }
+  ]
+}

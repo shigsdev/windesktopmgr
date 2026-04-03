@@ -1,0 +1,17 @@
+{
+  "_captured_at": "2026-04-03T18:34:58.694282",
+  "_hostname": "shigs78-pc24",
+  "_python": "3.14.3",
+  "data": {
+    "temps": [],
+    "perf": {
+      "CPUPct": 45,
+      "MemUsedMB": 20003,
+      "MemTotalMB": 30370,
+      "Battery": null
+    },
+    "fans": [],
+    "has_rich": false,
+    "note": "Install LibreHardwareMonitor for detailed CPU/GPU per-core temperatures. Run it once as Administrator to register its WMI provider."
+  }
+}

@@ -35,6 +35,8 @@ addopts = [
 ]
 markers = [
     "integration: real PowerShell/Windows tests (run with: pytest -m integration)",
+    "snapshot: tests using captured real system output as fixtures",
+    "e2e: end-to-end smoke tests hitting Flask routes with multi-layer mocks",
 ]
 
 # ── ruff ──────────────────────────────────────────────────────────────────────
