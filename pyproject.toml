@@ -27,6 +27,7 @@ dev = [
 testpaths = ["tests"]
 addopts = [
     "--cov=windesktopmgr",
+    "--cov=homenet",
     "--cov-report=term-missing:skip-covered",
     "--cov-fail-under=80",
     "-q",
@@ -91,6 +92,9 @@ ignore = [
 ]
 "windowsdrivermgr.py" = [
     "E722",   # bare except — intentional safety wrappers
+]
+"dev.py" = [
+    "T201",   # allow print() — it's a CLI tool
 ]
 
 # ── coverage ──────────────────────────────────────────────────────────────────

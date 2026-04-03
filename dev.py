@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""
+dev.py — Quick quality gate runner for WinDesktopMgr.
+
+Usage:
+    python dev.py          # Run all checks (lint, format, test)
+    python dev.py check    # Lint + format check only (fast, no tests)
+    python dev.py fix      # Auto-fix lint + format issues
+    python dev.py test     # Tests only
+"""
+
+import subprocess
+import sys
+import time
+
+TARGETS = [
+    "windesktopmgr.py",
+    "tray.py",
+    "SystemHealthDiag.py",
+    "tests/",
+]
+
+GREEN = "\033[92m"
+RED = "\033[91m"
+YELLOW = "\033[93m"
+RESET = "\033[0m"
+BOLD = "\033[1m"
+
+
+def run(label, cmd):
+    """Run a command, print pass/fail, return success bool."""
+    print(f"  {label} ... ", end="", flush=True)
+    start = time.time()
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    elapsed = time.time() - start
+    if result.returncode == 0:
+        print(f"{GREEN}passed{RESET} ({elapsed:.1f}s)")
+        return True
+    else:
+        print(f"{RED}FAILED{RESET} ({elapsed:.1f}s)")
+        output = (result.stdout + result.stderr).strip()
+        if output:
+            for line in output.splitlines()[:20]:
+                print(f"    {line}")
+        return False
+
+
+def cmd_check():
+    """Lint + format check (fast, no tests)."""
+    print(f"\n{BOLD}Quality Check (lint + format){RESET}")
+    ok = True
+    ok &= run("ruff check", [sys.executable, "-m", "ruff", "check", *TARGETS])
+    ok &= run("ruff format", [sys.executable, "-m", "ruff", "format", "--check", *TARGETS])
+    return ok
+
+
+def cmd_fix():
+    """Auto-fix lint issues + reformat."""
+    print(f"\n{BOLD}Auto-fix (lint + format){RESET}")
+    ok = True
+    ok &= run("ruff check --fix", [sys.executable, "-m", "ruff", "check", "--fix", *TARGETS])
+    ok &= run("ruff format", [sys.executable, "-m", "ruff", "format", *TARGETS])
+    return ok
+
+
+def cmd_test():
+    """Run full test suite."""
+    print(f"\n{BOLD}Tests{RESET}")
+    return run("pytest", [sys.executable, "-m", "pytest", "tests/", "-v"])
+
+
+def cmd_all():
+    """Run everything: fix → test."""
+    ok = cmd_fix()
+    ok &= cmd_test()
+    return ok
+
+
+def main():
+    commands = {
+        "check": cmd_check,
+        "fix": cmd_fix,
+        "test": cmd_test,
+    }
+
+    arg = sys.argv[1] if len(sys.argv) > 1 else "all"
+
+    if arg in commands:
+        ok = commands[arg]()
+    elif arg == "all":
+        ok = cmd_all()
+    else:
+        print(f"Unknown command: {arg}")
+        print("Usage: python dev.py [check|fix|test|all]")
+        sys.exit(1)
+
+    print()
+    if ok:
+        print(f"  {GREEN}{BOLD}All checks passed{RESET}")
+    else:
+        print(f"  {RED}{BOLD}Some checks failed{RESET}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

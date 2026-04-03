@@ -8,7 +8,7 @@ class TestHomeNetCredentialRoutes:
     """Test credential management endpoints."""
 
     def test_list_credentials_returns_200(self, client, mocker):
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=(None, None))
+        mocker.patch("homenet._get_homenet_cred", return_value=(None, None))
         resp = client.get("/api/homenet/credentials")
         assert resp.status_code == 200
         data = resp.get_json()
@@ -24,7 +24,7 @@ class TestHomeNetCredentialRoutes:
                 return ("admin", "mypass123")
             return (None, None)
 
-        mocker.patch("windesktopmgr._get_homenet_cred", side_effect=fake_cred)
+        mocker.patch("homenet._get_homenet_cred", side_effect=fake_cred)
         resp = client.get("/api/homenet/credentials")
         data = resp.get_json()
         verizon = data[0]
@@ -35,7 +35,7 @@ class TestHomeNetCredentialRoutes:
         assert orbi["configured"] is False
 
     def test_save_credential_success(self, client, mocker):
-        mocker.patch("windesktopmgr._set_homenet_cred", return_value=True)
+        mocker.patch("homenet._set_homenet_cred", return_value=True)
         resp = client.post(
             "/api/homenet/credentials/save",
             json={"device_key": "verizon", "username": "admin", "password": "test123"},
@@ -58,7 +58,7 @@ class TestHomeNetCredentialRoutes:
         assert resp.status_code == 400
 
     def test_delete_credential_success(self, client, mocker):
-        mocker.patch("windesktopmgr._delete_homenet_cred", return_value=True)
+        mocker.patch("homenet._delete_homenet_cred", return_value=True)
         resp = client.post(
             "/api/homenet/credentials/delete",
             json={"device_key": "verizon"},
@@ -93,7 +93,7 @@ class TestHomeNetCredentialRoutes:
 
     def test_test_credential_verizon(self, client, mocker):
         mocker.patch(
-            "windesktopmgr._verizon_get_devices",
+            "homenet._verizon_get_devices",
             return_value={"ok": True, "known_devices": {"known_devices": [1, 2, 3]}},
         )
         resp = client.post(
@@ -107,7 +107,7 @@ class TestHomeNetCredentialRoutes:
 
     def test_test_credential_orbi(self, client, mocker):
         mocker.patch(
-            "windesktopmgr._orbi_get_devices",
+            "homenet._orbi_get_devices",
             return_value={"ok": True, "devices": [{"ip": "10.0.0.2"}]},
         )
         resp = client.post(
@@ -127,7 +127,7 @@ class TestHomeNetCredentialRoutes:
 
     def test_test_credential_verizon_failure(self, client, mocker):
         mocker.patch(
-            "windesktopmgr._verizon_get_devices",
+            "homenet._verizon_get_devices",
             return_value={"error": "Bad password"},
         )
         resp = client.post(
@@ -143,11 +143,11 @@ class TestHomeNetScanRoute:
     """Test network scanning endpoints."""
 
     def test_scan_returns_200(self, client, mocker):
-        mocker.patch("windesktopmgr._arp_scan", return_value=[])
-        mocker.patch("windesktopmgr._verizon_get_devices", return_value={"error": "No creds"})
-        mocker.patch("windesktopmgr._orbi_get_devices", return_value={"error": "No creds"})
-        mocker.patch("windesktopmgr._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
-        mocker.patch("windesktopmgr._save_homenet_inventory")
+        mocker.patch("homenet._arp_scan", return_value=[])
+        mocker.patch("homenet._verizon_get_devices", return_value={"error": "No creds"})
+        mocker.patch("homenet._orbi_get_devices", return_value={"error": "No creds"})
+        mocker.patch("homenet._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
+        mocker.patch("homenet._save_homenet_inventory")
         resp = client.post("/api/homenet/scan")
         assert resp.status_code == 200
         data = resp.get_json()
@@ -156,15 +156,15 @@ class TestHomeNetScanRoute:
 
     def test_scan_merges_arp_devices(self, client, mocker):
         mocker.patch(
-            "windesktopmgr._arp_scan",
+            "homenet._arp_scan",
             return_value=[
                 {"IP": "192.168.1.50", "MAC": "AA:BB:CC:DD:EE:FF", "Type": "dynamic", "Interface": "192.168.1.10"},
             ],
         )
-        mocker.patch("windesktopmgr._verizon_get_devices", return_value={"error": "No creds"})
-        mocker.patch("windesktopmgr._orbi_get_devices", return_value={"error": "No creds"})
-        mocker.patch("windesktopmgr._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
-        mocker.patch("windesktopmgr._save_homenet_inventory")
+        mocker.patch("homenet._verizon_get_devices", return_value={"error": "No creds"})
+        mocker.patch("homenet._orbi_get_devices", return_value={"error": "No creds"})
+        mocker.patch("homenet._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
+        mocker.patch("homenet._save_homenet_inventory")
         resp = client.post("/api/homenet/scan")
         data = resp.get_json()
         assert data["device_count"] == 1
@@ -172,11 +172,11 @@ class TestHomeNetScanRoute:
         assert data["devices"][0]["network"] == "wired"
 
     def test_scan_collects_errors(self, client, mocker):
-        mocker.patch("windesktopmgr._arp_scan", return_value=[])
-        mocker.patch("windesktopmgr._verizon_get_devices", return_value={"error": "Connection refused"})
-        mocker.patch("windesktopmgr._orbi_get_devices", return_value={"error": "Timeout"})
-        mocker.patch("windesktopmgr._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
-        mocker.patch("windesktopmgr._save_homenet_inventory")
+        mocker.patch("homenet._arp_scan", return_value=[])
+        mocker.patch("homenet._verizon_get_devices", return_value={"error": "Connection refused"})
+        mocker.patch("homenet._orbi_get_devices", return_value={"error": "Timeout"})
+        mocker.patch("homenet._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
+        mocker.patch("homenet._save_homenet_inventory")
         resp = client.post("/api/homenet/scan")
         data = resp.get_json()
         assert len(data["errors"]) == 2
@@ -184,9 +184,9 @@ class TestHomeNetScanRoute:
         assert "Orbi" in data["errors"][1]
 
     def test_scan_merges_verizon_devices(self, client, mocker):
-        mocker.patch("windesktopmgr._arp_scan", return_value=[])
+        mocker.patch("homenet._arp_scan", return_value=[])
         mocker.patch(
-            "windesktopmgr._verizon_get_devices",
+            "homenet._verizon_get_devices",
             return_value={
                 "ok": True,
                 "known_devices": {
@@ -196,9 +196,9 @@ class TestHomeNetScanRoute:
                 },
             },
         )
-        mocker.patch("windesktopmgr._orbi_get_devices", return_value={"error": "No creds"})
-        mocker.patch("windesktopmgr._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
-        mocker.patch("windesktopmgr._save_homenet_inventory")
+        mocker.patch("homenet._orbi_get_devices", return_value={"error": "No creds"})
+        mocker.patch("homenet._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
+        mocker.patch("homenet._save_homenet_inventory")
         resp = client.post("/api/homenet/scan")
         data = resp.get_json()
         assert data["device_count"] == 1
@@ -210,9 +210,9 @@ class TestHomeNetLightScan:
     """Test light ARP-only scan endpoint."""
 
     def test_light_scan_returns_200(self, client, mocker):
-        mocker.patch("windesktopmgr._arp_scan", return_value=[])
-        mocker.patch("windesktopmgr._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
-        mocker.patch("windesktopmgr._save_homenet_inventory")
+        mocker.patch("homenet._arp_scan", return_value=[])
+        mocker.patch("homenet._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
+        mocker.patch("homenet._save_homenet_inventory")
         resp = client.post("/api/homenet/scan/light")
         assert resp.status_code == 200
         data = resp.get_json()
@@ -244,9 +244,9 @@ class TestHomeNetLightScan:
             "last_scan": None,
         }
         # ARP sees no devices — the known device should go offline
-        mocker.patch("windesktopmgr._arp_scan", return_value=[])
-        mocker.patch("windesktopmgr._load_homenet_inventory", return_value=existing)
-        mocker.patch("windesktopmgr._save_homenet_inventory")
+        mocker.patch("homenet._arp_scan", return_value=[])
+        mocker.patch("homenet._load_homenet_inventory", return_value=existing)
+        mocker.patch("homenet._save_homenet_inventory")
         resp = client.post("/api/homenet/scan/light")
         data = resp.get_json()
         assert data["device_count"] == 1
@@ -254,13 +254,13 @@ class TestHomeNetLightScan:
 
     def test_light_scan_discovers_new_device(self, client, mocker):
         mocker.patch(
-            "windesktopmgr._arp_scan",
+            "homenet._arp_scan",
             return_value=[
                 {"IP": "10.0.0.50", "MAC": "11:22:33:44:55:66", "Type": "dynamic", "Interface": "10.0.0.89"},
             ],
         )
-        mocker.patch("windesktopmgr._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
-        mocker.patch("windesktopmgr._save_homenet_inventory")
+        mocker.patch("homenet._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
+        mocker.patch("homenet._save_homenet_inventory")
         resp = client.post("/api/homenet/scan/light")
         data = resp.get_json()
         assert data["device_count"] == 1
@@ -293,13 +293,13 @@ class TestHomeNetLightScan:
             "last_scan": None,
         }
         mocker.patch(
-            "windesktopmgr._arp_scan",
+            "homenet._arp_scan",
             return_value=[
                 {"IP": "192.168.1.55", "MAC": "AA:BB:CC:DD:EE:FF", "Type": "dynamic", "Interface": "192.168.1.10"},
             ],
         )
-        mocker.patch("windesktopmgr._load_homenet_inventory", return_value=existing)
-        mocker.patch("windesktopmgr._save_homenet_inventory")
+        mocker.patch("homenet._load_homenet_inventory", return_value=existing)
+        mocker.patch("homenet._save_homenet_inventory")
         resp = client.post("/api/homenet/scan/light")
         data = resp.get_json()
         dev = data["devices"][0]
@@ -312,7 +312,7 @@ class TestHomeNetInventoryRoute:
 
     def test_inventory_returns_200(self, client, mocker):
         mocker.patch(
-            "windesktopmgr._load_homenet_inventory",
+            "homenet._load_homenet_inventory",
             return_value={"devices": {}, "last_scan": None},
         )
         resp = client.get("/api/homenet/inventory")
@@ -323,7 +323,7 @@ class TestHomeNetInventoryRoute:
 
     def test_inventory_returns_devices(self, client, mocker):
         mocker.patch(
-            "windesktopmgr._load_homenet_inventory",
+            "homenet._load_homenet_inventory",
             return_value={
                 "devices": {
                     "AA:BB:CC:DD:EE:FF": {
@@ -354,8 +354,8 @@ class TestHomeNetDeviceUpdate:
             },
             "last_scan": None,
         }
-        mocker.patch("windesktopmgr._load_homenet_inventory", return_value=inv)
-        mocker.patch("windesktopmgr._save_homenet_inventory")
+        mocker.patch("homenet._load_homenet_inventory", return_value=inv)
+        mocker.patch("homenet._save_homenet_inventory")
         resp = client.post(
             "/api/homenet/device/update",
             json={"mac": "AA:BB:CC:DD:EE:FF", "friendly_name": "Living Room TV", "category": "TV"},
@@ -368,7 +368,7 @@ class TestHomeNetDeviceUpdate:
         assert resp.status_code == 400
 
     def test_update_device_not_found(self, client, mocker):
-        mocker.patch("windesktopmgr._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
+        mocker.patch("homenet._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
         resp = client.post(
             "/api/homenet/device/update",
             json={"mac": "FF:FF:FF:FF:FF:FF"},
@@ -380,19 +380,19 @@ class TestMacVendor:
     """Test MAC vendor lookup."""
 
     def test_known_vendor(self):
-        from windesktopmgr import _mac_vendor
+        from homenet import _mac_vendor
 
         assert _mac_vendor("28:94:01:3F:73:E1") == "Netgear"
         assert _mac_vendor("E0:E2:E6:09:67:30") == "Roku"
         assert _mac_vendor("80:6A:10:31:42:E8") == "Apple"
 
     def test_unknown_vendor(self):
-        from windesktopmgr import _mac_vendor
+        from homenet import _mac_vendor
 
         assert _mac_vendor("99:99:99:00:00:00") == "Unknown"
 
     def test_dash_format(self):
-        from windesktopmgr import _mac_vendor
+        from homenet import _mac_vendor
 
         assert _mac_vendor("28-94-01-3F-73-E1") == "Netgear"
 
@@ -401,21 +401,21 @@ class TestVerizonJsParsing:
     """Test Verizon cgi_basic.js parsing."""
 
     def test_parse_simple_string(self):
-        from windesktopmgr import _parse_verizon_js
+        from homenet import _parse_verizon_js
 
         js = 'addROD("router_name", "MyRouter");'
         result = _parse_verizon_js(js)
         assert result["router_name"] == "MyRouter"
 
     def test_parse_json_object(self):
-        from windesktopmgr import _parse_verizon_js
+        from homenet import _parse_verizon_js
 
         js = 'addROD("hardware_model", "CR1000A");'
         result = _parse_verizon_js(js)
         assert result["hardware_model"] == "CR1000A"
 
     def test_parse_known_device_list(self):
-        from windesktopmgr import _parse_verizon_js
+        from homenet import _parse_verizon_js
 
         js = """addROD("known_device_list", {"known_devices": [{"mac": "AA:BB:CC:DD:EE:FF", "ip": "192.168.1.5"}]});"""
         result = _parse_verizon_js(js)
@@ -430,7 +430,7 @@ class TestOrbiSoapParsing:
 
     def test_parse_xml_device_format(self):
         """Test RBRE960 XML Device element parsing."""
-        from windesktopmgr import _parse_orbi_soap
+        from homenet import _parse_orbi_soap
 
         xml = """<Device>
         <IP>10.0.0.60</IP>
@@ -472,7 +472,7 @@ class TestOrbiSoapParsing:
 
     def test_parse_legacy_delimited_format(self):
         """Test legacy @-delimited format from older firmware."""
-        from windesktopmgr import _parse_orbi_soap
+        from homenet import _parse_orbi_soap
 
         xml = """<NewGetAttachDevice2>10.0.0.2;MyPhone;AA:BB:CC:DD:EE:FF;5G;866Mbps;-45;Phone@10.0.0.3;Laptop;11:22:33:44:55:66;2.4G;72Mbps;-60;Computer</NewGetAttachDevice2>"""
         devices = _parse_orbi_soap(xml)
@@ -482,7 +482,7 @@ class TestOrbiSoapParsing:
         assert devices[1]["connection_type"] == "2.4G"
 
     def test_parse_empty_response(self):
-        from windesktopmgr import _parse_orbi_soap
+        from homenet import _parse_orbi_soap
 
         xml = "<SomeOtherTag>nothing here</SomeOtherTag>"
         devices = _parse_orbi_soap(xml)
@@ -490,7 +490,7 @@ class TestOrbiSoapParsing:
 
     def test_parse_xml_skips_no_mac(self):
         """Devices without MAC should be skipped."""
-        from windesktopmgr import _parse_orbi_soap
+        from homenet import _parse_orbi_soap
 
         xml = """<Device><IP>10.0.0.1</IP><Name>NoMAC</Name></Device>
         <Device><IP>10.0.0.2</IP><Name>HasMAC</Name><MAC>AA:BB:CC:DD:EE:FF</MAC></Device>"""
@@ -503,7 +503,7 @@ class TestArcMd5:
     """Test Verizon's ArcMD5 hashing."""
 
     def test_arc_md5_deterministic(self):
-        from windesktopmgr import _arc_md5
+        from homenet import _arc_md5
 
         h1 = _arc_md5("admin")
         h2 = _arc_md5("admin")
@@ -511,7 +511,7 @@ class TestArcMd5:
         assert len(h1) == 128  # SHA512 hex = 128 chars
 
     def test_arc_md5_different_inputs(self):
-        from windesktopmgr import _arc_md5
+        from homenet import _arc_md5
 
         assert _arc_md5("admin") != _arc_md5("password")
 
@@ -520,7 +520,7 @@ class TestMergeDeviceData:
     """Test device data merging logic."""
 
     def test_merge_new_device(self):
-        from windesktopmgr import _merge_device_data
+        from homenet import _merge_device_data
 
         inv = {"devices": {}, "last_scan": None}
         devices = [{"mac": "AA:BB:CC:DD:EE:FF", "ip": "192.168.1.50", "name": "TestPC"}]
@@ -529,7 +529,7 @@ class TestMergeDeviceData:
         assert result["devices"]["AA:BB:CC:DD:EE:FF"]["network"] == "wired"
 
     def test_merge_preserves_user_fields(self):
-        from windesktopmgr import _merge_device_data
+        from homenet import _merge_device_data
 
         inv = {
             "devices": {
@@ -555,7 +555,7 @@ class TestMergeDeviceData:
         assert dev["location"] == "Office"  # preserved
 
     def test_merge_skips_broadcast(self):
-        from windesktopmgr import _merge_device_data
+        from homenet import _merge_device_data
 
         inv = {"devices": {}, "last_scan": None}
         devices = [{"mac": "FF:FF:FF:FF:FF:FF", "ip": "192.168.1.255", "name": ""}]
@@ -563,7 +563,7 @@ class TestMergeDeviceData:
         assert len(result["devices"]) == 0
 
     def test_merge_wireless_detection(self):
-        from windesktopmgr import _merge_device_data
+        from homenet import _merge_device_data
 
         inv = {"devices": {}, "last_scan": None}
         devices = [{"mac": "AA:BB:CC:DD:EE:FF", "ip": "10.0.0.50", "name": ""}]
@@ -571,7 +571,7 @@ class TestMergeDeviceData:
         assert result["devices"]["AA:BB:CC:DD:EE:FF"]["network"] == "wireless"
 
     def test_merge_normalizes_mac(self):
-        from windesktopmgr import _merge_device_data
+        from homenet import _merge_device_data
 
         inv = {"devices": {}, "last_scan": None}
         devices = [{"mac": "aa-bb-cc-dd-ee-ff", "ip": "192.168.1.50", "name": ""}]
@@ -584,7 +584,7 @@ class TestCredentialHelpers:
 
     def test_get_cred_no_keyring(self, mocker):
         mocker.patch.dict("sys.modules", {"keyring": None})
-        from windesktopmgr import _get_homenet_cred
+        from homenet import _get_homenet_cred
 
         result = _get_homenet_cred("verizon")
         assert result == (None, None)
@@ -592,10 +592,10 @@ class TestCredentialHelpers:
     def test_get_cred_with_admin_password(self, mocker):
         mock_kr = MagicMock()
         mock_kr.get_password.return_value = "secret123"
-        mocker.patch("windesktopmgr.keyring", mock_kr, create=True)
+        mocker.patch("homenet.keyring", mock_kr, create=True)
         # We need to reimport to use the mock - instead test via route
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=("admin", "secret123"))
-        from windesktopmgr import _get_homenet_cred
+        mocker.patch("homenet._get_homenet_cred", return_value=("admin", "secret123"))
+        from homenet import _get_homenet_cred
 
         assert _get_homenet_cred("verizon") == ("admin", "secret123")
 
@@ -607,57 +607,57 @@ class TestCredentialHelpers:
         mock_cred.username = "customuser"
         mock_cred.password = "custompw"
         mock_kr.get_credential.return_value = mock_cred
-        mocker.patch("windesktopmgr.keyring", mock_kr, create=True)
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=("customuser", "custompw"))
-        from windesktopmgr import _get_homenet_cred
+        mocker.patch("homenet.keyring", mock_kr, create=True)
+        mocker.patch("homenet._get_homenet_cred", return_value=("customuser", "custompw"))
+        from homenet import _get_homenet_cred
 
         user, pw = _get_homenet_cred("orbi")
         assert user == "customuser"
 
     def test_set_cred_calls_keyring(self, mocker):
-        mocker.patch("windesktopmgr._set_homenet_cred", return_value=True)
-        from windesktopmgr import _set_homenet_cred
+        mocker.patch("homenet._set_homenet_cred", return_value=True)
+        from homenet import _set_homenet_cred
 
         assert _set_homenet_cred("verizon", "admin", "test") is True
 
     def test_set_cred_failure(self, mocker):
-        mocker.patch("windesktopmgr._set_homenet_cred", return_value=False)
-        from windesktopmgr import _set_homenet_cred
+        mocker.patch("homenet._set_homenet_cred", return_value=False)
+        from homenet import _set_homenet_cred
 
         assert _set_homenet_cred("verizon", "admin", "test") is False
 
     def test_delete_cred_with_user(self, mocker):
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=("admin", "pw"))
-        mocker.patch("windesktopmgr._delete_homenet_cred", return_value=True)
-        from windesktopmgr import _delete_homenet_cred
+        mocker.patch("homenet._get_homenet_cred", return_value=("admin", "pw"))
+        mocker.patch("homenet._delete_homenet_cred", return_value=True)
+        from homenet import _delete_homenet_cred
 
         assert _delete_homenet_cred("verizon") is True
 
     def test_delete_cred_no_user(self, mocker):
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=(None, None))
-        mocker.patch("windesktopmgr._delete_homenet_cred", return_value=True)
-        from windesktopmgr import _delete_homenet_cred
+        mocker.patch("homenet._get_homenet_cred", return_value=(None, None))
+        mocker.patch("homenet._delete_homenet_cred", return_value=True)
+        from homenet import _delete_homenet_cred
 
         assert _delete_homenet_cred("verizon") is True
 
     def test_list_creds_all_unconfigured(self, mocker):
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=(None, None))
-        from windesktopmgr import _list_homenet_creds
+        mocker.patch("homenet._get_homenet_cred", return_value=(None, None))
+        from homenet import _list_homenet_creds
 
         result = _list_homenet_creds()
         assert len(result) == 3
         assert all(c["configured"] is False for c in result)
 
     def test_list_creds_password_hint(self, mocker):
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=("admin", "mypassword"))
-        from windesktopmgr import _list_homenet_creds
+        mocker.patch("homenet._get_homenet_cred", return_value=("admin", "mypassword"))
+        from homenet import _list_homenet_creds
 
         result = _list_homenet_creds()
         assert result[0]["password_hint"] == "••••rd"
 
     def test_list_creds_short_password(self, mocker):
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=("admin", "ab"))
-        from windesktopmgr import _list_homenet_creds
+        mocker.patch("homenet._get_homenet_cred", return_value=("admin", "ab"))
+        from homenet import _list_homenet_creds
 
         result = _list_homenet_creds()
         assert result[0]["password_hint"] == "••••"
@@ -667,15 +667,15 @@ class TestVerizonApi:
     """Test Verizon CR1000A API functions."""
 
     def test_verizon_no_creds(self, mocker):
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=(None, None))
-        from windesktopmgr import _verizon_get_devices
+        mocker.patch("homenet._get_homenet_cred", return_value=(None, None))
+        from homenet import _verizon_get_devices
 
         result = _verizon_get_devices()
         assert "error" in result
         assert "credentials" in result["error"].lower()
 
     def test_verizon_encode_password(self):
-        from windesktopmgr import _verizon_encode_password
+        from homenet import _verizon_encode_password
 
         token = "abc123"
         result = _verizon_encode_password("password", token)
@@ -686,12 +686,12 @@ class TestVerizonApi:
     def test_verizon_connection_timeout(self, mocker):
         import requests
 
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=("admin", "pw"))
+        mocker.patch("homenet._get_homenet_cred", return_value=("admin", "pw"))
         mock_session = MagicMock()
         mock_session.cookies.get_dict.return_value = {}
         mock_session.get.side_effect = requests.exceptions.ConnectTimeout()
-        mocker.patch("windesktopmgr.requests.Session", return_value=mock_session)
-        from windesktopmgr import _verizon_get_devices
+        mocker.patch("homenet.requests.Session", return_value=mock_session)
+        from homenet import _verizon_get_devices
 
         result = _verizon_get_devices()
         assert "error" in result
@@ -702,8 +702,8 @@ class TestOrbiApi:
     """Test Orbi SOAP API functions."""
 
     def test_orbi_no_creds(self, mocker):
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=(None, None))
-        from windesktopmgr import _orbi_get_devices
+        mocker.patch("homenet._get_homenet_cred", return_value=(None, None))
+        from homenet import _orbi_get_devices
 
         result = _orbi_get_devices()
         assert "error" in result
@@ -712,11 +712,11 @@ class TestOrbiApi:
     def test_orbi_ssl_error_returns_error(self, mocker):
         import requests as req
 
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=("admin", "password"))
+        mocker.patch("homenet._get_homenet_cred", return_value=("admin", "password"))
         mock_session = MagicMock()
         mock_session.post.side_effect = req.exceptions.SSLError("SSL certificate verify failed")
-        mocker.patch("windesktopmgr.requests.Session", return_value=mock_session)
-        from windesktopmgr import _orbi_get_devices
+        mocker.patch("homenet.requests.Session", return_value=mock_session)
+        from homenet import _orbi_get_devices
 
         result = _orbi_get_devices()
         assert "error" in result
@@ -734,8 +734,8 @@ class TestArpScan:
         )
         mock_result = MagicMock()
         mock_result.stdout = arp_json
-        mocker.patch("windesktopmgr.subprocess.run", return_value=mock_result)
-        from windesktopmgr import _arp_scan
+        mocker.patch("homenet.subprocess.run", return_value=mock_result)
+        from homenet import _arp_scan
 
         result = _arp_scan()
         assert len(result) == 1
@@ -748,15 +748,15 @@ class TestArpScan:
         )
         mock_result = MagicMock()
         mock_result.stdout = arp_json
-        mocker.patch("windesktopmgr.subprocess.run", return_value=mock_result)
-        from windesktopmgr import _arp_scan
+        mocker.patch("homenet.subprocess.run", return_value=mock_result)
+        from homenet import _arp_scan
 
         result = _arp_scan()
         assert len(result) == 1
 
     def test_arp_scan_error(self, mocker):
-        mocker.patch("windesktopmgr.subprocess.run", side_effect=Exception("fail"))
-        from windesktopmgr import _arp_scan
+        mocker.patch("homenet.subprocess.run", side_effect=Exception("fail"))
+        from homenet import _arp_scan
 
         result = _arp_scan()
         assert result == []
@@ -764,8 +764,8 @@ class TestArpScan:
     def test_arp_scan_empty(self, mocker):
         mock_result = MagicMock()
         mock_result.stdout = "[]"
-        mocker.patch("windesktopmgr.subprocess.run", return_value=mock_result)
-        from windesktopmgr import _arp_scan
+        mocker.patch("homenet.subprocess.run", return_value=mock_result)
+        from homenet import _arp_scan
 
         result = _arp_scan()
         assert result == []
@@ -775,8 +775,8 @@ class TestTpLinkSwitch:
     """Test TP-Link switch SNMP integration."""
 
     def test_tplink_no_creds(self, mocker):
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=(None, None))
-        from windesktopmgr import _tplink_get_data
+        mocker.patch("homenet._get_homenet_cred", return_value=(None, None))
+        from homenet import _tplink_get_data
 
         result = _tplink_get_data()
         assert "error" in result
@@ -788,45 +788,45 @@ class TestTpLinkSwitch:
             "sys.modules",
             {"pysnmp": None, "pysnmp.hlapi": None, "pysnmp.hlapi.v1arch": None, "pysnmp.hlapi.v1arch.asyncio": None},
         )
-        from windesktopmgr import _tplink_snmp_query
+        from homenet import _tplink_snmp_query
 
         result = _tplink_snmp_query("192.168.1.1", "public")
         assert "error" in result
 
     def test_tplink_get_data_calls_snmp(self, mocker):
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=("192.168.1.100", "public"))
+        mocker.patch("homenet._get_homenet_cred", return_value=("192.168.1.100", "public"))
         mocker.patch(
-            "windesktopmgr._tplink_snmp_query",
+            "homenet._tplink_snmp_query",
             return_value={"ok": True, "ports": [], "mac_table": [], "system_info": {}},
         )
-        from windesktopmgr import _tplink_get_data
+        from homenet import _tplink_get_data
 
         result = _tplink_get_data()
         assert result["ok"] is True
 
     def test_tplink_auto_resolve_ip(self, mocker):
         """When user stores 'auto' as IP, app resolves via MAC lookup."""
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=("auto", "public"))
+        mocker.patch("homenet._get_homenet_cred", return_value=("auto", "public"))
         mocker.patch(
-            "windesktopmgr._arp_scan",
+            "homenet._arp_scan",
             return_value=[
                 {"IP": "192.168.1.55", "MAC": "DC:62:79:F3:52:5C", "Type": "dynamic", "Interface": "192.168.1.10"},
             ],
         )
         mocker.patch(
-            "windesktopmgr._tplink_snmp_query",
+            "homenet._tplink_snmp_query",
             return_value={"ok": True, "ports": [], "mac_table": [], "system_info": {}},
         )
-        from windesktopmgr import _tplink_get_data
+        from homenet import _tplink_get_data
 
         result = _tplink_get_data()
         assert result["ok"] is True
 
     def test_tplink_auto_resolve_not_found(self, mocker):
         """When auto-resolve can't find the switch MAC."""
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=("auto", "public"))
-        mocker.patch("windesktopmgr._arp_scan", return_value=[])
-        from windesktopmgr import _tplink_get_data
+        mocker.patch("homenet._get_homenet_cred", return_value=("auto", "public"))
+        mocker.patch("homenet._arp_scan", return_value=[])
+        from homenet import _tplink_get_data
 
         result = _tplink_get_data()
         assert "error" in result
@@ -834,24 +834,24 @@ class TestTpLinkSwitch:
 
     def test_resolve_ip_from_mac(self, mocker):
         mocker.patch(
-            "windesktopmgr._arp_scan",
+            "homenet._arp_scan",
             return_value=[
                 {"IP": "192.168.1.55", "MAC": "DC:62:79:F3:52:5C", "Type": "dynamic", "Interface": "192.168.1.10"},
             ],
         )
-        from windesktopmgr import _resolve_ip_from_mac
+        from homenet import _resolve_ip_from_mac
 
         assert _resolve_ip_from_mac("DC:62:79:F3:52:5C") == "192.168.1.55"
 
     def test_resolve_ip_from_mac_not_found(self, mocker):
-        mocker.patch("windesktopmgr._arp_scan", return_value=[])
-        from windesktopmgr import _resolve_ip_from_mac
+        mocker.patch("homenet._arp_scan", return_value=[])
+        from homenet import _resolve_ip_from_mac
 
         assert _resolve_ip_from_mac("DC:62:79:F3:52:5C") == ""
 
     def test_tplink_test_endpoint(self, client, mocker):
         mocker.patch(
-            "windesktopmgr._tplink_get_data",
+            "homenet._tplink_get_data",
             return_value={
                 "ok": True,
                 "ports": [
@@ -872,7 +872,7 @@ class TestTpLinkSwitch:
 
     def test_tplink_test_endpoint_failure(self, client, mocker):
         mocker.patch(
-            "windesktopmgr._tplink_get_data",
+            "homenet._tplink_get_data",
             return_value={"error": "SNMP timeout"},
         )
         resp = client.post(
@@ -885,7 +885,7 @@ class TestTpLinkSwitch:
 
     def test_switch_data_route(self, client, mocker):
         mocker.patch(
-            "windesktopmgr._tplink_get_data",
+            "homenet._tplink_get_data",
             return_value={
                 "ok": True,
                 "ports": [{"port": "GigE1/0/1", "status": "up"}],
@@ -900,7 +900,7 @@ class TestTpLinkSwitch:
         assert len(data["ports"]) == 1
 
     def test_creds_list_includes_tplink(self, client, mocker):
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=(None, None))
+        mocker.patch("homenet._get_homenet_cred", return_value=(None, None))
         resp = client.get("/api/homenet/credentials")
         data = resp.get_json()
         assert len(data) == 3
@@ -928,7 +928,7 @@ class TestHomeNetInventoryPersistence:
 
     def test_load_missing_file(self, mocker):
         mocker.patch("os.path.exists", return_value=False)
-        from windesktopmgr import _load_homenet_inventory
+        from homenet import _load_homenet_inventory
 
         result = _load_homenet_inventory()
         assert result == {"devices": {}, "last_scan": None}
@@ -936,16 +936,16 @@ class TestHomeNetInventoryPersistence:
     def test_load_corrupt_file(self, mocker, tmp_path):
         f = tmp_path / "bad.json"
         f.write_text("not json!")
-        mocker.patch("windesktopmgr.HOMENET_INVENTORY_FILE", str(f))
-        from windesktopmgr import _load_homenet_inventory
+        mocker.patch("homenet.HOMENET_INVENTORY_FILE", str(f))
+        from homenet import _load_homenet_inventory
 
         result = _load_homenet_inventory()
         assert result == {"devices": {}, "last_scan": None}
 
     def test_save_and_load(self, mocker, tmp_path):
         f = tmp_path / "inv.json"
-        mocker.patch("windesktopmgr.HOMENET_INVENTORY_FILE", str(f))
-        from windesktopmgr import _load_homenet_inventory, _save_homenet_inventory
+        mocker.patch("homenet.HOMENET_INVENTORY_FILE", str(f))
+        from homenet import _load_homenet_inventory, _save_homenet_inventory
 
         inv = {"devices": {"AA:BB:CC:DD:EE:FF": {"mac": "AA:BB:CC:DD:EE:FF"}}, "last_scan": "2026-01-01"}
         _save_homenet_inventory(inv)
@@ -957,16 +957,16 @@ class TestHomenetFullScan:
     """Test full scan orchestration."""
 
     def test_full_scan_with_all_sources(self, client, mocker):
-        mocker.patch("windesktopmgr._wifi_ensure_orbi_connected", return_value=(True, True, "OrbiNet"))
-        mocker.patch("windesktopmgr._wifi_restore")
+        mocker.patch("homenet._wifi_ensure_orbi_connected", return_value=(True, True, "OrbiNet"))
+        mocker.patch("homenet._wifi_restore")
         mocker.patch(
-            "windesktopmgr._arp_scan",
+            "homenet._arp_scan",
             return_value=[
                 {"IP": "192.168.1.50", "MAC": "AA:BB:CC:DD:EE:FF", "Type": "dynamic", "Interface": "192.168.1.10"},
             ],
         )
         mocker.patch(
-            "windesktopmgr._verizon_get_devices",
+            "homenet._verizon_get_devices",
             return_value={
                 "ok": True,
                 "known_devices": {
@@ -977,14 +977,14 @@ class TestHomenetFullScan:
             },
         )
         mocker.patch(
-            "windesktopmgr._orbi_get_devices",
+            "homenet._orbi_get_devices",
             return_value={
                 "ok": True,
                 "devices": [{"ip": "10.0.0.5", "name": "Phone", "mac": "99:88:77:66:55:44", "connection_type": "5G"}],
             },
         )
-        mocker.patch("windesktopmgr._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
-        mocker.patch("windesktopmgr._save_homenet_inventory")
+        mocker.patch("homenet._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
+        mocker.patch("homenet._save_homenet_inventory")
         resp = client.post("/api/homenet/scan")
         data = resp.get_json()
         assert data["ok"] is True
@@ -993,11 +993,11 @@ class TestHomenetFullScan:
 
     def test_full_scan_handles_verizon_list_format(self, client, mocker):
         """Verizon known_devices can be a list directly (not nested in dict)."""
-        mocker.patch("windesktopmgr._wifi_ensure_orbi_connected", return_value=(False, True, ""))
-        mocker.patch("windesktopmgr._wifi_restore")
-        mocker.patch("windesktopmgr._arp_scan", return_value=[])
+        mocker.patch("homenet._wifi_ensure_orbi_connected", return_value=(False, True, ""))
+        mocker.patch("homenet._wifi_restore")
+        mocker.patch("homenet._arp_scan", return_value=[])
         mocker.patch(
-            "windesktopmgr._verizon_get_devices",
+            "homenet._verizon_get_devices",
             return_value={
                 "ok": True,
                 "known_devices": [
@@ -1005,8 +1005,8 @@ class TestHomenetFullScan:
                 ],
             },
         )
-        mocker.patch("windesktopmgr._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
-        mocker.patch("windesktopmgr._save_homenet_inventory")
+        mocker.patch("homenet._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
+        mocker.patch("homenet._save_homenet_inventory")
         resp = client.post("/api/homenet/scan")
         data = resp.get_json()
         # When known_devices is a list (not dict), it won't have .get("known_devices")
@@ -1018,7 +1018,7 @@ class TestSwitchDataRoute:
     """Test switch data endpoint."""
 
     def test_switch_route_no_creds(self, client, mocker):
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=(None, None))
+        mocker.patch("homenet._get_homenet_cred", return_value=(None, None))
         resp = client.get("/api/homenet/switch")
         assert resp.status_code == 200
         data = resp.get_json()
@@ -1026,7 +1026,7 @@ class TestSwitchDataRoute:
 
     def test_switch_route_with_data(self, client, mocker):
         mocker.patch(
-            "windesktopmgr._tplink_get_data",
+            "homenet._tplink_get_data",
             return_value={
                 "ok": True,
                 "ports": [
@@ -1064,12 +1064,12 @@ class TestTpLinkMacVendor:
     """Test TP-Link specific MAC vendor lookup."""
 
     def test_tplink_switch_mac(self):
-        from windesktopmgr import _mac_vendor
+        from homenet import _mac_vendor
 
         assert _mac_vendor("DC:62:79:F3:52:5C") == "TP-Link"
 
     def test_tplink_common_prefixes(self):
-        from windesktopmgr import _mac_vendor
+        from homenet import _mac_vendor
 
         assert _mac_vendor("50:C7:BF:00:00:00") == "TP-Link"
         assert _mac_vendor("F4:EC:38:00:00:00") == "TP-Link"
@@ -1080,7 +1080,7 @@ class TestOrbiSoapParsingEdgeCases:
     """Additional Orbi SOAP parsing edge cases."""
 
     def test_parse_single_legacy_device(self):
-        from windesktopmgr import _parse_orbi_soap
+        from homenet import _parse_orbi_soap
 
         xml = "<NewGetAttachDevice2>10.0.0.2;Phone;AA:BB:CC:DD:EE:FF;5G;866Mbps;-45;Phone</NewGetAttachDevice2>"
         devices = _parse_orbi_soap(xml)
@@ -1088,21 +1088,21 @@ class TestOrbiSoapParsingEdgeCases:
         assert devices[0]["ip"] == "10.0.0.2"
 
     def test_parse_short_legacy_entry(self):
-        from windesktopmgr import _parse_orbi_soap
+        from homenet import _parse_orbi_soap
 
         xml = "<NewGetAttachDevice2>10.0.0.2;Phone;AA:BB:CC:DD:EE:FF;5G</NewGetAttachDevice2>"
         devices = _parse_orbi_soap(xml)
         assert len(devices) == 1
 
     def test_parse_too_short_legacy_entry(self):
-        from windesktopmgr import _parse_orbi_soap
+        from homenet import _parse_orbi_soap
 
         xml = "<NewGetAttachDevice2>10.0.0.2;Phone;MAC</NewGetAttachDevice2>"
         devices = _parse_orbi_soap(xml)
         assert len(devices) == 0
 
     def test_parse_xml_missing_optional_fields(self):
-        from windesktopmgr import _parse_orbi_soap
+        from homenet import _parse_orbi_soap
 
         xml = """<Device><IP>10.0.0.5</IP><MAC>AA:BB:CC:DD:EE:FF</MAC></Device>"""
         devices = _parse_orbi_soap(xml)
@@ -1119,23 +1119,23 @@ class TestVerizonApiEdgeCases:
     def test_verizon_connection_error(self, mocker):
         import requests
 
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=("admin", "pw"))
+        mocker.patch("homenet._get_homenet_cred", return_value=("admin", "pw"))
         mock_session = MagicMock()
         mock_session.cookies.get_dict.return_value = {}
         mock_session.get.side_effect = requests.exceptions.ConnectionError()
-        mocker.patch("windesktopmgr.requests.Session", return_value=mock_session)
-        from windesktopmgr import _verizon_get_devices
+        mocker.patch("homenet.requests.Session", return_value=mock_session)
+        from homenet import _verizon_get_devices
 
         result = _verizon_get_devices()
         assert "error" in result
         assert "connect" in result["error"].lower()
 
     def test_verizon_generic_error(self, mocker):
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=("admin", "pw"))
+        mocker.patch("homenet._get_homenet_cred", return_value=("admin", "pw"))
         mock_session = MagicMock()
         mock_session.get.side_effect = Exception("weird error")
-        mocker.patch("windesktopmgr.requests.Session", return_value=mock_session)
-        from windesktopmgr import _verizon_get_devices
+        mocker.patch("homenet.requests.Session", return_value=mock_session)
+        from homenet import _verizon_get_devices
 
         result = _verizon_get_devices()
         assert "error" in result
@@ -1143,11 +1143,11 @@ class TestVerizonApiEdgeCases:
     def test_orbi_connection_timeout(self, mocker):
         import requests
 
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=("admin", "pw"))
+        mocker.patch("homenet._get_homenet_cred", return_value=("admin", "pw"))
         mock_session = MagicMock()
         mock_session.post.side_effect = requests.exceptions.ConnectTimeout()
-        mocker.patch("windesktopmgr.requests.Session", return_value=mock_session)
-        from windesktopmgr import _orbi_get_devices
+        mocker.patch("homenet.requests.Session", return_value=mock_session)
+        from homenet import _orbi_get_devices
 
         result = _orbi_get_devices()
         assert "error" in result
@@ -1156,22 +1156,22 @@ class TestVerizonApiEdgeCases:
     def test_orbi_connection_error(self, mocker):
         import requests
 
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=("admin", "pw"))
+        mocker.patch("homenet._get_homenet_cred", return_value=("admin", "pw"))
         mock_session = MagicMock()
         mock_session.post.side_effect = requests.exceptions.ConnectionError()
-        mocker.patch("windesktopmgr.requests.Session", return_value=mock_session)
-        from windesktopmgr import _orbi_get_devices
+        mocker.patch("homenet.requests.Session", return_value=mock_session)
+        from homenet import _orbi_get_devices
 
         result = _orbi_get_devices()
         assert "error" in result
 
     def test_orbi_generic_error(self, mocker):
 
-        mocker.patch("windesktopmgr._get_homenet_cred", return_value=("admin", "pw"))
+        mocker.patch("homenet._get_homenet_cred", return_value=("admin", "pw"))
         mock_session = MagicMock()
         mock_session.post.side_effect = Exception("generic")
-        mocker.patch("windesktopmgr.requests.Session", return_value=mock_session)
-        from windesktopmgr import _orbi_get_devices
+        mocker.patch("homenet.requests.Session", return_value=mock_session)
+        from homenet import _orbi_get_devices
 
         result = _orbi_get_devices()
         assert "error" in result
@@ -1181,21 +1181,21 @@ class TestVerizonParsing:
     """Additional Verizon JS parsing edge cases."""
 
     def test_parse_trailing_comma(self):
-        from windesktopmgr import _parse_verizon_js
+        from homenet import _parse_verizon_js
 
         js = """addROD("known_device_list", {"known_devices": [{"mac": "AA:BB:CC:DD:EE:FF",},]});"""
         result = _parse_verizon_js(js)
         assert "known_device_list" in result
 
     def test_parse_single_quotes(self):
-        from windesktopmgr import _parse_verizon_js
+        from homenet import _parse_verizon_js
 
         js = "addROD('hardware_model', 'CR1000A');"
         result = _parse_verizon_js(js)
         assert result["hardware_model"] == "CR1000A"
 
     def test_parse_multiple_entries(self):
-        from windesktopmgr import _parse_verizon_js
+        from homenet import _parse_verizon_js
 
         js = 'addROD("router_name", "HomeRouter");\naddROD("hardware_model", "CR1000A");'
         result = _parse_verizon_js(js)
@@ -1207,7 +1207,7 @@ class TestAutoCategorizee:
     """Test auto-categorization by vendor/hostname/device type."""
 
     def test_categorize_by_vendor(self):
-        from windesktopmgr import _auto_categorize
+        from homenet import _auto_categorize
 
         assert _auto_categorize("Roku", "", "", "") == "TV"
         assert _auto_categorize("Apple", "", "", "") == "Phone"
@@ -1217,7 +1217,7 @@ class TestAutoCategorizee:
         assert _auto_categorize("Alexa/Amazon", "", "", "") == "IoT"
 
     def test_categorize_by_device_type(self):
-        from windesktopmgr import _auto_categorize
+        from homenet import _auto_categorize
 
         assert _auto_categorize("Unknown", "", "Phone", "") == "Phone"
         assert _auto_categorize("Unknown", "", "Computer", "") == "Computer"
@@ -1226,7 +1226,7 @@ class TestAutoCategorizee:
         assert _auto_categorize("Unknown", "", "Tablet", "") == "Phone"
 
     def test_categorize_by_os(self):
-        from windesktopmgr import _auto_categorize
+        from homenet import _auto_categorize
 
         assert _auto_categorize("Unknown", "", "", "iOS") == "Phone"
         assert _auto_categorize("Unknown", "", "", "Android") == "Phone"
@@ -1234,7 +1234,7 @@ class TestAutoCategorizee:
         assert _auto_categorize("Unknown", "", "", "macOS") == "Computer"
 
     def test_categorize_by_hostname(self):
-        from windesktopmgr import _auto_categorize
+        from homenet import _auto_categorize
 
         assert _auto_categorize("Unknown", "BRW707781CBB5A5", "", "") == "Printer"
         assert _auto_categorize("Unknown", "Roku-Streaming-Stick", "", "") == "TV"
@@ -1245,13 +1245,13 @@ class TestAutoCategorizee:
 
     def test_categorize_device_type_takes_precedence(self):
         """Device type from router should override vendor guess."""
-        from windesktopmgr import _auto_categorize
+        from homenet import _auto_categorize
 
         # Samsung makes TVs but also phones
         assert _auto_categorize("Samsung", "", "Phone", "") == "Phone"
 
     def test_categorize_unknown(self):
-        from windesktopmgr import _auto_categorize
+        from homenet import _auto_categorize
 
         assert _auto_categorize("Unknown", "", "", "") == ""
         assert _auto_categorize("Random MAC (Phone)", "", "", "") == ""
@@ -1280,7 +1280,7 @@ class TestNameResolution:
             "subprocess.run",
             side_effect=[dns_result, nbt_wired, wifi_result],
         )
-        from windesktopmgr import _resolve_names_batch
+        from homenet import _resolve_names_batch
 
         devices = [
             {"ip": "192.168.1.50", "hostname": ""},
@@ -1290,7 +1290,7 @@ class TestNameResolution:
         assert result["192.168.1.50"] == "MyPC"
 
     def test_resolve_names_batch_empty(self, mocker):
-        from windesktopmgr import _resolve_names_batch
+        from homenet import _resolve_names_batch
 
         # All devices already have names
         devices = [
@@ -1300,8 +1300,8 @@ class TestNameResolution:
         assert result == {}
 
     def test_resolve_names_batch_error(self, mocker):
-        mocker.patch("windesktopmgr.subprocess.run", side_effect=Exception("dns fail"))
-        from windesktopmgr import _resolve_names_batch
+        mocker.patch("homenet.subprocess.run", side_effect=Exception("dns fail"))
+        from homenet import _resolve_names_batch
 
         devices = [{"ip": "192.168.1.50", "hostname": ""}]
         result = _resolve_names_batch(devices)
@@ -1313,8 +1313,8 @@ class TestNameResolution:
         dns_result.stdout = json.dumps({"IP": "192.168.1.50", "Name": "NAS"})
         dns_result.stderr = ""
         # No wired unresolved (DNS got it), no wireless IPs
-        mocker.patch("windesktopmgr.subprocess.run", return_value=dns_result)
-        from windesktopmgr import _resolve_names_batch
+        mocker.patch("homenet.subprocess.run", return_value=dns_result)
+        from homenet import _resolve_names_batch
 
         devices = [{"ip": "192.168.1.50", "hostname": ""}]
         result = _resolve_names_batch(devices)
@@ -1322,7 +1322,7 @@ class TestNameResolution:
 
     def test_resolve_skips_already_named(self, mocker):
         """Devices with good hostnames should not be re-resolved."""
-        from windesktopmgr import _resolve_names_batch
+        from homenet import _resolve_names_batch
 
         devices = [
             {"ip": "192.168.1.50", "hostname": "GoodName"},
@@ -1338,7 +1338,7 @@ class TestNameResolution:
             ]
         )
         dns_result.stderr = ""
-        mocker.patch("windesktopmgr.subprocess.run", return_value=dns_result)
+        mocker.patch("homenet.subprocess.run", return_value=dns_result)
         result = _resolve_names_batch(devices)
         assert "192.168.1.50" not in result
         assert result["192.168.1.51"] == "Laptop"
@@ -1352,8 +1352,8 @@ class TestEnrichDeviceNames:
         mock_result = MagicMock()
         mock_result.stdout = json.dumps([{"IP": "192.168.1.50", "Name": "MyPC"}])
         mock_result.stderr = ""
-        mocker.patch("windesktopmgr.subprocess.run", return_value=mock_result)
-        from windesktopmgr import _enrich_device_names
+        mocker.patch("homenet.subprocess.run", return_value=mock_result)
+        from homenet import _enrich_device_names
 
         inventory = {
             "devices": {
@@ -1375,8 +1375,8 @@ class TestEnrichDeviceNames:
         assert dev["category"] == "Computer"  # Intel vendor → Computer
 
     def test_enrich_preserves_user_category(self, mocker):
-        mocker.patch("windesktopmgr.subprocess.run", return_value=MagicMock(stdout="[]", stderr=""))
-        from windesktopmgr import _enrich_device_names
+        mocker.patch("homenet.subprocess.run", return_value=MagicMock(stdout="[]", stderr=""))
+        from homenet import _enrich_device_names
 
         inventory = {
             "devices": {
@@ -1400,8 +1400,8 @@ class TestEnrichDeviceNames:
         mock_result = MagicMock()
         mock_result.stdout = json.dumps([{"IP": "192.168.1.50", "Name": "NewName"}])
         mock_result.stderr = ""
-        mocker.patch("windesktopmgr.subprocess.run", return_value=mock_result)
-        from windesktopmgr import _enrich_device_names
+        mocker.patch("homenet.subprocess.run", return_value=mock_result)
+        from homenet import _enrich_device_names
 
         inventory = {
             "devices": {
@@ -1426,7 +1426,7 @@ class TestResolveNamesRoute:
 
     def test_resolve_names_endpoint(self, client, mocker):
         mocker.patch(
-            "windesktopmgr._load_homenet_inventory",
+            "homenet._load_homenet_inventory",
             return_value={
                 "devices": {
                     "AA:BB:CC:DD:EE:FF": {
@@ -1444,8 +1444,8 @@ class TestResolveNamesRoute:
         )
         mock_result = MagicMock()
         mock_result.stdout = json.dumps([{"IP": "192.168.1.50", "Name": "MyPC"}])
-        mocker.patch("windesktopmgr.subprocess.run", return_value=mock_result)
-        mocker.patch("windesktopmgr._save_homenet_inventory")
+        mocker.patch("homenet.subprocess.run", return_value=mock_result)
+        mocker.patch("homenet._save_homenet_inventory")
 
         resp = client.post("/api/homenet/resolve-names")
         assert resp.status_code == 200
