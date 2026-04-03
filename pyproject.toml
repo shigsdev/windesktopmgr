@@ -92,6 +92,9 @@ ignore = [
 "windowsdrivermgr.py" = [
     "E722",   # bare except — intentional safety wrappers
 ]
+"dev.py" = [
+    "T201",   # allow print() — it's a CLI tool
+]
 
 # ── coverage ──────────────────────────────────────────────────────────────────
 
