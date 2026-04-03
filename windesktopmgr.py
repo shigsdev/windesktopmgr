@@ -6974,9 +6974,10 @@ def dashboard_summary():
         "memory": get_memory_analysis,
         "bios": get_bios_status,
         "credentials": get_credentials_network_health,
+        "disk": get_disk_health,
     }
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
         futs = {ex.submit(fn): name for name, fn in checks.items()}
         for fut in concurrent.futures.as_completed(futs, timeout=30):
             name = futs[fut]
@@ -7132,6 +7133,37 @@ def dashboard_summary():
         )
     elif bios.get("update", {}).get("confirmed_current"):
         pass  # BIOS confirmed current — no concern needed
+
+    # Disk usage
+    disk = results.get("disk", {})
+    for v in disk.get("drives", []):
+        pct_used = v.get("PctUsed", 0)
+        drive_letter = v.get("Letter", "?")
+        free_gb = v.get("FreeGB", 0)
+        if pct_used >= 95:
+            concerns.append(
+                {
+                    "level": "critical",
+                    "tab": "disk",
+                    "icon": "💾",
+                    "title": f"Drive {drive_letter} is {pct_used}% full ({free_gb:.1f} GB free)",
+                    "detail": "Critically low disk space. System performance may be degraded.",
+                    "action": "View Disk Health",
+                    "action_fn": "switchTab('disk')",
+                }
+            )
+        elif pct_used >= 90:
+            concerns.append(
+                {
+                    "level": "warning",
+                    "tab": "disk",
+                    "icon": "💾",
+                    "title": f"Drive {drive_letter} is {pct_used}% full ({free_gb:.1f} GB free)",
+                    "detail": "Disk space is running low. Consider freeing up space.",
+                    "action": "View Disk Health",
+                    "action_fn": "switchTab('disk')",
+                }
+            )
 
     # Sort by level
     level_order = {"critical": 0, "warning": 1, "info": 2, "ok": 3}
