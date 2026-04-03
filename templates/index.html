@@ -2568,7 +2568,8 @@ function renderMemory(d) {
         legend: { position: "right", labels: { color: "#aaa", font: { size: 11 },
           generateLabels: (chart) => chart.data.labels.map((l,i) => ({
             text: `${l}: ${values[i].toLocaleString()} MB`,
-            fillStyle: colors[i], strokeStyle: colors[i], lineWidth: 0
+            fillStyle: colors[i], strokeStyle: colors[i], lineWidth: 0,
+            fontColor: "#ccc"
           }))
         }},
         tooltip: { callbacks: { label: ctx => ` ${ctx.label}: ${ctx.raw.toLocaleString()} MB` } }
