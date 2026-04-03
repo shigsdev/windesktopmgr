@@ -1207,6 +1207,13 @@ class TestDashboardSummaryRoute:
             ),
         )
         mocker.patch("windesktopmgr.get_disk_health", return_value=overrides.get("disk", self.HEALTHY_DISK))
+        mocker.patch(
+            "windesktopmgr.get_driver_health",
+            return_value=overrides.get(
+                "drivers",
+                {"old_drivers": [], "problematic_drivers": [], "nvidia": None},
+            ),
+        )
 
     def test_returns_200_with_structure(self, client, mocker):
         self._mock_dashboard_deps(mocker)
@@ -1302,6 +1309,93 @@ class TestDashboardSummaryRoute:
         data = resp.get_json()
         disk_concerns = [c for c in data["concerns"] if c.get("tab") == "disk"]
         assert len(disk_concerns) == 0
+
+    # ── Driver health concerns ────────────────────────────────────────────────
+
+    def test_problematic_drivers_raise_critical(self, client, mocker):
+        self._mock_dashboard_deps(
+            mocker,
+            drivers={
+                "old_drivers": [],
+                "problematic_drivers": [{"DeviceName": "Bad USB Controller", "ErrorCode": 10, "Status": "Error"}],
+                "nvidia": None,
+            },
+        )
+        resp = client.get("/api/dashboard/summary")
+        data = resp.get_json()
+        drv_concerns = [c for c in data["concerns"] if c.get("tab") == "drivers"]
+        assert len(drv_concerns) == 1
+        assert drv_concerns[0]["level"] == "critical"
+        assert "driver errors" in drv_concerns[0]["title"]
+
+    def test_old_drivers_raise_warning_when_more_than_3(self, client, mocker):
+        old = [
+            {"DeviceName": f"Device {i}", "Provider": "Acme", "Version": "1.0", "Date": "2022-01-01"} for i in range(5)
+        ]
+        self._mock_dashboard_deps(mocker, drivers={"old_drivers": old, "problematic_drivers": [], "nvidia": None})
+        resp = client.get("/api/dashboard/summary")
+        data = resp.get_json()
+        drv_concerns = [c for c in data["concerns"] if c.get("tab") == "drivers" and c["level"] == "warning"]
+        assert len(drv_concerns) == 1
+        assert "over 2 years old" in drv_concerns[0]["title"]
+
+    def test_few_old_drivers_no_concern(self, client, mocker):
+        old = [{"DeviceName": "Old Device", "Provider": "Acme", "Version": "1.0", "Date": "2022-01-01"}]
+        self._mock_dashboard_deps(mocker, drivers={"old_drivers": old, "problematic_drivers": [], "nvidia": None})
+        resp = client.get("/api/dashboard/summary")
+        data = resp.get_json()
+        drv_concerns = [c for c in data["concerns"] if c.get("tab") == "drivers"]
+        assert len(drv_concerns) == 0
+
+    def test_nvidia_update_available_raises_warning(self, client, mocker):
+        self._mock_dashboard_deps(
+            mocker,
+            drivers={
+                "old_drivers": [],
+                "problematic_drivers": [],
+                "nvidia": {
+                    "Name": "NVIDIA GeForce RTX 4090",
+                    "InstalledVersion": "565.79",
+                    "LatestVersion": "572.16",
+                    "UpdateAvailable": True,
+                    "UpdateSource": "nvidia_app",
+                },
+            },
+        )
+        resp = client.get("/api/dashboard/summary")
+        data = resp.get_json()
+        nv_concerns = [c for c in data["concerns"] if "NVIDIA" in c.get("title", "")]
+        assert len(nv_concerns) == 1
+        assert nv_concerns[0]["level"] == "warning"
+        assert "565.79" in nv_concerns[0]["title"]
+        assert "572.16" in nv_concerns[0]["title"]
+
+    def test_nvidia_current_no_concern(self, client, mocker):
+        self._mock_dashboard_deps(
+            mocker,
+            drivers={
+                "old_drivers": [],
+                "problematic_drivers": [],
+                "nvidia": {
+                    "Name": "NVIDIA GeForce RTX 4090",
+                    "InstalledVersion": "572.16",
+                    "LatestVersion": "572.16",
+                    "UpdateAvailable": False,
+                    "UpdateSource": "nvidia_app",
+                },
+            },
+        )
+        resp = client.get("/api/dashboard/summary")
+        data = resp.get_json()
+        nv_concerns = [c for c in data["concerns"] if "NVIDIA" in c.get("title", "")]
+        assert len(nv_concerns) == 0
+
+    def test_no_nvidia_gpu_no_concern(self, client, mocker):
+        self._mock_dashboard_deps(mocker)
+        resp = client.get("/api/dashboard/summary")
+        data = resp.get_json()
+        nv_concerns = [c for c in data["concerns"] if "NVIDIA" in c.get("title", "")]
+        assert len(nv_concerns) == 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════

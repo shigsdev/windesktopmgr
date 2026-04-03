@@ -248,6 +248,113 @@ def get_installed_drivers() -> list:
         return []
 
 
+def get_driver_health() -> dict:
+    """Lightweight driver health check for the dashboard.
+
+    Returns dict with:
+        old_drivers: list of 3rd-party drivers >2 years old
+        problematic_drivers: list of devices with ConfigManager errors
+        nvidia: dict with GPU driver info and update state (or None)
+    """
+    ps = r"""
+$cutoff = (Get-Date).AddYears(-2)
+$ms = @('Microsoft','Microsoft Windows','Microsoft Corporation')
+
+# Third-party drivers older than 2 years
+$old = @()
+foreach ($d in Get-CimInstance Win32_PnPSignedDriver -EA SilentlyContinue | Where-Object { $_.DriverVersion }) {
+    $isMS = $false; foreach ($p in $ms) { if ($d.DriverProviderName -like "*$p*") { $isMS=$true; break } }
+    if (-not $isMS -and $d.DriverProviderName -and $d.DriverDate -and $d.DriverDate -lt $cutoff) {
+        $old += @{DeviceName=$d.DeviceName;Provider=$d.DriverProviderName;Version=$d.DriverVersion;Date=$d.DriverDate.ToString('yyyy-MM-dd')}
+    }
+}
+
+# Devices with errors
+$prob = @(Get-CimInstance Win32_PnPEntity -EA SilentlyContinue | Where-Object { $_.ConfigManagerErrorCode -ne 0 } | ForEach-Object {
+    @{DeviceName=$_.Name;ErrorCode=$_.ConfigManagerErrorCode;Status=$_.Status}
+})
+
+# NVIDIA GPU info
+$gpu = Get-CimInstance Win32_VideoController -EA SilentlyContinue | Where-Object { $_.Name -like '*NVIDIA*' } | Select-Object -First 1
+$nv = $null
+if ($gpu) {
+    $nvVer = $gpu.DriverVersion
+    # Convert Windows driver version (e.g. 32.0.15.6579) to NVIDIA format (565.79)
+    $parts = $nvVer -split '\.'
+    $nvShort = ''
+    if ($parts.Count -ge 4) { $nvShort = $parts[2].Substring($parts[2].Length - 2) + '.' + $parts[3].Substring($parts[3].Length - 2) }
+
+    # Check multiple sources for pending NVIDIA update
+    $nvLatest = ''
+    $nvUpdateAvail = $false
+    $nvSource = 'none'
+
+    # Method 1: NVIDIA App / GeForce Experience registry
+    try {
+        foreach ($regPath in @(
+            'HKLM:\SOFTWARE\NVIDIA Corporation\Global\GFExperience',
+            'HKLM:\SOFTWARE\NVIDIA Corporation\Global\GridLicensing'
+        )) {
+            if (Test-Path $regPath) {
+                $reg = Get-ItemProperty $regPath -EA SilentlyContinue
+                if ($reg.DriverRecommendedVersion) {
+                    $nvLatest = $reg.DriverRecommendedVersion
+                    $nvSource = 'nvidia_app'
+                    break
+                }
+            }
+        }
+    } catch {}
+
+    # Method 2: Windows Update pending NVIDIA driver
+    if (-not $nvLatest) {
+        try {
+            $sess = New-Object -ComObject Microsoft.Update.Session
+            $search = $sess.CreateUpdateSearcher()
+            $results = $search.Search("Type='Driver' AND IsInstalled=0")
+            foreach ($u in $results.Updates) {
+                if ($u.Title -like '*NVIDIA*' -or $u.DriverManufacturer -like '*NVIDIA*') {
+                    $nvLatest = if ($u.DriverVersion) { $u.DriverVersion } else { $u.Title }
+                    $nvSource = 'windows_update'
+                    break
+                }
+            }
+        } catch {}
+    }
+
+    if ($nvLatest -and $nvLatest -ne $nvShort -and $nvLatest -ne $nvVer) { $nvUpdateAvail = $true }
+
+    $nv = @{
+        Name = $gpu.Name
+        InstalledVersion = $nvShort
+        WindowsVersion = $nvVer
+        DriverDate = if ($gpu.DriverDate) { $gpu.DriverDate.ToString('yyyy-MM-dd') } else { '' }
+        AdapterRAM_GB = [math]::Round($gpu.AdapterRAM / 1GB, 1)
+        LatestVersion = $nvLatest
+        UpdateAvailable = $nvUpdateAvail
+        UpdateSource = $nvSource
+    }
+}
+
+@{OldDrivers=$old;Problematic=$prob;NVIDIA=$nv} | ConvertTo-Json -Depth 3
+"""
+    try:
+        r = subprocess.run(
+            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=30
+        )
+        data = json.loads(r.stdout.strip() or "{}")
+        old = data.get("OldDrivers") or []
+        if isinstance(old, dict):
+            old = [old]
+        prob = data.get("Problematic") or []
+        if isinstance(prob, dict):
+            prob = [prob]
+        return {"old_drivers": old, "problematic_drivers": prob, "nvidia": data.get("NVIDIA")}
+    except Exception as e:
+        print(f"[DriverHealth] {e}")
+        return {"old_drivers": [], "problematic_drivers": [], "nvidia": None}
+
+
 def get_windows_update_drivers() -> dict:
     """
     Use Windows Update API via PowerShell to find available driver updates.
@@ -6975,9 +7082,10 @@ def dashboard_summary():
         "bios": get_bios_status,
         "credentials": get_credentials_network_health,
         "disk": get_disk_health,
+        "drivers": get_driver_health,
     }
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
         futs = {ex.submit(fn): name for name, fn in checks.items()}
         for fut in concurrent.futures.as_completed(futs, timeout=30):
             name = futs[fut]
@@ -7164,6 +7272,54 @@ def dashboard_summary():
                     "action_fn": "switchTab('disk')",
                 }
             )
+
+    # Driver health
+    drv = results.get("drivers", {})
+    prob_drivers = drv.get("problematic_drivers", [])
+    old_drivers = drv.get("old_drivers", [])
+    nv = drv.get("nvidia")
+    if prob_drivers:
+        names = ", ".join(d.get("DeviceName", "?")[:30] for d in prob_drivers[:3])
+        concerns.append(
+            {
+                "level": "critical",
+                "tab": "drivers",
+                "icon": "⚠",
+                "title": f"{len(prob_drivers)} device(s) with driver errors",
+                "detail": names,
+                "action": "View Driver Manager",
+                "action_fn": "switchTab('drivers')",
+            }
+        )
+    if len(old_drivers) > 3:
+        concerns.append(
+            {
+                "level": "warning",
+                "tab": "drivers",
+                "icon": "📦",
+                "title": f"{len(old_drivers)} third-party drivers are over 2 years old",
+                "detail": "Outdated drivers can cause BSODs and instability. Check Device Manager for updates.",
+                "action": "View Driver Manager",
+                "action_fn": "switchTab('drivers')",
+            }
+        )
+
+    # NVIDIA GPU driver update
+    if nv and nv.get("UpdateAvailable"):
+        installed = nv.get("InstalledVersion", "?")
+        latest = nv.get("LatestVersion", "?")
+        gpu_name = nv.get("Name", "NVIDIA GPU")
+        concerns.append(
+            {
+                "level": "warning",
+                "tab": "drivers",
+                "icon": "🎮",
+                "title": f"NVIDIA driver update available: {installed} → {latest}",
+                "detail": f"{gpu_name}. Open NVIDIA App or Windows Update to install.",
+                "action": "View Driver Manager",
+                "action_fn": "switchTab('drivers')",
+            }
+        )
 
     # Sort by level
     level_order = {"critical": 0, "warning": 1, "info": 2, "ok": 3}

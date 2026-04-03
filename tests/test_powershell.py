@@ -2269,3 +2269,123 @@ class TestWarrantyDataCommands:
         client.get("/api/warranty/data")
         cmd = m.call_args_list[2][0][0][-1]
         assert "41" in cmd
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# get_driver_health — driver age + NVIDIA update check
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestGetDriverHealth:
+    SAMPLE = json.dumps(
+        {
+            "OldDrivers": [
+                {"DeviceName": "Realtek Audio", "Provider": "Realtek", "Version": "6.0.1.1", "Date": "2022-03-15"},
+            ],
+            "Problematic": [
+                {"DeviceName": "Unknown Device", "ErrorCode": 28, "Status": "Error"},
+            ],
+            "NVIDIA": {
+                "Name": "NVIDIA GeForce RTX 4090",
+                "InstalledVersion": "565.79",
+                "WindowsVersion": "32.0.15.6579",
+                "DriverDate": "2024-11-01",
+                "AdapterRAM_GB": 24.0,
+                "LatestVersion": "572.16",
+                "UpdateAvailable": True,
+                "UpdateSource": "nvidia_app",
+            },
+        }
+    )
+
+    def test_happy_path_returns_all_keys(self, mocker):
+        _mock_run(mocker, stdout=self.SAMPLE)
+        result = wdm.get_driver_health()
+        assert "old_drivers" in result
+        assert "problematic_drivers" in result
+        assert "nvidia" in result
+
+    def test_old_drivers_parsed(self, mocker):
+        _mock_run(mocker, stdout=self.SAMPLE)
+        result = wdm.get_driver_health()
+        assert len(result["old_drivers"]) == 1
+        assert result["old_drivers"][0]["DeviceName"] == "Realtek Audio"
+
+    def test_problematic_drivers_parsed(self, mocker):
+        _mock_run(mocker, stdout=self.SAMPLE)
+        result = wdm.get_driver_health()
+        assert len(result["problematic_drivers"]) == 1
+        assert result["problematic_drivers"][0]["ErrorCode"] == 28
+
+    def test_nvidia_update_detected(self, mocker):
+        _mock_run(mocker, stdout=self.SAMPLE)
+        result = wdm.get_driver_health()
+        nv = result["nvidia"]
+        assert nv is not None
+        assert nv["UpdateAvailable"] is True
+        assert nv["InstalledVersion"] == "565.79"
+        assert nv["LatestVersion"] == "572.16"
+        assert nv["UpdateSource"] == "nvidia_app"
+
+    def test_no_nvidia_gpu_returns_none(self, mocker):
+        no_nv = json.dumps({"OldDrivers": [], "Problematic": [], "NVIDIA": None})
+        _mock_run(mocker, stdout=no_nv)
+        result = wdm.get_driver_health()
+        assert result["nvidia"] is None
+
+    def test_empty_output_returns_safe_defaults(self, mocker):
+        _mock_run(mocker, stdout="")
+        result = wdm.get_driver_health()
+        assert result["old_drivers"] == []
+        assert result["problematic_drivers"] == []
+        assert result["nvidia"] is None
+
+    def test_timeout_returns_safe_defaults(self, mocker):
+        _mock_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 30))
+        result = wdm.get_driver_health()
+        assert result["old_drivers"] == []
+        assert result["problematic_drivers"] == []
+
+    def test_single_old_driver_normalised_to_list(self, mocker):
+        single = json.dumps(
+            {
+                "OldDrivers": {"DeviceName": "Solo", "Provider": "X", "Version": "1.0", "Date": "2022-01-01"},
+                "Problematic": [],
+                "NVIDIA": None,
+            }
+        )
+        _mock_run(mocker, stdout=single)
+        result = wdm.get_driver_health()
+        assert isinstance(result["old_drivers"], list)
+        assert len(result["old_drivers"]) == 1
+
+    def test_command_queries_driver_date_cutoff(self, mocker):
+        m = _mock_run(mocker, stdout="{}")
+        wdm.get_driver_health()
+        cmd = m.call_args[0][0][-1]
+        assert "AddYears(-2)" in cmd
+
+    def test_command_queries_nvidia_gpu(self, mocker):
+        m = _mock_run(mocker, stdout="{}")
+        wdm.get_driver_health()
+        cmd = m.call_args[0][0][-1]
+        assert "NVIDIA" in cmd
+        assert "Win32_VideoController" in cmd
+
+    def test_command_checks_nvidia_app_registry(self, mocker):
+        m = _mock_run(mocker, stdout="{}")
+        wdm.get_driver_health()
+        cmd = m.call_args[0][0][-1]
+        assert "GFExperience" in cmd
+
+    def test_command_checks_windows_update_fallback(self, mocker):
+        m = _mock_run(mocker, stdout="{}")
+        wdm.get_driver_health()
+        cmd = m.call_args[0][0][-1]
+        assert "Microsoft.Update.Session" in cmd
+
+    def test_command_queries_configmanager_errors(self, mocker):
+        m = _mock_run(mocker, stdout="{}")
+        wdm.get_driver_health()
+        cmd = m.call_args[0][0][-1]
+        assert "ConfigManagerErrorCode" in cmd
