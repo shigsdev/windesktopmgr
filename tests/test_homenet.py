@@ -1,6 +1,7 @@
 """Tests for Home Network Management feature."""
 
 import json
+import subprocess
 from unittest.mock import MagicMock
 
 
@@ -1453,3 +1454,123 @@ class TestResolveNamesRoute:
         assert data["ok"] is True
         assert data["resolved"] == 1
         assert data["total_named"] == 1
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PowerShell Command Validation — homenet.py
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestArpScanCommand:
+    """Command-content and fallback tests for _arp_scan."""
+
+    def test_returns_list(self, mocker):
+        m = mocker.patch("homenet.subprocess.run")
+        m.return_value = MagicMock(stdout="[]", returncode=0, stderr="")
+        from homenet import _arp_scan
+
+        result = _arp_scan()
+        assert isinstance(result, list)
+
+    def test_command_uses_arp_a(self, mocker):
+        m = mocker.patch("homenet.subprocess.run")
+        m.return_value = MagicMock(stdout="[]", returncode=0, stderr="")
+        from homenet import _arp_scan
+
+        _arp_scan()
+        cmd = m.call_args[0][0][-1]
+        assert "arp" in cmd.lower()
+        assert "-a" in cmd
+
+    def test_command_parses_mac_ip_interface(self, mocker):
+        m = mocker.patch("homenet.subprocess.run")
+        m.return_value = MagicMock(stdout="[]", returncode=0, stderr="")
+        from homenet import _arp_scan
+
+        _arp_scan()
+        cmd = m.call_args[0][0][-1]
+        assert "Interface" in cmd
+        assert "IP" in cmd
+        assert "MAC" in cmd
+
+    def test_empty_output_returns_empty_list(self, mocker):
+        m = mocker.patch("homenet.subprocess.run")
+        m.return_value = MagicMock(stdout="", returncode=0, stderr="")
+        from homenet import _arp_scan
+
+        assert _arp_scan() == []
+
+    def test_single_dict_normalised_to_list(self, mocker):
+        single = json.dumps(
+            {"Interface": "192.168.1.1", "IP": "192.168.1.100", "MAC": "AA:BB:CC:DD:EE:FF", "Type": "dynamic"}
+        )
+        m = mocker.patch("homenet.subprocess.run")
+        m.return_value = MagicMock(stdout=single, returncode=0, stderr="")
+        from homenet import _arp_scan
+
+        result = _arp_scan()
+        assert isinstance(result, list)
+        assert len(result) == 1
+
+    def test_timeout_returns_empty_list(self, mocker):
+        mocker.patch("homenet.subprocess.run", side_effect=subprocess.TimeoutExpired("powershell", 15))
+        from homenet import _arp_scan
+
+        assert _arp_scan() == []
+
+
+class TestResolveNamesBatchCommands:
+    """Command-content tests for _resolve_names_batch PS phases."""
+
+    def test_dns_phase_uses_system_net_dns(self, mocker):
+        m = mocker.patch("homenet.subprocess.run")
+        m.return_value = MagicMock(stdout="[]", returncode=0, stderr="")
+        from homenet import _resolve_names_batch
+
+        _resolve_names_batch([{"ip": "192.168.1.100", "hostname": ""}])
+        dns_cmd = m.call_args_list[0][0][0][-1]
+        assert "Dns" in dns_cmd or "GetHostEntry" in dns_cmd
+
+    def test_dns_phase_includes_ip(self, mocker):
+        m = mocker.patch("homenet.subprocess.run")
+        m.return_value = MagicMock(stdout="[]", returncode=0, stderr="")
+        from homenet import _resolve_names_batch
+
+        _resolve_names_batch([{"ip": "192.168.1.55", "hostname": ""}])
+        dns_cmd = m.call_args_list[0][0][0][-1]
+        assert "192.168.1.55" in dns_cmd
+
+    def test_netbios_phase_uses_nbtstat(self, mocker):
+        m = mocker.patch("homenet.subprocess.run")
+        # DNS returns empty → triggers NetBIOS
+        m.return_value = MagicMock(stdout="[]", returncode=0, stderr="")
+        from homenet import _resolve_names_batch
+
+        _resolve_names_batch([{"ip": "192.168.1.100", "hostname": ""}])
+        all_cmds = [call[0][0][-1] for call in m.call_args_list]
+        assert any("nbtstat" in c for c in all_cmds)
+
+    def test_timeout_on_dns_phase_handled_gracefully(self, mocker):
+        mocker.patch("homenet.subprocess.run", side_effect=subprocess.TimeoutExpired("powershell", 60))
+        from homenet import _resolve_names_batch
+
+        result = _resolve_names_batch([{"ip": "192.168.1.100", "hostname": ""}])
+        assert isinstance(result, dict)
+
+    def test_skips_devices_with_existing_hostname(self, mocker):
+        m = mocker.patch("homenet.subprocess.run")
+        from homenet import _resolve_names_batch
+
+        result = _resolve_names_batch([{"ip": "192.168.1.100", "hostname": "MyPC"}])
+        m.assert_not_called()
+        assert result == {}
+
+    def test_wireless_ips_trigger_separate_phase(self, mocker):
+        m = mocker.patch("homenet.subprocess.run")
+        m.return_value = MagicMock(stdout="[]", returncode=0, stderr="")
+        from homenet import _resolve_names_batch
+
+        _resolve_names_batch([{"ip": "10.0.0.50", "hostname": ""}])
+        # Wireless IPs (10.x) skip DNS and go to wireless NetBIOS phase
+        all_cmds = [call[0][0][-1] for call in m.call_args_list]
+        assert any("10.0.0.50" in c for c in all_cmds)

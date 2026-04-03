@@ -1674,3 +1674,598 @@ class TestCheckDellBiosUpdate:
         m.side_effect = subprocess.TimeoutExpired("powershell", 60)
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["source"] == "unknown"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PowerShell Command Validation Tests — Phase 1: Static command-content gaps
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestGetDiskHealthIOCommand:
+    """Command-content tests for the IO sub-command (2nd subprocess call)."""
+
+    def _make_mock(self, mocker):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        main_out = json.dumps({"drives": [], "physical": []})
+        m.side_effect = [
+            type("R", (), {"stdout": main_out, "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
+        ]
+        return m
+
+    def test_io_command_uses_get_counter(self, mocker):
+        m = self._make_mock(mocker)
+        wdm.get_disk_health()
+        cmd = m.call_args_list[1][0][0][-1]
+        assert "Get-Counter" in cmd
+
+    def test_io_command_requests_read_and_write_bytes(self, mocker):
+        m = self._make_mock(mocker)
+        wdm.get_disk_health()
+        cmd = m.call_args_list[1][0][0][-1]
+        assert "Disk Read Bytes/sec" in cmd
+        assert "Disk Write Bytes/sec" in cmd
+
+
+class TestGetThermsFansCommand:
+    """Command-content test for fans sub-command (3rd subprocess call)."""
+
+    def _make_mock(self, mocker):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = [
+            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "{}", "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
+        ]
+        return m
+
+    def test_fans_command_uses_win32_fan(self, mocker):
+        m = self._make_mock(mocker)
+        wdm.get_thermals()
+        cmd = m.call_args_list[2][0][0][-1]
+        assert "Win32_Fan" in cmd
+
+
+class TestGetSystemTimelineCredCommand:
+    """Command-content tests for credential events query (5th subprocess call)."""
+
+    EMPTY = json.dumps([])
+
+    def _make_mock(self, mocker):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = [
+            type("R", (), {"stdout": self.EMPTY, "returncode": 0, "stderr": ""})(),  # bsod
+            type("R", (), {"stdout": self.EMPTY, "returncode": 0, "stderr": ""})(),  # updates
+            type("R", (), {"stdout": self.EMPTY, "returncode": 0, "stderr": ""})(),  # services
+            type("R", (), {"stdout": self.EMPTY, "returncode": 0, "stderr": ""})(),  # boot
+            type("R", (), {"stdout": self.EMPTY, "returncode": 0, "stderr": ""})(),  # cred events
+        ]
+        return m
+
+    def test_cred_command_queries_event_id_4625(self, mocker):
+        m = self._make_mock(mocker)
+        wdm.get_system_timeline()
+        cmd = m.call_args_list[4][0][0][-1]
+        assert "4625" in cmd
+
+    def test_cred_command_queries_security_log(self, mocker):
+        m = self._make_mock(mocker)
+        wdm.get_system_timeline()
+        cmd = m.call_args_list[4][0][0][-1]
+        assert "Security" in cmd
+
+
+class TestCheckDellBiosCommandContent:
+    """Command-content tests for the 4 subprocess calls in check_dell_bios_update."""
+
+    def _mock_run(self, mocker, tmp_path):
+        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = [
+            type("R", (), {"stdout": "9T46D14", "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "DCU_NOT_FOUND", "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "NO_BIOS_IN_WU", "returncode": 0, "stderr": ""})(),
+        ]
+        return m
+
+    def test_service_tag_command_uses_win32_bios(self, mocker, tmp_path):
+        m = self._mock_run(mocker, tmp_path)
+        wdm.check_dell_bios_update("XPS8960", "2.22.0")
+        cmd = m.call_args_list[0][0][0][-1]
+        assert "Win32_BIOS" in cmd or "SerialNumber" in cmd
+
+    def test_dcu_command_references_command_update(self, mocker, tmp_path):
+        m = self._mock_run(mocker, tmp_path)
+        wdm.check_dell_bios_update("XPS8960", "2.22.0")
+        cmd = m.call_args_list[1][0][0][-1]
+        assert "dcu-cli" in cmd.lower() or "CommandUpdate" in cmd
+
+    def test_catalog_command_references_dell_downloads(self, mocker, tmp_path):
+        m = self._mock_run(mocker, tmp_path)
+        wdm.check_dell_bios_update("XPS8960", "2.22.0")
+        cmd = m.call_args_list[2][0][0][-1]
+        assert "dell.com" in cmd.lower() or "CatalogPC" in cmd
+
+    def test_wu_command_searches_pending_updates(self, mocker, tmp_path):
+        m = self._mock_run(mocker, tmp_path)
+        wdm.check_dell_bios_update("XPS8960", "2.22.0")
+        cmd = m.call_args_list[3][0][0][-1]
+        assert "IsInstalled" in cmd or "BIOS" in cmd or "Firmware" in cmd
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 2: fix_fast_startup
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestFixFastStartup:
+    def test_disable_returns_ok_true(self, mocker):
+        _mock_run(mocker, stdout="OK:disabled")
+        result = wdm.fix_fast_startup(False)
+        assert result["ok"] is True
+        assert result["enabled"] is False
+
+    def test_enable_returns_ok_true(self, mocker):
+        _mock_run(mocker, stdout="OK:enabled")
+        result = wdm.fix_fast_startup(True)
+        assert result["ok"] is True
+        assert result["enabled"] is True
+
+    def test_disable_command_sets_value_zero(self, mocker):
+        m = _mock_run(mocker, stdout="OK:disabled")
+        wdm.fix_fast_startup(False)
+        cmd = m.call_args[0][0][-1]
+        assert "HiberbootEnabled" in cmd
+        assert "-Value 0" in cmd
+
+    def test_enable_command_sets_value_one(self, mocker):
+        m = _mock_run(mocker, stdout="OK:enabled")
+        wdm.fix_fast_startup(True)
+        cmd = m.call_args[0][0][-1]
+        assert "HiberbootEnabled" in cmd
+        assert "-Value 1" in cmd
+
+    def test_registry_path_correct(self, mocker):
+        m = _mock_run(mocker, stdout="OK:disabled")
+        wdm.fix_fast_startup(False)
+        cmd = m.call_args[0][0][-1]
+        assert "Session Manager\\Power" in cmd
+
+    def test_ps_error_returns_ok_false(self, mocker):
+        _mock_run(mocker, stdout="ERROR: Access denied")
+        result = wdm.fix_fast_startup(False)
+        assert result["ok"] is False
+
+    def test_timeout_returns_ok_false(self, mocker):
+        _mock_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 10))
+        result = wdm.fix_fast_startup(False)
+        assert result["ok"] is False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 3: Injection-risk functions
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestLookupViaWindowsProvider:
+    SAMPLE = json.dumps(
+        {
+            "Provider": "Microsoft-Windows-Kernel-Power",
+            "Id": 41,
+            "Description": "The system has rebooted without cleanly shutting down first.",
+            "Level": 2,
+            "Keywords": "0x8000000000000002",
+        }
+    )
+
+    def test_happy_path_returns_dict_with_required_keys(self, mocker):
+        _mock_run(mocker, stdout=self.SAMPLE)
+        result = wdm._lookup_via_windows_provider(41, "Microsoft-Windows-Kernel-Power")
+        assert result is not None
+        for key in ("source", "title", "detail", "fetched"):
+            assert key in result
+
+    def test_empty_output_returns_none(self, mocker):
+        _mock_run(mocker, stdout="")
+        result = wdm._lookup_via_windows_provider(41, "Kernel-Power")
+        assert result is None
+
+    def test_malformed_json_returns_none(self, mocker):
+        _mock_run(mocker, stdout="<error/>")
+        result = wdm._lookup_via_windows_provider(41, "Kernel-Power")
+        assert result is None
+
+    def test_timeout_returns_none(self, mocker):
+        _mock_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 20))
+        result = wdm._lookup_via_windows_provider(41, "Kernel-Power")
+        assert result is None
+
+    def test_command_contains_event_id(self, mocker):
+        m = _mock_run(mocker, stdout=self.SAMPLE)
+        wdm._lookup_via_windows_provider(41, "Kernel-Power")
+        cmd = m.call_args[0][0][-1]
+        assert "41" in cmd
+
+    def test_command_contains_sanitized_source(self, mocker):
+        m = _mock_run(mocker, stdout="")
+        wdm._lookup_via_windows_provider(41, "Kernel-Power")
+        cmd = m.call_args[0][0][-1]
+        assert "Kernel-Power" in cmd
+
+    def test_source_injection_semicolons_stripped(self, mocker):
+        """safe_source = re.sub(r"[^\\w \\-]", "", source) strips ; and \\ but keeps words."""
+        m = _mock_run(mocker, stdout="")
+        wdm._lookup_via_windows_provider(41, "Kernel;Drop-DB")
+        cmd = m.call_args[0][0][-1]
+        # Semicolons and special chars are stripped
+        assert ";" not in cmd
+        # Letters survive sanitization
+        assert "Kernel" in cmd
+
+    def test_empty_description_returns_none(self, mocker):
+        no_desc = json.dumps({"Provider": "SomeProvider", "Id": 41, "Description": "", "Level": 2, "Keywords": ""})
+        _mock_run(mocker, stdout=no_desc)
+        result = wdm._lookup_via_windows_provider(41, "SomeProvider")
+        assert result is None
+
+
+class TestLookupStartupViaFileinfo:
+    FILE_INFO = json.dumps(
+        {
+            "FileDescription": "Microsoft OneDrive",
+            "CompanyName": "Microsoft Corporation",
+            "ProductName": "Microsoft OneDrive",
+            "FileVersion": "25.001.0112.0001",
+            "FileName": "OneDrive.exe",
+        }
+    )
+
+    def test_happy_path_returns_enrichment(self, mocker):
+        _mock_run(mocker, stdout=self.FILE_INFO)
+        result = wdm._lookup_startup_via_fileinfo(
+            r'"C:\Program Files\Microsoft OneDrive\OneDrive.exe" /background', "OneDrive"
+        )
+        assert result is not None
+        assert result["publisher"] == "Microsoft Corporation"
+
+    def test_exe_path_injected_into_get_item(self, mocker):
+        m = _mock_run(mocker, stdout=self.FILE_INFO)
+        wdm._lookup_startup_via_fileinfo(r'"C:\Windows\system32\notepad.exe"', "Notepad")
+        cmd = m.call_args[0][0][-1]
+        assert "Get-Item" in cmd
+        assert "notepad.exe" in cmd.lower()
+
+    def test_no_exe_path_triggers_get_command(self, mocker):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = [
+            type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})(),
+        ]
+        result = wdm._lookup_startup_via_fileinfo("somename", "somename")
+        assert result is None
+        cmd = m.call_args_list[0][0][0][-1]
+        assert "Get-Command" in cmd
+
+    def test_empty_output_returns_none(self, mocker):
+        _mock_run(mocker, stdout="")
+        result = wdm._lookup_startup_via_fileinfo(r'"C:\Program Files\App\app.exe"', "App")
+        assert result is None
+
+    def test_timeout_returns_none(self, mocker):
+        _mock_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 10))
+        result = wdm._lookup_startup_via_fileinfo(r'"C:\Program Files\App\app.exe"', "App")
+        assert result is None
+
+    def test_empty_desc_and_company_returns_none(self, mocker):
+        empty = json.dumps(
+            {"FileDescription": "", "CompanyName": "", "ProductName": "", "FileVersion": "1.0", "FileName": "x.exe"}
+        )
+        _mock_run(mocker, stdout=empty)
+        result = wdm._lookup_startup_via_fileinfo(r'"C:\app.exe"', "App")
+        assert result is None
+
+
+class TestLookupProcessViaFileinfo:
+    FILE_INFO = json.dumps(
+        {
+            "FileDescription": "Google Chrome",
+            "CompanyName": "Google LLC",
+            "ProductName": "Google Chrome",
+            "FileVersion": "120.0.6099.130",
+        }
+    )
+
+    def test_happy_path_returns_enrichment(self, mocker):
+        _mock_run(mocker, stdout=self.FILE_INFO)
+        result = wdm._lookup_process_via_fileinfo("chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+        assert result is not None
+        assert result["publisher"] == "Google LLC"
+
+    def test_no_path_triggers_get_command(self, mocker):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = [
+            type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})(),
+        ]
+        result = wdm._lookup_process_via_fileinfo("unknownapp", "")
+        assert result is None
+        cmd = m.call_args_list[0][0][0][-1]
+        assert "Get-Command" in cmd
+
+    def test_get_item_command_contains_path(self, mocker):
+        m = _mock_run(mocker, stdout=self.FILE_INFO)
+        wdm._lookup_process_via_fileinfo("chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+        cmd = m.call_args[0][0][-1]
+        assert "Get-Item" in cmd
+        assert "chrome.exe" in cmd
+
+    def test_system_path_marks_safe_kill_false(self, mocker):
+        sys_info = json.dumps(
+            {
+                "FileDescription": "Windows Explorer",
+                "CompanyName": "Microsoft Corporation",
+                "ProductName": "Microsoft Windows",
+                "FileVersion": "10.0.26100.1",
+            }
+        )
+        _mock_run(mocker, stdout=sys_info)
+        result = wdm._lookup_process_via_fileinfo("explorer", r"C:\Windows\explorer.exe")
+        assert result is not None
+        assert result["safe_kill"] is False
+
+    def test_non_system_path_marks_safe_kill_true(self, mocker):
+        _mock_run(mocker, stdout=self.FILE_INFO)
+        result = wdm._lookup_process_via_fileinfo("chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+        assert result["safe_kill"] is True
+
+    def test_empty_desc_and_company_returns_none(self, mocker):
+        empty = json.dumps({"FileDescription": "", "CompanyName": "", "ProductName": "", "FileVersion": "1.0"})
+        _mock_run(mocker, stdout=empty)
+        result = wdm._lookup_process_via_fileinfo("mystery", r"C:\mystery.exe")
+        assert result is None
+
+    def test_timeout_returns_none(self, mocker):
+        _mock_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 8))
+        result = wdm._lookup_process_via_fileinfo("chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+        assert result is None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 4: Remediation command-content + fallback tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestRemediationCommands:
+    """Command-content and fallback tests for all 10 _rem_* functions."""
+
+    # ── flush_dns ─────────────────────────────────────────────────────────────
+
+    def test_flush_dns_command_uses_ipconfig(self, mocker):
+        m = _mock_run(mocker, stdout="", returncode=0)
+        wdm._rem_flush_dns()
+        cmd = m.call_args[0][0][-1]
+        assert "ipconfig" in cmd
+        assert "flushdns" in cmd
+
+    def test_flush_dns_ok_on_success(self, mocker):
+        _mock_run(mocker, stdout="", returncode=0)
+        assert wdm._rem_flush_dns()["ok"] is True
+
+    def test_flush_dns_fail_on_nonzero(self, mocker):
+        _mock_run(mocker, stdout="", returncode=1, stderr="failed")
+        assert wdm._rem_flush_dns()["ok"] is False
+
+    def test_flush_dns_timeout(self, mocker):
+        _mock_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 15))
+        assert wdm._rem_flush_dns()["ok"] is False
+
+    # ── reset_winsock ─────────────────────────────────────────────────────────
+
+    def test_reset_winsock_command_uses_netsh(self, mocker):
+        m = _mock_run(mocker, stdout="", returncode=0)
+        wdm._rem_reset_winsock()
+        cmd = m.call_args[0][0][-1]
+        assert "netsh" in cmd
+        assert "winsock" in cmd
+        assert "reset" in cmd
+
+    def test_reset_winsock_timeout(self, mocker):
+        _mock_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 30))
+        assert wdm._rem_reset_winsock()["ok"] is False
+
+    # ── reset_tcpip ───────────────────────────────────────────────────────────
+
+    def test_reset_tcpip_command_uses_netsh_tcp(self, mocker):
+        m = _mock_run(mocker, stdout="", returncode=0)
+        wdm._rem_reset_tcpip()
+        cmd = m.call_args[0][0][-1]
+        assert "netsh" in cmd
+        assert "tcp" in cmd
+
+    def test_reset_tcpip_ok_on_success(self, mocker):
+        _mock_run(mocker, stdout="", returncode=0)
+        assert wdm._rem_reset_tcpip()["ok"] is True
+
+    # ── clear_temp ────────────────────────────────────────────────────────────
+
+    def test_clear_temp_command_uses_remove_item(self, mocker):
+        m = _mock_run(mocker, stdout="Removed:5 Errors:0", returncode=0)
+        wdm._rem_clear_temp()
+        cmd = m.call_args[0][0][-1]
+        assert "Remove-Item" in cmd
+
+    def test_clear_temp_parses_removed_count(self, mocker):
+        _mock_run(mocker, stdout="Removed:42 Errors:3", returncode=0)
+        result = wdm._rem_clear_temp()
+        assert result["ok"] is True
+        assert "42" in result["message"]
+
+    def test_clear_temp_timeout(self, mocker):
+        _mock_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 120))
+        assert wdm._rem_clear_temp()["ok"] is False
+
+    # ── repair_image ──────────────────────────────────────────────────────────
+
+    def test_repair_image_command_uses_dism_and_sfc(self, mocker):
+        m = _mock_run(mocker, stdout="DISM_DONE SFC_DONE OK:True", returncode=0)
+        wdm._rem_repair_image()
+        cmd = m.call_args[0][0][-1]
+        assert "dism" in cmd.lower()
+        assert "sfc" in cmd.lower()
+
+    def test_repair_image_ok_true_on_success(self, mocker):
+        _mock_run(mocker, stdout="DISM_DONE SFC_DONE OK:True", returncode=0)
+        assert wdm._rem_repair_image()["ok"] is True
+
+    def test_repair_image_ok_false_on_failure(self, mocker):
+        _mock_run(mocker, stdout="DISM_DONE SFC_DONE OK:False", returncode=0)
+        assert wdm._rem_repair_image()["ok"] is False
+
+    # ── clear_wu_cache ────────────────────────────────────────────────────────
+
+    def test_clear_wu_cache_command_stops_wuauserv(self, mocker):
+        m = _mock_run(mocker, stdout="OK", returncode=0)
+        wdm._rem_clear_wu_cache()
+        cmd = m.call_args[0][0][-1]
+        assert "Stop-Service" in cmd
+        assert "wuauserv" in cmd
+
+    def test_clear_wu_cache_command_clears_softwaredistribution(self, mocker):
+        m = _mock_run(mocker, stdout="OK", returncode=0)
+        wdm._rem_clear_wu_cache()
+        cmd = m.call_args[0][0][-1]
+        assert "SoftwareDistribution" in cmd
+
+    def test_clear_wu_cache_ok_on_success(self, mocker):
+        _mock_run(mocker, stdout="OK", returncode=0)
+        assert wdm._rem_clear_wu_cache()["ok"] is True
+
+    def test_clear_wu_cache_error_string_returns_ok_false(self, mocker):
+        _mock_run(mocker, stdout="ERROR: service not found", returncode=0)
+        assert wdm._rem_clear_wu_cache()["ok"] is False
+
+    # ── restart_spooler ───────────────────────────────────────────────────────
+
+    def test_restart_spooler_command_stops_and_starts(self, mocker):
+        m = _mock_run(mocker, stdout="OK", returncode=0)
+        wdm._rem_restart_spooler()
+        cmd = m.call_args[0][0][-1]
+        assert "Stop-Service" in cmd
+        assert "Start-Service" in cmd
+        assert "Spooler" in cmd
+
+    def test_restart_spooler_ok_on_success(self, mocker):
+        _mock_run(mocker, stdout="OK", returncode=0)
+        assert wdm._rem_restart_spooler()["ok"] is True
+
+    # ── reset_network_adapter ─────────────────────────────────────────────────
+
+    def test_reset_adapter_command_uses_netadapter(self, mocker):
+        m = _mock_run(mocker, stdout="RESET:2", returncode=0)
+        wdm._rem_reset_network_adapter()
+        cmd = m.call_args[0][0][-1]
+        assert "Get-NetAdapter" in cmd
+        assert "Disable-NetAdapter" in cmd
+        assert "Enable-NetAdapter" in cmd
+
+    def test_reset_adapter_parses_count(self, mocker):
+        _mock_run(mocker, stdout="RESET:3", returncode=0)
+        result = wdm._rem_reset_network_adapter()
+        assert result["ok"] is True
+        assert "3" in result["message"]
+
+    def test_reset_adapter_zero_count_returns_ok_false(self, mocker):
+        _mock_run(mocker, stdout="RESET:0", returncode=0)
+        assert wdm._rem_reset_network_adapter()["ok"] is False
+
+    # ── clear_icon_cache ──────────────────────────────────────────────────────
+
+    def test_clear_icon_cache_command_stops_explorer(self, mocker):
+        m = _mock_run(mocker, stdout="OK", returncode=0)
+        wdm._rem_clear_icon_cache()
+        cmd = m.call_args[0][0][-1]
+        assert "explorer" in cmd.lower()
+        assert "IconCache" in cmd
+
+    def test_clear_icon_cache_ok_on_success(self, mocker):
+        _mock_run(mocker, stdout="OK", returncode=0)
+        assert wdm._rem_clear_icon_cache()["ok"] is True
+
+    # ── reboot_system ─────────────────────────────────────────────────────────
+
+    def test_reboot_command_uses_shutdown(self, mocker):
+        m = _mock_run(mocker, stdout="", returncode=0)
+        wdm._rem_reboot_system()
+        cmd = m.call_args[0][0][-1]
+        assert "shutdown" in cmd
+        assert "/r" in cmd
+
+    def test_reboot_ok_on_success(self, mocker):
+        _mock_run(mocker, stdout="", returncode=0)
+        assert wdm._rem_reboot_system()["ok"] is True
+
+    def test_reboot_fail_on_nonzero(self, mocker):
+        _mock_run(mocker, stdout="", returncode=1, stderr="permission denied")
+        assert wdm._rem_reboot_system()["ok"] is False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Phase 5: Warranty data command-content tests
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestWarrantyDataCommands:
+    CPU_OUT = json.dumps(
+        {
+            "CPUName": "Intel(R) Core(TM) i9-14900K",
+            "ProcessorId": "BFEBFBFF000B0671",
+            "SerialNumber": "N/A",
+            "DellServiceTag": "9T46D14",
+            "BIOSVersion": "2.23.0",
+            "BIOSDate": "2024-01-06",
+            "Manufacturer": "Dell Inc.",
+            "Model": "XPS 8960",
+        }
+    )
+    MCU_OUT = "0x010001B4"
+    COUNTS_OUT = json.dumps({"BSODs30Days": 2, "WHEAErrors": 0, "UnexpectedShutdowns": 1})
+
+    def _make_mock(self, mocker):
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = [
+            type("R", (), {"stdout": self.CPU_OUT, "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": self.MCU_OUT, "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": self.COUNTS_OUT, "returncode": 0, "stderr": ""})(),
+        ]
+        return m
+
+    def test_cpu_command_uses_win32_processor(self, mocker, client):
+        m = self._make_mock(mocker)
+        client.get("/api/warranty/data")
+        cmd = m.call_args_list[0][0][0][-1]
+        assert "Win32_Processor" in cmd
+
+    def test_cpu_command_collects_bios_info(self, mocker, client):
+        m = self._make_mock(mocker)
+        client.get("/api/warranty/data")
+        cmd = m.call_args_list[0][0][0][-1]
+        assert "Win32_BIOS" in cmd
+        assert "Win32_ComputerSystem" in cmd
+
+    def test_microcode_command_reads_registry(self, mocker, client):
+        m = self._make_mock(mocker)
+        client.get("/api/warranty/data")
+        cmd = m.call_args_list[1][0][0][-1]
+        assert "CentralProcessor" in cmd
+        assert "Update Revision" in cmd
+
+    def test_counts_command_queries_whea_logger(self, mocker, client):
+        m = self._make_mock(mocker)
+        client.get("/api/warranty/data")
+        cmd = m.call_args_list[2][0][0][-1]
+        assert "WHEA-Logger" in cmd
+
+    def test_counts_command_queries_kernel_power_41(self, mocker, client):
+        m = self._make_mock(mocker)
+        client.get("/api/warranty/data")
+        cmd = m.call_args_list[2][0][0][-1]
+        assert "41" in cmd
