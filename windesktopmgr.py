@@ -2056,14 +2056,26 @@ def summarize_drivers(results: list) -> dict:
     if updates:
         cats = Counter(r["category"] for r in updates)
         top = cats.most_common(1)[0][0]
+        nvidia_updates = [r for r in updates if r.get("download_url", "").startswith("nvidia-app:")]
+        wu_updates_list = [r for r in updates if not r.get("download_url", "").startswith("nvidia-app:")]
+        # Build context-aware advice
+        if nvidia_updates and wu_updates_list:
+            advice = f"{len(nvidia_updates)} via NVIDIA App, {len(wu_updates_list)} via Windows Update."
+            actions.append("Update via NVIDIA App")
+            actions.append("Open Windows Update")
+        elif nvidia_updates:
+            advice = "Open NVIDIA App to install the latest driver."
+            actions.append("Update via NVIDIA App")
+        else:
+            advice = "Open Windows Update to install pending driver updates."
+            actions.append("Open Windows Update")
         insights.append(
             _insight(
                 "warning",
                 f"{len(updates)} driver update(s) available — most in {top}.",
-                "Open Windows Update to install pending driver updates.",
+                advice,
             )
         )
-        actions.append("Open Windows Update")
         critical = [
             r for r in updates if r["category"] in ("Display", "Network", "Chipset") and not r.get("low_priority")
         ]

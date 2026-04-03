@@ -8,7 +8,7 @@ import windesktopmgr as wdm
 # ── Helper builders ────────────────────────────────────────────────────────────
 
 
-def _driver(name, status, category="Display", low_priority=False):
+def _driver(name, status, category="Display", low_priority=False, download_url=""):
     return {
         "name": name,
         "status": status,
@@ -19,7 +19,7 @@ def _driver(name, status, category="Display", low_priority=False):
         "manufacturer": "",
         "latest_version": None,
         "latest_date": None,
-        "download_url": "",
+        "download_url": download_url,
         "category_note": "",
     }
 
@@ -149,6 +149,27 @@ class TestSummarizeDrivers:
         result = wdm.summarize_drivers(drivers)
         assert "1" in result["headline"]  # at least mentions count
         assert "up to date" not in result["headline"].lower() or "unknown" in result["headline"]
+
+    def test_nvidia_only_updates_show_nvidia_action(self):
+        drivers = [_driver("NVIDIA RTX 4060 Ti", "update_available", "Display", download_url="nvidia-app:")]
+        result = wdm.summarize_drivers(drivers)
+        assert "Update via NVIDIA App" in result["actions"]
+        assert "Open Windows Update" not in result["actions"]
+
+    def test_wu_only_updates_show_wu_action(self):
+        drivers = [_driver("HP Audio", "update_available", "Audio", download_url="ms-settings:windowsupdate")]
+        result = wdm.summarize_drivers(drivers)
+        assert "Open Windows Update" in result["actions"]
+        assert "Update via NVIDIA App" not in result["actions"]
+
+    def test_mixed_nvidia_and_wu_updates_show_both_actions(self):
+        drivers = [
+            _driver("NVIDIA RTX 4060 Ti", "update_available", "Display", download_url="nvidia-app:"),
+            _driver("HP Audio", "update_available", "Audio", download_url="ms-settings:windowsupdate"),
+        ]
+        result = wdm.summarize_drivers(drivers)
+        assert "Update via NVIDIA App" in result["actions"]
+        assert "Open Windows Update" in result["actions"]
 
 
 # ══════════════════════════════════════════════════════════════════════════════

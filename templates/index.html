@@ -569,6 +569,13 @@
     border: 1px solid var(--cyan); color: var(--cyan);
     background: #00d4ff11; cursor: default;
   }
+  a.action-link {
+    cursor: pointer; text-decoration: none;
+    transition: background .15s, color .15s;
+  }
+  a.action-link:hover {
+    background: var(--cyan); color: var(--bg);
+  }
 
   </style>
 </head>
@@ -1225,7 +1232,7 @@ function buildDriverCard(d, i) {
   const isNvidiaApp = d.download_url && d.download_url.startsWith("nvidia-app:");
   const dlBtn = (!isLow && d.status==="update_available" && d.download_url)
     ? (isNvidiaApp
-        ? `<div class="btn-dl" style="cursor:default;text-align:center">🟢 Update via NVIDIA App</div>`
+        ? `<a class="btn-dl" href="https://www.nvidia.com/en-us/software/nvidia-app/" target="_blank">🟢 Update via NVIDIA App</a>`
         : `<a class="btn-dl" href="${escHtml(d.download_url)}" target="_blank">↓ Download Update</a>`)
     : "";
   const latestBlock = d.latest_version
@@ -1474,7 +1481,11 @@ function renderSummary(containerId, summary) {
     return `<div class="insight-row"><span class="insight-dot dot-${ins.level}">●</span><span>${ins.text}${action}</span></div>`;
   }).join("");
   const chipsHtml = (summary.actions || []).length
-    ? `<div class="summary-actions">${(summary.actions||[]).map(a=>`<span class="action-chip">${a}</span>`).join("")}</div>` : "";
+    ? `<div class="summary-actions">${(summary.actions||[]).map(a=>{
+      if (a === "Open Windows Update") return `<a class="action-chip action-link" href="ms-settings:windowsupdate" target="_blank">${a}</a>`;
+      if (a === "Update via NVIDIA App") return `<a class="action-chip action-link" href="https://www.nvidia.com/en-us/software/nvidia-app/" target="_blank">${a}</a>`;
+      return `<span class="action-chip">${a}</span>`;
+    }).join("")}</div>` : "";
   el.className = `summary-banner loaded s-${s}`;
   el.innerHTML = `
     <div class="summary-headline">
