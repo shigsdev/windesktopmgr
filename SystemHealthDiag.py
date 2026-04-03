@@ -120,6 +120,24 @@ def ps_events(log_name, provider=None, event_id=None, level=None, max_events=20)
     return result if isinstance(result, list) else []
 
 
+def _count_recent_events(events, days=30):
+    """Count events that occurred within the last N days."""
+    cutoff = datetime.now() - timedelta(days=days)
+    count = 0
+    for ev in events:
+        date_str = ev.get("Date", "")
+        if date_str:
+            try:
+                ev_date = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
+                if ev_date > cutoff:
+                    count += 1
+            except ValueError:
+                count += 1  # can't parse date, assume recent
+        else:
+            count += 1  # no date, assume recent
+    return count
+
+
 def cprint(msg, color="cyan"):
     """Print colored console output."""
     colors = {
@@ -146,7 +164,7 @@ def normalize_list(data, key):
 # ============================================================
 def collect_system_info():
     """Section 1: Collect system information via WMI."""
-    cprint("[1/10] Collecting System Information...", "yellow")
+    cprint("[1/13] Collecting System Information...", "yellow")
     sys_info_cmd = """
 $OS = Get-CimInstance Win32_OperatingSystem
 $CS = Get-CimInstance Win32_ComputerSystem
@@ -183,7 +201,7 @@ def check_intel_cpu(sys_info):
     Returns:
         tuple: (intel_check dict, critical list, warnings list, info list)
     """
-    cprint("[2/10] Checking Intel CPU Microcode & Known Issues...", "yellow")
+    cprint("[2/13] Checking Intel CPU Microcode & Known Issues...", "yellow")
 
     critical = []
     warnings = []
@@ -266,7 +284,7 @@ def analyze_bsod():
     Returns:
         tuple: (bsod_data dict, critical list, warnings list, info list)
     """
-    cprint("[3/10] Analyzing BSOD Minidump Files...", "yellow")
+    cprint("[3/13] Analyzing BSOD Minidump Files...", "yellow")
 
     critical = []
     warnings = []
@@ -325,10 +343,15 @@ def analyze_bsod():
         {"Date": e.get("Date", ""), "Message": safe_truncate(e.get("Message", ""), 300)} for e in kp_events[:10]
     ]
 
-    if bsod_data["UnexpectedShutdowns"] > 5:
+    recent_kp = _count_recent_events(kp_events)
+    if recent_kp > 5:
         critical.append(
-            f"{bsod_data['UnexpectedShutdowns']} unexpected shutdowns (Kernel-Power 41) detected. Combined with BSODs, this points to a hardware or power delivery issue."
+            f"{recent_kp} unexpected shutdowns (Kernel-Power 41) in the last 30 days. Combined with BSODs, this points to a hardware or power delivery issue."
         )
+    elif recent_kp > 0:
+        warnings.append(f"{recent_kp} unexpected shutdown(s) (Kernel-Power 41) in the last 30 days.")
+    elif len(kp_events) > 0:
+        info.append(f"{len(kp_events)} historical unexpected shutdown(s) found (all older than 30 days).")
 
     return bsod_data, critical, warnings, info
 
@@ -339,7 +362,7 @@ def scan_event_logs():
     Returns:
         tuple: (event_data dict, critical list, warnings list, info list)
     """
-    cprint("[4/10] Scanning Windows Event Logs...", "yellow")
+    cprint("[4/13] Scanning Windows Event Logs...", "yellow")
 
     critical = []
     warnings = []
@@ -353,9 +376,14 @@ def scan_event_logs():
     whea_events = ps_events("System", provider="Microsoft-Windows-WHEA-Logger", max_events=50)
     event_data["WHEAErrors"] = whea_events
 
-    if len(whea_events) > 0:
+    recent_whea = _count_recent_events(whea_events)
+    if recent_whea > 0:
         critical.append(
-            f"{len(whea_events)} WHEA (hardware error) events found. This strongly indicates a hardware problem - likely CPU, RAM, or motherboard. With an i9-14900K, this is a hallmark of the Intel voltage degradation issue."
+            f"{recent_whea} WHEA (hardware error) events in the last 30 days. This strongly indicates a hardware problem - likely CPU, RAM, or motherboard. With an i9-14900K, this is a hallmark of the Intel voltage degradation issue."
+        )
+    elif len(whea_events) > 0:
+        info.append(
+            f"{len(whea_events)} historical WHEA error(s) found (all older than 30 days). No recent hardware errors detected."
         )
 
     return event_data, critical, warnings, info
@@ -367,7 +395,7 @@ def analyze_drivers():
     Returns:
         tuple: (driver_data dict, critical list, warnings list, info list)
     """
-    cprint("[5/10] Analyzing Installed Drivers...", "yellow")
+    cprint("[5/13] Analyzing Installed Drivers...", "yellow")
 
     critical = []
     warnings = []
@@ -417,7 +445,7 @@ def check_disk_health():
     Returns:
         tuple: (disk_data dict, critical list, warnings list, info list)
     """
-    cprint("[6/10] Checking Disk Health...", "yellow")
+    cprint("[6/13] Checking Disk Health...", "yellow")
 
     critical = []
     warnings = []
@@ -460,19 +488,24 @@ foreach ($v in Get-Volume | Where-Object { $_.DriveLetter -and $_.DriveType -eq 
             )
 
     for v in disk_data["Volumes"]:
-        if str(v.get("DriveLetter", "")).startswith("C") and v.get("PercentFree", 100) < 10:
-            warnings.append(f"C: drive is critically low on space ({v.get('PercentFree')}% free).")
+        drive = v.get("DriveLetter", "?")
+        pct_free = v.get("PercentFree", 100)
+        free_gb = v.get("Free_GB", 999)
+        if pct_free < 5:
+            critical.append(f"Drive {drive} is critically low on space ({pct_free}% free, {free_gb} GB remaining).")
+        elif pct_free < 10:
+            warnings.append(f"Drive {drive} is low on space ({pct_free}% free, {free_gb} GB remaining).")
 
     return disk_data, critical, warnings, info
 
 
 def analyze_memory():
-    """Section 7: Analyze memory (RAM) configuration.
+    """Section 7: Analyze memory (RAM) configuration and current usage.
 
     Returns:
         tuple: (mem_data dict, critical list, warnings list, info list)
     """
-    cprint("[7/10] Analyzing Memory Configuration...", "yellow")
+    cprint("[7/13] Analyzing Memory Configuration & Usage...", "yellow")
 
     critical = []
     warnings = []
@@ -485,7 +518,12 @@ foreach ($s in Get-CimInstance Win32_PhysicalMemory) {
     $speeds += $s.ConfiguredClockSpeed; $sizes += $s.Capacity
 }
 $cs = Get-CimInstance Win32_ComputerSystem
-@{Sticks=$sticks;TotalGB=[math]::Round($cs.TotalPhysicalMemory/1GB,1);Speeds=$speeds;Sizes=$sizes} | ConvertTo-Json -Depth 4
+$os = Get-CimInstance Win32_OperatingSystem
+$totalMB = [math]::Round($os.TotalVisibleMemorySize/1024,0)
+$freeMB = [math]::Round($os.FreePhysicalMemory/1024,0)
+$usedMB = $totalMB - $freeMB
+$pctUsed = if($totalMB -gt 0){[math]::Round(($usedMB/$totalMB)*100,1)}else{0}
+@{Sticks=$sticks;TotalGB=[math]::Round($cs.TotalPhysicalMemory/1GB,1);Speeds=$speeds;Sizes=$sizes;UsageTotalMB=$totalMB;UsageFreeMB=$freeMB;UsageUsedMB=$usedMB;UsagePctUsed=$pctUsed} | ConvertTo-Json -Depth 4
 """
     mem_raw = ps(mem_cmd, as_json=True) or {}
     mem_data = {
@@ -493,6 +531,10 @@ $cs = Get-CimInstance Win32_ComputerSystem
         "TotalGB": mem_raw.get("TotalGB", 0),
         "XMPWarning": False,
         "MismatchWarning": False,
+        "UsageTotalMB": mem_raw.get("UsageTotalMB", 0),
+        "UsageFreeMB": mem_raw.get("UsageFreeMB", 0),
+        "UsageUsedMB": mem_raw.get("UsageUsedMB", 0),
+        "UsagePctUsed": mem_raw.get("UsagePctUsed", 0),
     }
 
     speeds = mem_raw.get("Speeds", []) or []
@@ -513,6 +555,18 @@ $cs = Get-CimInstance Win32_ComputerSystem
             f"RAM speed ({speeds[0]} MHz) exceeds Intel official spec for 14th Gen (5600 MHz DDR5). Try disabling XMP in BIOS."
         )
 
+    pct_used = mem_data["UsagePctUsed"]
+    free_mb = mem_data["UsageFreeMB"]
+    free_gb = round(free_mb / 1024, 1) if free_mb else 0
+    if pct_used >= 95:
+        critical.append(
+            f"RAM usage critically high at {pct_used}% ({free_gb} GB free). System may become unresponsive."
+        )
+    elif pct_used >= 85:
+        warnings.append(f"RAM usage elevated at {pct_used}% ({free_gb} GB free). Consider closing unused applications.")
+    elif pct_used > 0:
+        info.append(f"RAM usage at {pct_used}% ({free_gb} GB free).")
+
     return mem_data, critical, warnings, info
 
 
@@ -522,7 +576,7 @@ def check_thermals():
     Returns:
         tuple: (thermal_data dict, critical list, warnings list, info list)
     """
-    cprint("[8/10] Checking Thermal & Power Status...", "yellow")
+    cprint("[8/13] Checking Thermal & Power Status...", "yellow")
 
     critical = []
     warnings = []
@@ -568,7 +622,7 @@ def check_updates():
     Returns:
         tuple: (update_history list, critical list, warnings list, info list)
     """
-    cprint("[9/10] Checking System Integrity & Updates...", "yellow")
+    cprint("[9/13] Checking System Integrity & Updates...", "yellow")
 
     critical = []
     warnings = []
@@ -604,10 +658,143 @@ def collect_reliability():
     Returns:
         tuple: (app_crashes list, app_hangs list)
     """
-    cprint("[10/10] Collecting Reliability Data...", "yellow")
+    cprint("[10/13] Collecting Reliability Data...", "yellow")
     app_crashes = ps_events("Application", provider="Application Error", event_id=1000, max_events=20)
     app_hangs = ps_events("Application", provider="Application Hang", event_id=1002, max_events=20)
     return app_crashes, app_hangs
+
+
+def check_network_health():
+    """Section 11: Check network adapter status and connectivity.
+
+    Returns:
+        tuple: (network_data dict, critical list, warnings list, info list)
+    """
+    cprint("[11/13] Checking Network Health...", "yellow")
+
+    critical = []
+    warnings = []
+    info = []
+
+    net_cmd = """
+$adapters = @()
+foreach ($a in Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -ne 'Not Present' }) {
+    $adapters += @{
+        Name=$a.Name; InterfaceDescription=$a.InterfaceDescription
+        Status="$($a.Status)"; LinkSpeed="$($a.LinkSpeed)"
+        MacAddress=$a.MacAddress
+    }
+}
+$dns = $true; $dnsMs = 0
+try {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    [System.Net.Dns]::GetHostAddresses('dns.google') | Out-Null
+    $sw.Stop(); $dnsMs = $sw.ElapsedMilliseconds
+} catch { $dns = $false }
+$internet = $false; $latencyMs = 0
+try {
+    $r = Test-Connection -ComputerName 8.8.8.8 -Count 2 -Quiet -ErrorAction Stop
+    $internet = $r
+    if ($r) {
+        $p = Test-Connection -ComputerName 8.8.8.8 -Count 2 -ErrorAction Stop
+        $latencyMs = [math]::Round(($p | Measure-Object -Property Latency -Average).Average, 0)
+    }
+} catch { $internet = $false }
+@{Adapters=$adapters;DNSWorking=$dns;DNSLatencyMs=$dnsMs;InternetReachable=$internet;PingLatencyMs=$latencyMs} | ConvertTo-Json -Depth 3
+"""
+    net_raw = ps(net_cmd, as_json=True) or {}
+    network_data = {
+        "Adapters": normalize_list(net_raw, "Adapters"),
+        "DNSWorking": net_raw.get("DNSWorking", False),
+        "DNSLatencyMs": net_raw.get("DNSLatencyMs", 0),
+        "InternetReachable": net_raw.get("InternetReachable", False),
+        "PingLatencyMs": net_raw.get("PingLatencyMs", 0),
+    }
+
+    up_adapters = [a for a in network_data["Adapters"] if a.get("Status") == "Up"]
+    down_adapters = [a for a in network_data["Adapters"] if a.get("Status") not in ("Up", "Disabled")]
+
+    if not up_adapters:
+        critical.append("No active network adapters found. Network connectivity is unavailable.")
+    if down_adapters:
+        names = ", ".join(a.get("Name", "Unknown") for a in down_adapters)
+        warnings.append(f"Network adapter(s) not connected: {names}.")
+
+    if not network_data["InternetReachable"]:
+        critical.append("Internet is unreachable (ping to 8.8.8.8 failed).")
+    elif network_data["PingLatencyMs"] > 200:
+        warnings.append(f"Internet latency is high ({network_data['PingLatencyMs']} ms).")
+
+    if not network_data["DNSWorking"]:
+        critical.append("DNS resolution is failing. Cannot resolve hostnames.")
+    elif network_data["DNSLatencyMs"] > 500:
+        warnings.append(f"DNS resolution is slow ({network_data['DNSLatencyMs']} ms).")
+
+    if network_data["InternetReachable"] and network_data["DNSWorking"]:
+        info.append(
+            f"Network healthy: internet reachable ({network_data['PingLatencyMs']} ms), DNS working ({network_data['DNSLatencyMs']} ms)."
+        )
+
+    return network_data, critical, warnings, info
+
+
+def check_cpu_utilization():
+    """Section 12: Check current CPU utilization.
+
+    Returns:
+        tuple: (cpu_data dict, critical list, warnings list, info list)
+    """
+    cprint("[12/13] Checking CPU Utilization...", "yellow")
+
+    critical = []
+    warnings = []
+    info = []
+
+    cpu_cmd = """
+$samples = @()
+for ($i = 0; $i -lt 3; $i++) {
+    $c = (Get-Counter '\\Processor(_Total)\\% Processor Time' -SampleInterval 1 -MaxSamples 1 -EA SilentlyContinue).CounterSamples[0].CookedValue
+    $samples += [math]::Round($c, 1)
+}
+$avg = [math]::Round(($samples | Measure-Object -Average).Average, 1)
+$topProcs = Get-Process -ErrorAction SilentlyContinue |
+    Sort-Object CPU -Descending |
+    Select-Object -First 5 ProcessName, @{N='CPU_Seconds';E={[math]::Round($_.CPU,1)}}, @{N='MemMB';E={[math]::Round($_.WorkingSet64/1MB,1)}} |
+    ConvertTo-Json -Depth 2
+$queueCmd = (Get-Counter '\\System\\Processor Queue Length' -EA SilentlyContinue).CounterSamples[0].CookedValue
+@{AvgCpuPct=$avg;Samples=$samples;TopProcesses=$(if($topProcs){$topProcs}else{'[]'});ProcessorQueueLength=$queueCmd} | ConvertTo-Json -Depth 3
+"""
+    cpu_raw = ps(cpu_cmd, as_json=True) or {}
+    top_procs = cpu_raw.get("TopProcesses", [])
+    if isinstance(top_procs, str):
+        try:
+            top_procs = json.loads(top_procs)
+        except (json.JSONDecodeError, ValueError):
+            top_procs = []
+    if isinstance(top_procs, dict):
+        top_procs = [top_procs]
+
+    cpu_data = {
+        "AvgCpuPct": cpu_raw.get("AvgCpuPct", 0),
+        "Samples": cpu_raw.get("Samples", []),
+        "TopProcesses": top_procs,
+        "ProcessorQueueLength": cpu_raw.get("ProcessorQueueLength", 0),
+    }
+
+    avg = cpu_data["AvgCpuPct"]
+    queue = cpu_data["ProcessorQueueLength"]
+
+    if avg >= 95:
+        critical.append(f"CPU usage critically high at {avg}%. System may be unresponsive.")
+    elif avg >= 80:
+        warnings.append(f"CPU usage elevated at {avg}%. Check for runaway processes.")
+    elif avg > 0:
+        info.append(f"CPU usage at {avg}%.")
+
+    if isinstance(queue, (int, float)) and queue > 10:
+        warnings.append(f"Processor queue length is {int(queue)} (>10 indicates CPU bottleneck).")
+
+    return cpu_data, critical, warnings, info
 
 
 # ============================================================
@@ -914,6 +1101,8 @@ def build_html_report(
     score_label,
     score_color,
     warranty=None,
+    network_data=None,
+    cpu_data=None,
 ):
     """Assemble the full HTML diagnostic report.
 
@@ -1013,6 +1202,26 @@ def build_html_report(
         thermal_html += f'<div class="thermal-card"><span class="stat-label">{he(str(t.get("Zone", "")))}</span><span class="stat-val">{t.get("TempC", "")}C / {t.get("TempF", "")}F</span></div>'
     thermal_html += "</div>"
 
+    # Network section
+    net_data = network_data or {}
+    net_adapters_html = ""
+    if net_data.get("Adapters"):
+        net_adapters_html = '<div class="subsection"><h3>Network Adapters</h3><div class="table-wrap"><table><thead><tr><th>Name</th><th>Description</th><th>Status</th><th>Link Speed</th></tr></thead><tbody>'
+        for a in net_data["Adapters"]:
+            status = a.get("Status", "Unknown")
+            cls = ' class="err-row"' if status not in ("Up", "Disabled") else ""
+            net_adapters_html += f"<tr{cls}><td>{he(str(a.get('Name', '')))}</td><td>{he(str(a.get('InterfaceDescription', '')))}</td><td>{he(status)}</td><td>{he(str(a.get('LinkSpeed', '')))}</td></tr>"
+        net_adapters_html += "</tbody></table></div></div>"
+
+    # CPU section
+    cpu_info = cpu_data or {}
+    cpu_top_html = ""
+    if cpu_info.get("TopProcesses"):
+        cpu_top_html = '<div class="subsection"><h3>Top Processes by CPU Time</h3><div class="table-wrap"><table><thead><tr><th>Process</th><th>CPU (seconds)</th><th>Memory (MB)</th></tr></thead><tbody>'
+        for p in cpu_info["TopProcesses"]:
+            cpu_top_html += f"<tr><td>{he(str(p.get('ProcessName', '')))}</td><td>{p.get('CPU_Seconds', 0)}</td><td>{p.get('MemMB', 0)}</td></tr>"
+        cpu_top_html += "</tbody></table></div></div>"
+
     # Updates table
     update_html = ""
     if update_history:
@@ -1057,7 +1266,7 @@ def build_html_report(
         </div>
         <div class="score-details">
             <h2>Overall System Health</h2>
-            <p>Based on analysis of event logs, drivers, hardware status, BSOD history, and Intel CPU microcode.</p>
+            <p>Based on analysis of event logs, drivers, hardware status, BSOD history, Intel CPU microcode, memory usage, network health, and CPU utilization.</p>
             <div class="score-counts">
                 <span class="cnt-crit">{len(critical)} Critical</span>
                 <span class="cnt-warn">{len(warnings)} Warnings</span>
@@ -1115,6 +1324,8 @@ def build_html_report(
         sys_grid(
             [
                 ("Total RAM", f"{mem_data['TotalGB']} GB"),
+                ("Used", f"{round(mem_data.get('UsageUsedMB', 0) / 1024, 1)} GB ({mem_data.get('UsagePctUsed', 0)}%)"),
+                ("Free", f"{round(mem_data.get('UsageFreeMB', 0) / 1024, 1)} GB"),
                 ("Sticks Installed", len(mem_data["Sticks"])),
                 ("Speed Mismatch", "YES" if mem_data["MismatchWarning"] else "No"),
                 ("XMP Concern", "YES - High Speed" if mem_data["XMPWarning"] else "No"),
@@ -1127,6 +1338,33 @@ def build_html_report(
     <div class="section"><div class="section-header"><div class="section-icon">&#x1F321;</div><h2>Thermal and Power</h2></div><div class="section-body">{
         thermal_html
     }</div></div>
+
+    <div class="section"><div class="section-header"><div class="section-icon">&#x1F310;</div><h2>Network Health</h2></div><div class="section-body">
+        <div class="subsection">{
+        sys_grid(
+            [
+                ("Internet", "Reachable" if net_data.get("InternetReachable") else "UNREACHABLE"),
+                ("Ping Latency", f"{net_data.get('PingLatencyMs', 0)} ms"),
+                ("DNS Resolution", "Working" if net_data.get("DNSWorking") else "FAILING"),
+                ("DNS Latency", f"{net_data.get('DNSLatencyMs', 0)} ms"),
+                ("Active Adapters", len([a for a in net_data.get("Adapters", []) if a.get("Status") == "Up"])),
+            ]
+        )
+    }</div>
+        {net_adapters_html}
+    </div></div>
+
+    <div class="section"><div class="section-header"><div class="section-icon">&#x1F4CA;</div><h2>CPU Utilization</h2></div><div class="section-body">
+        <div class="subsection">{
+        sys_grid(
+            [
+                ("Average CPU", f"{cpu_info.get('AvgCpuPct', 0)}%"),
+                ("Processor Queue", cpu_info.get("ProcessorQueueLength", 0)),
+            ]
+        )
+    }</div>
+        {cpu_top_html}
+    </div></div>
 
     <div class="section"><div class="section-header"><div class="section-icon">&#x1F4BB;</div><h2>System Information</h2></div><div class="section-body">{
         sys_grid(
@@ -1499,6 +1737,20 @@ def main():
     # Section 10: Reliability
     app_crashes, app_hangs = collect_reliability()
 
+    # Section 11: Network Health
+    network_data, crit, warn, inf = check_network_health()
+    all_critical.extend(crit)
+    all_warnings.extend(warn)
+    all_info.extend(inf)
+
+    # Section 12: CPU Utilization
+    cpu_data, crit, warn, inf = check_cpu_utilization()
+    all_critical.extend(crit)
+    all_warnings.extend(warn)
+    all_info.extend(inf)
+
+    cprint("[13/13] Running WinDesktopMgr Integration Tests...", "yellow")
+
     # Warranty readiness data
     warranty = collect_warranty_data(sys_info, intel_check, bsod_data, event_data)
 
@@ -1527,6 +1779,8 @@ def main():
         score_label,
         score_color,
         warranty=warranty,
+        network_data=network_data,
+        cpu_data=cpu_data,
     )
 
     with open(report_path, "w", encoding="utf-8") as f:
@@ -1564,9 +1818,7 @@ def main():
     except:
         pass
 
-    # Section 11: WinDesktopMgr Integration Tests
-    print()
-    cprint("Running WinDesktopMgr integration tests...", "cyan")
+    # Section 13: WinDesktopMgr Integration Tests
     test_result = run_windesktopmgr_tests()
     if test_result["passed"]:
         cprint(f"  ✓ All {test_result['total']} integration tests passed", "green")

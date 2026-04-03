@@ -10,6 +10,7 @@ All subprocess / PowerShell / winreg / ctypes calls are mocked — no Windows de
 import os
 import re
 import sys
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
@@ -90,6 +91,46 @@ class TestNormalizeList:
     def test_empty_list_unchanged(self):
         data = {"items": []}
         assert shd.normalize_list(data, "items") == []
+
+
+# ===========================================================================
+# TEST CLASS: _count_recent_events
+# ===========================================================================
+class TestCountRecentEvents:
+    """Test the time-weighted event counting helper."""
+
+    def test_all_recent_events_counted(self):
+        today = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        events = [{"Date": today}, {"Date": today}]
+        assert shd._count_recent_events(events) == 2
+
+    def test_old_events_excluded(self):
+        old_date = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d %H:%M:%S")
+        events = [{"Date": old_date}, {"Date": old_date}]
+        assert shd._count_recent_events(events) == 0
+
+    def test_mixed_old_and_recent(self):
+        recent = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        old = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d %H:%M:%S")
+        events = [{"Date": recent}, {"Date": old}, {"Date": recent}]
+        assert shd._count_recent_events(events) == 2
+
+    def test_empty_date_assumed_recent(self):
+        events = [{"Date": ""}]
+        assert shd._count_recent_events(events) == 1
+
+    def test_missing_date_assumed_recent(self):
+        events = [{}]
+        assert shd._count_recent_events(events) == 1
+
+    def test_custom_days_parameter(self):
+        eight_days_ago = (datetime.now() - timedelta(days=8)).strftime("%Y-%m-%d %H:%M:%S")
+        events = [{"Date": eight_days_ago}]
+        assert shd._count_recent_events(events, days=7) == 0
+        assert shd._count_recent_events(events, days=10) == 1
+
+    def test_empty_list(self):
+        assert shd._count_recent_events([]) == 0
 
 
 # ===========================================================================
@@ -384,15 +425,41 @@ class TestAnalyzeBSOD:
         assert "0x00000139" in bsod_data["BugCheckCodes"]
 
     @patch.object(shd, "ps_events")
-    def test_unexpected_shutdowns_critical(self, mock_events):
+    def test_unexpected_shutdowns_critical_when_recent(self, mock_events):
+        recent_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         mock_events.side_effect = [
             [],  # WER events
-            [{"Date": f"2026-03-{i}", "Message": "shutdown"} for i in range(8)],  # Kernel-Power
+            [{"Date": recent_date, "Message": "shutdown"} for _ in range(8)],  # Kernel-Power
         ]
         with patch("os.path.isdir", return_value=False):
             bsod_data, crit, warn, info = shd.analyze_bsod()
         assert bsod_data["UnexpectedShutdowns"] == 8
         assert any("unexpected shutdowns" in c for c in crit)
+
+    @patch.object(shd, "ps_events")
+    def test_old_shutdowns_become_info(self, mock_events):
+        old_date = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d %H:%M:%S")
+        mock_events.side_effect = [
+            [],  # WER events
+            [{"Date": old_date, "Message": "shutdown"} for _ in range(8)],  # Kernel-Power
+        ]
+        with patch("os.path.isdir", return_value=False):
+            bsod_data, crit, warn, info = shd.analyze_bsod()
+        assert bsod_data["UnexpectedShutdowns"] == 8
+        assert len(crit) == 0
+        assert any("historical" in i for i in info)
+
+    @patch.object(shd, "ps_events")
+    def test_few_recent_shutdowns_warning(self, mock_events):
+        recent_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        mock_events.side_effect = [
+            [],  # WER events
+            [{"Date": recent_date, "Message": "shutdown"} for _ in range(3)],  # Kernel-Power
+        ]
+        with patch("os.path.isdir", return_value=False):
+            bsod_data, crit, warn, info = shd.analyze_bsod()
+        assert len(crit) == 0
+        assert any("unexpected shutdown" in w for w in warn)
 
 
 # ===========================================================================
@@ -402,16 +469,30 @@ class TestScanEventLogs:
     """Test the scan_event_logs function."""
 
     @patch.object(shd, "ps_events")
-    def test_whea_events_trigger_critical(self, mock_events):
+    def test_recent_whea_events_trigger_critical(self, mock_events):
+        recent_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         mock_events.side_effect = [
             [],  # SystemCritical
             [],  # SystemErrors
-            [{"Date": "2026-03-18", "EventID": 18, "Source": "WHEA", "Level": "Error", "Message": "hw error"}],
+            [{"Date": recent_date, "EventID": 18, "Source": "WHEA", "Level": "Error", "Message": "hw error"}],
         ]
         event_data, crit, warn, info = shd.scan_event_logs()
         assert len(event_data["WHEAErrors"]) == 1
         assert len(crit) == 1
         assert "WHEA" in crit[0]
+
+    @patch.object(shd, "ps_events")
+    def test_old_whea_events_become_info(self, mock_events):
+        old_date = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d %H:%M:%S")
+        mock_events.side_effect = [
+            [],  # SystemCritical
+            [],  # SystemErrors
+            [{"Date": old_date, "EventID": 18, "Source": "WHEA", "Level": "Error", "Message": "hw error"}],
+        ]
+        event_data, crit, warn, info = shd.scan_event_logs()
+        assert len(event_data["WHEAErrors"]) == 1
+        assert len(crit) == 0
+        assert any("historical WHEA" in i for i in info)
 
     @patch.object(shd, "ps_events")
     def test_no_events_no_findings(self, mock_events):
@@ -486,16 +567,38 @@ class TestCheckDiskHealth:
     def test_low_c_drive_space_warning(self, mock_ps):
         mock_ps.return_value = {
             "Disks": [],
-            "Volumes": [{"DriveLetter": "C:", "PercentFree": 5.0}],
+            "Volumes": [{"DriveLetter": "C:", "PercentFree": 7.0, "Free_GB": 60}],
         }
         disk_data, crit, warn, info = shd.check_disk_health()
-        assert any("critically low on space" in w for w in warn)
+        assert any("low on space" in w for w in warn)
+
+    @patch.object(shd, "ps")
+    def test_critically_low_space_is_critical(self, mock_ps):
+        mock_ps.return_value = {
+            "Disks": [],
+            "Volumes": [{"DriveLetter": "E:", "PercentFree": 3.0, "Free_GB": 2.5}],
+        }
+        disk_data, crit, warn, info = shd.check_disk_health()
+        assert any("critically low" in c for c in crit)
+        assert "E:" in crit[0]
+
+    @patch.object(shd, "ps")
+    def test_non_c_drive_low_space_detected(self, mock_ps):
+        mock_ps.return_value = {
+            "Disks": [],
+            "Volumes": [
+                {"DriveLetter": "C:", "PercentFree": 50.0, "Free_GB": 400},
+                {"DriveLetter": "E:", "PercentFree": 8.0, "Free_GB": 5},
+            ],
+        }
+        disk_data, crit, warn, info = shd.check_disk_health()
+        assert any("E:" in w for w in warn)
 
     @patch.object(shd, "ps")
     def test_healthy_system(self, mock_ps):
         mock_ps.return_value = {
             "Disks": [{"FriendlyName": "Good SSD", "HealthStatus": "Healthy", "ReadErrors": 0, "WriteErrors": 0}],
-            "Volumes": [{"DriveLetter": "C:", "PercentFree": 55.0}],
+            "Volumes": [{"DriveLetter": "C:", "PercentFree": 55.0, "Free_GB": 400}],
         }
         disk_data, crit, warn, info = shd.check_disk_health()
         assert len(crit) == 0
@@ -515,11 +618,17 @@ class TestAnalyzeMemory:
             "TotalGB": 64.0,
             "Speeds": [5600, 5600],
             "Sizes": [34359738368, 34359738368],
+            "UsageTotalMB": 65536,
+            "UsageFreeMB": 32768,
+            "UsageUsedMB": 32768,
+            "UsagePctUsed": 50.0,
         }
         mem_data, crit, warn, info = shd.analyze_memory()
         assert len(warn) == 0
+        assert len(crit) == 0
         assert mem_data["MismatchWarning"] is False
         assert mem_data["XMPWarning"] is False
+        assert mem_data["UsagePctUsed"] == 50.0
 
     @patch.object(shd, "ps")
     def test_mismatched_speeds_warning(self, mock_ps):
@@ -916,7 +1025,16 @@ class TestBuildHTMLReport:
             event_data={"SystemCritical": [], "SystemErrors": [], "WHEAErrors": []},
             driver_data={"TotalDrivers": 0, "ThirdPartyDrivers": [], "OldDrivers": [], "ProblematicDrivers": []},
             disk_data={"Disks": [], "Volumes": []},
-            mem_data={"Sticks": [], "TotalGB": 64, "XMPWarning": False, "MismatchWarning": False},
+            mem_data={
+                "Sticks": [],
+                "TotalGB": 64,
+                "XMPWarning": False,
+                "MismatchWarning": False,
+                "UsageTotalMB": 65536,
+                "UsageFreeMB": 32768,
+                "UsageUsedMB": 32768,
+                "UsagePctUsed": 50.0,
+            },
             thermal_data={"PowerPlan": "Balanced", "CPUPerformancePct": 95, "Temperatures": []},
             update_history=[],
             app_crashes=[],
@@ -927,6 +1045,21 @@ class TestBuildHTMLReport:
             score=100,
             score_label="Good",
             score_color="#22c55e",
+            network_data={
+                "Adapters": [
+                    {"Name": "Ethernet", "InterfaceDescription": "Intel I225-V", "Status": "Up", "LinkSpeed": "1 Gbps"}
+                ],
+                "DNSWorking": True,
+                "DNSLatencyMs": 10,
+                "InternetReachable": True,
+                "PingLatencyMs": 8,
+            },
+            cpu_data={
+                "AvgCpuPct": 15.0,
+                "Samples": [15.0],
+                "TopProcesses": [{"ProcessName": "chrome", "CPU_Seconds": 100, "MemMB": 500}],
+                "ProcessorQueueLength": 1,
+            },
         )
 
     def test_report_contains_required_sections(self):
@@ -940,6 +1073,8 @@ class TestBuildHTMLReport:
             "Disk Health",
             "Memory - RAM",
             "Thermal and Power",
+            "Network Health",
+            "CPU Utilization",
             "System Information",
             "Windows Updates and Integrity",
             "Application Reliability",
@@ -1194,3 +1329,280 @@ class TestBuildWarrantySection:
         html = shd.build_warranty_section(warranty)
         assert "<script>" not in html
         assert "&lt;script&gt;" in html
+
+
+# ===========================================================================
+# TEST CLASS: analyze_memory — usage checks
+# ===========================================================================
+class TestAnalyzeMemoryUsage:
+    """Test memory usage warnings/criticals in analyze_memory."""
+
+    @patch.object(shd, "ps")
+    def test_high_usage_warning(self, mock_ps):
+        mock_ps.return_value = {
+            "Sticks": [],
+            "TotalGB": 64.0,
+            "Speeds": [5600],
+            "Sizes": [34359738368],
+            "UsageTotalMB": 65536,
+            "UsageFreeMB": 6554,
+            "UsageUsedMB": 58982,
+            "UsagePctUsed": 90.0,
+        }
+        mem_data, crit, warn, info = shd.analyze_memory()
+        assert any("90.0%" in w for w in warn)
+        assert len(crit) == 0
+
+    @patch.object(shd, "ps")
+    def test_critical_usage(self, mock_ps):
+        mock_ps.return_value = {
+            "Sticks": [],
+            "TotalGB": 64.0,
+            "Speeds": [5600],
+            "Sizes": [34359738368],
+            "UsageTotalMB": 65536,
+            "UsageFreeMB": 1638,
+            "UsageUsedMB": 63898,
+            "UsagePctUsed": 97.5,
+        }
+        mem_data, crit, warn, info = shd.analyze_memory()
+        assert any("critically high" in c for c in crit)
+
+    @patch.object(shd, "ps")
+    def test_normal_usage_info(self, mock_ps):
+        mock_ps.return_value = {
+            "Sticks": [],
+            "TotalGB": 64.0,
+            "Speeds": [5600],
+            "Sizes": [34359738368],
+            "UsageTotalMB": 65536,
+            "UsageFreeMB": 39322,
+            "UsageUsedMB": 26214,
+            "UsagePctUsed": 40.0,
+        }
+        mem_data, crit, warn, info = shd.analyze_memory()
+        assert len(crit) == 0
+        assert len(warn) == 0
+        assert any("40.0%" in i for i in info)
+
+    @patch.object(shd, "ps")
+    def test_zero_usage_no_info(self, mock_ps):
+        """When PS returns no usage data (all zeros), skip the info message."""
+        mock_ps.return_value = {
+            "Sticks": [],
+            "TotalGB": 0,
+            "Speeds": [],
+            "Sizes": [],
+            "UsageTotalMB": 0,
+            "UsageFreeMB": 0,
+            "UsageUsedMB": 0,
+            "UsagePctUsed": 0,
+        }
+        mem_data, crit, warn, info = shd.analyze_memory()
+        assert len(crit) == 0
+        assert len(warn) == 0
+        assert not any("usage" in i.lower() for i in info)
+
+
+# ===========================================================================
+# TEST CLASS: check_network_health
+# ===========================================================================
+class TestCheckNetworkHealth:
+    """Test the check_network_health function."""
+
+    @patch.object(shd, "ps")
+    def test_healthy_network(self, mock_ps):
+        mock_ps.return_value = {
+            "Adapters": [
+                {
+                    "Name": "Ethernet",
+                    "InterfaceDescription": "Intel I225-V",
+                    "Status": "Up",
+                    "LinkSpeed": "1 Gbps",
+                    "MacAddress": "AA-BB-CC-DD-EE-FF",
+                }
+            ],
+            "DNSWorking": True,
+            "DNSLatencyMs": 15,
+            "InternetReachable": True,
+            "PingLatencyMs": 12,
+        }
+        net_data, crit, warn, info = shd.check_network_health()
+        assert len(crit) == 0
+        assert len(warn) == 0
+        assert any("healthy" in i.lower() for i in info)
+        assert net_data["InternetReachable"] is True
+
+    @patch.object(shd, "ps")
+    def test_no_internet(self, mock_ps):
+        mock_ps.return_value = {
+            "Adapters": [{"Name": "Ethernet", "Status": "Up"}],
+            "DNSWorking": True,
+            "DNSLatencyMs": 20,
+            "InternetReachable": False,
+            "PingLatencyMs": 0,
+        }
+        net_data, crit, warn, info = shd.check_network_health()
+        assert any("unreachable" in c.lower() for c in crit)
+
+    @patch.object(shd, "ps")
+    def test_dns_failing(self, mock_ps):
+        mock_ps.return_value = {
+            "Adapters": [{"Name": "Ethernet", "Status": "Up"}],
+            "DNSWorking": False,
+            "DNSLatencyMs": 0,
+            "InternetReachable": True,
+            "PingLatencyMs": 10,
+        }
+        net_data, crit, warn, info = shd.check_network_health()
+        assert any("dns" in c.lower() for c in crit)
+
+    @patch.object(shd, "ps")
+    def test_high_latency_warning(self, mock_ps):
+        mock_ps.return_value = {
+            "Adapters": [{"Name": "Wi-Fi", "Status": "Up"}],
+            "DNSWorking": True,
+            "DNSLatencyMs": 30,
+            "InternetReachable": True,
+            "PingLatencyMs": 350,
+        }
+        net_data, crit, warn, info = shd.check_network_health()
+        assert any("latency" in w.lower() for w in warn)
+
+    @patch.object(shd, "ps")
+    def test_slow_dns_warning(self, mock_ps):
+        mock_ps.return_value = {
+            "Adapters": [{"Name": "Ethernet", "Status": "Up"}],
+            "DNSWorking": True,
+            "DNSLatencyMs": 800,
+            "InternetReachable": True,
+            "PingLatencyMs": 20,
+        }
+        net_data, crit, warn, info = shd.check_network_health()
+        assert any("dns" in w.lower() for w in warn)
+
+    @patch.object(shd, "ps")
+    def test_no_active_adapters(self, mock_ps):
+        mock_ps.return_value = {
+            "Adapters": [{"Name": "Wi-Fi", "Status": "Disabled"}],
+            "DNSWorking": False,
+            "DNSLatencyMs": 0,
+            "InternetReachable": False,
+            "PingLatencyMs": 0,
+        }
+        net_data, crit, warn, info = shd.check_network_health()
+        assert any("no active" in c.lower() for c in crit)
+
+    @patch.object(shd, "ps")
+    def test_disconnected_adapter_warning(self, mock_ps):
+        mock_ps.return_value = {
+            "Adapters": [
+                {"Name": "Ethernet", "Status": "Up"},
+                {"Name": "Wi-Fi", "Status": "Disconnected"},
+            ],
+            "DNSWorking": True,
+            "DNSLatencyMs": 10,
+            "InternetReachable": True,
+            "PingLatencyMs": 10,
+        }
+        net_data, crit, warn, info = shd.check_network_health()
+        assert any("wi-fi" in w.lower() for w in warn)
+
+    @patch.object(shd, "ps")
+    def test_empty_ps_response(self, mock_ps):
+        mock_ps.return_value = None
+        net_data, crit, warn, info = shd.check_network_health()
+        assert net_data["InternetReachable"] is False
+        assert len(crit) > 0
+
+
+# ===========================================================================
+# TEST CLASS: check_cpu_utilization
+# ===========================================================================
+class TestCheckCpuUtilization:
+    """Test the check_cpu_utilization function."""
+
+    @patch.object(shd, "ps")
+    def test_normal_cpu(self, mock_ps):
+        mock_ps.return_value = {
+            "AvgCpuPct": 25.3,
+            "Samples": [20.1, 28.5, 27.3],
+            "TopProcesses": [
+                {"ProcessName": "chrome", "CPU_Seconds": 120.5, "MemMB": 800},
+                {"ProcessName": "python", "CPU_Seconds": 45.2, "MemMB": 200},
+            ],
+            "ProcessorQueueLength": 2,
+        }
+        cpu_data, crit, warn, info = shd.check_cpu_utilization()
+        assert len(crit) == 0
+        assert len(warn) == 0
+        assert any("25.3%" in i for i in info)
+
+    @patch.object(shd, "ps")
+    def test_high_cpu_warning(self, mock_ps):
+        mock_ps.return_value = {
+            "AvgCpuPct": 85.0,
+            "Samples": [82.0, 86.0, 87.0],
+            "TopProcesses": [],
+            "ProcessorQueueLength": 5,
+        }
+        cpu_data, crit, warn, info = shd.check_cpu_utilization()
+        assert any("85.0%" in w for w in warn)
+
+    @patch.object(shd, "ps")
+    def test_critical_cpu(self, mock_ps):
+        mock_ps.return_value = {
+            "AvgCpuPct": 98.5,
+            "Samples": [97.0, 99.0, 99.5],
+            "TopProcesses": [],
+            "ProcessorQueueLength": 15,
+        }
+        cpu_data, crit, warn, info = shd.check_cpu_utilization()
+        assert any("critically high" in c for c in crit)
+        assert any("queue" in w.lower() for w in warn)
+
+    @patch.object(shd, "ps")
+    def test_high_queue_length(self, mock_ps):
+        mock_ps.return_value = {
+            "AvgCpuPct": 50.0,
+            "Samples": [50.0],
+            "TopProcesses": [],
+            "ProcessorQueueLength": 15,
+        }
+        cpu_data, crit, warn, info = shd.check_cpu_utilization()
+        assert any("queue" in w.lower() for w in warn)
+
+    @patch.object(shd, "ps")
+    def test_top_processes_as_string(self, mock_ps):
+        """PS sometimes returns JSON string for nested objects."""
+        import json
+
+        mock_ps.return_value = {
+            "AvgCpuPct": 30.0,
+            "Samples": [30.0],
+            "TopProcesses": json.dumps([{"ProcessName": "svchost", "CPU_Seconds": 50, "MemMB": 100}]),
+            "ProcessorQueueLength": 1,
+        }
+        cpu_data, crit, warn, info = shd.check_cpu_utilization()
+        assert len(cpu_data["TopProcesses"]) == 1
+        assert cpu_data["TopProcesses"][0]["ProcessName"] == "svchost"
+
+    @patch.object(shd, "ps")
+    def test_top_processes_single_dict(self, mock_ps):
+        """PS returns single dict instead of list for one process."""
+        mock_ps.return_value = {
+            "AvgCpuPct": 10.0,
+            "Samples": [10.0],
+            "TopProcesses": {"ProcessName": "idle", "CPU_Seconds": 5000, "MemMB": 0},
+            "ProcessorQueueLength": 0,
+        }
+        cpu_data, crit, warn, info = shd.check_cpu_utilization()
+        assert isinstance(cpu_data["TopProcesses"], list)
+        assert len(cpu_data["TopProcesses"]) == 1
+
+    @patch.object(shd, "ps")
+    def test_empty_ps_response(self, mock_ps):
+        mock_ps.return_value = None
+        cpu_data, crit, warn, info = shd.check_cpu_utilization()
+        assert cpu_data["AvgCpuPct"] == 0
+        assert cpu_data["TopProcesses"] == []

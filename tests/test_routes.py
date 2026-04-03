@@ -1149,48 +1149,67 @@ class TestBiosCacheClearRoute:
 
 
 class TestDashboardSummaryRoute:
-    def test_returns_200_with_structure(self, client, mocker):
+    HEALTHY_DISK = {"drives": [{"Letter": "C", "PctUsed": 50, "FreeGB": 400}], "physical": [], "io": []}
+
+    def _mock_dashboard_deps(self, mocker, **overrides):
+        """Helper to mock all dashboard_summary dependencies."""
         mocker.patch(
             "windesktopmgr.get_thermals",
-            return_value={
-                "temps": [],
-                "perf": {},
-                "fans": [],
-                "has_rich": False,
-                "note": "",
-            },
+            return_value=overrides.get(
+                "thermals",
+                {
+                    "temps": [],
+                    "perf": {},
+                    "fans": [],
+                    "has_rich": False,
+                    "note": "",
+                },
+            ),
         )
         mocker.patch(
             "windesktopmgr.get_memory_analysis",
-            return_value={
-                "total_mb": 32768,
-                "used_mb": 16000,
-                "free_mb": 16768,
-                "categories": {},
-                "top_procs": [],
-                "mcafee_mb": 0,
-                "defender_mb": 0,
-                "defender_baseline": 150,
-                "mcafee_saving_mb": 0,
-                "has_mcafee": False,
-            },
+            return_value=overrides.get(
+                "memory",
+                {
+                    "total_mb": 32768,
+                    "used_mb": 8000,
+                    "free_mb": 24768,
+                    "categories": {},
+                    "top_procs": [],
+                    "mcafee_mb": 0,
+                    "defender_mb": 0,
+                    "defender_baseline": 150,
+                    "mcafee_saving_mb": 0,
+                    "has_mcafee": False,
+                },
+            ),
         )
         mocker.patch(
             "windesktopmgr.get_bios_status",
-            return_value={
-                "current": {},
-                "update": {},
-            },
+            return_value=overrides.get(
+                "bios",
+                {
+                    "current": {},
+                    "update": {},
+                },
+            ),
         )
         mocker.patch(
             "windesktopmgr.get_credentials_network_health",
-            return_value={
-                "onedrive_suspended": False,
-                "fast_startup": False,
-                "drives_down": [],
-                "msal_token_stale": False,
-            },
+            return_value=overrides.get(
+                "credentials",
+                {
+                    "onedrive_suspended": False,
+                    "fast_startup": False,
+                    "drives_down": [],
+                    "msal_token_stale": False,
+                },
+            ),
         )
+        mocker.patch("windesktopmgr.get_disk_health", return_value=overrides.get("disk", self.HEALTHY_DISK))
+
+    def test_returns_200_with_structure(self, client, mocker):
+        self._mock_dashboard_deps(mocker)
         resp = client.get("/api/dashboard/summary")
         assert resp.status_code == 200
         data = resp.get_json()
@@ -1202,92 +1221,21 @@ class TestDashboardSummaryRoute:
         assert "checked_at" in data
 
     def test_overall_ok_when_no_concerns(self, client, mocker):
-        mocker.patch(
-            "windesktopmgr.get_thermals",
-            return_value={
-                "temps": [],
-                "perf": {},
-                "fans": [],
-                "has_rich": False,
-                "note": "",
-            },
-        )
-        mocker.patch(
-            "windesktopmgr.get_memory_analysis",
-            return_value={
-                "total_mb": 32768,
-                "used_mb": 8000,
-                "free_mb": 24768,
-                "categories": {},
-                "top_procs": [],
-                "mcafee_mb": 0,
-                "defender_mb": 0,
-                "defender_baseline": 150,
-                "mcafee_saving_mb": 0,
-                "has_mcafee": False,
-            },
-        )
-        mocker.patch(
-            "windesktopmgr.get_bios_status",
-            return_value={
-                "current": {},
-                "update": {},
-            },
-        )
-        mocker.patch(
-            "windesktopmgr.get_credentials_network_health",
-            return_value={
-                "onedrive_suspended": False,
-                "fast_startup": False,
-                "drives_down": [],
-                "msal_token_stale": False,
-            },
-        )
+        self._mock_dashboard_deps(mocker)
         resp = client.get("/api/dashboard/summary")
         data = resp.get_json()
         assert data["overall"] == "ok"
         assert data["total"] == 0
 
     def test_critical_concern_raises_overall_to_critical(self, client, mocker):
-        mocker.patch(
-            "windesktopmgr.get_thermals",
-            return_value={
+        self._mock_dashboard_deps(
+            mocker,
+            thermals={
                 "temps": [{"TempC": 95, "Name": "CPU", "Source": "LHM", "status": "critical"}],
                 "perf": {"CPUPct": 10},
                 "fans": [],
                 "has_rich": True,
                 "note": "",
-            },
-        )
-        mocker.patch(
-            "windesktopmgr.get_memory_analysis",
-            return_value={
-                "total_mb": 32768,
-                "used_mb": 8000,
-                "free_mb": 24768,
-                "categories": {},
-                "top_procs": [],
-                "mcafee_mb": 0,
-                "defender_mb": 0,
-                "defender_baseline": 150,
-                "mcafee_saving_mb": 0,
-                "has_mcafee": False,
-            },
-        )
-        mocker.patch(
-            "windesktopmgr.get_bios_status",
-            return_value={
-                "current": {},
-                "update": {},
-            },
-        )
-        mocker.patch(
-            "windesktopmgr.get_credentials_network_health",
-            return_value={
-                "onedrive_suspended": False,
-                "fast_startup": False,
-                "drives_down": [],
-                "msal_token_stale": False,
             },
         )
         resp = client.get("/api/dashboard/summary")
@@ -1296,19 +1244,9 @@ class TestDashboardSummaryRoute:
         assert data["critical"] >= 1
 
     def test_mcafee_detected_raises_warning(self, client, mocker):
-        mocker.patch(
-            "windesktopmgr.get_thermals",
-            return_value={
-                "temps": [],
-                "perf": {},
-                "fans": [],
-                "has_rich": False,
-                "note": "",
-            },
-        )
-        mocker.patch(
-            "windesktopmgr.get_memory_analysis",
-            return_value={
+        self._mock_dashboard_deps(
+            mocker,
+            memory={
                 "total_mb": 32768,
                 "used_mb": 16000,
                 "free_mb": 16768,
@@ -1321,27 +1259,49 @@ class TestDashboardSummaryRoute:
                 "has_mcafee": True,
             },
         )
-        mocker.patch(
-            "windesktopmgr.get_bios_status",
-            return_value={
-                "current": {},
-                "update": {},
-            },
-        )
-        mocker.patch(
-            "windesktopmgr.get_credentials_network_health",
-            return_value={
-                "onedrive_suspended": False,
-                "fast_startup": False,
-                "drives_down": [],
-                "msal_token_stale": False,
-            },
-        )
         resp = client.get("/api/dashboard/summary")
         data = resp.get_json()
         assert data["warnings"] >= 1
         mcafee_concerns = [c for c in data["concerns"] if "McAfee" in c["title"]]
         assert len(mcafee_concerns) >= 1
+
+    def test_disk_critical_when_drive_95_pct_full(self, client, mocker):
+        self._mock_dashboard_deps(
+            mocker,
+            disk={
+                "drives": [{"Letter": "E", "PctUsed": 97, "FreeGB": 2.5}],
+                "physical": [],
+                "io": [],
+            },
+        )
+        resp = client.get("/api/dashboard/summary")
+        data = resp.get_json()
+        disk_concerns = [c for c in data["concerns"] if c.get("tab") == "disk"]
+        assert len(disk_concerns) == 1
+        assert disk_concerns[0]["level"] == "critical"
+        assert "E" in disk_concerns[0]["title"]
+
+    def test_disk_warning_when_drive_90_pct_full(self, client, mocker):
+        self._mock_dashboard_deps(
+            mocker,
+            disk={
+                "drives": [{"Letter": "C", "PctUsed": 92, "FreeGB": 60}],
+                "physical": [],
+                "io": [],
+            },
+        )
+        resp = client.get("/api/dashboard/summary")
+        data = resp.get_json()
+        disk_concerns = [c for c in data["concerns"] if c.get("tab") == "disk"]
+        assert len(disk_concerns) == 1
+        assert disk_concerns[0]["level"] == "warning"
+
+    def test_no_disk_concern_when_space_ok(self, client, mocker):
+        self._mock_dashboard_deps(mocker)
+        resp = client.get("/api/dashboard/summary")
+        data = resp.get_json()
+        disk_concerns = [c for c in data["concerns"] if c.get("tab") == "disk"]
+        assert len(disk_concerns) == 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
