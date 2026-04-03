@@ -138,6 +138,23 @@ def _count_recent_events(events, days=30):
     return count
 
 
+def _most_recent_event_age_days(events):
+    """Return the age in days of the most recent event, or None if no parseable dates."""
+    now = datetime.now()
+    min_age = None
+    for ev in events:
+        date_str = ev.get("Date", "")
+        if date_str:
+            try:
+                ev_date = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
+                age = (now - ev_date).days
+                if min_age is None or age < min_age:
+                    min_age = age
+            except ValueError:
+                pass
+    return min_age
+
+
 def cprint(msg, color="cyan"):
     """Print colored console output."""
     colors = {
@@ -344,9 +361,14 @@ def analyze_bsod():
     ]
 
     recent_kp = _count_recent_events(kp_events)
-    if recent_kp > 5:
+    kp_age = _most_recent_event_age_days(kp_events)
+    if recent_kp > 5 and kp_age is not None and kp_age <= 7:
         critical.append(
-            f"{recent_kp} unexpected shutdowns (Kernel-Power 41) in the last 30 days. Combined with BSODs, this points to a hardware or power delivery issue."
+            f"{recent_kp} unexpected shutdowns (Kernel-Power 41) in the last 30 days (most recent: {kp_age} day(s) ago). Active hardware or power issue."
+        )
+    elif recent_kp > 5:
+        warnings.append(
+            f"{recent_kp} unexpected shutdowns (Kernel-Power 41) in the last 30 days, but none in the last week. Issue may be resolving."
         )
     elif recent_kp > 0:
         warnings.append(f"{recent_kp} unexpected shutdown(s) (Kernel-Power 41) in the last 30 days.")
@@ -377,9 +399,14 @@ def scan_event_logs():
     event_data["WHEAErrors"] = whea_events
 
     recent_whea = _count_recent_events(whea_events)
-    if recent_whea > 0:
+    whea_age = _most_recent_event_age_days(whea_events)
+    if recent_whea > 0 and whea_age is not None and whea_age <= 7:
         critical.append(
-            f"{recent_whea} WHEA (hardware error) events in the last 30 days. This strongly indicates a hardware problem - likely CPU, RAM, or motherboard. With an i9-14900K, this is a hallmark of the Intel voltage degradation issue."
+            f"{recent_whea} WHEA (hardware error) events in the last 30 days (most recent: {whea_age} day(s) ago). Active hardware problem - likely CPU, RAM, or motherboard."
+        )
+    elif recent_whea > 0:
+        warnings.append(
+            f"{recent_whea} WHEA (hardware error) events in the last 30 days, but none in the last week. Hardware issue may be resolved."
         )
     elif len(whea_events) > 0:
         info.append(
