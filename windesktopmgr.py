@@ -377,6 +377,36 @@ _NVIDIA_PFID_MAP: dict[str, int] = {
 _NVIDIA_DRIVER_API = "https://gfwsl.geforce.com/services_toolkit/services/com/nvidia/services/AjaxDriverService.php"
 
 
+def _detect_nvidia_driver_branch() -> bool:
+    """Detect whether the user is on Studio/CRD or Game Ready driver branch.
+
+    Checks NVIDIA App's SHIM.json for IsCRD flag, falls back to True (Studio)
+    since that's the safer default — offering Game Ready to a Studio user is wrong.
+
+    Returns True for Studio/CRD, False for Game Ready.
+    """
+    try:
+        import glob
+        import os
+
+        pattern = os.path.join(
+            os.environ.get("LOCALAPPDATA", ""),
+            "NVIDIA Corporation",
+            "NVIDIA app",
+            "NvBackend",
+            "SHIM.json",
+        )
+        matches = glob.glob(pattern)
+        if matches:
+            with open(matches[0]) as f:
+                data = json.load(f)
+            return data.get("IsCRD", True)
+    except Exception:
+        pass
+    # Default to Studio — safer than offering Game Ready to Studio users
+    return True
+
+
 def _query_nvidia_api(pfid: int, *, studio: bool = True) -> dict | None:
     """Query NVIDIA's public driver API for the latest available driver.
 
@@ -446,14 +476,15 @@ def get_nvidia_update_info() -> dict | None:
     latest = ""
     source = "none"
 
+    # Detect driver branch (Studio/CRD vs Game Ready) from NVIDIA App data
+    is_studio = _detect_nvidia_driver_branch()
+
     # Method 1: NVIDIA public API — real-time latest version check
     pfid = _NVIDIA_PFID_MAP.get(name)
     if pfid:
-        # Try Studio driver first (user has CRD/Studio driver installed)
-        api_result = _query_nvidia_api(pfid, studio=True)
-        if not api_result:
-            # Fallback to Game Ready
-            api_result = _query_nvidia_api(pfid, studio=False)
+        api_result = _query_nvidia_api(pfid, studio=is_studio)
+        # Do NOT fall back to the other branch — Game Ready 595.97 is not
+        # a valid "update" for a Studio 595.79 user (different driver branches).
         if api_result and api_result.get("version"):
             latest = api_result["version"]
             source = "nvidia_api"

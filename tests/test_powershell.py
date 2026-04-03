@@ -2426,6 +2426,26 @@ class TestGetNvidiaGpuInfo:
         assert "Win32_VideoController" in cmd
 
 
+class TestDetectNvidiaDriverBranch:
+    """Tests for _detect_nvidia_driver_branch() — detects Studio vs Game Ready."""
+
+    def test_studio_detected_from_shim(self, mocker, tmp_path):
+        shim = tmp_path / "SHIM.json"
+        shim.write_text(json.dumps({"IsCRD": True, "NVDriver.Version": 59579}))
+        mocker.patch("glob.glob", return_value=[str(shim)])
+        assert wdm._detect_nvidia_driver_branch() is True
+
+    def test_game_ready_detected_from_shim(self, mocker, tmp_path):
+        shim = tmp_path / "SHIM.json"
+        shim.write_text(json.dumps({"IsCRD": False}))
+        mocker.patch("glob.glob", return_value=[str(shim)])
+        assert wdm._detect_nvidia_driver_branch() is False
+
+    def test_missing_shim_defaults_to_studio(self, mocker):
+        mocker.patch("glob.glob", return_value=[])
+        assert wdm._detect_nvidia_driver_branch() is True
+
+
 class TestQueryNvidiaApi:
     """Tests for _query_nvidia_api() — HTTP call to NVIDIA's AjaxDriverService."""
 
@@ -2515,6 +2535,7 @@ class TestGetNvidiaUpdateInfo:
         """Mock _get_nvidia_gpu_info — returns GPU dict or None."""
         if gpu is None:
             gpu = self.GPU_INFO
+        mocker.patch("windesktopmgr._detect_nvidia_driver_branch", return_value=True)
         return mocker.patch("windesktopmgr._get_nvidia_gpu_info", return_value=gpu)
 
     def _mock_api(self, mocker, result=None):
@@ -2534,6 +2555,7 @@ class TestGetNvidiaUpdateInfo:
 
     def test_no_nvidia_gpu_returns_none(self, mocker):
         mocker.patch("windesktopmgr._get_nvidia_gpu_info", return_value=None)
+        mocker.patch("windesktopmgr._detect_nvidia_driver_branch", return_value=True)
         result = wdm.get_nvidia_update_info()
         assert result is None
 
@@ -2590,21 +2612,21 @@ class TestGetNvidiaUpdateInfo:
         # API should NOT be called since pfid is not in the map
         api_mock.assert_not_called()
 
-    def test_api_studio_fails_tries_game_ready(self, mocker):
-        """Studio driver API fails → fallback to Game Ready."""
+    def test_studio_api_failure_does_not_fall_back_to_game_ready(self, mocker):
+        """Studio driver API fails → must NOT fall back to Game Ready.
+        Game Ready 595.97 is NOT a valid update for Studio 595.79 user."""
         self._mock_gpu(mocker)
-        # First call (studio=True) returns None, second (studio=False) returns result
-        mocker.patch(
-            "windesktopmgr._query_nvidia_api",
-            side_effect=[None, self.API_RESULT],
-        )
+        api_mock = mocker.patch("windesktopmgr._query_nvidia_api", return_value=None)
         m = mocker.patch("windesktopmgr.subprocess.run")
         m.return_value.stdout = ""
         m.return_value.returncode = 0
         m.return_value.stderr = ""
         result = wdm.get_nvidia_update_info()
-        assert result["UpdateAvailable"] is True
-        assert result["UpdateSource"] == "nvidia_api"
+        # API should be called exactly ONCE (Studio only), not twice
+        api_mock.assert_called_once()
+        # No update from API — falls through to Installer2 Cache
+        assert result["UpdateSource"] == "none"
+        assert result["UpdateAvailable"] is False
 
     def test_installer2_cache_timeout_still_returns_result(self, mocker):
         """Installer2 PS timeout → graceful fallback, still returns GPU info."""
