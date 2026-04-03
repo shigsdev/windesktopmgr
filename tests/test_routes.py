@@ -1328,14 +1328,14 @@ class TestDashboardSummaryRoute:
         assert drv_concerns[0]["level"] == "critical"
         assert "driver errors" in drv_concerns[0]["title"]
 
-    def test_old_drivers_raise_warning_when_more_than_3(self, client, mocker):
+    def test_old_drivers_raise_info_when_more_than_3(self, client, mocker):
         old = [
             {"DeviceName": f"Device {i}", "Provider": "Acme", "Version": "1.0", "Date": "2022-01-01"} for i in range(5)
         ]
         self._mock_dashboard_deps(mocker, drivers={"old_drivers": old, "problematic_drivers": [], "nvidia": None})
         resp = client.get("/api/dashboard/summary")
         data = resp.get_json()
-        drv_concerns = [c for c in data["concerns"] if c.get("tab") == "drivers" and c["level"] == "warning"]
+        drv_concerns = [c for c in data["concerns"] if c.get("tab") == "drivers" and c["level"] == "info"]
         assert len(drv_concerns) == 1
         assert "over 2 years old" in drv_concerns[0]["title"]
 

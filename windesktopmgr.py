@@ -7465,11 +7465,11 @@ def dashboard_summary():
     if len(old_drivers) > 3:
         concerns.append(
             {
-                "level": "warning",
+                "level": "info",
                 "tab": "drivers",
                 "icon": "📦",
                 "title": f"{len(old_drivers)} third-party drivers are over 2 years old",
-                "detail": "Outdated drivers can cause BSODs and instability. Check Device Manager for updates.",
+                "detail": "Age alone is not actionable — check Driver Manager tab for actual available updates.",
                 "action": "View Driver Manager",
                 "action_fn": "switchTab('drivers')",
             }

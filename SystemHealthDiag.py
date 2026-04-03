@@ -460,8 +460,9 @@ $prob = @(Get-CimInstance Win32_PnPEntity | Where-Object { $_.ConfigManagerError
             "These devices may not function correctly and could contribute to system instability."
         )
     if len(driver_data["OldDrivers"]) > 3:
-        warnings.append(
-            f"{len(driver_data['OldDrivers'])} third-party drivers are over 2 years old. Outdated drivers can cause BSODs."
+        info.append(
+            f"{len(driver_data['OldDrivers'])} third-party drivers are over 2 years old. "
+            "Check the Driver Manager tab for actual available updates."
         )
 
     return driver_data, critical, warnings, info

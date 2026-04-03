@@ -584,14 +584,16 @@ class TestAnalyzeDrivers:
         assert any("driver errors" in c for c in crit)
 
     @patch.object(shd, "ps")
-    def test_many_old_drivers_warning(self, mock_ps):
+    def test_many_old_drivers_info_not_warning(self, mock_ps):
+        """Old drivers are info-level (not actionable without actual updates)."""
         old = [
             {"DeviceName": f"Dev{i}", "Provider": "X", "Version": "1.0", "Date": "2022-01-01", "IsSigned": True}
             for i in range(5)
         ]
         mock_ps.return_value = {"Total": 100, "ThirdParty": old, "Old": old, "Problematic": []}
-        driver_data, crit, warn, info = shd.analyze_drivers()
-        assert any("over 2 years old" in w for w in warn)
+        driver_data, crit, warn, inf = shd.analyze_drivers()
+        assert not any("over 2 years old" in w for w in warn), "Old drivers should not be a warning"
+        assert any("over 2 years old" in i for i in inf)
 
     @patch.object(shd, "ps")
     def test_empty_output(self, mock_ps):
