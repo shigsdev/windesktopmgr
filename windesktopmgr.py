@@ -274,78 +274,7 @@ $prob = @(Get-CimInstance Win32_PnPEntity -EA SilentlyContinue | Where-Object { 
     @{DeviceName=$_.Name;ErrorCode=$_.ConfigManagerErrorCode;Status=$_.Status}
 })
 
-# NVIDIA GPU info
-$gpu = Get-CimInstance Win32_VideoController -EA SilentlyContinue | Where-Object { $_.Name -like '*NVIDIA*' } | Select-Object -First 1
-$nv = $null
-if ($gpu) {
-    $nvVer = $gpu.DriverVersion
-    # Convert Windows driver version to NVIDIA format
-    # 32.0.15.9174 → concat parts[2]+parts[3] = "159174" → drop first char → "59174" → "591.74"
-    $parts = $nvVer -split '\.'
-    $nvShort = ''
-    if ($parts.Count -ge 4) {
-        $raw = $parts[2] + $parts[3]
-        if ($raw.Length -gt 2) { $nvShort = $raw.Substring(1, $raw.Length - 3) + '.' + $raw.Substring($raw.Length - 2) }
-    }
-
-    # Check for pending NVIDIA update
-    $nvLatest = ''
-    $nvUpdateAvail = $false
-    $nvSource = 'none'
-
-    # Method 1: Installer2 Cache — detect downloaded-but-not-installed newer driver
-    $cacheKey = 'HKLM:\SOFTWARE\NVIDIA Corporation\Installer2\Cache'
-    if (Test-Path $cacheKey) {
-        $props = Get-ItemProperty $cacheKey -EA SilentlyContinue
-        $maxVer = 0
-        foreach ($p in $props.PSObject.Properties) {
-            if ($p.Name -match '^Display\.Driver/(.+)$') {
-                $ver = $Matches[1] -replace '\.', ''
-                $verNum = [int]$ver
-                if ($verNum -gt $maxVer) { $maxVer = $verNum }
-            }
-        }
-        if ($maxVer -gt 0) {
-            $maxStr = [string]$maxVer
-            $latestCached = $maxStr.Substring(0, $maxStr.Length - 2) + '.' + $maxStr.Substring($maxStr.Length - 2)
-            if ($latestCached -ne $nvShort) {
-                $nvLatest = $latestCached
-                $nvSource = 'installer2_cache'
-            }
-        }
-    }
-
-    # Method 2: Windows Update pending NVIDIA driver
-    if (-not $nvLatest) {
-        try {
-            $sess = New-Object -ComObject Microsoft.Update.Session
-            $search = $sess.CreateUpdateSearcher()
-            $results = $search.Search("Type='Driver' AND IsInstalled=0")
-            foreach ($u in $results.Updates) {
-                if ($u.Title -like '*NVIDIA*' -or $u.DriverManufacturer -like '*NVIDIA*') {
-                    $nvLatest = if ($u.DriverVersion) { $u.DriverVersion } else { $u.Title }
-                    $nvSource = 'windows_update'
-                    break
-                }
-            }
-        } catch {}
-    }
-
-    if ($nvLatest -and $nvLatest -ne $nvShort -and $nvLatest -ne $nvVer) { $nvUpdateAvail = $true }
-
-    $nv = @{
-        Name = $gpu.Name
-        InstalledVersion = $nvShort
-        WindowsVersion = $nvVer
-        DriverDate = if ($gpu.DriverDate) { $gpu.DriverDate.ToString('yyyy-MM-dd') } else { '' }
-        AdapterRAM_GB = [math]::Round($gpu.AdapterRAM / 1GB, 1)
-        LatestVersion = $nvLatest
-        UpdateAvailable = $nvUpdateAvail
-        UpdateSource = $nvSource
-    }
-}
-
-@{OldDrivers=$old;Problematic=$prob;NVIDIA=$nv} | ConvertTo-Json -Depth 3
+@{OldDrivers=$old;Problematic=$prob} | ConvertTo-Json -Depth 3
 """
     try:
         r = subprocess.run(
@@ -358,10 +287,13 @@ if ($gpu) {
         prob = data.get("Problematic") or []
         if isinstance(prob, dict):
             prob = [prob]
-        return {"old_drivers": old, "problematic_drivers": prob, "nvidia": data.get("NVIDIA")}
     except Exception as e:
         print(f"[DriverHealth] {e}")
-        return {"old_drivers": [], "problematic_drivers": [], "nvidia": None}
+        old, prob = [], []
+
+    # NVIDIA update check via Python (API + fallback) — no extra PS overhead
+    nvidia = get_nvidia_update_info()
+    return {"old_drivers": old, "problematic_drivers": prob, "nvidia": nvidia}
 
 
 def _win_to_nvidia_version(win_ver: str) -> str:
@@ -380,50 +312,152 @@ def _win_to_nvidia_version(win_ver: str) -> str:
     return raw[:-2] + "." + raw[-2:]  # "591.74"
 
 
+def _get_nvidia_gpu_info() -> dict | None:
+    """Detect NVIDIA GPU name and installed driver version via nvidia-smi or WMI.
+
+    Returns dict with 'name', 'installed', 'win_ver' or None if no NVIDIA GPU.
+    """
+    ps = r"""
+$nvsmi = "$env:SystemRoot\System32\nvidia-smi.exe"
+if (Test-Path $nvsmi) {
+    $csv = & $nvsmi --query-gpu=name,driver_version --format=csv,noheader 2>$null
+    if ($csv) {
+        $fields = $csv -split ','
+        $gpuName = $fields[0].Trim()
+        $nvShort = $fields[1].Trim()
+        $gpu = Get-CimInstance Win32_VideoController -EA SilentlyContinue | Where-Object { $_.Name -like '*NVIDIA*' } | Select-Object -First 1
+        $winVer = if ($gpu) { $gpu.DriverVersion } else { '' }
+        @{Name=$gpuName;Installed=$nvShort;WinVer=$winVer} | ConvertTo-Json
+        exit 0
+    }
+}
+$gpu = Get-CimInstance Win32_VideoController -EA SilentlyContinue | Where-Object { $_.Name -like '*NVIDIA*' } | Select-Object -First 1
+if (-not $gpu) { Write-Output ''; exit 0 }
+$winVer = $gpu.DriverVersion
+$parts = $winVer -split '\.'
+$nvShort = ''
+if ($parts.Count -ge 4) {
+    $raw = $parts[2] + $parts[3]
+    if ($raw.Length -gt 2) { $nvShort = $raw.Substring(1, $raw.Length - 3) + '.' + $raw.Substring($raw.Length - 2) }
+}
+@{Name=$gpu.Name;Installed=$nvShort;WinVer=$winVer} | ConvertTo-Json
+"""
+    try:
+        r = subprocess.run(
+            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=15
+        )
+        raw = r.stdout.strip()
+        if not raw:
+            return None
+        data = json.loads(raw)
+        return {"name": data["Name"], "installed": data["Installed"], "win_ver": data.get("WinVer", "")}
+    except Exception:
+        return None
+
+
+# Known GPU product family IDs for the NVIDIA driver lookup API.
+# Resolved via https://www.nvidia.com/Download/API/lookupValueSearch.aspx?TypeID=3&ParentID=<series>
+# Series 127 = GeForce RTX 40 Series (Desktop)
+_NVIDIA_PFID_MAP: dict[str, int] = {
+    "NVIDIA GeForce RTX 4090": 995,
+    "NVIDIA GeForce RTX 4080 SUPER": 1041,
+    "NVIDIA GeForce RTX 4080": 996,
+    "NVIDIA GeForce RTX 4070 Ti SUPER": 1040,
+    "NVIDIA GeForce RTX 4070 Ti": 1001,
+    "NVIDIA GeForce RTX 4070 SUPER": 1039,
+    "NVIDIA GeForce RTX 4070": 1015,
+    "NVIDIA GeForce RTX 4060 Ti": 1022,
+    "NVIDIA GeForce RTX 4060": 1023,
+}
+
+# NVIDIA AjaxDriverService API endpoint
+_NVIDIA_DRIVER_API = "https://gfwsl.geforce.com/services_toolkit/services/com/nvidia/services/AjaxDriverService.php"
+
+
+def _query_nvidia_api(pfid: int, *, studio: bool = True) -> dict | None:
+    """Query NVIDIA's public driver API for the latest available driver.
+
+    Args:
+        pfid: Product Family ID (e.g. 1022 for RTX 4060 Ti)
+        studio: True for Studio/CRD driver, False for Game Ready
+
+    Returns dict with 'version', 'url', 'date', 'name' or None on failure.
+    """
+    params = {
+        "func": "DriverManualLookup",
+        "pfid": str(pfid),
+        "osID": "57",  # Windows 10/11 64-bit
+        "languageCode": "1033",
+        "beta": "0",
+        "isWHQL": "1",
+        "dltype": "-1",
+        "dch": "1",
+        "upCRD": "1" if studio else "0",
+        "qnf": "0",
+        "sort1": "0",
+        "numberOfResults": "1",
+    }
+    try:
+        import urllib.parse
+        import urllib.request
+
+        url = _NVIDIA_DRIVER_API + "?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(url, headers={"User-Agent": "WinDesktopMgr/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        if data.get("Success") != "1" or not data.get("IDS"):
+            return None
+        info = data["IDS"][0].get("downloadInfo", {})
+        if info.get("Success") != "1":
+            return None
+        import urllib.parse as up
+
+        return {
+            "version": info.get("Version", ""),
+            "url": up.unquote(info.get("DetailsURL", "")),
+            "date": info.get("ReleaseDateTime", ""),
+            "name": up.unquote(info.get("Name", "")),
+        }
+    except Exception as e:
+        print(f"[NVIDIA API] {e}")
+        return None
+
+
 def get_nvidia_update_info() -> dict | None:
     """Check for NVIDIA GPU and pending driver updates.
 
-    Uses nvidia-smi for installed version (fast, reliable), then checks:
-    1. Installer2 Cache registry for downloaded-but-not-installed updates
-    2. Windows Update for pending NVIDIA driver updates
+    Detection priority:
+    1. NVIDIA public API (real-time, works even if update not downloaded)
+    2. Installer2 Cache registry (downloaded-but-not-installed)
+    3. Windows Update (pending NVIDIA driver)
 
     Returns dict with InstalledVersion, LatestVersion, UpdateAvailable, Name
     or None if no NVIDIA GPU found.
     """
-    ps = r"""
-# Use nvidia-smi for reliable version detection
-$nvsmi = "$env:SystemRoot\System32\nvidia-smi.exe"
-if (-not (Test-Path $nvsmi)) {
-    # Fallback to WMI
-    $gpu = Get-CimInstance Win32_VideoController -EA SilentlyContinue | Where-Object { $_.Name -like '*NVIDIA*' } | Select-Object -First 1
-    if (-not $gpu) { Write-Output ''; exit 0 }
-    $gpuName = $gpu.Name
-    $winVer = $gpu.DriverVersion
-} else {
-    $csv = & $nvsmi --query-gpu=name,driver_version --format=csv,noheader 2>$null
-    if (-not $csv) { Write-Output ''; exit 0 }
-    $fields = $csv -split ','
-    $gpuName = $fields[0].Trim()
-    $winVer = ''
-    # nvidia-smi returns NVIDIA format directly (e.g. 591.74)
-    $nvShort = $fields[1].Trim()
-    # Also get Windows format from WMI for compatibility
-    $gpu = Get-CimInstance Win32_VideoController -EA SilentlyContinue | Where-Object { $_.Name -like '*NVIDIA*' } | Select-Object -First 1
-    if ($gpu) { $winVer = $gpu.DriverVersion }
-}
+    gpu = _get_nvidia_gpu_info()
+    if not gpu:
+        return None
 
-# Convert Windows version to NVIDIA format if we used WMI fallback
-if (-not $nvShort -and $winVer) {
-    $parts = $winVer -split '\.'
-    if ($parts.Count -ge 4) {
-        $raw = $parts[2] + $parts[3]
-        if ($raw.Length -gt 2) { $nvShort = $raw.Substring(1, $raw.Length - 3) + '.' + $raw.Substring($raw.Length - 2) }
-    }
-}
+    installed = gpu["installed"]
+    name = gpu["name"]
+    latest = ""
+    source = "none"
 
-# Check Installer2 Cache for downloaded-but-not-installed newer version
-$nvLatest = ''
-$nvSource = 'none'
+    # Method 1: NVIDIA public API — real-time latest version check
+    pfid = _NVIDIA_PFID_MAP.get(name)
+    if pfid:
+        # Try Studio driver first (user has CRD/Studio driver installed)
+        api_result = _query_nvidia_api(pfid, studio=True)
+        if not api_result:
+            # Fallback to Game Ready
+            api_result = _query_nvidia_api(pfid, studio=False)
+        if api_result and api_result.get("version"):
+            latest = api_result["version"]
+            source = "nvidia_api"
+
+    # Method 2: Installer2 Cache (offline fallback)
+    if not latest:
+        ps_cache = r"""
 $cacheKey = 'HKLM:\SOFTWARE\NVIDIA Corporation\Installer2\Cache'
 if (Test-Path $cacheKey) {
     $props = Get-ItemProperty $cacheKey -EA SilentlyContinue
@@ -437,53 +471,33 @@ if (Test-Path $cacheKey) {
     }
     if ($maxVer -gt 0) {
         $maxStr = [string]$maxVer
-        $latestCached = $maxStr.Substring(0, $maxStr.Length - 2) + '.' + $maxStr.Substring($maxStr.Length - 2)
-        if ($latestCached -ne $nvShort) {
-            $nvLatest = $latestCached
-            $nvSource = 'installer2_cache'
-        }
+        Write-Output ($maxStr.Substring(0, $maxStr.Length - 2) + '.' + $maxStr.Substring($maxStr.Length - 2))
     }
 }
-
-# Fallback: check Windows Update for pending NVIDIA driver
-if (-not $nvLatest) {
-    try {
-        $sess = New-Object -ComObject Microsoft.Update.Session
-        $search = $sess.CreateUpdateSearcher()
-        $results = $search.Search("Type='Driver' AND IsInstalled=0")
-        foreach ($u in $results.Updates) {
-            if ($u.Title -like '*NVIDIA*' -or $u.DriverManufacturer -like '*NVIDIA*') {
-                $nvLatest = if ($u.DriverVersion) { $u.DriverVersion } else { $u.Title }
-                $nvSource = 'windows_update'
-                break
-            }
-        }
-    } catch {}
-}
-
-$updateAvail = $false
-if ($nvLatest -and $nvLatest -ne $nvShort) { $updateAvail = $true }
-
-@{
-    Name = $gpuName
-    InstalledVersion = $nvShort
-    WindowsVersion = $winVer
-    LatestVersion = $nvLatest
-    UpdateAvailable = $updateAvail
-    UpdateSource = $nvSource
-} | ConvertTo-Json
 """
-    try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=30
-        )
-        raw = r.stdout.strip()
-        if not raw:
-            return None
-        return json.loads(raw)
-    except Exception as e:
-        print(f"[NVIDIA check] {e}")
-        return None
+        try:
+            r = subprocess.run(
+                ["powershell", "-NonInteractive", "-Command", ps_cache],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            cached_ver = r.stdout.strip()
+            if cached_ver and cached_ver != installed:
+                latest = cached_ver
+                source = "installer2_cache"
+        except Exception:
+            pass
+
+    update_available = bool(latest and latest != installed)
+    return {
+        "Name": name,
+        "InstalledVersion": installed,
+        "WindowsVersion": gpu["win_ver"],
+        "LatestVersion": latest,
+        "UpdateAvailable": update_available,
+        "UpdateSource": source,
+    }
 
 
 def get_windows_update_drivers() -> dict | None:

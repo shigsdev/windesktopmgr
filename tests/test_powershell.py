@@ -2277,6 +2277,9 @@ class TestWarrantyDataCommands:
 
 
 class TestGetDriverHealth:
+    """Tests for get_driver_health() — PS checks old drivers + problematic devices,
+    then calls get_nvidia_update_info() from Python for NVIDIA data."""
+
     SAMPLE = json.dumps(
         {
             "OldDrivers": [
@@ -2285,63 +2288,65 @@ class TestGetDriverHealth:
             "Problematic": [
                 {"DeviceName": "Unknown Device", "ErrorCode": 28, "Status": "Error"},
             ],
-            "NVIDIA": {
-                "Name": "NVIDIA GeForce RTX 4090",
-                "InstalledVersion": "565.79",
-                "WindowsVersion": "32.0.15.6579",
-                "DriverDate": "2024-11-01",
-                "AdapterRAM_GB": 24.0,
-                "LatestVersion": "572.16",
-                "UpdateAvailable": True,
-                "UpdateSource": "nvidia_app",
-            },
         }
     )
 
+    def _mock_deps(self, mocker, ps_stdout=None, nvidia_result=None):
+        """Mock both the PS subprocess and get_nvidia_update_info."""
+        m = _mock_run(mocker, stdout=ps_stdout if ps_stdout is not None else self.SAMPLE)
+        mocker.patch("windesktopmgr.get_nvidia_update_info", return_value=nvidia_result)
+        return m
+
     def test_happy_path_returns_all_keys(self, mocker):
-        _mock_run(mocker, stdout=self.SAMPLE)
+        self._mock_deps(mocker)
         result = wdm.get_driver_health()
         assert "old_drivers" in result
         assert "problematic_drivers" in result
         assert "nvidia" in result
 
     def test_old_drivers_parsed(self, mocker):
-        _mock_run(mocker, stdout=self.SAMPLE)
+        self._mock_deps(mocker)
         result = wdm.get_driver_health()
         assert len(result["old_drivers"]) == 1
         assert result["old_drivers"][0]["DeviceName"] == "Realtek Audio"
 
     def test_problematic_drivers_parsed(self, mocker):
-        _mock_run(mocker, stdout=self.SAMPLE)
+        self._mock_deps(mocker)
         result = wdm.get_driver_health()
         assert len(result["problematic_drivers"]) == 1
         assert result["problematic_drivers"][0]["ErrorCode"] == 28
 
-    def test_nvidia_update_detected(self, mocker):
-        _mock_run(mocker, stdout=self.SAMPLE)
+    def test_nvidia_update_from_python_call(self, mocker):
+        nv = {
+            "Name": "NVIDIA GeForce RTX 4060 Ti",
+            "InstalledVersion": "591.74",
+            "LatestVersion": "595.79",
+            "UpdateAvailable": True,
+            "UpdateSource": "nvidia_api",
+        }
+        self._mock_deps(mocker, nvidia_result=nv)
         result = wdm.get_driver_health()
-        nv = result["nvidia"]
-        assert nv is not None
-        assert nv["UpdateAvailable"] is True
-        assert nv["InstalledVersion"] == "565.79"
-        assert nv["LatestVersion"] == "572.16"
-        assert nv["UpdateSource"] == "nvidia_app"
+        assert result["nvidia"] is not None
+        assert result["nvidia"]["UpdateAvailable"] is True
+        assert result["nvidia"]["LatestVersion"] == "595.79"
 
     def test_no_nvidia_gpu_returns_none(self, mocker):
-        no_nv = json.dumps({"OldDrivers": [], "Problematic": [], "NVIDIA": None})
-        _mock_run(mocker, stdout=no_nv)
+        self._mock_deps(mocker, nvidia_result=None)
         result = wdm.get_driver_health()
         assert result["nvidia"] is None
 
     def test_empty_output_returns_safe_defaults(self, mocker):
-        _mock_run(mocker, stdout="")
+        self._mock_deps(mocker, ps_stdout="")
         result = wdm.get_driver_health()
         assert result["old_drivers"] == []
         assert result["problematic_drivers"] == []
-        assert result["nvidia"] is None
 
     def test_timeout_returns_safe_defaults(self, mocker):
-        _mock_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 30))
+        mocker.patch(
+            "windesktopmgr.subprocess.run",
+            side_effect=subprocess.TimeoutExpired("powershell", 30),
+        )
+        mocker.patch("windesktopmgr.get_nvidia_update_info", return_value=None)
         result = wdm.get_driver_health()
         assert result["old_drivers"] == []
         assert result["problematic_drivers"] == []
@@ -2351,45 +2356,127 @@ class TestGetDriverHealth:
             {
                 "OldDrivers": {"DeviceName": "Solo", "Provider": "X", "Version": "1.0", "Date": "2022-01-01"},
                 "Problematic": [],
-                "NVIDIA": None,
             }
         )
-        _mock_run(mocker, stdout=single)
+        self._mock_deps(mocker, ps_stdout=single)
         result = wdm.get_driver_health()
         assert isinstance(result["old_drivers"], list)
         assert len(result["old_drivers"]) == 1
 
     def test_command_queries_driver_date_cutoff(self, mocker):
-        m = _mock_run(mocker, stdout="{}")
+        m = self._mock_deps(mocker, ps_stdout="{}")
         wdm.get_driver_health()
         cmd = m.call_args[0][0][-1]
         assert "AddYears(-2)" in cmd
 
-    def test_command_queries_nvidia_gpu(self, mocker):
-        m = _mock_run(mocker, stdout="{}")
-        wdm.get_driver_health()
-        cmd = m.call_args[0][0][-1]
-        assert "NVIDIA" in cmd
-        assert "Win32_VideoController" in cmd
-
-    def test_command_checks_installer2_cache(self, mocker):
-        m = _mock_run(mocker, stdout="{}")
-        wdm.get_driver_health()
-        cmd = m.call_args[0][0][-1]
-        assert "Installer2" in cmd
-        assert "Display" in cmd and "Driver" in cmd
-
-    def test_command_checks_windows_update_fallback(self, mocker):
-        m = _mock_run(mocker, stdout="{}")
-        wdm.get_driver_health()
-        cmd = m.call_args[0][0][-1]
-        assert "Microsoft.Update.Session" in cmd
-
     def test_command_queries_configmanager_errors(self, mocker):
-        m = _mock_run(mocker, stdout="{}")
+        m = self._mock_deps(mocker, ps_stdout="{}")
         wdm.get_driver_health()
         cmd = m.call_args[0][0][-1]
         assert "ConfigManagerErrorCode" in cmd
+
+    def test_command_does_not_contain_nvidia_code(self, mocker):
+        """PS script should NOT contain NVIDIA/Installer2/WU code — that's in Python now."""
+        m = self._mock_deps(mocker, ps_stdout="{}")
+        wdm.get_driver_health()
+        cmd = m.call_args[0][0][-1]
+        assert "nvidia-smi" not in cmd
+        assert "Installer2" not in cmd
+        assert "Microsoft.Update.Session" not in cmd
+
+
+class TestGetNvidiaGpuInfo:
+    """Tests for _get_nvidia_gpu_info() — nvidia-smi + WMI fallback for GPU detection."""
+
+    SMI_OUTPUT = json.dumps({"Name": "NVIDIA GeForce RTX 4060 Ti", "Installed": "591.74", "WinVer": "32.0.15.9174"})
+
+    def test_happy_path_returns_gpu_dict(self, mocker):
+        _mock_run(mocker, stdout=self.SMI_OUTPUT)
+        result = wdm._get_nvidia_gpu_info()
+        assert result is not None
+        assert result["name"] == "NVIDIA GeForce RTX 4060 Ti"
+        assert result["installed"] == "591.74"
+        assert result["win_ver"] == "32.0.15.9174"
+
+    def test_no_gpu_returns_none(self, mocker):
+        _mock_run(mocker, stdout="")
+        result = wdm._get_nvidia_gpu_info()
+        assert result is None
+
+    def test_malformed_json_returns_none(self, mocker):
+        _mock_run(mocker, stdout="not json")
+        result = wdm._get_nvidia_gpu_info()
+        assert result is None
+
+    def test_timeout_returns_none(self, mocker):
+        _mock_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 15))
+        result = wdm._get_nvidia_gpu_info()
+        assert result is None
+
+    def test_command_uses_nvidia_smi(self, mocker):
+        m = _mock_run(mocker, stdout="")
+        wdm._get_nvidia_gpu_info()
+        cmd = m.call_args[0][0][-1]
+        assert "nvidia-smi" in cmd
+
+    def test_command_has_wmi_fallback(self, mocker):
+        m = _mock_run(mocker, stdout="")
+        wdm._get_nvidia_gpu_info()
+        cmd = m.call_args[0][0][-1]
+        assert "Win32_VideoController" in cmd
+
+
+class TestQueryNvidiaApi:
+    """Tests for _query_nvidia_api() — HTTP call to NVIDIA's AjaxDriverService."""
+
+    GOOD_RESPONSE = json.dumps(
+        {
+            "Success": "1",
+            "IDS": [
+                {
+                    "downloadInfo": {
+                        "Success": "1",
+                        "Version": "595.79",
+                        "DetailsURL": "https%3A%2F%2Fnvidia.com%2Fdl",
+                        "ReleaseDateTime": "2026-03-30",
+                        "Name": "NVIDIA+Studio+Driver",
+                    }
+                }
+            ],
+        }
+    ).encode()
+
+    def test_happy_path_returns_version(self, mocker):
+        mock_resp = mocker.MagicMock()
+        mock_resp.read.return_value = self.GOOD_RESPONSE
+        mock_resp.__enter__ = mocker.MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = mocker.MagicMock(return_value=False)
+        mocker.patch("urllib.request.urlopen", return_value=mock_resp)
+        result = wdm._query_nvidia_api(1022, studio=True)
+        assert result is not None
+        assert result["version"] == "595.79"
+
+    def test_api_failure_returns_none(self, mocker):
+        mocker.patch("urllib.request.urlopen", side_effect=Exception("timeout"))
+        result = wdm._query_nvidia_api(1022, studio=True)
+        assert result is None
+
+    def test_bad_success_flag_returns_none(self, mocker):
+        bad = json.dumps({"Success": "0", "IDS": []}).encode()
+        mock_resp = mocker.MagicMock()
+        mock_resp.read.return_value = bad
+        mock_resp.__enter__ = mocker.MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = mocker.MagicMock(return_value=False)
+        mocker.patch("urllib.request.urlopen", return_value=mock_resp)
+        result = wdm._query_nvidia_api(1022, studio=True)
+        assert result is None
+
+    def test_studio_and_game_ready_both_callable(self, mocker):
+        """Both studio=True and studio=False should work without errors."""
+        mocker.patch("urllib.request.urlopen", side_effect=Exception("skip"))
+        # Both calls should handle the exception gracefully and return None
+        assert wdm._query_nvidia_api(1022, studio=True) is None
+        assert wdm._query_nvidia_api(1022, studio=False) is None
 
 
 class TestWinToNvidiaVersion:
@@ -2413,72 +2500,128 @@ class TestWinToNvidiaVersion:
 
 
 class TestGetNvidiaUpdateInfo:
-    """Tests for get_nvidia_update_info() — nvidia-smi + Installer2 Cache check."""
+    """Tests for get_nvidia_update_info() — Python-based 3-tier detection:
+    _get_nvidia_gpu_info() → _query_nvidia_api() → Installer2 Cache PS fallback."""
 
-    SAMPLE = json.dumps(
-        {
-            "Name": "NVIDIA GeForce RTX 4060 Ti",
-            "InstalledVersion": "591.74",
-            "WindowsVersion": "32.0.15.9174",
-            "LatestVersion": "595.79",
-            "UpdateAvailable": True,
-            "UpdateSource": "installer2_cache",
-        }
-    )
+    GPU_INFO = {"name": "NVIDIA GeForce RTX 4060 Ti", "installed": "591.74", "win_ver": "32.0.15.9174"}
+    API_RESULT = {
+        "version": "595.79",
+        "url": "https://nvidia.com/dl/595.79",
+        "date": "2026-03-30",
+        "name": "Studio Driver",
+    }
 
-    SAMPLE_CURRENT = json.dumps(
-        {
-            "Name": "NVIDIA GeForce RTX 4060 Ti",
-            "InstalledVersion": "595.79",
-            "WindowsVersion": "32.0.15.9579",
-            "LatestVersion": "",
-            "UpdateAvailable": False,
-            "UpdateSource": "none",
-        }
-    )
+    def _mock_gpu(self, mocker, gpu=None):
+        """Mock _get_nvidia_gpu_info — returns GPU dict or None."""
+        if gpu is None:
+            gpu = self.GPU_INFO
+        return mocker.patch("windesktopmgr._get_nvidia_gpu_info", return_value=gpu)
 
-    def test_happy_path_update_available(self, mocker):
-        _mock_run(mocker, stdout=self.SAMPLE)
+    def _mock_api(self, mocker, result=None):
+        """Mock _query_nvidia_api — returns API result dict or None."""
+        return mocker.patch("windesktopmgr._query_nvidia_api", return_value=result)
+
+    def test_happy_path_api_update_available(self, mocker):
+        self._mock_gpu(mocker)
+        self._mock_api(mocker, result=self.API_RESULT)
         result = wdm.get_nvidia_update_info()
         assert result is not None
         assert result["UpdateAvailable"] is True
         assert result["LatestVersion"] == "595.79"
         assert result["InstalledVersion"] == "591.74"
+        assert result["UpdateSource"] == "nvidia_api"
         assert "RTX 4060" in result["Name"]
 
     def test_no_nvidia_gpu_returns_none(self, mocker):
-        _mock_run(mocker, stdout="")
+        mocker.patch("windesktopmgr._get_nvidia_gpu_info", return_value=None)
         result = wdm.get_nvidia_update_info()
         assert result is None
 
-    def test_driver_current_no_update(self, mocker):
-        _mock_run(mocker, stdout=self.SAMPLE_CURRENT)
+    def test_driver_current_via_api(self, mocker):
+        """API returns same version as installed → no update, but source is still nvidia_api."""
+        gpu = {"name": "NVIDIA GeForce RTX 4060 Ti", "installed": "595.79", "win_ver": "32.0.15.9579"}
+        self._mock_gpu(mocker, gpu=gpu)
+        self._mock_api(mocker, result={"version": "595.79", "url": "", "date": "", "name": ""})
         result = wdm.get_nvidia_update_info()
         assert result is not None
         assert result["UpdateAvailable"] is False
+        assert result["UpdateSource"] == "nvidia_api"
 
-    def test_timeout_returns_none(self, mocker):
+    def test_api_failure_falls_back_to_installer2_cache(self, mocker):
+        """When API fails, check Installer2 Cache via PS."""
+        self._mock_gpu(mocker)
+        self._mock_api(mocker, result=None)
+        # Mock the Installer2 Cache PS call
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.return_value.stdout = "595.79\n"
+        m.return_value.returncode = 0
+        m.return_value.stderr = ""
+        result = wdm.get_nvidia_update_info()
+        assert result is not None
+        assert result["UpdateAvailable"] is True
+        assert result["LatestVersion"] == "595.79"
+        assert result["UpdateSource"] == "installer2_cache"
+
+    def test_api_failure_no_cache_returns_no_update(self, mocker):
+        """When API fails and no Installer2 Cache → no update available."""
+        self._mock_gpu(mocker)
+        self._mock_api(mocker, result=None)
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.return_value.stdout = ""
+        m.return_value.returncode = 0
+        m.return_value.stderr = ""
+        result = wdm.get_nvidia_update_info()
+        assert result is not None
+        assert result["UpdateAvailable"] is False
+        assert result["UpdateSource"] == "none"
+
+    def test_unknown_gpu_skips_api_tries_cache(self, mocker):
+        """GPU not in pfid map → skip API, try Installer2 only."""
+        gpu = {"name": "NVIDIA GeForce GTX 1660", "installed": "560.00", "win_ver": "31.0.15.6000"}
+        self._mock_gpu(mocker, gpu=gpu)
+        api_mock = self._mock_api(mocker)
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.return_value.stdout = ""
+        m.return_value.returncode = 0
+        m.return_value.stderr = ""
+        result = wdm.get_nvidia_update_info()
+        assert result is not None
+        assert result["UpdateAvailable"] is False
+        # API should NOT be called since pfid is not in the map
+        api_mock.assert_not_called()
+
+    def test_api_studio_fails_tries_game_ready(self, mocker):
+        """Studio driver API fails → fallback to Game Ready."""
+        self._mock_gpu(mocker)
+        # First call (studio=True) returns None, second (studio=False) returns result
+        mocker.patch(
+            "windesktopmgr._query_nvidia_api",
+            side_effect=[None, self.API_RESULT],
+        )
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.return_value.stdout = ""
+        m.return_value.returncode = 0
+        m.return_value.stderr = ""
+        result = wdm.get_nvidia_update_info()
+        assert result["UpdateAvailable"] is True
+        assert result["UpdateSource"] == "nvidia_api"
+
+    def test_installer2_cache_timeout_still_returns_result(self, mocker):
+        """Installer2 PS timeout → graceful fallback, still returns GPU info."""
+        self._mock_gpu(mocker)
+        self._mock_api(mocker, result=None)
         mocker.patch(
             "windesktopmgr.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=30),
+            side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=10),
         )
         result = wdm.get_nvidia_update_info()
-        assert result is None
+        assert result is not None
+        assert result["UpdateAvailable"] is False
+        assert result["InstalledVersion"] == "591.74"
 
-    def test_malformed_json_returns_none(self, mocker):
-        _mock_run(mocker, stdout="not json at all")
+    def test_result_contains_all_expected_keys(self, mocker):
+        self._mock_gpu(mocker)
+        self._mock_api(mocker, result=self.API_RESULT)
         result = wdm.get_nvidia_update_info()
-        assert result is None
-
-    def test_command_uses_nvidia_smi(self, mocker):
-        m = _mock_run(mocker, stdout="")
-        wdm.get_nvidia_update_info()
-        cmd = m.call_args[0][0][-1]
-        assert "nvidia-smi" in cmd
-
-    def test_command_checks_installer2_cache(self, mocker):
-        m = _mock_run(mocker, stdout="")
-        wdm.get_nvidia_update_info()
-        cmd = m.call_args[0][0][-1]
-        assert "Installer2" in cmd
-        assert "Display" in cmd and "Driver" in cmd
+        for key in ("Name", "InstalledVersion", "WindowsVersion", "LatestVersion", "UpdateAvailable", "UpdateSource"):
+            assert key in result
