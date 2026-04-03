@@ -279,32 +279,41 @@ $gpu = Get-CimInstance Win32_VideoController -EA SilentlyContinue | Where-Object
 $nv = $null
 if ($gpu) {
     $nvVer = $gpu.DriverVersion
-    # Convert Windows driver version (e.g. 32.0.15.6579) to NVIDIA format (565.79)
+    # Convert Windows driver version to NVIDIA format
+    # 32.0.15.9174 → concat parts[2]+parts[3] = "159174" → drop first char → "59174" → "591.74"
     $parts = $nvVer -split '\.'
     $nvShort = ''
-    if ($parts.Count -ge 4) { $nvShort = $parts[2].Substring($parts[2].Length - 2) + '.' + $parts[3].Substring($parts[3].Length - 2) }
+    if ($parts.Count -ge 4) {
+        $raw = $parts[2] + $parts[3]
+        if ($raw.Length -gt 2) { $nvShort = $raw.Substring(1, $raw.Length - 3) + '.' + $raw.Substring($raw.Length - 2) }
+    }
 
-    # Check multiple sources for pending NVIDIA update
+    # Check for pending NVIDIA update
     $nvLatest = ''
     $nvUpdateAvail = $false
     $nvSource = 'none'
 
-    # Method 1: NVIDIA App / GeForce Experience registry
-    try {
-        foreach ($regPath in @(
-            'HKLM:\SOFTWARE\NVIDIA Corporation\Global\GFExperience',
-            'HKLM:\SOFTWARE\NVIDIA Corporation\Global\GridLicensing'
-        )) {
-            if (Test-Path $regPath) {
-                $reg = Get-ItemProperty $regPath -EA SilentlyContinue
-                if ($reg.DriverRecommendedVersion) {
-                    $nvLatest = $reg.DriverRecommendedVersion
-                    $nvSource = 'nvidia_app'
-                    break
-                }
+    # Method 1: Installer2 Cache — detect downloaded-but-not-installed newer driver
+    $cacheKey = 'HKLM:\SOFTWARE\NVIDIA Corporation\Installer2\Cache'
+    if (Test-Path $cacheKey) {
+        $props = Get-ItemProperty $cacheKey -EA SilentlyContinue
+        $maxVer = 0
+        foreach ($p in $props.PSObject.Properties) {
+            if ($p.Name -match '^Display\.Driver/(.+)$') {
+                $ver = $Matches[1] -replace '\.', ''
+                $verNum = [int]$ver
+                if ($verNum -gt $maxVer) { $maxVer = $verNum }
             }
         }
-    } catch {}
+        if ($maxVer -gt 0) {
+            $maxStr = [string]$maxVer
+            $latestCached = $maxStr.Substring(0, $maxStr.Length - 2) + '.' + $maxStr.Substring($maxStr.Length - 2)
+            if ($latestCached -ne $nvShort) {
+                $nvLatest = $latestCached
+                $nvSource = 'installer2_cache'
+            }
+        }
+    }
 
     # Method 2: Windows Update pending NVIDIA driver
     if (-not $nvLatest) {
@@ -355,36 +364,118 @@ if ($gpu) {
         return {"old_drivers": [], "problematic_drivers": [], "nvidia": None}
 
 
+def _win_to_nvidia_version(win_ver: str) -> str:
+    """Convert Windows driver version to NVIDIA short format.
+
+    Windows: 32.0.15.9174  →  NVIDIA: 591.74
+    Formula: concatenate parts[2]+parts[3], drop first char, insert dot before last 2.
+    """
+    parts = win_ver.split(".")
+    if len(parts) < 4:
+        return win_ver
+    raw = parts[2] + parts[3]  # e.g. "159174"
+    if len(raw) < 3:
+        return win_ver
+    raw = raw[1:]  # drop first char → "59174"
+    return raw[:-2] + "." + raw[-2:]  # "591.74"
+
+
 def get_nvidia_update_info() -> dict | None:
-    """Check NVIDIA App registry for pending GPU driver update.
+    """Check for NVIDIA GPU and pending driver updates.
+
+    Uses nvidia-smi for installed version (fast, reliable), then checks:
+    1. Installer2 Cache registry for downloaded-but-not-installed updates
+    2. Windows Update for pending NVIDIA driver updates
 
     Returns dict with InstalledVersion, LatestVersion, UpdateAvailable, Name
     or None if no NVIDIA GPU found.
     """
     ps = r"""
-$gpu = Get-CimInstance Win32_VideoController -EA SilentlyContinue | Where-Object { $_.Name -like '*NVIDIA*' } | Select-Object -First 1
-if (-not $gpu) { Write-Output ''; exit 0 }
-$nvVer = $gpu.DriverVersion
-$parts = $nvVer -split '\.'
-$nvShort = ''
-if ($parts.Count -ge 4) { $nvShort = $parts[2].Substring($parts[2].Length - 2) + '.' + $parts[3].Substring($parts[3].Length - 2) }
-$nvLatest = ''
-foreach ($regPath in @(
-    'HKLM:\SOFTWARE\NVIDIA Corporation\Global\GFExperience',
-    'HKLM:\SOFTWARE\NVIDIA Corporation\Global\GridLicensing'
-)) {
-    if (Test-Path $regPath) {
-        $reg = Get-ItemProperty $regPath -EA SilentlyContinue
-        if ($reg.DriverRecommendedVersion) { $nvLatest = $reg.DriverRecommendedVersion; break }
+# Use nvidia-smi for reliable version detection
+$nvsmi = "$env:SystemRoot\System32\nvidia-smi.exe"
+if (-not (Test-Path $nvsmi)) {
+    # Fallback to WMI
+    $gpu = Get-CimInstance Win32_VideoController -EA SilentlyContinue | Where-Object { $_.Name -like '*NVIDIA*' } | Select-Object -First 1
+    if (-not $gpu) { Write-Output ''; exit 0 }
+    $gpuName = $gpu.Name
+    $winVer = $gpu.DriverVersion
+} else {
+    $csv = & $nvsmi --query-gpu=name,driver_version --format=csv,noheader 2>$null
+    if (-not $csv) { Write-Output ''; exit 0 }
+    $fields = $csv -split ','
+    $gpuName = $fields[0].Trim()
+    $winVer = ''
+    # nvidia-smi returns NVIDIA format directly (e.g. 591.74)
+    $nvShort = $fields[1].Trim()
+    # Also get Windows format from WMI for compatibility
+    $gpu = Get-CimInstance Win32_VideoController -EA SilentlyContinue | Where-Object { $_.Name -like '*NVIDIA*' } | Select-Object -First 1
+    if ($gpu) { $winVer = $gpu.DriverVersion }
+}
+
+# Convert Windows version to NVIDIA format if we used WMI fallback
+if (-not $nvShort -and $winVer) {
+    $parts = $winVer -split '\.'
+    if ($parts.Count -ge 4) {
+        $raw = $parts[2] + $parts[3]
+        if ($raw.Length -gt 2) { $nvShort = $raw.Substring(1, $raw.Length - 3) + '.' + $raw.Substring($raw.Length - 2) }
     }
 }
+
+# Check Installer2 Cache for downloaded-but-not-installed newer version
+$nvLatest = ''
+$nvSource = 'none'
+$cacheKey = 'HKLM:\SOFTWARE\NVIDIA Corporation\Installer2\Cache'
+if (Test-Path $cacheKey) {
+    $props = Get-ItemProperty $cacheKey -EA SilentlyContinue
+    $maxVer = 0
+    foreach ($p in $props.PSObject.Properties) {
+        if ($p.Name -match '^Display\.Driver/(.+)$') {
+            $ver = $Matches[1] -replace '\.', ''
+            $verNum = [int]$ver
+            if ($verNum -gt $maxVer) { $maxVer = $verNum }
+        }
+    }
+    if ($maxVer -gt 0) {
+        $maxStr = [string]$maxVer
+        $latestCached = $maxStr.Substring(0, $maxStr.Length - 2) + '.' + $maxStr.Substring($maxStr.Length - 2)
+        if ($latestCached -ne $nvShort) {
+            $nvLatest = $latestCached
+            $nvSource = 'installer2_cache'
+        }
+    }
+}
+
+# Fallback: check Windows Update for pending NVIDIA driver
+if (-not $nvLatest) {
+    try {
+        $sess = New-Object -ComObject Microsoft.Update.Session
+        $search = $sess.CreateUpdateSearcher()
+        $results = $search.Search("Type='Driver' AND IsInstalled=0")
+        foreach ($u in $results.Updates) {
+            if ($u.Title -like '*NVIDIA*' -or $u.DriverManufacturer -like '*NVIDIA*') {
+                $nvLatest = if ($u.DriverVersion) { $u.DriverVersion } else { $u.Title }
+                $nvSource = 'windows_update'
+                break
+            }
+        }
+    } catch {}
+}
+
 $updateAvail = $false
-if ($nvLatest -and $nvLatest -ne $nvShort -and $nvLatest -ne $nvVer) { $updateAvail = $true }
-@{Name=$gpu.Name;InstalledVersion=$nvShort;WindowsVersion=$nvVer;LatestVersion=$nvLatest;UpdateAvailable=$updateAvail} | ConvertTo-Json
+if ($nvLatest -and $nvLatest -ne $nvShort) { $updateAvail = $true }
+
+@{
+    Name = $gpuName
+    InstalledVersion = $nvShort
+    WindowsVersion = $winVer
+    LatestVersion = $nvLatest
+    UpdateAvailable = $updateAvail
+    UpdateSource = $nvSource
+} | ConvertTo-Json
 """
     try:
         r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=15
+            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=30
         )
         raw = r.stdout.strip()
         if not raw:

@@ -2372,11 +2372,12 @@ class TestGetDriverHealth:
         assert "NVIDIA" in cmd
         assert "Win32_VideoController" in cmd
 
-    def test_command_checks_nvidia_app_registry(self, mocker):
+    def test_command_checks_installer2_cache(self, mocker):
         m = _mock_run(mocker, stdout="{}")
         wdm.get_driver_health()
         cmd = m.call_args[0][0][-1]
-        assert "GFExperience" in cmd
+        assert "Installer2" in cmd
+        assert "Display" in cmd and "Driver" in cmd
 
     def test_command_checks_windows_update_fallback(self, mocker):
         m = _mock_run(mocker, stdout="{}")
@@ -2391,16 +2392,37 @@ class TestGetDriverHealth:
         assert "ConfigManagerErrorCode" in cmd
 
 
+class TestWinToNvidiaVersion:
+    """Tests for _win_to_nvidia_version() — Windows→NVIDIA version conversion."""
+
+    def test_standard_conversion(self):
+        assert wdm._win_to_nvidia_version("32.0.15.9174") == "591.74"
+
+    def test_another_version(self):
+        assert wdm._win_to_nvidia_version("32.0.15.9579") == "595.79"
+
+    def test_older_version(self):
+        assert wdm._win_to_nvidia_version("31.0.15.6579") == "565.79"
+
+    def test_short_version_passthrough(self):
+        assert wdm._win_to_nvidia_version("1.0") == "1.0"
+
+    def test_three_digit_part3(self):
+        # e.g. 32.0.16.5770 → "165770" → drop first → "65770" → "657.70"
+        assert wdm._win_to_nvidia_version("32.0.16.5770") == "657.70"
+
+
 class TestGetNvidiaUpdateInfo:
-    """Tests for get_nvidia_update_info() — NVIDIA App registry check for Driver Manager tab."""
+    """Tests for get_nvidia_update_info() — nvidia-smi + Installer2 Cache check."""
 
     SAMPLE = json.dumps(
         {
             "Name": "NVIDIA GeForce RTX 4060 Ti",
-            "InstalledVersion": "91.74",
+            "InstalledVersion": "591.74",
             "WindowsVersion": "32.0.15.9174",
             "LatestVersion": "595.79",
             "UpdateAvailable": True,
+            "UpdateSource": "installer2_cache",
         }
     )
 
@@ -2409,8 +2431,9 @@ class TestGetNvidiaUpdateInfo:
             "Name": "NVIDIA GeForce RTX 4060 Ti",
             "InstalledVersion": "595.79",
             "WindowsVersion": "32.0.15.9579",
-            "LatestVersion": "595.79",
+            "LatestVersion": "",
             "UpdateAvailable": False,
+            "UpdateSource": "none",
         }
     )
 
@@ -2420,7 +2443,7 @@ class TestGetNvidiaUpdateInfo:
         assert result is not None
         assert result["UpdateAvailable"] is True
         assert result["LatestVersion"] == "595.79"
-        assert result["InstalledVersion"] == "91.74"
+        assert result["InstalledVersion"] == "591.74"
         assert "RTX 4060" in result["Name"]
 
     def test_no_nvidia_gpu_returns_none(self, mocker):
@@ -2437,7 +2460,7 @@ class TestGetNvidiaUpdateInfo:
     def test_timeout_returns_none(self, mocker):
         mocker.patch(
             "windesktopmgr.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=15),
+            side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=30),
         )
         result = wdm.get_nvidia_update_info()
         assert result is None
@@ -2447,16 +2470,15 @@ class TestGetNvidiaUpdateInfo:
         result = wdm.get_nvidia_update_info()
         assert result is None
 
-    def test_command_queries_nvidia_gpu(self, mocker):
+    def test_command_uses_nvidia_smi(self, mocker):
         m = _mock_run(mocker, stdout="")
         wdm.get_nvidia_update_info()
         cmd = m.call_args[0][0][-1]
-        assert "NVIDIA" in cmd
-        assert "Win32_VideoController" in cmd
+        assert "nvidia-smi" in cmd
 
-    def test_command_checks_gfexperience_registry(self, mocker):
+    def test_command_checks_installer2_cache(self, mocker):
         m = _mock_run(mocker, stdout="")
         wdm.get_nvidia_update_info()
         cmd = m.call_args[0][0][-1]
-        assert "GFExperience" in cmd
-        assert "DriverRecommendedVersion" in cmd
+        assert "Installer2" in cmd
+        assert "Display" in cmd and "Driver" in cmd

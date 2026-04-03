@@ -1066,7 +1066,7 @@ class TestRunScan:
             wu={},  # WU has no NVIDIA update — but NVIDIA App does
             nvidia={
                 "Name": "NVIDIA GeForce RTX 4060 Ti",
-                "InstalledVersion": "91.74",
+                "InstalledVersion": "591.74",
                 "LatestVersion": "595.79",
                 "UpdateAvailable": True,
             },
