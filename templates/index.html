@@ -2484,7 +2484,7 @@ function renderTimeline() {
 
   document.getElementById("tl-crashes").textContent  = (_tlData.events||[]).filter(e=>e.type==="bsod").length;
   document.getElementById("tl-updates").textContent  = (_tlData.events||[]).filter(e=>e.type==="update"||e.type==="driver_install").length;
-  document.getElementById("tl-near").textContent     = (_tlData.events||[]).filter(e=>e.near_crash).length;
+  document.getElementById("tl-near").textContent     = (_tlData.events||[]).filter(e=>e.crash_correlation?.classification==="likely_cause"||e.crash_correlation?.classification==="possible_cause").length;
   document.getElementById("tl-reboots").textContent  = (_tlData.events||[]).filter(e=>e.type==="reboot").length;
   const tlCredEl = document.getElementById("tl-credfails");
   if (tlCredEl) tlCredEl.textContent = (_tlData.events||[]).filter(e=>e.type==="cred_failure").length;
@@ -2509,8 +2509,9 @@ function renderTimeline() {
       <div style="font-size:11px;font-weight:700;color:var(--muted);padding:10px 12px 4px;letter-spacing:.08em;text-transform:uppercase">${esc(date)}</div>
       ${evts.map(e => {
         const time = new Date(e.ts).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"});
-        const nearCrash = e.near_crash
-          ? `<span style="margin-left:8px;font-size:10px;background:#ff405033;color:var(--red);padding:2px 7px;border-radius:10px;font-weight:700">⚡ ${e.crash_gap_h}h before crash</span>` : "";
+        const corr = e.crash_correlation || {};
+        const nearCrash = corr.has_correlation
+          ? `<span style="margin-left:8px;font-size:10px;background:${corr.classification==='likely_cause'?'#ff405033':'#ff8c0033'};color:${corr.classification==='likely_cause'?'var(--red)':'var(--orange)'};padding:2px 7px;border-radius:10px;font-weight:700">${corr.classification==='likely_cause'?'🔴':'🟡'} ${corr.confidence}% — crash ${e.crash_gap_h}h later</span>` : "";
         return `<div style="display:flex;align-items:flex-start;gap:10px;padding:8px 12px;border-left:3px solid ${catColor(e.type)};background:${catBg(e.type)};margin-bottom:2px">
           <span style="font-size:16px;flex-shrink:0">${esc(e.icon||"•")}</span>
           <div style="flex:1;min-width:0">

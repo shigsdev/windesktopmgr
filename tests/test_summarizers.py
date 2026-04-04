@@ -1000,3 +1000,167 @@ class TestSummarizeHealthHistory:
         result = wdm.summarize_health_history(data)
         bsod_insights = [i for i in result["insights"] if "BSOD" in i["text"]]
         assert len(bsod_insights) == 1
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# _correlate_crashes_with_updates  &  summarize_timeline
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _tl_crash(ts, stop_code=None, error_name="", faulty_driver=None):
+    return {
+        "ts": ts,
+        "type": "bsod",
+        "category": "crash",
+        "title": "System Crash",
+        "detail": f"Stop code: {stop_code}" if stop_code else "Kernel power loss",
+        "severity": "critical",
+        "icon": "💀",
+        "stop_code": stop_code,
+        "error_name": error_name,
+        "faulty_driver": faulty_driver,
+    }
+
+
+def _tl_update(ts, title="Windows Update KB1234", update_type="update"):
+    return {
+        "ts": ts,
+        "type": update_type,
+        "category": "update",
+        "title": title,
+        "detail": "",
+        "severity": "info",
+        "icon": "🔄",
+    }
+
+
+class TestCorrelateUpdatesWithCrashes:
+    """Tests for _correlate_crashes_with_updates."""
+
+    def test_crash_after_update_gets_correlated(self):
+        events = [
+            _tl_update("2026-04-01T10:00:00"),
+            _tl_crash("2026-04-01T11:30:00", "0x00000116", "VIDEO_TDR_FAILURE", "nvlddmkm.sys"),
+        ]
+        result = wdm._correlate_crashes_with_updates(events)
+        upd = [e for e in result if e["type"] == "update"][0]
+        assert upd["crash_correlation"]["has_correlation"] is True
+        assert upd["crash_correlation"]["confidence"] > 0
+
+    def test_crash_before_update_not_correlated(self):
+        events = [
+            _tl_crash("2026-04-01T08:00:00", "0x00000116", "VIDEO_TDR_FAILURE"),
+            _tl_update("2026-04-01T10:00:00"),
+        ]
+        result = wdm._correlate_crashes_with_updates(events)
+        upd = [e for e in result if e["type"] == "update"][0]
+        assert upd["crash_correlation"]["has_correlation"] is False
+
+    def test_domain_match_boosts_confidence(self):
+        # NVIDIA driver update → nvlddmkm.sys crash should score higher
+        events_matched = [
+            _tl_update("2026-04-01T10:00:00", "NVIDIA GeForce Driver Update", "driver_install"),
+            _tl_crash("2026-04-01T11:00:00", "0x00000116", "VIDEO_TDR_FAILURE", "nvlddmkm.sys"),
+        ]
+        events_unmatched = [
+            _tl_update("2026-04-01T10:00:00", "Windows Security Update KB5555"),
+            _tl_crash("2026-04-01T11:00:00", "0x00000116", "VIDEO_TDR_FAILURE", "nvlddmkm.sys"),
+        ]
+        result_matched = wdm._correlate_crashes_with_updates(events_matched)
+        result_unmatched = wdm._correlate_crashes_with_updates(events_unmatched)
+        conf_matched = [e for e in result_matched if e["type"] == "driver_install"][0]["crash_correlation"][
+            "confidence"
+        ]
+        conf_unmatched = [e for e in result_unmatched if e["type"] == "update"][0]["crash_correlation"]["confidence"]
+        assert conf_matched > conf_unmatched
+
+    def test_pre_existing_pattern_reduces_confidence(self):
+        # Same stop code existed before the update → confidence drops
+        events = [
+            _tl_crash("2026-03-25T08:00:00", "0x00000116", "VIDEO_TDR_FAILURE"),
+            _tl_update("2026-04-01T10:00:00"),
+            _tl_crash("2026-04-01T11:00:00", "0x00000116", "VIDEO_TDR_FAILURE"),
+        ]
+        result = wdm._correlate_crashes_with_updates(events)
+        upd = [e for e in result if e["type"] == "update"][0]
+        # Still correlated but lower confidence due to pre-existing
+        corr = upd["crash_correlation"]
+        assert corr["has_correlation"] is True
+        assert any("prior" in r.lower() or "existed before" in r.lower() for r in corr["reasoning"])
+
+    def test_new_crash_pattern_boosts_confidence(self):
+        # Stop code first appeared after update → confidence boost
+        events = [
+            _tl_update("2026-04-01T10:00:00", "NVIDIA Driver Update", "driver_install"),
+            _tl_crash("2026-04-01T11:00:00", "0x00000116", "VIDEO_TDR_FAILURE", "nvlddmkm.sys"),
+        ]
+        result = wdm._correlate_crashes_with_updates(events)
+        upd = [e for e in result if e["type"] == "driver_install"][0]
+        corr = upd["crash_correlation"]
+        assert any("first time" in r.lower() for r in corr["reasoning"])
+
+    def test_crash_more_than_24h_after_not_correlated(self):
+        events = [
+            _tl_update("2026-04-01T10:00:00"),
+            _tl_crash("2026-04-03T10:00:00"),  # 48h later
+        ]
+        result = wdm._correlate_crashes_with_updates(events)
+        upd = [e for e in result if e["type"] == "update"][0]
+        assert upd["crash_correlation"]["has_correlation"] is False
+
+    def test_no_crashes_means_no_correlation(self):
+        events = [_tl_update("2026-04-01T10:00:00")]
+        result = wdm._correlate_crashes_with_updates(events)
+        upd = result[0]
+        assert upd["crash_correlation"]["has_correlation"] is False
+
+    def test_classification_likely_cause(self):
+        # Driver install with domain match + close timing → likely_cause
+        events = [
+            _tl_update("2026-04-01T10:00:00", "NVIDIA GeForce Driver", "driver_install"),
+            _tl_crash("2026-04-01T10:30:00", "0x00000116", "VIDEO_TDR_FAILURE", "nvlddmkm.sys"),
+        ]
+        result = wdm._correlate_crashes_with_updates(events)
+        upd = [e for e in result if e["type"] == "driver_install"][0]
+        assert upd["crash_correlation"]["classification"] == "likely_cause"
+
+    def test_backward_compat_near_crash_field(self):
+        events = [
+            _tl_update("2026-04-01T10:00:00"),
+            _tl_crash("2026-04-01T11:00:00"),
+        ]
+        result = wdm._correlate_crashes_with_updates(events)
+        upd = [e for e in result if e["type"] == "update"][0]
+        # near_crash field still set for backward compat
+        assert "near_crash" in upd
+
+
+class TestSummarizeTimeline:
+    def test_likely_cause_returns_critical(self):
+        events = [
+            _tl_update("2026-04-01T10:00:00", "NVIDIA Driver", "driver_install"),
+            _tl_crash("2026-04-01T10:30:00", "0x00000116", "VIDEO_TDR_FAILURE", "nvlddmkm.sys"),
+        ]
+        events = wdm._correlate_crashes_with_updates(events)
+        result = wdm.summarize_timeline(events)
+        assert result["status"] == "critical"
+        assert "likely" in result["headline"].lower()
+
+    def test_no_crashes_returns_ok(self):
+        events = [_tl_update("2026-04-01T10:00:00")]
+        events = wdm._correlate_crashes_with_updates(events)
+        result = wdm.summarize_timeline(events)
+        assert result["status"] == "ok"
+
+    def test_crashes_without_correlation_returns_warning(self):
+        events = [
+            _tl_crash("2026-04-01T08:00:00"),
+            _tl_update("2026-04-01T10:00:00"),  # update after crash — no correlation
+        ]
+        events = wdm._correlate_crashes_with_updates(events)
+        result = wdm.summarize_timeline(events)
+        assert result["status"] == "warning"
+
+    def test_empty_events_returns_ok(self):
+        result = wdm.summarize_timeline([])
+        assert result["status"] == "ok"

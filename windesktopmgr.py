@@ -161,6 +161,61 @@ BUGCHECK_CODES = {
     "0x1000008e": "KERNEL_MODE_EXCEPTION_NOT_HANDLED_M",
 }
 
+# ─── Crash correlation domain mappings ────────────────────────────────────────
+# Stop codes that are inherently driver-related
+DRIVER_RELATED_STOP_CODES = {
+    "VIDEO_TDR_FAILURE",
+    "VIDEO_TDR_TIMEOUT_DETECTED",
+    "VIDEO_SCHEDULER_INTERNAL_ERROR",
+    "DRIVER_IRQL_NOT_LESS_OR_EQUAL",
+    "DRIVER_POWER_STATE_FAILURE",
+    "DRIVER_OVERRAN_STACK_BUFFER",
+    "THREAD_STUCK_IN_DEVICE_DRIVER",
+    "KMODE_EXCEPTION_NOT_HANDLED",
+    "SYSTEM_THREAD_EXCEPTION_NOT_HANDLED",
+    "IRQL_NOT_LESS_OR_EQUAL",
+    "WDF_VIOLATION",
+    "NDIS_INTERNAL_ERROR",
+}
+
+# Map faulty .sys file to a broad domain for semantic matching
+_DRIVER_DOMAIN = {
+    "nvlddmkm.sys": "nvidia",
+    "nvwgf2umx.sys": "nvidia",
+    "dxgmms2.sys": "gpu",
+    "atikmdag.sys": "amd_gpu",
+    "igdkmd64.sys": "intel_gpu",
+    "tcpip.sys": "network",
+    "ndis.sys": "network",
+    "e1d65x64.sys": "network",
+    "intelppm.sys": "intel_cpu",
+    "storport.sys": "storage",
+    "iastora.sys": "storage",
+    "hidclass.sys": "usb",
+    "wdf01000.sys": "usb",
+    "klif.sys": "security",
+    "mfehidk.sys": "security",
+    "aswsnx.sys": "security",
+}
+
+# Extract a domain from update title keywords
+_UPDATE_DOMAIN_KEYWORDS = {
+    "nvidia": "nvidia",
+    "geforce": "nvidia",
+    "radeon": "amd_gpu",
+    "amd": "amd_gpu",
+    "intel": "intel_cpu",
+    "realtek": "network",
+    "network": "network",
+    "wi-fi": "network",
+    "usb": "usb",
+    "storage": "storage",
+    "nvme": "storage",
+    "defender": "security",
+    "mcafee": "security",
+}
+
+
 RECOMMENDATIONS_DB = {
     "HYPERVISOR_ERROR": {
         "priority": "critical",
@@ -5020,6 +5075,11 @@ $results | ConvertTo-Json -Depth 2
             eid = e.get("EventId", 0)
             msg = e.get("Message", "")
             code = re.search(r"0x[0-9a-fA-F]{4,8}", msg)
+            # Parse structured crash data for correlation
+            parsed = parse_event(e)
+            stop_code = parsed.get("stop_code") if parsed else None
+            error_name = parsed.get("error_code", "") if parsed else ""
+            faulty_drv = parsed.get("faulty_driver") if parsed else None
             events.append(
                 {
                     "ts": ts.isoformat(),
@@ -5033,6 +5093,9 @@ $results | ConvertTo-Json -Depth 2
                     ),
                     "severity": "critical",
                     "icon": "💀",
+                    "stop_code": stop_code,
+                    "error_name": error_name,
+                    "faulty_driver": faulty_drv,
                 }
             )
     except Exception as e:
@@ -5209,21 +5272,171 @@ try {
     except Exception as e:
         print(f"[Timeline] Cred events error: {e}")
 
-    # ── Sort and annotate ─────────────────────────────────────────────────────
+    # ── Sort and correlate ────────────────────────────────────────────────────
     events.sort(key=lambda e: e["ts"], reverse=True)
+    events = _correlate_crashes_with_updates(events)
+    return events
 
-    # Flag updates that happened within 2 hours before a crash
-    crash_times = [_parse_ts(e["ts"]) for e in events if e["type"] == "bsod"]
+
+def _get_update_domain(title: str) -> str | None:
+    """Extract a domain tag from an update title (e.g. 'NVIDIA' -> 'nvidia')."""
+    lower = title.lower()
+    for keyword, domain in _UPDATE_DOMAIN_KEYWORDS.items():
+        if keyword in lower:
+            return domain
+    return None
+
+
+def _get_crash_domain(faulty_driver: str | None) -> str | None:
+    """Map a faulty .sys file to a domain tag."""
+    if not faulty_driver:
+        return None
+    return _DRIVER_DOMAIN.get(faulty_driver.lower())
+
+
+def _correlate_crashes_with_updates(events: list) -> list:
+    """Smart crash-update correlation with confidence scoring.
+
+    Instead of naive abs(time difference), this:
+    1. Only links updates BEFORE crashes (causation direction)
+    2. Checks if the crash pattern is pre-existing (existed before update)
+    3. Matches driver domains (e.g. NVIDIA update → nvlddmkm.sys crash)
+    4. Assigns a confidence score (0-100) and classification
+    """
+    crashes = [e for e in events if e["type"] == "bsod"]
+    updates = [e for e in events if e["type"] in ("update", "driver_install")]
+
+    if not crashes or not updates:
+        for ev in events:
+            if ev["type"] in ("update", "driver_install"):
+                ev["near_crash"] = False
+                ev["crash_correlation"] = {"has_correlation": False}
+        return events
+
+    # Build a map of stop codes → sorted timestamps (oldest first) for pre-existing check
+    code_history: dict[str, list[datetime]] = {}
+    for c in crashes:
+        code = c.get("error_name") or c.get("stop_code") or "UNKNOWN"
+        ts = _parse_ts(c["ts"])
+        code_history.setdefault(code, []).append(ts)
+    for v in code_history.values():
+        v.sort()
+
+    # Score each update against crashes
     for ev in events:
-        ev["near_crash"] = False
-        if ev["type"] in ("update", "driver_install"):
-            ev_ts = _parse_ts(ev["ts"])
-            for ct in crash_times:
-                diff_h = abs((ct - ev_ts).total_seconds() / 3600)
-                if 0 < diff_h <= 4:
-                    ev["near_crash"] = True
-                    ev["crash_gap_h"] = round(diff_h, 1)
-                    break
+        if ev["type"] not in ("update", "driver_install"):
+            continue
+        ev_ts = _parse_ts(ev["ts"])
+        update_domain = _get_update_domain(ev.get("title", ""))
+        best_score = 0
+        matched_crashes = []
+        reasoning = []
+
+        for c in crashes:
+            crash_ts = _parse_ts(c["ts"])
+            delta_h = (crash_ts - ev_ts).total_seconds() / 3600
+
+            # Only consider crashes AFTER the update (cause → effect)
+            if delta_h <= 0 or delta_h > 24:
+                continue
+
+            score = 0
+            reasons = []
+
+            # ── Time proximity ────────────────────────────────────
+            if delta_h <= 2:
+                score += 30
+                reasons.append(f"Crash {delta_h:.1f}h after update (very close)")
+            elif delta_h <= 6:
+                score += 20
+                reasons.append(f"Crash {delta_h:.1f}h after update")
+            else:
+                score += 10
+                reasons.append(f"Crash {delta_h:.1f}h after update (loose)")
+
+            # ── Update type ───────────────────────────────────────
+            if ev["type"] == "driver_install":
+                score += 15
+                reasons.append("Update is a driver/firmware install")
+
+            # ── Driver-related stop code ──────────────────────────
+            error_name = c.get("error_name", "")
+            if error_name in DRIVER_RELATED_STOP_CODES:
+                score += 10
+                reasons.append(f"Stop code {error_name} is driver-related")
+
+            # ── Domain match ──────────────────────────────────────
+            crash_domain = _get_crash_domain(c.get("faulty_driver"))
+            if update_domain and crash_domain and update_domain == crash_domain:
+                score += 25
+                reasons.append(f"Domain match: {update_domain} update → {c.get('faulty_driver', '?')} crash")
+
+            # ── Faulty driver in update title ─────────────────────
+            faulty = c.get("faulty_driver", "")
+            if faulty and faulty.lower().replace(".sys", "") in ev.get("title", "").lower():
+                score += 20
+                reasons.append(f"Faulty driver {faulty} mentioned in update title")
+
+            # ── Pre-existing pattern check ────────────────────────
+            code_key = error_name or c.get("stop_code") or "UNKNOWN"
+            code_times = code_history.get(code_key, [])
+            pre_existing = [t for t in code_times if t < ev_ts]
+            if pre_existing:
+                score -= 20
+                reasons.append(f"Same crash pattern existed before update ({len(pre_existing)} prior occurrence(s))")
+            else:
+                score += 15
+                reasons.append("First time this crash pattern appeared after update")
+
+            # ── Cluster bonus ─────────────────────────────────────
+            post_same_code = [t for t in code_times if 0 < (t - ev_ts).total_seconds() / 3600 <= 24]
+            if len(post_same_code) >= 2:
+                score += 10
+                reasons.append(f"{len(post_same_code)} crashes with same code within 24h")
+
+            score = max(5, min(100, score))
+
+            matched_crashes.append(
+                {
+                    "ts": c["ts"],
+                    "stop_code": c.get("error_name") or c.get("stop_code", ""),
+                    "faulty_driver": c.get("faulty_driver"),
+                    "hours_after_update": round(delta_h, 1),
+                    "confidence": score,
+                }
+            )
+            if score > best_score:
+                best_score = score
+                reasoning = reasons
+
+        # Classify
+        if best_score >= 70:
+            classification = "likely_cause"
+        elif best_score >= 40:
+            classification = "possible_cause"
+        elif best_score > 0:
+            classification = "coincidental"
+        else:
+            classification = None
+
+        has_corr = best_score > 0 and len(matched_crashes) > 0
+        ev["near_crash"] = has_corr and classification in ("likely_cause", "possible_cause")
+        if has_corr and matched_crashes:
+            ev["crash_gap_h"] = matched_crashes[0]["hours_after_update"]
+        ev["crash_correlation"] = {
+            "has_correlation": has_corr,
+            "confidence": best_score if has_corr else 0,
+            "classification": classification,
+            "matched_crashes": sorted(matched_crashes, key=lambda x: -x["confidence"])[:5],
+            "reasoning": reasoning,
+        }
+
+    # Ensure non-update events have the field
+    for ev in events:
+        if "crash_correlation" not in ev:
+            ev["crash_correlation"] = {"has_correlation": False}
+        if "near_crash" not in ev:
+            ev["near_crash"] = False
 
     return events
 
@@ -5235,17 +5448,35 @@ def summarize_timeline(events: list) -> dict:
     crashes = [e for e in events if e["type"] == "bsod"]
     updates = [e for e in events if e["type"] in ("update", "driver_install")]
     cred_fails = [e for e in events if e["type"] == "cred_failure"]
-    near_crash = [e for e in updates if e.get("near_crash")]
-    if near_crash:
+
+    # Confidence-based correlation groups
+    correlated = [e for e in updates if e.get("crash_correlation", {}).get("has_correlation")]
+    likely = [e for e in correlated if e["crash_correlation"]["classification"] == "likely_cause"]
+    possible = [e for e in correlated if e["crash_correlation"]["classification"] == "possible_cause"]
+
+    if likely:
+        for u in likely[:3]:
+            corr = u["crash_correlation"]
+            top_crash = corr["matched_crashes"][0] if corr["matched_crashes"] else {}
+            stop = top_crash.get("stop_code", "unknown crash")
+            gap = top_crash.get("hours_after_update", "?")
+            insights.append(
+                _insight(
+                    "critical",
+                    f"{u['title'][:50]} → {stop} {gap}h later (confidence {corr['confidence']}%).",
+                    corr["reasoning"][0] if corr["reasoning"] else "Consider rolling back this update.",
+                )
+            )
+        actions.append("Review and consider rolling back flagged updates")
+    if possible:
+        titles = ", ".join(e["title"][:35] for e in possible[:2])
         insights.append(
             _insight(
-                "critical",
-                f"{len(near_crash)} update(s) installed within 4 hours of a crash: "
-                + ", ".join(e["title"][:40] for e in near_crash[:2]),
-                "These updates are likely candidates for the crash cause. Consider rolling them back.",
+                "warning",
+                f"{len(possible)} update(s) with suspicious crash timing: {titles}.",
+                "Investigate these updates — they may or may not be related.",
             )
         )
-        actions.append("Review near-crash updates")
     if crashes:
         insights.append(
             _insight("warning" if len(crashes) < 5 else "critical", f"{len(crashes)} crash(es) in the selected period.")
@@ -5262,12 +5493,14 @@ def summarize_timeline(events: list) -> dict:
                 "Check the Credentials & Network Health tab for diagnosis.",
             )
         )
-    if not crashes and not near_crash:
+    if not crashes and not likely and not possible:
         insights.append(_insight("ok", "No crashes detected and no suspicious update timing."))
-    status = "critical" if near_crash else "warning" if crashes else "ok"
+    status = "critical" if likely else "warning" if (possible or crashes) else "ok"
     headline = (
-        f"{len(near_crash)} update(s) correlated with crashes!"
-        if near_crash
+        f"{len(likely)} update(s) likely caused crashes!"
+        if likely
+        else f"{len(possible)} update(s) may be related to crashes"
+        if possible
         else f"{len(crashes)} crash(es), {len(updates)} update(s) in period"
     )
     return {"status": status, "headline": headline, "insights": insights, "actions": actions}
