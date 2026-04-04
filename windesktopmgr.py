@@ -89,13 +89,7 @@ CATEGORY_NOTES = {
 
 
 # ─── BSOD constants ───────────────────────────────────────────────────────────
-REPORT_DIR = os.path.join(
-    os.environ.get("USERPROFILE", os.path.expanduser("~")),
-    "OneDrive",
-    "Coding",
-    "Windows Tools",
-    "System Health Reports",
-)
+REPORT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "System Health Reports")
 
 BUGCHECK_CODES = {
     "0x0000000a": "IRQL_NOT_LESS_OR_EQUAL",
@@ -4882,12 +4876,31 @@ def get_health_report_history() -> dict:
     avg_score = round(sum(scores) / len(scores), 1) if scores else None
     latest = reports[-1] if reports else None
 
+    # Staleness check — flag if no report in the last 48 hours
+    stale = False
+    stale_days = 0
+    if latest and latest.get("timestamp"):
+        try:
+            ts = latest["timestamp"]
+            # Handle ISO format: "2026-04-03T17:01:14+00:00"
+            if "T" in ts:
+                last_dt = datetime.fromisoformat(ts.replace("+00:00", "").replace("Z", ""))
+            else:
+                last_dt = datetime.strptime(ts, "%Y-%m-%d %H:%M")
+            age = datetime.now() - last_dt
+            stale_days = age.days
+            stale = age.total_seconds() > 48 * 3600  # >48 hours
+        except (ValueError, TypeError):
+            pass
+
     return {
         "reports": reports,
         "total": len(reports),
         "avg_score": avg_score,
         "latest": latest,
         "report_dir": REPORT_DIR,
+        "stale": stale,
+        "stale_days": stale_days,
     }
 
 
@@ -4904,6 +4917,16 @@ def summarize_health_history(data: dict) -> dict:
     avg = data.get("avg_score")
     last = data.get("latest", {})
     last_score = last.get("score") if last else None
+    # Staleness alert
+    if data.get("stale"):
+        days = data.get("stale_days", 0)
+        insights.append(
+            _insight(
+                "warning",
+                f"Health reports are stale — last report was {days} day(s) ago.",
+                "Check that the scheduled task for SystemHealthDiag.py is running and that REPORT_DIR matches.",
+            )
+        )
     # Score trend
     if avg is not None:
         level = "ok" if avg >= 80 else "warning" if avg >= 60 else "critical"

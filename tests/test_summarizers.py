@@ -925,3 +925,78 @@ class TestSummarizeEvents:
         assert "headline" in result
         assert "insights" in result
         assert "actions" in result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# summarize_health_history
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def _hh_report(score=85, bsod_count=0, date_label="Apr 01"):
+    return {
+        "file": "report.html",
+        "timestamp": "2026-04-01T07:00:00+00:00",
+        "date_label": date_label,
+        "score": score,
+        "bsod_count": bsod_count,
+        "whea_count": 0,
+        "drv_errors": 0,
+        "sys_files": [],
+        "status": "ok",
+    }
+
+
+class TestSummarizeHealthHistory:
+    def test_no_reports_returns_info(self):
+        result = wdm.summarize_health_history({"reports": []})
+        assert result["status"] == "info"
+        assert "No health reports" in result["headline"]
+
+    def test_stale_reports_show_warning(self):
+        data = {
+            "reports": [_hh_report()],
+            "avg_score": 85,
+            "latest": _hh_report(),
+            "stale": True,
+            "stale_days": 5,
+        }
+        result = wdm.summarize_health_history(data)
+        stale_insights = [i for i in result["insights"] if "stale" in i["text"].lower()]
+        assert len(stale_insights) == 1
+        assert stale_insights[0]["level"] == "warning"
+        assert "5 day" in stale_insights[0]["text"]
+
+    def test_fresh_reports_no_stale_warning(self):
+        data = {
+            "reports": [_hh_report()],
+            "avg_score": 85,
+            "latest": _hh_report(),
+            "stale": False,
+            "stale_days": 0,
+        }
+        result = wdm.summarize_health_history(data)
+        stale_insights = [i for i in result["insights"] if "stale" in i["text"].lower()]
+        assert len(stale_insights) == 0
+
+    def test_critical_score_returns_critical(self):
+        data = {
+            "reports": [_hh_report(score=40)],
+            "avg_score": 40,
+            "latest": _hh_report(score=40),
+            "stale": False,
+            "stale_days": 0,
+        }
+        result = wdm.summarize_health_history(data)
+        assert result["status"] == "critical"
+
+    def test_bsod_reports_raise_warning(self):
+        data = {
+            "reports": [_hh_report(bsod_count=3)],
+            "avg_score": 85,
+            "latest": _hh_report(bsod_count=3),
+            "stale": False,
+            "stale_days": 0,
+        }
+        result = wdm.summarize_health_history(data)
+        bsod_insights = [i for i in result["insights"] if "BSOD" in i["text"]]
+        assert len(bsod_insights) == 1

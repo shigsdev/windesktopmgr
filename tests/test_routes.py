@@ -914,6 +914,23 @@ class TestHealthHistoryDataRoute:
         resp = client.get("/api/health-history/data")
         assert resp.content_type.startswith("application/json")
 
+    def test_stale_flag_included_in_response(self, client, mocker):
+        mocker.patch(
+            "windesktopmgr.get_health_report_history",
+            return_value={
+                "reports": [],
+                "total": 0,
+                "avg_score": None,
+                "latest": None,
+                "stale": True,
+                "stale_days": 10,
+            },
+        )
+        resp = client.get("/api/health-history/data")
+        data = resp.get_json()
+        assert data["stale"] is True
+        assert data["stale_days"] == 10
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GET  /api/timeline/data

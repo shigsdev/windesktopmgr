@@ -2399,6 +2399,15 @@ function renderHealthHistory(d) {
     return;
   }
 
+  // Staleness warning banner
+  const staleBanner = document.getElementById("hh-stale-banner");
+  if (d.stale) {
+    staleBanner.innerHTML = `<span style="color:var(--orange);font-weight:600">⚠ Reports are stale</span> — last report was ${d.stale_days} day(s) ago. Check that the SystemHealthDiag scheduled task is running.`;
+    staleBanner.style.display = "block";
+  } else {
+    staleBanner.style.display = "none";
+  }
+
   // Chart
   const labels = reports.map(r => r.date_label);
   const scores = reports.map(r => r.score);
@@ -4511,6 +4520,7 @@ function renderSystemInfo(d) {
       <h2 style="margin:0">Health Score History</h2>
       <button class="btn-action" onclick="loadHealthHistory()" style="padding:6px 16px;font-size:12px">↺ Refresh</button>
     </div>
+    <div id="hh-stale-banner" style="display:none;background:rgba(245,158,11,0.1);border:1px solid var(--orange);border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:var(--muted)"></div>
     <div id="hh-loading" style="text-align:center;padding:40px;color:var(--muted)">Loading health reports…</div>
     <div id="hh-content" style="display:none">
       <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px;margin-bottom:24px">

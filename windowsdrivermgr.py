@@ -46,9 +46,7 @@ CATEGORIES = {
 DELL_API = "https://www.dell.com/support/driver/en-us/ips/api/driverlist/fetchdriversbyproduct"
 
 # ─── BSOD constants ───────────────────────────────────────────────────────────
-REPORT_DIR = os.path.join(
-    os.environ.get("USERPROFILE", "C:\\Users\\higs7"), "OneDrive", "Coding", "Windows Tools", "System Health Reports"
-)
+REPORT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "System Health Reports")
 
 BUGCHECK_CODES = {
     "0x00020001": "HYPERVISOR_ERROR",
