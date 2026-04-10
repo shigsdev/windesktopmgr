@@ -18,6 +18,7 @@ required).  Each test group covers:
 
 import json
 import subprocess
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -1026,24 +1027,29 @@ class TestGetCurrentBios:
 
 
 class TestGetSystemTimeline:
-    # All timestamps within 30-day window
+    # All timestamps within 30-day window — use relative dates so tests don't rot
+    _NOW = datetime.now(timezone.utc)
+    _BSOD1 = (_NOW - timedelta(days=20)).isoformat()
+    _BSOD2 = (_NOW - timedelta(days=15)).isoformat()
+    _UPDATE = (_NOW - timedelta(days=18)).isoformat()
+
     BSOD_EVTS = json.dumps(
         [
             {
                 "EventId": 41,
-                "TimeCreated": "2026-03-10T08:00:00+00:00",
+                "TimeCreated": _BSOD1,
                 "Message": "The system has rebooted without cleanly shutting down first.",
             },
             {
                 "EventId": 1001,
-                "TimeCreated": "2026-03-15T12:00:00+00:00",
+                "TimeCreated": _BSOD2,
                 "Message": "Problem signature: stop code 0x0000009F",
             },
         ]
     )
     UPDATE_EVTS = json.dumps(
         [
-            {"Title": "2026-03 Cumulative Update (KB5055523)", "Date": "2026-03-12T02:00:00+00:00", "KB": "KB5055523"},
+            {"Title": "2026-03 Cumulative Update (KB5055523)", "Date": _UPDATE, "KB": "KB5055523"},
         ]
     )
     EMPTY = json.dumps([])

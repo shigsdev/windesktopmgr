@@ -1308,28 +1308,6 @@ class TestDashboardSummaryRoute:
         assert data["overall"] == "critical"
         assert data["critical"] >= 1
 
-    def test_mcafee_detected_raises_warning(self, client, mocker):
-        self._mock_dashboard_deps(
-            mocker,
-            memory={
-                "total_mb": 32768,
-                "used_mb": 16000,
-                "free_mb": 16768,
-                "categories": {},
-                "top_procs": [],
-                "mcafee_mb": 500,
-                "defender_mb": 150,
-                "defender_baseline": 150,
-                "mcafee_saving_mb": 350,
-                "has_mcafee": True,
-            },
-        )
-        resp = client.get("/api/dashboard/summary")
-        data = resp.get_json()
-        assert data["warnings"] >= 1
-        mcafee_concerns = [c for c in data["concerns"] if "McAfee" in c["title"]]
-        assert len(mcafee_concerns) >= 1
-
     def test_disk_critical_when_drive_95_pct_full(self, client, mocker):
         self._mock_dashboard_deps(
             mocker,

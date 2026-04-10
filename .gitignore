@@ -50,6 +50,10 @@ diag_email_config.xml
 # Any generated reports
 System Health Reports/
 
+# ── LinkedIn drafts ───────────────────────────────────────────────────────
+linkedin_post*.md
+linkedin_preview*.html
+
 # ── OS files ──────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db

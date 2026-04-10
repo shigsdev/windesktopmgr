@@ -5692,33 +5692,17 @@ def summarize_memory(data: dict) -> dict:
     level = "critical" if pct > 90 else "warning" if pct > 75 else "ok"
     insights.append(_insight(level, f"{used:,.0f} MB used of {total:,.0f} MB ({pct}%). {free:,.0f} MB free."))
 
-    if data.get("has_mcafee"):
-        saving = data.get("mcafee_saving_mb", 0)
-        mcafee_mb = data.get("mcafee_mb", 0)
-        insights.append(
-            _insight(
-                "warning",
-                f"McAfee is using {mcafee_mb:,.0f} MB RAM. "
-                f"Switching to Windows Defender (built-in) could free ~{saving:,.0f} MB.",
-                "Consider uninstalling McAfee — Windows Defender provides equivalent protection "
-                "and uses ~150 MB vs McAfee's current usage.",
-            )
-        )
-        actions.append("Consider switching from McAfee to Windows Defender")
-
     browser_mb = cats.get("browser", 0)
     comms_mb = cats.get("comms", 0)
     if browser_mb > 2000:
         insights.append(_insight("warning", f"Browsers are using {browser_mb:,.0f} MB. Consider closing unused tabs."))
     if comms_mb > 1000:
         insights.append(_insight("info", f"Communication apps (Teams, Slack, etc.) are using {comms_mb:,.0f} MB."))
-    if not data.get("has_mcafee") and pct < 75:
+    if pct < 75:
         insights.append(_insight("ok", "Memory usage is within normal limits."))
 
-    status = "critical" if pct > 90 else "warning" if (pct > 75 or data.get("has_mcafee")) else "ok"
-    headline = f"{pct}% RAM used — {used:,.0f}/{total:,.0f} MB" + (
-        f" | McAfee using {data.get('mcafee_mb', 0):,.0f} MB" if data.get("has_mcafee") else ""
-    )
+    status = "critical" if pct > 90 else "warning" if pct > 75 else "ok"
+    headline = f"{pct}% RAM used — {used:,.0f}/{total:,.0f} MB"
     return {"status": status, "headline": headline, "insights": insights, "actions": actions}
 
 
@@ -7720,22 +7704,8 @@ def dashboard_summary():
             }
         )
 
-    # Memory / McAfee
+    # Memory
     mem = results.get("memory", {})
-    if mem.get("has_mcafee"):
-        mc_mb = mem.get("mcafee_mb", 0)
-        saving = mem.get("mcafee_saving_mb", 0)
-        concerns.append(
-            {
-                "level": "warning",
-                "tab": "memory",
-                "icon": "🧠",
-                "title": f"McAfee using {mc_mb:,.0f} MB RAM",
-                "detail": f"Switching to Windows Defender could free ~{saving:,.0f} MB.",
-                "action": "View Memory Analysis",
-                "action_fn": "switchTab('memory')",
-            }
-        )
     mem_pct = round(mem.get("used_mb", 0) / max(mem.get("total_mb", 1), 1) * 100, 1)
     if mem_pct > 90:
         concerns.append(
