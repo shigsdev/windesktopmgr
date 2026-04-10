@@ -620,6 +620,7 @@
       <button class="page-tab" data-page="sysinfo">🖥 System Info</button>
       <button class="page-tab" data-page="remediation">🔧 Remediation</button>
       <button class="page-tab" data-page="homenet">🏠 Home Network</button>
+      <button class="page-tab" data-page="logs">📜 Logs</button>
       <button class="page-tab" data-page="architecture">🏗 Architecture</button>
     </div>
   </nav>
@@ -1074,7 +1075,7 @@ document.querySelectorAll(".page-tab").forEach(btn => {
     const page = btn.dataset.page;
     // Stop home network polling when leaving the tab
     if (page !== "homenet" && typeof _hnStopPolling === "function") _hnStopPolling();
-    ["dashboard","drivers","bsod","startup","disk","network","updates","events","processes","thermals","services","health-history","timeline","memory","bios","credentials","sysinfo","remediation","homenet","architecture"].forEach(function(p) {
+    ["dashboard","drivers","bsod","startup","disk","network","updates","events","processes","thermals","services","health-history","timeline","memory","bios","credentials","sysinfo","remediation","homenet","logs","architecture"].forEach(function(p) {
       var el = document.getElementById("page-" + p);
       if (el) el.style.display = (p === page) ? "" : "none";
     });
@@ -1114,6 +1115,8 @@ document.querySelectorAll(".page-tab").forEach(btn => {
       if (!_tabLoaded["remediation"])    { _tabLoaded["remediation"]    = true; loadRemediation(); }
     } else if (page === "homenet") {
       if (!_tabLoaded["homenet"])        { _tabLoaded["homenet"]        = true; loadHomeNet(); }
+    } else if (page === "logs") {
+      if (!_tabLoaded["logs"])           { _tabLoaded["logs"]           = true; logLoad(); }
     } else if (page === "architecture") {
       if (!_tabLoaded["architecture"])   { _tabLoaded["architecture"]   = true; loadArchitecture(); }
     }
@@ -3145,6 +3148,7 @@ const ALL_TABS = [
   { page:"bios",         icon:"🔩", label:"BIOS & Firmware" },
   { page:"credentials",  icon:"🔐", label:"Credentials & Network" },
   { page:"remediation",  icon:"🔧", label:"Remediation" },
+  { page:"logs",         icon:"📜", label:"Application Logs" },
 ];
 
 async function loadDashboard() {
@@ -3877,6 +3881,55 @@ async function saveDeviceEdit() {
   } else {
     alert("Save failed: " + data.message);
   }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// LOGS TAB (prefix: log)
+// ══════════════════════════════════════════════════════════════════════════
+async function logLoad() {
+  const container = document.getElementById("log-container");
+  const summary = document.getElementById("log-summary");
+  const level = document.getElementById("log-level").value;
+  const lines = document.getElementById("log-lines").value;
+  container.textContent = "Loading...";
+  summary.textContent = "";
+  try {
+    const params = new URLSearchParams({ lines: lines });
+    if (level) params.set("level", level);
+    const ctrl = new AbortController();
+    const timeoutId = setTimeout(() => ctrl.abort(), 10000);
+    const resp = await fetch("/api/logs?" + params.toString(), { signal: ctrl.signal });
+    clearTimeout(timeoutId);
+    const data = await resp.json();
+    if (!data.ok || !data.entries) {
+      container.textContent = "No log entries found.";
+      return;
+    }
+    summary.textContent = `${data.count} entries (newest first, ${level || "all levels"})`;
+    logRender(data.entries);
+  } catch (e) {
+    container.textContent = "Failed to load logs: " + (e && e.message ? e.message : e);
+  }
+}
+
+function logRender(entries) {
+  const container = document.getElementById("log-container");
+  if (!entries.length) { container.textContent = "No matching entries."; return; }
+  const colors = {
+    DEBUG: "#888",
+    INFO: "#7ac6ff",
+    WARNING: "#ffcc66",
+    ERROR: "#ff6b6b",
+    CRITICAL: "#ff3030",
+  };
+  const html = entries.map(e => {
+    const color = colors[e.level] || "#ccc";
+    return `<div><span style="color:#666">${esc(e.timestamp)}</span> `
+         + `<span style="color:${color};font-weight:600">${esc(e.level.padEnd(8))}</span> `
+         + `<span style="color:#9fb3c8">${esc(e.logger)}</span> `
+         + `<span>${esc(e.message)}</span></div>`;
+  }).join("");
+  container.innerHTML = html;
 }
 
 function loadArchitecture() {
@@ -5168,6 +5221,38 @@ function renderSystemInfo(d) {
           <button onclick="saveCredential()" class="btn-action" style="padding:6px 16px;font-size:12px">Save</button>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       PAGE: LOGS
+  ══════════════════════════════════════════ -->
+  <div id="page-logs" style="display:none">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:12px;flex-wrap:wrap">
+      <h2 style="font-size:18px;font-weight:700">Application Logs</h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <label style="font-size:12px;color:var(--muted)">Level:</label>
+        <select id="log-level" onchange="logLoad()" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px">
+          <option value="">All</option>
+          <option value="DEBUG">DEBUG+</option>
+          <option value="INFO" selected>INFO+</option>
+          <option value="WARNING">WARNING+</option>
+          <option value="ERROR">ERROR+</option>
+        </select>
+        <label style="font-size:12px;color:var(--muted)">Lines:</label>
+        <select id="log-lines" onchange="logLoad()" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px">
+          <option value="100">100</option>
+          <option value="200" selected>200</option>
+          <option value="500">500</option>
+          <option value="1000">1000</option>
+          <option value="2000">2000</option>
+        </select>
+        <button class="btn-action" onclick="logLoad()" style="padding:6px 16px;font-size:12px">↺ Refresh</button>
+      </div>
+    </div>
+    <div id="log-summary" style="font-size:12px;color:var(--muted);margin-bottom:12px"></div>
+    <div id="log-container" style="background:#07090f;border:1px solid var(--border);border-radius:12px;padding:12px;font-family:'Consolas','Monaco',monospace;font-size:12px;line-height:1.5;max-height:70vh;overflow-y:auto;white-space:pre-wrap;word-break:break-word">
+      Loading...
     </div>
   </div>
 

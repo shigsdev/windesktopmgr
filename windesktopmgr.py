@@ -20,7 +20,10 @@ from datetime import datetime, timedelta, timezone
 
 from flask import Flask, jsonify, make_response, render_template, request, send_from_directory
 
+from applogging import get_logger
 from homenet import homenet_bp, homenet_get_inventory
+
+_ps_log = get_logger("ps")
 
 try:
     import anthropic
@@ -35,11 +38,50 @@ HEADLESS_MODE = False
 _original_subprocess_run = subprocess.run
 
 
+def _summarize_cmd(args) -> str:
+    """Return a short string describing the subprocess command for logging."""
+    try:
+        text = " ".join(str(a) for a in args) if isinstance(args, (list, tuple)) else str(args)
+    except Exception:  # noqa: BLE001
+        return "<unprintable cmd>"
+    text = text.replace("\n", " ").replace("\r", " ")
+    if len(text) > 200:
+        text = text[:197] + "..."
+    return text
+
+
 def _headless_subprocess_run(*args, **kwargs):
-    """Wrapper that adds CREATE_NO_WINDOW flag when in headless/tray mode."""
+    """Wrapper that adds CREATE_NO_WINDOW flag when in headless/tray mode
+    and logs every subprocess call via the windesktopmgr.ps logger.
+    """
     if HEADLESS_MODE and os.name == "nt" and "creationflags" not in kwargs:
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-    return _original_subprocess_run(*args, **kwargs)
+
+    cmd = args[0] if args else kwargs.get("args", "")
+    cmd_summary = _summarize_cmd(cmd)
+    start = time.time()
+    try:
+        result = _original_subprocess_run(*args, **kwargs)
+    except subprocess.TimeoutExpired:
+        elapsed_ms = int((time.time() - start) * 1000)
+        _ps_log.warning("TIMEOUT (%d ms) %s", elapsed_ms, cmd_summary)
+        raise
+    except Exception as e:
+        elapsed_ms = int((time.time() - start) * 1000)
+        _ps_log.error("EXCEPTION (%d ms) %s -- %s", elapsed_ms, cmd_summary, e)
+        raise
+
+    elapsed_ms = int((time.time() - start) * 1000)
+    rc = getattr(result, "returncode", 0)
+    if rc == 0:
+        _ps_log.debug("ok rc=0 (%d ms) %s", elapsed_ms, cmd_summary)
+    else:
+        stderr = getattr(result, "stderr", "") or ""
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        stderr_snip = stderr.strip().replace("\n", " ")[:200]
+        _ps_log.warning("rc=%s (%d ms) %s -- %s", rc, elapsed_ms, cmd_summary, stderr_snip)
+    return result
 
 
 subprocess.run = _headless_subprocess_run
@@ -6738,6 +6780,37 @@ def summarize_credentials_network(data: dict) -> dict:
 # FLASK ROUTES
 # ══════════════════════════════════════════════════════════════════════════════
 
+_flask_log = get_logger("flask")
+
+
+@app.before_request
+def _log_request_start():
+    """Stamp the start time so we can report request duration on completion."""
+    request._wdm_start_time = time.time()
+
+
+@app.after_request
+def _log_request_end(response):
+    """Log every HTTP request. Skip /api/health to avoid polluting the log."""
+    try:
+        path = request.path or ""
+        # Suppress heartbeat polls -- they would dominate the log
+        if path == "/api/health":
+            return response
+        start = getattr(request, "_wdm_start_time", None)
+        elapsed_ms = int((time.time() - start) * 1000) if start else 0
+        level = _flask_log.warning if response.status_code >= 400 else _flask_log.info
+        level(
+            "%s %s -> %s (%d ms)",
+            request.method,
+            path,
+            response.status_code,
+            elapsed_ms,
+        )
+    except Exception:  # noqa: BLE001
+        pass  # never break a request just because logging failed
+    return response
+
 
 @app.route("/")
 def index():
@@ -6751,6 +6824,26 @@ def index():
 def api_health():
     """Lightweight heartbeat endpoint for server-alive checks."""
     return jsonify({"ok": True, "status": "running"})
+
+
+@app.route("/api/logs")
+def api_logs():
+    """Return recent log entries from the rotating app log file.
+
+    Query params:
+        lines (int)   -- how many entries to return, default 200, max 2000
+        level (str)   -- minimum severity (DEBUG/INFO/WARNING/ERROR/CRITICAL)
+    """
+    from applogging import read_recent
+
+    try:
+        n = int(request.args.get("lines", 200))
+    except (TypeError, ValueError):
+        n = 200
+    n = max(1, min(n, 2000))
+    level = request.args.get("level") or None
+    entries = read_recent(lines=n, min_level=level)
+    return jsonify({"ok": True, "count": len(entries), "entries": entries})
 
 
 # ── Self-test smoke check registry ────────────────────────────────────────────
