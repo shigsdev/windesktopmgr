@@ -890,6 +890,123 @@ class TestHealthEndpoint:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# GET  /api/selftest
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSelftestEndpoint:
+    def _stub_all(self, mocker, fake=None):
+        """Replace every smoke-check function with a no-op that returns fake."""
+        import windesktopmgr as wdm
+
+        default = fake if fake is not None else {"ok": True}
+        for _name, fn_name, _t in wdm.SELFTEST_CHECKS:
+            mocker.patch.object(wdm, fn_name, return_value=default)
+
+    def test_all_checks_pass(self, client, mocker):
+        self._stub_all(mocker)
+        resp = client.get("/api/selftest")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["failed"] == 0
+        assert data["passed"] == data["total"]
+        assert len(data["checks"]) == data["total"]
+
+    def test_one_check_failure_is_reported(self, client, mocker):
+        import windesktopmgr as wdm
+
+        self._stub_all(mocker)
+        mocker.patch.object(wdm, "get_memory_analysis", side_effect=RuntimeError("boom"))
+        resp = client.get("/api/selftest")
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert data["failed"] == 1
+        failing = [c for c in data["checks"] if not c["ok"]]
+        assert len(failing) == 1
+        assert failing[0]["name"] == "memory"
+        assert "boom" in failing[0]["error"]
+
+    def test_dict_with_error_key_counts_as_failure(self, client, mocker):
+        import windesktopmgr as wdm
+
+        self._stub_all(mocker)
+        mocker.patch.object(wdm, "get_disk_health", return_value={"error": "PS timeout"})
+        resp = client.get("/api/selftest")
+        data = resp.get_json()
+        assert data["failed"] == 1
+        failing = [c for c in data["checks"] if not c["ok"]]
+        assert failing[0]["name"] == "disk"
+        assert "PS timeout" in failing[0]["error"]
+
+    def test_results_include_duration_ms(self, client, mocker):
+        self._stub_all(mocker)
+        resp = client.get("/api/selftest")
+        data = resp.get_json()
+        for c in data["checks"]:
+            assert "duration_ms" in c
+            assert isinstance(c["duration_ms"], int)
+
+    def test_results_sorted_by_name(self, client, mocker):
+        self._stub_all(mocker)
+        resp = client.get("/api/selftest")
+        data = resp.get_json()
+        names = [c["name"] for c in data["checks"]]
+        assert names == sorted(names)
+
+    def test_none_return_is_failure(self, client, mocker):
+        import windesktopmgr as wdm
+
+        self._stub_all(mocker)
+        mocker.patch.object(wdm, "get_startup_items", return_value=None)
+        resp = client.get("/api/selftest")
+        data = resp.get_json()
+        assert data["failed"] == 1
+        failing = [c for c in data["checks"] if not c["ok"]]
+        assert failing[0]["name"] == "startup"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# POST /api/restart
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestRestartEndpoint:
+    def test_rejects_non_localhost(self, client, mocker):
+        # Prevent any accidental exit even if the guard fails
+        mocker.patch("windesktopmgr.os._exit")
+        mocker.patch("windesktopmgr.subprocess.Popen")
+        resp = client.post("/api/restart", environ_base={"REMOTE_ADDR": "192.168.1.42"})
+        assert resp.status_code == 403
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert "localhost" in data["error"]
+
+    def test_localhost_returns_202(self, client, mocker):
+        mocker.patch("windesktopmgr.os._exit")
+        mocker.patch("windesktopmgr.subprocess.Popen")
+        mocker.patch("windesktopmgr.threading.Thread")  # don't actually spawn the worker
+        resp = client.post("/api/restart", environ_base={"REMOTE_ADDR": "127.0.0.1"})
+        assert resp.status_code == 202
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert "restart scheduled" in data["status"]
+
+    def test_get_not_allowed(self, client):
+        resp = client.get("/api/restart")
+        assert resp.status_code == 405
+
+    def test_schedules_background_thread(self, client, mocker):
+        mocker.patch("windesktopmgr.os._exit")
+        mocker.patch("windesktopmgr.subprocess.Popen")
+        mock_thread = mocker.patch("windesktopmgr.threading.Thread")
+        client.post("/api/restart", environ_base={"REMOTE_ADDR": "127.0.0.1"})
+        assert mock_thread.called
+        kwargs = mock_thread.call_args.kwargs
+        assert kwargs.get("daemon") is True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # GET  /api/health-history/data
 # ══════════════════════════════════════════════════════════════════════════════
 

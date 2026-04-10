@@ -10,7 +10,9 @@ import os
 import queue
 import re
 import subprocess
+import sys
 import threading
+import time
 import urllib.parse
 import urllib.request
 from collections import Counter
@@ -6749,6 +6751,129 @@ def index():
 def api_health():
     """Lightweight heartbeat endpoint for server-alive checks."""
     return jsonify({"ok": True, "status": "running"})
+
+
+# ── Self-test smoke check registry ────────────────────────────────────────────
+# Each entry: (name, function, timeout_seconds). Functions are resolved lazily
+# at request time so tests can monkey-patch them.
+SELFTEST_CHECKS: list[tuple[str, str, int]] = [
+    ("memory", "get_memory_analysis", 15),
+    ("disk", "get_disk_health", 20),
+    ("network", "get_network_data", 15),
+    ("thermals", "get_thermals", 15),
+    ("processes", "get_process_list", 15),
+    ("services", "get_services_list", 20),
+    ("startup", "get_startup_items", 15),
+    ("bsod", "get_bsod_events", 15),
+    ("drivers", "get_driver_health", 60),
+    ("updates", "get_update_history", 20),
+    ("credentials", "get_credentials_network_health", 20),
+    ("bios", "get_bios_status", 15),
+    ("timeline", "get_system_timeline", 20),
+    ("health_history", "get_health_report_history", 10),
+]
+
+
+@app.route("/api/selftest")
+def api_selftest():
+    """Run every key data-collection function in parallel and report per-check
+    ok/duration/error. Used by post-restart smoke checks to verify the app
+    came back up cleanly. Real PowerShell calls — slow but authoritative.
+    """
+    import concurrent.futures
+
+    results: list[dict] = []
+    overall_budget = 90  # seconds
+
+    def _run_check(name: str, fn_name: str, _timeout: int) -> dict:
+        fn = globals().get(fn_name)
+        start = time.time()
+        if fn is None:
+            return {
+                "name": name,
+                "ok": False,
+                "duration_ms": 0,
+                "error": f"function {fn_name} not found",
+            }
+        try:
+            out = fn()
+            ok = out is not None
+            err = None
+            if isinstance(out, dict) and out.get("error"):
+                ok = False
+                err = str(out.get("error"))
+            return {
+                "name": name,
+                "ok": ok,
+                "duration_ms": int((time.time() - start) * 1000),
+                "error": err,
+            }
+        except Exception as e:  # noqa: BLE001 — smoke check must not crash
+            return {
+                "name": name,
+                "ok": False,
+                "duration_ms": int((time.time() - start) * 1000),
+                "error": f"{type(e).__name__}: {e}",
+            }
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        futs = {ex.submit(_run_check, name, fn_name, t): name for name, fn_name, t in SELFTEST_CHECKS}
+        try:
+            for fut in concurrent.futures.as_completed(futs, timeout=overall_budget):
+                results.append(fut.result())
+        except concurrent.futures.TimeoutError:
+            completed_names = {r["name"] for r in results}
+            for name, _fn, _t in SELFTEST_CHECKS:
+                if name not in completed_names:
+                    results.append(
+                        {
+                            "name": name,
+                            "ok": False,
+                            "duration_ms": overall_budget * 1000,
+                            "error": "timed out waiting for result",
+                        }
+                    )
+
+    results.sort(key=lambda r: r["name"])
+    passed = sum(1 for r in results if r["ok"])
+    failed = len(results) - passed
+    return jsonify(
+        {
+            "ok": failed == 0,
+            "total": len(results),
+            "passed": passed,
+            "failed": failed,
+            "checks": results,
+        }
+    )
+
+
+@app.route("/api/restart", methods=["POST"])
+def api_restart():
+    """Schedule a full app restart. Spawns a new pythonw process running the
+    same entry point, then exits the current one after a short delay. Callers
+    should poll /api/health to detect the new instance.
+
+    Localhost-only — refuses any request not from 127.0.0.1/::1.
+    """
+    remote = request.remote_addr or ""
+    if remote not in ("127.0.0.1", "::1", "localhost"):
+        return jsonify({"ok": False, "error": "restart is localhost-only"}), 403
+
+    def _do_restart():
+        time.sleep(0.3)  # let the HTTP response flush
+        try:
+            python = sys.executable
+            subprocess.Popen(  # noqa: S603
+                [python, *sys.argv],
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+        finally:
+            time.sleep(0.3)
+            os._exit(0)  # noqa: SLF001 — hard exit kills daemon threads immediately
+
+    threading.Thread(target=_do_restart, daemon=True, name="RestartWorker").start()
+    return jsonify({"ok": True, "status": "restart scheduled"}), 202
 
 
 @app.route("/api/launch/nvidia-app", methods=["POST"])

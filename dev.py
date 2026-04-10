@@ -7,6 +7,8 @@ Usage:
     python dev.py check    # Lint + format check only (fast, no tests)
     python dev.py fix      # Auto-fix lint + format issues
     python dev.py test     # Tests only
+    python dev.py verify   # Restart running app + run /api/selftest
+    python dev.py ship     # fix + test + verify (post-deploy smoke)
 """
 
 import subprocess
@@ -77,11 +79,29 @@ def cmd_all():
     return ok
 
 
+def cmd_verify():
+    """Restart the running app and run /api/selftest against it."""
+    print(f"\n{BOLD}Verify (restart + selftest){RESET}")
+    return run("post_restart_check", [sys.executable, "scripts/post_restart_check.py"])
+
+
+def cmd_ship():
+    """Full post-deploy smoke: fix → test → verify (assumes git push already done)."""
+    ok = cmd_fix()
+    ok &= cmd_test()
+    if not ok:
+        return False
+    ok &= cmd_verify()
+    return ok
+
+
 def main():
     commands = {
         "check": cmd_check,
         "fix": cmd_fix,
         "test": cmd_test,
+        "verify": cmd_verify,
+        "ship": cmd_ship,
     }
 
     arg = sys.argv[1] if len(sys.argv) > 1 else "all"
@@ -92,7 +112,7 @@ def main():
         ok = cmd_all()
     else:
         print(f"Unknown command: {arg}")
-        print("Usage: python dev.py [check|fix|test|all]")
+        print("Usage: python dev.py [check|fix|test|all|verify|ship]")
         sys.exit(1)
 
     print()
