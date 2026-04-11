@@ -1595,7 +1595,14 @@ def _lookup_startup_via_fileinfo(command: str, name: str) -> dict | None:
         if base:
             exe_name = base + ".exe"
             safe_name = re.sub(r"[^a-zA-Z0-9\-_. ]", "", exe_name)
-            ps_find = f'$c = Get-Command "{safe_name}" -EA SilentlyContinue; if ($c) {{ $c.Source }}'
+            # Explicit `exit 0` is critical: Get-Command leaves $? = $false when
+            # the exe is missing, even with -EA SilentlyContinue, and PowerShell
+            # exits with code 1. That produced a warning for every unknown process.
+            ps_find = (
+                f'$ErrorActionPreference="SilentlyContinue"; '
+                f'$c = Get-Command "{safe_name}" -EA SilentlyContinue; '
+                f"if ($c) {{ $c.Source }}; exit 0"
+            )
             try:
                 r0 = subprocess.run(
                     ["powershell", "-NonInteractive", "-Command", ps_find],
@@ -2038,17 +2045,38 @@ $conns = Get-NetTCPConnection -ErrorAction SilentlyContinue | ForEach-Object {
 }
 $conns | ConvertTo-Json -Depth 2
 """
+    # LinkSpeed from Get-NetAdapter is a STRING like "1 Gbps" / "100 Mbps" / "0 bps".
+    # Dividing by 1MB fails with "Cannot convert value '1 Gbps' to type Int32",
+    # so we parse the number + unit manually and convert to megabits.
     ps_adapters = r"""
-Get-NetAdapterStatistics -ErrorAction SilentlyContinue | ForEach-Object {
-    $a = Get-NetAdapter -Name $_.Name -ErrorAction SilentlyContinue
+$ErrorActionPreference = 'SilentlyContinue'
+Get-NetAdapterStatistics | ForEach-Object {
+    $a = Get-NetAdapter -Name $_.Name
+    $speedMb = 0
+    if ($a -and $a.LinkSpeed) {
+        $parts = ([string]$a.LinkSpeed).Trim().Split(' ')
+        if ($parts.Length -ge 2) {
+            try {
+                $n = [double]$parts[0]
+                switch ($parts[1].ToLower()) {
+                    'gbps' { $speedMb = [int]($n * 1000) }
+                    'mbps' { $speedMb = [int]$n }
+                    'kbps' { $speedMb = [int]($n / 1000) }
+                    'bps'  { $speedMb = [int]($n / 1000000) }
+                    default { $speedMb = 0 }
+                }
+            } catch { $speedMb = 0 }
+        }
+    }
     [PSCustomObject]@{
         Name        = $_.Name
         SentMB      = [math]::Round($_.SentBytes   / 1MB, 2)
         ReceivedMB  = [math]::Round($_.ReceivedBytes / 1MB, 2)
         Status      = if ($a) { $a.Status } else { "Unknown" }
-        LinkSpeedMb = if ($a) { [math]::Round($a.LinkSpeed / 1MB, 0) } else { 0 }
+        LinkSpeedMb = $speedMb
     }
 } | ConvertTo-Json -Depth 2
+exit 0
 """
     try:
         r1 = subprocess.run(
@@ -3924,7 +3952,10 @@ def _lookup_process_via_fileinfo(proc_name: str, path: str) -> dict | None:
                         "powershell",
                         "-NonInteractive",
                         "-Command",
-                        f'$c = Get-Command "{safe_name}" -EA SilentlyContinue; if ($c) {{ $c.Source }}',
+                        # exit 0 prevents rc=1 warnings when the exe isn't on PATH
+                        f'$ErrorActionPreference="SilentlyContinue"; '
+                        f'$c = Get-Command "{safe_name}" -EA SilentlyContinue; '
+                        f"if ($c) {{ $c.Source }}; exit 0",
                     ],
                     capture_output=True,
                     text=True,

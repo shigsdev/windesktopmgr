@@ -407,6 +407,26 @@ class TestGetNetworkData:
         cmd = m.call_args_list[1][0][0][-1]
         assert "Get-NetAdapterStatistics" in cmd
 
+    def test_adapters_command_parses_linkspeed_string(self, mocker):
+        """Regression: 'Cannot convert value "1 Gbps" to Int32' warning.
+
+        LinkSpeed is a string from Get-NetAdapter, not an Int32. The PS script
+        must parse it as a string (not divide by 1MB) or the subprocess returns
+        rc=1 and pollutes the log.
+        """
+        m = self._make_mock(mocker)
+        wdm.get_network_data()
+        cmd = m.call_args_list[1][0][0][-1]
+        # Must NOT use the broken numeric division that fails on "1 Gbps"
+        assert "$a.LinkSpeed / 1MB" not in cmd
+        # Must parse the string with a split on space
+        assert ".Split(' ')" in cmd or '.Split(" ")' in cmd
+        # Must handle Gbps, Mbps, bps variants
+        assert "gbps" in cmd.lower()
+        assert "mbps" in cmd.lower()
+        # Must explicitly exit 0 so non-fatal warnings don't produce rc=1
+        assert "exit 0" in cmd
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # get_update_history
@@ -1998,6 +2018,8 @@ class TestLookupProcessViaFileinfo:
         assert "Get-Command" in cmd
         # Must use PS 5.1-compatible syntax -- no ?. null-conditional operator
         assert "?." not in cmd
+        # Must explicitly exit 0 to prevent rc=1 warnings when exe is missing
+        assert "exit 0" in cmd
 
     def test_empty_proc_name_skips_get_command(self, mocker):
         """Guard against the '.exe' query that produced warnings in prod."""
