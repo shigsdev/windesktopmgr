@@ -2174,6 +2174,11 @@ def analyze_disk_path(path: str, top_n: int = 25) -> dict:
     # Embed `cleaned` as a SINGLE-quoted PS literal so $-expansion is disabled.
     # The sanitiser above already stripped `'` from user input, so the literal
     # cannot be broken out of.
+    # Per-subdir sizing uses `robocopy /L /E /BYTES` in list-only mode — a
+    # native Win32 walk that is 5-10x faster than `Get-ChildItem -Recurse`
+    # and avoids building a .NET FileSystemInfo object per file. We parse the
+    # "Bytes :" and "Files :" summary lines. Robocopy prints totals under a
+    # single "Total" column; we grab the FIRST integer after the label.
     ps = rf"""
 $ErrorActionPreference = 'SilentlyContinue'
 $root = '{cleaned}'
@@ -2181,10 +2186,13 @@ $items = Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue
 $results = @()
 foreach ($it in $items) {{
     if ($it.PSIsContainer) {{
-        $sum = Get-ChildItem -LiteralPath $it.FullName -Recurse -Force -File -ErrorAction SilentlyContinue |
-               Measure-Object -Property Length -Sum
-        $bytes = if ($sum.Sum) {{ [int64]$sum.Sum }} else {{ [int64]0 }}
-        $count = if ($sum.Count) {{ [int]$sum.Count }} else {{ 0 }}
+        $bytes = [int64]0
+        $count = 0
+        $rc = robocopy $it.FullName NULL /L /E /NFL /NDL /NJH /NC /BYTES /XJ /R:0 /W:0 2>$null
+        foreach ($line in $rc) {{
+            if ($line -match '^\s*Bytes\s*:\s*(\d+)') {{ $bytes = [int64]$matches[1] }}
+            elseif ($line -match '^\s*Files\s*:\s*(\d+)') {{ $count = [int]$matches[1] }}
+        }}
         $results += [PSCustomObject]@{{
             Name  = $it.Name
             Path  = $it.FullName
@@ -2211,7 +2219,7 @@ exit 0
             ["powershell", "-NonInteractive", "-Command", ps],
             capture_output=True,
             text=True,
-            timeout=180,
+            timeout=300,
         )
         raw = (r.stdout or "").strip()
         if not raw:
@@ -2264,7 +2272,7 @@ exit 0
     except subprocess.TimeoutExpired:
         return {
             "ok": False,
-            "error": "Scan timed out after 180s — try a smaller subfolder",
+            "error": "Scan timed out after 300s — try a smaller subfolder",
             "path": cleaned,
             "entries": [],
         }
@@ -2422,9 +2430,13 @@ foreach ($p in $paths) {{
     if (Test-Path -LiteralPath $p) {{
         $item = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
         if ($item -and $item.PSIsContainer) {{
-            $sum = Get-ChildItem -LiteralPath $p -Recurse -Force -File -ErrorAction SilentlyContinue |
-                   Measure-Object -Property Length -Sum
-            $bytes = if ($sum.Sum) {{ [int64]$sum.Sum }} else {{ [int64]0 }}
+            # Fast native walk via robocopy /L /BYTES — ~10x faster than
+            # Get-ChildItem -Recurse for large trees like WinSxS.
+            $bytes = [int64]0
+            $rc = robocopy $p NULL /L /E /NFL /NDL /NJH /NC /BYTES /XJ /R:0 /W:0 2>$null
+            foreach ($line in $rc) {{
+                if ($line -match '^\s*Bytes\s*:\s*(\d+)') {{ $bytes = [int64]$matches[1] }}
+            }}
         }} elseif ($item) {{
             $bytes = [int64]$item.Length
         }} else {{
@@ -2446,7 +2458,7 @@ exit 0
             ["powershell", "-NonInteractive", "-Command", ps],
             capture_output=True,
             text=True,
-            timeout=180,
+            timeout=300,
         )
         raw = (r.stdout or "").strip()
         if raw:

@@ -1720,6 +1720,19 @@ async function loadDisk() {
 let _dkAnalyzePath = null;
 let _dkAnalyzeDrive = null;
 
+// Escape a string for safe embedding as a JS single-quoted string literal
+// inside an HTML attribute like onclick="fn('<value>')". Critically, this
+// doubles backslashes so `C:\Users` survives the JS string-literal parser
+// (otherwise `\U` is treated as an invalid escape and the backslash is lost).
+function dkJsArg(s) {
+  return String(s || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/"/g, '&quot;');
+}
+
 function dkAnalyzeOpen(letter) {
   _dkAnalyzeDrive = letter;
   const root = letter + ':\\';
@@ -1748,10 +1761,10 @@ async function dkAnalyzeLoad(path) {
   segments.forEach((seg, i) => {
     if (i === 0) {
       accum = seg + '\\';
-      bcHtml += `<a href="#" onclick="dkAnalyzeLoad('${esc(accum)}');return false" style="color:var(--cyan);text-decoration:none">${esc(seg)}\\</a>`;
+      bcHtml += `<a href="#" onclick="dkAnalyzeLoad('${dkJsArg(accum)}');return false" style="color:var(--cyan);text-decoration:none">${esc(seg)}\\</a>`;
     } else if (seg) {
       accum = accum + seg + '\\';
-      bcHtml += ` / <a href="#" onclick="dkAnalyzeLoad('${esc(accum)}');return false" style="color:var(--cyan);text-decoration:none">${esc(seg)}</a>`;
+      bcHtml += ` / <a href="#" onclick="dkAnalyzeLoad('${dkJsArg(accum)}');return false" style="color:var(--cyan);text-decoration:none">${esc(seg)}</a>`;
     }
   });
   bc.innerHTML = bcHtml;
@@ -1783,7 +1796,7 @@ async function dkAnalyzeLoad(path) {
       const col = pct > 40 ? 'var(--red)' : pct > 15 ? 'var(--orange)' : 'var(--cyan)';
       const icon = e.type === 'dir' ? '📁' : '📄';
       const drillBtn = e.type === 'dir'
-        ? `<button class="btn-action" style="padding:4px 10px;font-size:11px;margin-right:4px" onclick="dkAnalyzeLoad('${esc(e.path)}')">Drill in</button>`
+        ? `<button class="btn-action" style="padding:4px 10px;font-size:11px;margin-right:4px" onclick="dkAnalyzeLoad('${dkJsArg(e.path)}')">Drill in</button>`
         : '';
       return `<tr style="border-bottom:1px solid var(--border)">
         <td style="padding:6px 10px;font-family:monospace;font-size:12px">${icon} ${esc(e.name)}</td>
@@ -1794,7 +1807,7 @@ async function dkAnalyzeLoad(path) {
         </td>
         <td style="padding:6px 10px">
           ${drillBtn}
-          <button class="btn-action" style="padding:4px 10px;font-size:11px" onclick="dkOpenFolder('${esc(e.path)}')">Open</button>
+          <button class="btn-action" style="padding:4px 10px;font-size:11px" onclick="dkOpenFolder('${dkJsArg(e.path)}')">Open</button>
         </td>
       </tr>`;
     }).join('');
@@ -1841,7 +1854,7 @@ async function dkQuickWinsLoad(letter) {
           <div style="font-size:10px;color:var(--muted);margin-top:2px;word-break:break-all">${esc(it.path)}</div>
           <div style="font-size:11px;color:var(--muted);margin-top:4px">${esc(it.description)}</div>
           <div style="margin-top:6px">
-            <button class="btn-action" style="padding:3px 8px;font-size:10px" onclick="dkOpenFolder('${esc(it.path)}')">Open</button>
+            <button class="btn-action" style="padding:3px 8px;font-size:10px" onclick="dkOpenFolder('${dkJsArg(it.path)}')">Open</button>
           </div>
         </div>`;
       });

@@ -2810,14 +2810,19 @@ class TestAnalyzeDiskPath:
         # — allowing the attacker to close the literal and run `Remove-Item`.
         assert root_line.count("'") == 2
 
-    def test_command_uses_get_childitem_recurse_measure(self, mocker):
+    def test_command_uses_robocopy_for_fast_sizing(self, mocker):
+        """Sizing each subdir must use `robocopy /L /BYTES` (native Win32 walk,
+        5-10x faster than `Get-ChildItem -Recurse | Measure-Object`)."""
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
         m = _mock_run(mocker, stdout="[]")
         wdm.analyze_disk_path("C:\\")
         ps_string = " ".join(m.call_args[0][0])
-        assert "Get-ChildItem" in ps_string
-        assert "-Recurse" in ps_string
-        assert "Measure-Object" in ps_string
+        # Immediate-children listing still uses Get-ChildItem (no -Recurse)
+        assert "Get-ChildItem -LiteralPath $root" in ps_string
+        # Per-subdir size comes from robocopy in list-only mode
+        assert "robocopy" in ps_string
+        assert "/BYTES" in ps_string
+        # Still sorts + exits cleanly
         assert "Sort-Object" in ps_string
         assert "exit 0" in ps_string
 
@@ -2922,7 +2927,9 @@ class TestGetDiskQuickwins:
         ps_string = " ".join(m.call_args[0][0])
         assert "$Recycle.Bin" in ps_string
         assert "Windows\\Temp" in ps_string
-        assert "Measure-Object" in ps_string
+        # Quick-wins sizes directories via robocopy too (/L /BYTES)
+        assert "robocopy" in ps_string
+        assert "/BYTES" in ps_string
         assert "exit 0" in ps_string
 
     def test_user_locations_only_for_profile_drive(self, mocker, monkeypatch):
