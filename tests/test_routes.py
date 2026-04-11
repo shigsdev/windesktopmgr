@@ -2468,3 +2468,46 @@ class TestDiskOpenRoute:
         )
         r = client.post("/api/disk/open", json={"path": "C:\\Ghost"})
         assert r.status_code == 422
+
+
+class TestDiskRunToolRoute:
+    """Tests for /api/disk/run-tool — POST launch whitelisted cleanup tool."""
+
+    def test_returns_200_on_success(self, client, mocker):
+        mocker.patch(
+            "windesktopmgr.launch_cleanup_tool",
+            return_value={"ok": True, "tool": "cleanmgr", "label": "Disk Cleanup"},
+        )
+        r = client.post("/api/disk/run-tool", json={"tool": "cleanmgr"})
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["ok"] is True
+        assert data["tool"] == "cleanmgr"
+
+    def test_missing_tool_returns_400(self, client):
+        r = client.post("/api/disk/run-tool", json={})
+        assert r.status_code == 400
+        body = r.get_json()
+        assert body["ok"] is False
+        assert "tool" in body["error"].lower()
+
+    def test_null_tool_returns_400(self, client):
+        r = client.post("/api/disk/run-tool", json={"tool": None})
+        assert r.status_code == 400
+
+    def test_unknown_tool_returns_422(self, client, mocker):
+        mocker.patch(
+            "windesktopmgr.launch_cleanup_tool",
+            return_value={"ok": False, "error": "Unknown cleanup tool: evil"},
+        )
+        r = client.post("/api/disk/run-tool", json={"tool": "evil"})
+        assert r.status_code == 422
+        assert r.get_json()["ok"] is False
+
+    def test_passes_tool_key_through(self, client, mocker):
+        m = mocker.patch(
+            "windesktopmgr.launch_cleanup_tool",
+            return_value={"ok": True, "tool": "sysdm_advanced", "label": "System Properties → Advanced"},
+        )
+        client.post("/api/disk/run-tool", json={"tool": "sysdm_advanced"})
+        m.assert_called_once_with("sysdm_advanced")

@@ -1853,8 +1853,8 @@ async function dkQuickWinsLoad(letter) {
           </div>
           <div style="font-size:10px;color:var(--muted);margin-top:2px;word-break:break-all">${esc(it.path)}</div>
           <div style="font-size:11px;color:var(--muted);margin-top:4px">${esc(it.description)}</div>
-          <div style="margin-top:6px">
-            <button class="btn-action" style="padding:3px 8px;font-size:10px" onclick="dkOpenFolder('${dkJsArg(it.path)}')">Open</button>
+          <div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap">
+            ${dkRenderQuickWinActions(it)}
           </div>
         </div>`;
       });
@@ -1863,6 +1863,91 @@ async function dkQuickWinsLoad(letter) {
   } catch(e) {
     loadingEl.style.display = 'none';
     listEl.innerHTML = `<div style="color:var(--red);font-size:12px">Network error: ${esc(e.message)}</div>`;
+  }
+}
+
+// Render the action buttons for a single quick-win item. Dispatches based on
+// `action_kind` (open_folder | run_tool | info_only) returned by the backend.
+function dkRenderQuickWinActions(it) {
+  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/'/g,'&#39;').replace(/"/g,'&quot;');
+  const kind = it.action_kind || 'open_folder';
+  const openBtn = `<button class="btn-action" style="padding:3px 8px;font-size:10px" onclick="dkOpenFolder('${dkJsArg(it.path)}')">📁 Open folder</button>`;
+  if (kind === 'run_tool') {
+    const toolLabel = it.tool_label || it.tool || 'tool';
+    const runBtn = `<button class="btn-action" style="padding:3px 8px;font-size:10px;background:var(--cyan);color:#000" onclick="dkRunTool('${dkJsArg(it.tool||'')}','${dkJsArg(toolLabel)}')">🧹 Launch ${esc(toolLabel)}</button>`;
+    return runBtn + openBtn;
+  }
+  if (kind === 'info_only') {
+    const cli = it.cli || '';
+    const cliBtn = `<button class="btn-action" style="padding:3px 8px;font-size:10px;background:var(--orange);color:#000" onclick="dkShowCli('${dkJsArg(it.label)}','${dkJsArg(cli)}','${dkJsArg(it.description||'')}')">📋 Show command</button>`;
+    return cliBtn + openBtn;
+  }
+  // default: open_folder
+  return openBtn;
+}
+
+async function dkRunTool(tool, label) {
+  if (!tool) { alert('No tool key provided'); return; }
+  try {
+    const r = await fetch('/api/disk/run-tool', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({tool: tool})
+    });
+    const d = await r.json();
+    if (!d.ok) {
+      alert('Could not launch ' + (label || tool) + ': ' + (d.error || 'unknown error'));
+    }
+  } catch(e) {
+    alert('Network error: ' + e.message);
+  }
+}
+
+// Show an admin command in a modal dialog with a Copy button. Used for
+// info_only quick-wins (WinSxS / hiberfil / etc.) where the user must run
+// the command themselves from an elevated prompt.
+function dkShowCli(label, cli, desc) {
+  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/'/g,'&#39;').replace(/"/g,'&quot;');
+  let modal = document.getElementById('dk-cli-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'dk-cli-modal';
+    modal.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:10000;align-items:center;justify-content:center';
+    modal.innerHTML = `
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:20px;max-width:640px;width:90%;box-shadow:0 10px 40px rgba(0,0,0,0.5)">
+        <div id="dk-cli-title" style="font-weight:700;font-size:14px;margin-bottom:6px;color:var(--cyan)"></div>
+        <div id="dk-cli-desc" style="font-size:12px;color:var(--muted);margin-bottom:10px"></div>
+        <pre id="dk-cli-cmd" style="background:#000;color:#0f0;padding:10px;border-radius:4px;overflow:auto;font-size:12px;font-family:Consolas,monospace;white-space:pre-wrap;word-break:break-all"></pre>
+        <div style="font-size:11px;color:var(--orange);margin-top:6px">⚠ Run this command in an <b>elevated</b> PowerShell or Command Prompt (Run as Administrator).</div>
+        <div style="margin-top:12px;display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn-action" onclick="dkCopyCli()">📋 Copy</button>
+          <button class="btn-action" onclick="document.getElementById('dk-cli-modal').style.display='none'">Close</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+  }
+  document.getElementById('dk-cli-title').textContent = label || 'Command';
+  document.getElementById('dk-cli-desc').textContent = desc || '';
+  document.getElementById('dk-cli-cmd').textContent = cli || '';
+  modal.style.display = 'flex';
+}
+
+function dkCopyCli() {
+  const cmd = document.getElementById('dk-cli-cmd').textContent || '';
+  if (!cmd) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(cmd).then(
+      () => { const b = event.target; const orig = b.textContent; b.textContent = '✓ Copied'; setTimeout(() => b.textContent = orig, 1500); },
+      () => alert('Copy failed — select the command manually.')
+    );
+  } else {
+    // Fallback: select the <pre> text
+    const range = document.createRange();
+    range.selectNodeContents(document.getElementById('dk-cli-cmd'));
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    alert('Command selected — press Ctrl+C to copy.');
   }
 }
 

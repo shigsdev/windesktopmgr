@@ -2282,65 +2282,105 @@ exit 0
         return {"ok": False, "error": str(e), "path": cleaned, "entries": []}
 
 
+# ── Cleanup tool allowlist ────────────────────────────────────────────────
+# Maps a short key to a concrete argv. Only keys in this dict can be launched
+# via /api/disk/run-tool — prevents arbitrary-command execution from the
+# frontend. Paths are absolute where possible and use only well-known
+# Windows system binaries.
+_CLEANUP_TOOLS: dict[str, dict] = {
+    "cleanmgr": {
+        "label": "Disk Cleanup",
+        "argv": ["cleanmgr.exe", "/d", "C"],
+        "description": "Launches Windows Disk Cleanup on the system drive.",
+    },
+    "cleanmgr_sageset": {
+        "label": "Disk Cleanup (extended)",
+        "argv": ["cleanmgr.exe", "/sageset:99"],
+        "description": "Configures extended Disk Cleanup categories.",
+    },
+    "sysdm_advanced": {
+        "label": "System Properties → Advanced",
+        "argv": ["SystemPropertiesAdvanced.exe"],
+        "description": "Opens Advanced System Properties (for pagefile config).",
+    },
+    "storage_settings": {
+        "label": "Storage Settings",
+        "argv": ["explorer.exe", "ms-settings:storagesense"],
+        "description": "Opens Windows Storage Settings / Storage Sense.",
+    },
+}
+
+
 # Fixed set of well-known bloat locations, relative to a drive letter.
-# Each entry: (key, label, relative_subpath_or_absolute, description, action_id)
-_QUICKWIN_LOCATIONS: list[tuple[str, str, str, str, str]] = [
-    (
-        "recycle_bin",
-        "Recycle Bin",
-        r"$Recycle.Bin",
-        "Deleted files still consuming space. Empty from the desktop Recycle Bin.",
-        "open_recycle_bin",
-    ),
-    (
-        "windows_old",
-        "Windows.old",
-        r"Windows.old",
-        "Previous Windows install left after an upgrade. Safe to remove via Disk Cleanup -> Previous Windows installation(s).",
-        "open_disk_cleanup",
-    ),
-    (
-        "windows_temp",
-        "Windows Temp",
-        r"Windows\Temp",
-        "System temporary files. Clean with the Clean Temp remediation action.",
-        "remediation_clean_temp",
-    ),
-    (
-        "windows_update_cache",
-        "Windows Update cache",
-        r"Windows\SoftwareDistribution\Download",
-        "Downloaded Windows Update payloads. Safe to clear after Stop-Service wuauserv.",
-        "open_folder",
-    ),
-    (
-        "windows_installer",
-        "Windows Installer cache",
-        r"Windows\Installer",
-        "MSI patch cache. Do NOT delete manually — use PatchCleaner or Disk Cleanup.",
-        "open_disk_cleanup",
-    ),
-    (
-        "winsxs",
-        "WinSxS (component store)",
-        r"Windows\WinSxS",
-        "Windows component store. Do NOT delete. Clean with: Dism.exe /Online /Cleanup-Image /StartComponentCleanup",
-        "info_only",
-    ),
-    (
-        "hiberfil",
-        "Hibernation file (hiberfil.sys)",
-        r"hiberfil.sys",
-        "Hibernation image, sized ~40% of RAM. Remove with: powercfg /hibernate off (admin).",
-        "info_only",
-    ),
-    (
-        "pagefile",
-        "Page file (pagefile.sys)",
-        r"pagefile.sys",
-        "Virtual memory swap file. Managed by Windows — do not delete directly.",
-        "info_only",
-    ),
+# Each entry is a dict with:
+#   key, label, rel_path, description,
+#   action_kind: "open_folder" | "run_tool" | "info_only"
+#   tool:  (run_tool only) key into _CLEANUP_TOOLS
+#   cli:   (info_only only) exact command to display/copy
+_QUICKWIN_LOCATIONS: list[dict] = [
+    {
+        "key": "recycle_bin",
+        "label": "Recycle Bin",
+        "rel": r"$Recycle.Bin",
+        "description": "Deleted files still consuming space. Empty from the desktop Recycle Bin.",
+        "action_kind": "open_folder",
+    },
+    {
+        "key": "windows_old",
+        "label": "Windows.old",
+        "rel": r"Windows.old",
+        "description": "Previous Windows install left after an upgrade. Remove via Disk Cleanup → Previous Windows installation(s).",
+        "action_kind": "run_tool",
+        "tool": "cleanmgr",
+    },
+    {
+        "key": "windows_temp",
+        "label": "Windows Temp",
+        "rel": r"Windows\Temp",
+        "description": "System temporary files. Launch Disk Cleanup to remove safely.",
+        "action_kind": "run_tool",
+        "tool": "cleanmgr",
+    },
+    {
+        "key": "windows_update_cache",
+        "label": "Windows Update cache",
+        "rel": r"Windows\SoftwareDistribution\Download",
+        "description": "Downloaded Windows Update payloads. Disk Cleanup clears these safely.",
+        "action_kind": "run_tool",
+        "tool": "cleanmgr",
+    },
+    {
+        "key": "windows_installer",
+        "label": "Windows Installer cache",
+        "rel": r"Windows\Installer",
+        "description": "MSI patch cache. Do NOT delete manually — use Disk Cleanup (or PatchCleaner).",
+        "action_kind": "run_tool",
+        "tool": "cleanmgr",
+    },
+    {
+        "key": "winsxs",
+        "label": "WinSxS (component store)",
+        "rel": r"Windows\WinSxS",
+        "description": "Windows component store. Do NOT delete. Run the DISM cleanup command as Administrator.",
+        "action_kind": "info_only",
+        "cli": "Dism.exe /Online /Cleanup-Image /StartComponentCleanup",
+    },
+    {
+        "key": "hiberfil",
+        "label": "Hibernation file (hiberfil.sys)",
+        "rel": r"hiberfil.sys",
+        "description": "Hibernation image, sized ~40% of RAM. Disable hibernation to reclaim.",
+        "action_kind": "info_only",
+        "cli": "powercfg /hibernate off",
+    },
+    {
+        "key": "pagefile",
+        "label": "Page file (pagefile.sys)",
+        "rel": r"pagefile.sys",
+        "description": "Virtual memory swap file. Configure via System Properties → Advanced → Performance → Virtual memory.",
+        "action_kind": "run_tool",
+        "tool": "sysdm_advanced",
+    },
 ]
 
 
@@ -2374,52 +2414,59 @@ def get_disk_quickwins(drive: str) -> dict:
     if not os.path.isdir(drive_root):
         return {"ok": False, "error": f"Drive {drive_root} not found", "locations": []}
 
-    # Build the candidate path list
-    candidates: list[tuple[str, str, str, str, str]] = []
-    for key, label, rel, desc, action in _QUICKWIN_LOCATIONS:
-        candidates.append((key, label, os.path.join(drive_root, rel), desc, action))
+    # Build the candidate path list (with full path joined in)
+    candidates: list[dict] = []
+    for entry in _QUICKWIN_LOCATIONS:
+        c = dict(entry)
+        c["path"] = os.path.join(drive_root, entry["rel"])
+        candidates.append(c)
 
     # User-profile locations (Downloads, AppData caches) only make sense on the
     # OS drive, so we only add them if `drive` matches the profile drive.
-    user_candidates: list[tuple[str, str, str, str, str]] = []
+    user_candidates: list[dict] = []
     userprofile = os.environ.get("USERPROFILE", "")
     if userprofile and userprofile[0].upper() == letter:
         user_candidates = [
-            (
-                "downloads",
-                "Downloads folder",
-                os.path.join(userprofile, "Downloads"),
-                "Personal downloads. Review and delete old installers / archives.",
-                "open_folder",
-            ),
-            (
-                "user_temp",
-                "User Temp (%TEMP%)",
-                os.path.join(userprofile, "AppData", "Local", "Temp"),
-                "Per-user temp files. Clean with the Clean Temp remediation action.",
-                "remediation_clean_temp",
-            ),
-            (
-                "chrome_cache",
-                "Chrome cache",
-                os.path.join(userprofile, "AppData", "Local", "Google", "Chrome", "User Data", "Default", "Cache"),
-                "Chrome browser cache. Clearable via Chrome settings.",
-                "open_folder",
-            ),
-            (
-                "edge_cache",
-                "Edge cache",
-                os.path.join(userprofile, "AppData", "Local", "Microsoft", "Edge", "User Data", "Default", "Cache"),
-                "Edge browser cache. Clearable via Edge settings.",
-                "open_folder",
-            ),
+            {
+                "key": "downloads",
+                "label": "Downloads folder",
+                "path": os.path.join(userprofile, "Downloads"),
+                "description": "Personal downloads. Review and delete old installers / archives.",
+                "action_kind": "open_folder",
+            },
+            {
+                "key": "user_temp",
+                "label": "User Temp (%TEMP%)",
+                "path": os.path.join(userprofile, "AppData", "Local", "Temp"),
+                "description": "Per-user temp files. Disk Cleanup removes these safely.",
+                "action_kind": "run_tool",
+                "tool": "cleanmgr",
+            },
+            {
+                "key": "chrome_cache",
+                "label": "Chrome cache",
+                "path": os.path.join(
+                    userprofile, "AppData", "Local", "Google", "Chrome", "User Data", "Default", "Cache"
+                ),
+                "description": "Chrome browser cache. Clearable via Chrome settings.",
+                "action_kind": "open_folder",
+            },
+            {
+                "key": "edge_cache",
+                "label": "Edge cache",
+                "path": os.path.join(
+                    userprofile, "AppData", "Local", "Microsoft", "Edge", "User Data", "Default", "Cache"
+                ),
+                "description": "Edge browser cache. Clearable via Edge settings.",
+                "action_kind": "open_folder",
+            },
         ]
 
     all_rows = candidates + user_candidates
     # Build one PS script that sizes every candidate in parallel-ish (foreach).
     # Paths are embedded as SINGLE-quoted literals so that `$Recycle.Bin` and
     # similar dollar-containing names aren't interpreted as variable expansions.
-    ps_paths = "\n".join(f"'{_safe_ps_path(p)}'" for _, _, p, _, _ in all_rows)
+    ps_paths = "\n".join(f"'{_safe_ps_path(c['path'])}'" for c in all_rows)
     ps = rf"""
 $ErrorActionPreference = 'SilentlyContinue'
 $paths = @(
@@ -2480,21 +2527,32 @@ exit 0
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e), "locations": []}
 
-    def _row(key, label, path, desc, action):
+    def _row(c: dict) -> dict:
+        path = c["path"]
         exists, size = size_by_path.get(path, (False, 0))
-        return {
-            "key": key,
-            "label": label,
+        action_kind = c.get("action_kind", "open_folder")
+        row = {
+            "key": c["key"],
+            "label": c["label"],
             "path": path,
             "exists": exists,
             "size_bytes": size,
             "size_human": _human_bytes(size),
-            "description": desc,
-            "action": action,
+            "description": c["description"],
+            "action_kind": action_kind,
         }
+        if action_kind == "run_tool":
+            tool_key = c.get("tool", "")
+            row["tool"] = tool_key
+            tool_spec = _CLEANUP_TOOLS.get(tool_key)
+            if tool_spec:
+                row["tool_label"] = tool_spec["label"]
+        elif action_kind == "info_only":
+            row["cli"] = c.get("cli", "")
+        return row
 
-    locations = [_row(*row) for row in candidates]
-    user_locations = [_row(*row) for row in user_candidates]
+    locations = [_row(c) for c in candidates]
+    user_locations = [_row(c) for c in user_candidates]
     # Sort each list by size descending so biggest hits float to the top
     locations.sort(key=lambda x: x["size_bytes"], reverse=True)
     user_locations.sort(key=lambda x: x["size_bytes"], reverse=True)
@@ -2524,6 +2582,36 @@ def open_folder_in_explorer(path: str) -> dict:
     try:
         subprocess.Popen(["explorer.exe", cleaned])  # noqa: S603
         return {"ok": True, "path": cleaned}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}
+
+
+def launch_cleanup_tool(tool_key: str) -> dict:
+    """Launch a whitelisted cleanup tool by key.
+
+    Only keys present in ``_CLEANUP_TOOLS`` are allowed — this prevents the
+    frontend from invoking arbitrary commands. Returns::
+
+        {"ok": True, "tool": "cleanmgr", "label": "Disk Cleanup"}
+
+    or ``{"ok": False, "error": "..."}``.
+    """
+    if not tool_key or not isinstance(tool_key, str):
+        return {"ok": False, "error": "Missing required field: tool"}
+    spec = _CLEANUP_TOOLS.get(tool_key)
+    if not spec:
+        return {"ok": False, "error": f"Unknown cleanup tool: {tool_key}"}
+    argv = list(spec["argv"])
+    try:
+        subprocess.Popen(argv)  # noqa: S603
+        return {
+            "ok": True,
+            "tool": tool_key,
+            "label": spec["label"],
+            "argv": argv,
+        }
+    except FileNotFoundError:
+        return {"ok": False, "error": f"Tool not found on PATH: {argv[0]}"}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)}
 
@@ -7762,6 +7850,18 @@ def disk_open_route():
     if not path:
         return jsonify({"ok": False, "error": "Missing required field: path"}), 400
     result = open_folder_in_explorer(path)
+    status = 200 if result.get("ok") else 422
+    return jsonify(result), status
+
+
+@app.route("/api/disk/run-tool", methods=["POST"])
+def disk_run_tool_route():
+    """Launch a whitelisted cleanup tool (e.g., cleanmgr, sysdm_advanced)."""
+    data = request.get_json() or {}
+    tool = data.get("tool")
+    if not tool:
+        return jsonify({"ok": False, "error": "Missing required field: tool"}), 400
+    result = launch_cleanup_tool(tool)
     status = 200 if result.get("ok") else 422
     return jsonify(result), status
 

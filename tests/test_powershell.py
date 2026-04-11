@@ -2946,6 +2946,122 @@ class TestGetDiskQuickwins:
         assert d_keys == set()  # no user locations for non-profile drive
 
 
+class TestQuickwinsActionDispatch:
+    """The quickwins response must include action_kind + tool/cli fields so
+    the frontend can render the right button (Open folder vs Launch tool vs
+    Show CLI)."""
+
+    def _stub(self, mocker):
+        mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
+        _mock_run(mocker, stdout="[]")
+
+    def test_run_tool_entries_include_tool_key(self, mocker):
+        self._stub(mocker)
+        result = wdm.get_disk_quickwins("C")
+        by_key = {loc["key"]: loc for loc in result["locations"]}
+        # windows_installer should launch Disk Cleanup
+        wi = by_key["windows_installer"]
+        assert wi["action_kind"] == "run_tool"
+        assert wi["tool"] == "cleanmgr"
+        assert "Disk Cleanup" in wi.get("tool_label", "")
+
+    def test_info_only_entries_include_cli_string(self, mocker):
+        self._stub(mocker)
+        result = wdm.get_disk_quickwins("C")
+        by_key = {loc["key"]: loc for loc in result["locations"]}
+        winsxs = by_key["winsxs"]
+        assert winsxs["action_kind"] == "info_only"
+        assert "Dism.exe" in winsxs["cli"]
+        assert "/StartComponentCleanup" in winsxs["cli"]
+        hiber = by_key["hiberfil"]
+        assert hiber["action_kind"] == "info_only"
+        assert "powercfg" in hiber["cli"]
+        assert "hibernate off" in hiber["cli"]
+
+    def test_open_folder_entries_have_no_tool_or_cli(self, mocker):
+        self._stub(mocker)
+        result = wdm.get_disk_quickwins("C")
+        by_key = {loc["key"]: loc for loc in result["locations"]}
+        rb = by_key["recycle_bin"]
+        assert rb["action_kind"] == "open_folder"
+        assert "tool" not in rb
+        assert "cli" not in rb
+
+    def test_run_tool_entries_reference_only_allowlisted_tools(self, mocker, monkeypatch):
+        self._stub(mocker)
+        monkeypatch.setenv("USERPROFILE", "C:\\Users\\tester")
+        result = wdm.get_disk_quickwins("C")
+        all_rows = result["locations"] + result["user_locations"]
+        for row in all_rows:
+            if row["action_kind"] == "run_tool":
+                assert row["tool"] in wdm._CLEANUP_TOOLS, f"Entry {row['key']} references unknown tool {row['tool']!r}"
+
+
+class TestLaunchCleanupTool:
+    def test_known_tool_launches(self, mocker):
+        popen = mocker.patch("windesktopmgr.subprocess.Popen")
+        result = wdm.launch_cleanup_tool("cleanmgr")
+        assert result["ok"] is True
+        assert result["tool"] == "cleanmgr"
+        assert result["label"] == "Disk Cleanup"
+        popen.assert_called_once()
+        argv = popen.call_args[0][0]
+        assert argv[0] == "cleanmgr.exe"
+
+    def test_sysdm_advanced_launches(self, mocker):
+        popen = mocker.patch("windesktopmgr.subprocess.Popen")
+        result = wdm.launch_cleanup_tool("sysdm_advanced")
+        assert result["ok"] is True
+        popen.assert_called_once()
+        assert popen.call_args[0][0][0] == "SystemPropertiesAdvanced.exe"
+
+    def test_unknown_tool_rejected(self, mocker):
+        popen = mocker.patch("windesktopmgr.subprocess.Popen")
+        result = wdm.launch_cleanup_tool("rm_rf_slash")
+        assert result["ok"] is False
+        assert "unknown" in result["error"].lower()
+        popen.assert_not_called()
+
+    def test_missing_tool_rejected(self, mocker):
+        popen = mocker.patch("windesktopmgr.subprocess.Popen")
+        result = wdm.launch_cleanup_tool("")
+        assert result["ok"] is False
+        popen.assert_not_called()
+
+    def test_none_tool_rejected(self, mocker):
+        popen = mocker.patch("windesktopmgr.subprocess.Popen")
+        result = wdm.launch_cleanup_tool(None)
+        assert result["ok"] is False
+        popen.assert_not_called()
+
+    def test_tool_not_on_path_returns_error(self, mocker):
+        mocker.patch(
+            "windesktopmgr.subprocess.Popen",
+            side_effect=FileNotFoundError("cleanmgr.exe not found"),
+        )
+        result = wdm.launch_cleanup_tool("cleanmgr")
+        assert result["ok"] is False
+        assert "not found" in result["error"].lower()
+
+    def test_popen_exception_returns_error(self, mocker):
+        mocker.patch(
+            "windesktopmgr.subprocess.Popen",
+            side_effect=OSError("access denied"),
+        )
+        result = wdm.launch_cleanup_tool("cleanmgr")
+        assert result["ok"] is False
+        assert "access denied" in result["error"].lower()
+
+    def test_allowlist_contains_expected_tools(self):
+        """The allowlist must include the tools the frontend expects to launch."""
+        assert "cleanmgr" in wdm._CLEANUP_TOOLS
+        assert "sysdm_advanced" in wdm._CLEANUP_TOOLS
+        for spec in wdm._CLEANUP_TOOLS.values():
+            assert "label" in spec and "argv" in spec
+            assert isinstance(spec["argv"], list) and len(spec["argv"]) >= 1
+            assert spec["argv"][0].lower().endswith((".exe",)) or spec["argv"][0] == "explorer.exe"
+
+
 class TestOpenFolderInExplorer:
     def test_happy_path_launches_explorer(self, mocker):
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
