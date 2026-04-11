@@ -123,6 +123,68 @@ class TestLogsEndpoint:
         assert mock.call_args.kwargs["min_level"] == "WARNING"
 
 
+class TestLogsDownloadEndpoint:
+    _sample = [
+        {"timestamp": "2026-04-10 12:00:00", "level": "INFO", "logger": "windesktopmgr.flask", "message": "GET /"},
+        {
+            "timestamp": "2026-04-10 12:00:01",
+            "level": "WARNING",
+            "logger": "windesktopmgr.ps",
+            "message": "rc=1 (10 ms) cmd",
+        },
+    ]
+
+    def test_download_json_default(self, client, mocker):
+        mocker.patch("applogging.read_recent", return_value=self._sample)
+        resp = client.get("/api/logs/download")
+        assert resp.status_code == 200
+        assert resp.headers["Content-Type"].startswith("application/json")
+        assert "attachment" in resp.headers["Content-Disposition"]
+        assert ".json" in resp.headers["Content-Disposition"]
+        import json as _json
+
+        body = _json.loads(resp.data)
+        assert body["count"] == 2
+        assert body["entries"][0]["level"] == "INFO"
+
+    def test_download_csv(self, client, mocker):
+        mocker.patch("applogging.read_recent", return_value=self._sample)
+        resp = client.get("/api/logs/download?format=csv")
+        assert resp.status_code == 200
+        assert resp.headers["Content-Type"].startswith("text/csv")
+        assert ".csv" in resp.headers["Content-Disposition"]
+        text = resp.data.decode("utf-8")
+        assert "timestamp,level,logger,message" in text
+        assert "INFO" in text and "WARNING" in text
+
+    def test_download_csv_escapes_commas(self, client, mocker):
+        mocker.patch(
+            "applogging.read_recent",
+            return_value=[
+                {
+                    "timestamp": "2026-04-10 12:00:00",
+                    "level": "INFO",
+                    "logger": "x",
+                    "message": "has, comma",
+                }
+            ],
+        )
+        resp = client.get("/api/logs/download?format=csv")
+        text = resp.data.decode("utf-8")
+        # csv module quotes fields containing commas
+        assert '"has, comma"' in text
+
+    def test_download_passes_level_filter(self, client, mocker):
+        mock = mocker.patch("applogging.read_recent", return_value=[])
+        client.get("/api/logs/download?level=ERROR&format=json")
+        assert mock.call_args.kwargs["min_level"] == "ERROR"
+
+    def test_download_clamps_lines_to_20000(self, client, mocker):
+        mock = mocker.patch("applogging.read_recent", return_value=[])
+        client.get("/api/logs/download?lines=999999")
+        assert mock.call_args.kwargs["lines"] == 20000
+
+
 class TestFlaskRequestMiddleware:
     def test_request_is_logged(self, client, caplog):
         with caplog.at_level(logging.INFO, logger="windesktopmgr.flask"):

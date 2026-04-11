@@ -1590,18 +1590,24 @@ def _lookup_startup_via_fileinfo(command: str, name: str) -> dict | None:
         exe_path = cmd.split()[0] if cmd else ""
 
     if not exe_path or not exe_path.lower().endswith(".exe"):
-        # Try to find it on PATH via where.exe
-        exe_name = _extract_exe_from_command(command) + ".exe"
-        ps_find = f'(Get-Command "{exe_name}" -EA SilentlyContinue)?.Source'
-        try:
-            r0 = subprocess.run(
-                ["powershell", "-NonInteractive", "-Command", ps_find], capture_output=True, text=True, timeout=5
-            )
-            found = r0.stdout.strip()
-            if found:
-                exe_path = found
-        except Exception:
-            pass
+        # Try to find it on PATH via Get-Command (PS 5.1-compatible — no ?. operator)
+        base = _extract_exe_from_command(command)
+        if base:
+            exe_name = base + ".exe"
+            safe_name = re.sub(r"[^a-zA-Z0-9\-_. ]", "", exe_name)
+            ps_find = f'$c = Get-Command "{safe_name}" -EA SilentlyContinue; if ($c) {{ $c.Source }}'
+            try:
+                r0 = subprocess.run(
+                    ["powershell", "-NonInteractive", "-Command", ps_find],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                found = r0.stdout.strip()
+                if found:
+                    exe_path = found
+            except Exception:  # noqa: BLE001
+                pass
 
     if not exe_path:
         return None
@@ -3908,23 +3914,25 @@ def _save_process_cache():
 
 def _lookup_process_via_fileinfo(proc_name: str, path: str) -> dict | None:
     """Read embedded file version info from the exe — offline, always current."""
-    if not path:
-        # Try to find exe via where.exe
-        try:
-            r0 = subprocess.run(
-                [
-                    "powershell",
-                    "-NonInteractive",
-                    "-Command",
-                    f'(Get-Command "{proc_name}.exe" -EA SilentlyContinue)?.Source',
-                ],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            path = r0.stdout.strip()
-        except Exception:
-            pass
+    if not path and proc_name:
+        # Try to find exe via Get-Command (PS 5.1-compatible — no ?. operator)
+        safe_name = re.sub(r"[^a-zA-Z0-9\-_. ]", "", proc_name) + ".exe"
+        if safe_name != ".exe":
+            try:
+                r0 = subprocess.run(
+                    [
+                        "powershell",
+                        "-NonInteractive",
+                        "-Command",
+                        f'$c = Get-Command "{safe_name}" -EA SilentlyContinue; if ($c) {{ $c.Source }}',
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                path = r0.stdout.strip()
+            except Exception:  # noqa: BLE001
+                pass
     if not path:
         return None
     ps = f"""
@@ -6826,24 +6834,70 @@ def api_health():
     return jsonify({"ok": True, "status": "running"})
 
 
+def _parse_log_query():
+    """Shared query-string parsing for /api/logs and download routes."""
+    try:
+        n = int(request.args.get("lines", 200))
+    except (TypeError, ValueError):
+        n = 200
+    n = max(1, min(n, 20000))
+    level = request.args.get("level") or None
+    return n, level
+
+
 @app.route("/api/logs")
 def api_logs():
     """Return recent log entries from the rotating app log file.
 
     Query params:
-        lines (int)   -- how many entries to return, default 200, max 2000
+        lines (int)   -- how many entries to return, default 200, max 20000
         level (str)   -- minimum severity (DEBUG/INFO/WARNING/ERROR/CRITICAL)
     """
     from applogging import read_recent
 
-    try:
-        n = int(request.args.get("lines", 200))
-    except (TypeError, ValueError):
-        n = 200
-    n = max(1, min(n, 2000))
-    level = request.args.get("level") or None
+    n, level = _parse_log_query()
+    # API browser view is capped tighter than downloads
+    n = min(n, 2000)
     entries = read_recent(lines=n, min_level=level)
     return jsonify({"ok": True, "count": len(entries), "entries": entries})
+
+
+@app.route("/api/logs/download")
+def api_logs_download():
+    """Download recent log entries as JSON or CSV.
+
+    Query params:
+        format (str)  -- "json" (default) or "csv"
+        lines (int)   -- how many entries to return, default 2000, max 20000
+        level (str)   -- minimum severity (DEBUG/INFO/WARNING/ERROR/CRITICAL)
+    """
+    import csv
+    import io
+
+    from applogging import read_recent
+
+    n, level = _parse_log_query()
+    fmt = (request.args.get("format") or "json").lower()
+    entries = read_recent(lines=n, min_level=level)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    if fmt == "csv":
+        buf = io.StringIO()
+        writer = csv.writer(buf, lineterminator="\n")
+        writer.writerow(["timestamp", "level", "logger", "message"])
+        for e in entries:
+            writer.writerow([e.get("timestamp", ""), e.get("level", ""), e.get("logger", ""), e.get("message", "")])
+        resp = make_response(buf.getvalue())
+        resp.headers["Content-Type"] = "text/csv; charset=utf-8"
+        resp.headers["Content-Disposition"] = f'attachment; filename="windesktopmgr_logs_{ts}.csv"'
+        return resp
+
+    # Default: JSON download
+    payload = json.dumps({"count": len(entries), "entries": entries}, indent=2)
+    resp = make_response(payload)
+    resp.headers["Content-Type"] = "application/json; charset=utf-8"
+    resp.headers["Content-Disposition"] = f'attachment; filename="windesktopmgr_logs_{ts}.json"'
+    return resp
 
 
 # ── Self-test smoke check registry ────────────────────────────────────────────

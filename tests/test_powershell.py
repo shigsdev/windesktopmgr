@@ -1996,6 +1996,15 @@ class TestLookupProcessViaFileinfo:
         assert result is None
         cmd = m.call_args_list[0][0][0][-1]
         assert "Get-Command" in cmd
+        # Must use PS 5.1-compatible syntax -- no ?. null-conditional operator
+        assert "?." not in cmd
+
+    def test_empty_proc_name_skips_get_command(self, mocker):
+        """Guard against the '.exe' query that produced warnings in prod."""
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        result = wdm._lookup_process_via_fileinfo("", "")
+        assert result is None
+        assert m.call_count == 0  # should never hit PS with an empty base name
 
     def test_get_item_command_contains_path(self, mocker):
         m = _mock_run(mocker, stdout=self.FILE_INFO)
