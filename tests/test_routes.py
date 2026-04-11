@@ -2325,3 +2325,146 @@ class TestArchitectureRoute:
     def test_contains_architecture_keyword(self, client):
         r = client.get("/architecture.html")
         assert b"Architecture" in r.data
+
+
+class TestDiskAnalyzeRoute:
+    """Tests for /api/disk/analyze — POST path analyser."""
+
+    def test_returns_200_on_success(self, client, mocker):
+        mocker.patch(
+            "windesktopmgr.analyze_disk_path",
+            return_value={
+                "ok": True,
+                "path": "C:\\",
+                "parent": None,
+                "total_bytes": 1000,
+                "entries": [
+                    {
+                        "name": "Users",
+                        "path": "C:\\Users",
+                        "type": "dir",
+                        "size_bytes": 800,
+                        "size_human": "800 B",
+                        "item_count": 5,
+                        "pct": 80.0,
+                    }
+                ],
+            },
+        )
+        r = client.post("/api/disk/analyze", json={"path": "C:\\"})
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["ok"] is True
+        assert data["entries"][0]["name"] == "Users"
+
+    def test_missing_path_returns_400(self, client):
+        r = client.post("/api/disk/analyze", json={})
+        assert r.status_code == 400
+        assert r.get_json()["ok"] is False
+
+    def test_backend_error_returns_422(self, client, mocker):
+        mocker.patch(
+            "windesktopmgr.analyze_disk_path",
+            return_value={"ok": False, "error": "Path does not exist", "path": "X:\\", "entries": []},
+        )
+        r = client.post("/api/disk/analyze", json={"path": "X:\\nope"})
+        assert r.status_code == 422
+
+    def test_top_n_clamped_upper_and_lower(self, client, mocker):
+        mock = mocker.patch(
+            "windesktopmgr.analyze_disk_path",
+            return_value={"ok": True, "path": "C:\\", "entries": [], "total_bytes": 0, "parent": None},
+        )
+        client.post("/api/disk/analyze", json={"path": "C:\\", "top_n": 9999})
+        assert mock.call_args.kwargs["top_n"] == 200
+        client.post("/api/disk/analyze", json={"path": "C:\\", "top_n": 1})
+        assert mock.call_args.kwargs["top_n"] == 5
+
+    def test_invalid_top_n_defaults_to_25(self, client, mocker):
+        mock = mocker.patch(
+            "windesktopmgr.analyze_disk_path",
+            return_value={"ok": True, "path": "C:\\", "entries": [], "total_bytes": 0, "parent": None},
+        )
+        client.post("/api/disk/analyze", json={"path": "C:\\", "top_n": "banana"})
+        assert mock.call_args.kwargs["top_n"] == 25
+
+
+class TestDiskQuickwinsRoute:
+    """Tests for /api/disk/quickwins — GET bloat-location scanner."""
+
+    def test_returns_200_on_success(self, client, mocker):
+        mocker.patch(
+            "windesktopmgr.get_disk_quickwins",
+            return_value={
+                "ok": True,
+                "drive": "C:\\",
+                "locations": [
+                    {
+                        "key": "recycle_bin",
+                        "label": "Recycle Bin",
+                        "path": "C:\\$Recycle.Bin",
+                        "exists": True,
+                        "size_bytes": 100,
+                        "size_human": "100 B",
+                        "description": "...",
+                        "action": "open_recycle_bin",
+                    }
+                ],
+                "user_locations": [],
+            },
+        )
+        r = client.get("/api/disk/quickwins?drive=C")
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["ok"] is True
+        assert data["locations"][0]["key"] == "recycle_bin"
+
+    def test_defaults_to_c_drive(self, client, mocker):
+        mock = mocker.patch(
+            "windesktopmgr.get_disk_quickwins",
+            return_value={"ok": True, "drive": "C:\\", "locations": [], "user_locations": []},
+        )
+        client.get("/api/disk/quickwins")
+        assert mock.call_args[0][0] == "C"
+
+    def test_passes_drive_arg(self, client, mocker):
+        mock = mocker.patch(
+            "windesktopmgr.get_disk_quickwins",
+            return_value={"ok": True, "drive": "D:\\", "locations": [], "user_locations": []},
+        )
+        client.get("/api/disk/quickwins?drive=D")
+        assert mock.call_args[0][0] == "D"
+
+    def test_backend_error_returns_422(self, client, mocker):
+        mocker.patch(
+            "windesktopmgr.get_disk_quickwins",
+            return_value={"ok": False, "error": "Drive not found", "locations": []},
+        )
+        r = client.get("/api/disk/quickwins?drive=Z")
+        assert r.status_code == 422
+
+
+class TestDiskOpenRoute:
+    """Tests for /api/disk/open — POST open folder in Explorer."""
+
+    def test_returns_200_on_success(self, client, mocker):
+        mocker.patch(
+            "windesktopmgr.open_folder_in_explorer",
+            return_value={"ok": True, "path": "C:\\Users"},
+        )
+        r = client.post("/api/disk/open", json={"path": "C:\\Users"})
+        assert r.status_code == 200
+        assert r.get_json()["ok"] is True
+
+    def test_missing_path_returns_400(self, client):
+        r = client.post("/api/disk/open", json={})
+        assert r.status_code == 400
+        assert r.get_json()["ok"] is False
+
+    def test_backend_error_returns_422(self, client, mocker):
+        mocker.patch(
+            "windesktopmgr.open_folder_in_explorer",
+            return_value={"ok": False, "error": "Path does not exist"},
+        )
+        r = client.post("/api/disk/open", json={"path": "C:\\Ghost"})
+        assert r.status_code == 422

@@ -2078,6 +2078,444 @@ $result | ConvertTo-Json -Depth 2
         return {"drives": [], "physical": [], "io": []}
 
 
+# ── Disk space analyzer (WinDirStat-style breadth-first) ─────────────────────
+
+# Characters allowed in a Windows path passed to PowerShell. Paths are embedded
+# as SINGLE-quoted PS literals (so $name expansion is disabled), and we strip
+# everything outside this whitelist. `$` is allowed because system folders like
+# `C:\$Recycle.Bin` legitimately contain it; single-quoting defuses expansion.
+# Allowed: letters, digits, space, dash, underscore, dot, colon, backslash,
+# parentheses (for "Program Files (x86)"), and `$` (for $Recycle.Bin).
+_PATH_SAFE_RE = re.compile(r"[^a-zA-Z0-9\-_. :\\()$]")
+
+
+def _safe_ps_path(path: str) -> str:
+    """Sanitise a filesystem path for safe embedding in a PowerShell string.
+
+    Strips control characters, quotes, semicolons, and anything else that
+    could break out of the literal. Returns "" for empty / None input.
+    """
+    if not path:
+        return ""
+    cleaned = _PATH_SAFE_RE.sub("", str(path)).strip()
+    # Collapse runs of backslashes (defensive — not strictly required)
+    cleaned = re.sub(r"\\{3,}", r"\\\\", cleaned)
+    return cleaned
+
+
+def _validate_analyze_path(path: str) -> tuple[bool, str]:
+    """Validate that `path` is safe to analyse.
+
+    Rules:
+    - must be a non-empty absolute Windows path (drive-letter rooted)
+    - no UNC paths (``\\\\server\\share``)
+    - no device paths (``\\\\?\\``)
+    - must exist on disk after sanitisation
+    Returns (True, cleaned_path) or (False, error_message).
+    """
+    if not path or not isinstance(path, str):
+        return False, "Missing required field: path"
+    cleaned = _safe_ps_path(path)
+    if not cleaned:
+        return False, "Invalid path"
+    # Reject UNC / device namespace before the slashes get stripped by sanitiser
+    if path.startswith(("\\\\", "//")):
+        return False, "UNC paths are not supported"
+    # Must start with drive letter followed by colon+backslash (e.g. C:\)
+    if len(cleaned) < 3 or cleaned[1] != ":" or cleaned[2] != "\\":
+        return False, "Path must be an absolute drive-letter path (e.g. C:\\Users)"
+    if not os.path.isdir(cleaned):
+        return False, f"Path does not exist or is not a directory: {cleaned}"
+    return True, cleaned
+
+
+def _human_bytes(n: int | float) -> str:
+    """Human-readable byte size (binary units)."""
+    try:
+        n = float(n)
+    except (TypeError, ValueError):
+        return "0 B"
+    for unit in ("B", "KB", "MB", "GB", "TB", "PB"):
+        if abs(n) < 1024.0:
+            return f"{n:.1f} {unit}" if unit != "B" else f"{int(n)} B"
+        n /= 1024.0
+    return f"{n:.1f} EB"
+
+
+def analyze_disk_path(path: str, top_n: int = 25) -> dict:
+    """Return the top `top_n` largest immediate children of `path` by total size.
+
+    Uses a PowerShell breadth-first scan: lists direct children of `path`, and
+    for each subdirectory sums the recursive size of every file inside. Files
+    at `path` are returned with their own size. The caller can drill into any
+    returned subdirectory by calling this function again with its full path.
+
+    Returns a dict like::
+
+        {
+            "ok": True,
+            "path": "C:\\\\",
+            "parent": None,              # or parent dir string
+            "total_bytes": 123456789,
+            "entries": [
+                {"name": "Users", "path": "C:\\\\Users", "type": "dir",
+                 "size_bytes": 40000000000, "size_human": "37.3 GB", "pct": 45.2,
+                 "item_count": 12345, "error": False},
+                ...
+            ],
+        }
+
+    On any failure, returns ``{"ok": False, "error": str, "path": path, "entries": []}``.
+    """
+    ok, cleaned = _validate_analyze_path(path)
+    if not ok:
+        return {"ok": False, "error": cleaned, "path": path, "entries": []}
+
+    # Embed `cleaned` as a SINGLE-quoted PS literal so $-expansion is disabled.
+    # The sanitiser above already stripped `'` from user input, so the literal
+    # cannot be broken out of.
+    ps = rf"""
+$ErrorActionPreference = 'SilentlyContinue'
+$root = '{cleaned}'
+$items = Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue
+$results = @()
+foreach ($it in $items) {{
+    if ($it.PSIsContainer) {{
+        $sum = Get-ChildItem -LiteralPath $it.FullName -Recurse -Force -File -ErrorAction SilentlyContinue |
+               Measure-Object -Property Length -Sum
+        $bytes = if ($sum.Sum) {{ [int64]$sum.Sum }} else {{ [int64]0 }}
+        $count = if ($sum.Count) {{ [int]$sum.Count }} else {{ 0 }}
+        $results += [PSCustomObject]@{{
+            Name  = $it.Name
+            Path  = $it.FullName
+            Type  = 'dir'
+            Bytes = $bytes
+            Count = $count
+        }}
+    }} else {{
+        $results += [PSCustomObject]@{{
+            Name  = $it.Name
+            Path  = $it.FullName
+            Type  = 'file'
+            Bytes = [int64]$it.Length
+            Count = 1
+        }}
+    }}
+}}
+$results | Sort-Object -Property Bytes -Descending | Select-Object -First {int(top_n)} |
+    ConvertTo-Json -Depth 3
+exit 0
+"""
+    try:
+        r = subprocess.run(
+            ["powershell", "-NonInteractive", "-Command", ps],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        raw = (r.stdout or "").strip()
+        if not raw:
+            return {
+                "ok": True,
+                "path": cleaned,
+                "parent": os.path.dirname(cleaned.rstrip("\\")) or None,
+                "total_bytes": 0,
+                "entries": [],
+            }
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            parsed = [parsed]
+        entries: list[dict] = []
+        total = 0
+        for row in parsed:
+            if not isinstance(row, dict):
+                continue
+            size = int(row.get("Bytes") or 0)
+            total += size
+            entries.append(
+                {
+                    "name": row.get("Name") or "",
+                    "path": row.get("Path") or "",
+                    "type": row.get("Type") or "dir",
+                    "size_bytes": size,
+                    "size_human": _human_bytes(size),
+                    "item_count": int(row.get("Count") or 0),
+                }
+            )
+        # Compute percentage of scanned total for each entry
+        for e in entries:
+            e["pct"] = round(e["size_bytes"] / total * 100, 1) if total > 0 else 0.0
+        # Parent = one dir up, unless we're at a drive root like C:\
+        cleaned_rstrip = cleaned.rstrip("\\")
+        parent: str | None
+        if len(cleaned_rstrip) <= 2:  # "C:" — already at drive root
+            parent = None
+        else:
+            parent = os.path.dirname(cleaned_rstrip) or None
+            if parent and len(parent) == 2 and parent[1] == ":":
+                parent = parent + "\\"
+        return {
+            "ok": True,
+            "path": cleaned,
+            "parent": parent,
+            "total_bytes": total,
+            "entries": entries,
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "error": "Scan timed out after 180s — try a smaller subfolder",
+            "path": cleaned,
+            "entries": [],
+        }
+    except json.JSONDecodeError:
+        return {"ok": False, "error": "Failed to parse scan output", "path": cleaned, "entries": []}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e), "path": cleaned, "entries": []}
+
+
+# Fixed set of well-known bloat locations, relative to a drive letter.
+# Each entry: (key, label, relative_subpath_or_absolute, description, action_id)
+_QUICKWIN_LOCATIONS: list[tuple[str, str, str, str, str]] = [
+    (
+        "recycle_bin",
+        "Recycle Bin",
+        r"$Recycle.Bin",
+        "Deleted files still consuming space. Empty from the desktop Recycle Bin.",
+        "open_recycle_bin",
+    ),
+    (
+        "windows_old",
+        "Windows.old",
+        r"Windows.old",
+        "Previous Windows install left after an upgrade. Safe to remove via Disk Cleanup -> Previous Windows installation(s).",
+        "open_disk_cleanup",
+    ),
+    (
+        "windows_temp",
+        "Windows Temp",
+        r"Windows\Temp",
+        "System temporary files. Clean with the Clean Temp remediation action.",
+        "remediation_clean_temp",
+    ),
+    (
+        "windows_update_cache",
+        "Windows Update cache",
+        r"Windows\SoftwareDistribution\Download",
+        "Downloaded Windows Update payloads. Safe to clear after Stop-Service wuauserv.",
+        "open_folder",
+    ),
+    (
+        "windows_installer",
+        "Windows Installer cache",
+        r"Windows\Installer",
+        "MSI patch cache. Do NOT delete manually — use PatchCleaner or Disk Cleanup.",
+        "open_disk_cleanup",
+    ),
+    (
+        "winsxs",
+        "WinSxS (component store)",
+        r"Windows\WinSxS",
+        "Windows component store. Do NOT delete. Clean with: Dism.exe /Online /Cleanup-Image /StartComponentCleanup",
+        "info_only",
+    ),
+    (
+        "hiberfil",
+        "Hibernation file (hiberfil.sys)",
+        r"hiberfil.sys",
+        "Hibernation image, sized ~40% of RAM. Remove with: powercfg /hibernate off (admin).",
+        "info_only",
+    ),
+    (
+        "pagefile",
+        "Page file (pagefile.sys)",
+        r"pagefile.sys",
+        "Virtual memory swap file. Managed by Windows — do not delete directly.",
+        "info_only",
+    ),
+]
+
+
+def get_disk_quickwins(drive: str) -> dict:
+    """Find well-known bloat locations on a given drive and report their sizes.
+
+    `drive` should be a single letter ('C') or 'C:' or 'C:\\'. Returns::
+
+        {
+            "ok": True,
+            "drive": "C:\\\\",
+            "locations": [
+                {"key": "recycle_bin", "label": "Recycle Bin",
+                 "path": "C:\\\\$Recycle.Bin", "exists": True,
+                 "size_bytes": 1234567, "size_human": "1.2 MB",
+                 "description": "...", "action": "open_recycle_bin"},
+                ...
+            ],
+            "user_locations": [
+                {"key": "downloads", "label": "Downloads", ...},
+                ...
+            ],
+        }
+    """
+    if not drive or not isinstance(drive, str):
+        return {"ok": False, "error": "Missing required field: drive", "locations": []}
+    letter = drive.strip().rstrip(":\\").upper()
+    if len(letter) != 1 or not letter.isalpha():
+        return {"ok": False, "error": "Drive must be a single letter (A–Z)", "locations": []}
+    drive_root = f"{letter}:\\"
+    if not os.path.isdir(drive_root):
+        return {"ok": False, "error": f"Drive {drive_root} not found", "locations": []}
+
+    # Build the candidate path list
+    candidates: list[tuple[str, str, str, str, str]] = []
+    for key, label, rel, desc, action in _QUICKWIN_LOCATIONS:
+        candidates.append((key, label, os.path.join(drive_root, rel), desc, action))
+
+    # User-profile locations (Downloads, AppData caches) only make sense on the
+    # OS drive, so we only add them if `drive` matches the profile drive.
+    user_candidates: list[tuple[str, str, str, str, str]] = []
+    userprofile = os.environ.get("USERPROFILE", "")
+    if userprofile and userprofile[0].upper() == letter:
+        user_candidates = [
+            (
+                "downloads",
+                "Downloads folder",
+                os.path.join(userprofile, "Downloads"),
+                "Personal downloads. Review and delete old installers / archives.",
+                "open_folder",
+            ),
+            (
+                "user_temp",
+                "User Temp (%TEMP%)",
+                os.path.join(userprofile, "AppData", "Local", "Temp"),
+                "Per-user temp files. Clean with the Clean Temp remediation action.",
+                "remediation_clean_temp",
+            ),
+            (
+                "chrome_cache",
+                "Chrome cache",
+                os.path.join(userprofile, "AppData", "Local", "Google", "Chrome", "User Data", "Default", "Cache"),
+                "Chrome browser cache. Clearable via Chrome settings.",
+                "open_folder",
+            ),
+            (
+                "edge_cache",
+                "Edge cache",
+                os.path.join(userprofile, "AppData", "Local", "Microsoft", "Edge", "User Data", "Default", "Cache"),
+                "Edge browser cache. Clearable via Edge settings.",
+                "open_folder",
+            ),
+        ]
+
+    all_rows = candidates + user_candidates
+    # Build one PS script that sizes every candidate in parallel-ish (foreach).
+    # Paths are embedded as SINGLE-quoted literals so that `$Recycle.Bin` and
+    # similar dollar-containing names aren't interpreted as variable expansions.
+    ps_paths = "\n".join(f"'{_safe_ps_path(p)}'" for _, _, p, _, _ in all_rows)
+    ps = rf"""
+$ErrorActionPreference = 'SilentlyContinue'
+$paths = @(
+{ps_paths}
+)
+$out = @()
+foreach ($p in $paths) {{
+    if (Test-Path -LiteralPath $p) {{
+        $item = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+        if ($item -and $item.PSIsContainer) {{
+            $sum = Get-ChildItem -LiteralPath $p -Recurse -Force -File -ErrorAction SilentlyContinue |
+                   Measure-Object -Property Length -Sum
+            $bytes = if ($sum.Sum) {{ [int64]$sum.Sum }} else {{ [int64]0 }}
+        }} elseif ($item) {{
+            $bytes = [int64]$item.Length
+        }} else {{
+            $bytes = [int64]0
+        }}
+        $exists = $true
+    }} else {{
+        $bytes = [int64]0
+        $exists = $false
+    }}
+    $out += [PSCustomObject]@{{ Path = $p; Exists = $exists; Bytes = $bytes }}
+}}
+$out | ConvertTo-Json -Depth 2
+exit 0
+"""
+    size_by_path: dict[str, tuple[bool, int]] = {}
+    try:
+        r = subprocess.run(
+            ["powershell", "-NonInteractive", "-Command", ps],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        raw = (r.stdout or "").strip()
+        if raw:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                parsed = [parsed]
+            for row in parsed:
+                if not isinstance(row, dict):
+                    continue
+                p = row.get("Path") or ""
+                size_by_path[p] = (
+                    bool(row.get("Exists")),
+                    int(row.get("Bytes") or 0),
+                )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Quick-wins scan timed out", "locations": []}
+    except json.JSONDecodeError:
+        return {"ok": False, "error": "Failed to parse quick-wins output", "locations": []}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e), "locations": []}
+
+    def _row(key, label, path, desc, action):
+        exists, size = size_by_path.get(path, (False, 0))
+        return {
+            "key": key,
+            "label": label,
+            "path": path,
+            "exists": exists,
+            "size_bytes": size,
+            "size_human": _human_bytes(size),
+            "description": desc,
+            "action": action,
+        }
+
+    locations = [_row(*row) for row in candidates]
+    user_locations = [_row(*row) for row in user_candidates]
+    # Sort each list by size descending so biggest hits float to the top
+    locations.sort(key=lambda x: x["size_bytes"], reverse=True)
+    user_locations.sort(key=lambda x: x["size_bytes"], reverse=True)
+    return {
+        "ok": True,
+        "drive": drive_root,
+        "locations": locations,
+        "user_locations": user_locations,
+    }
+
+
+def open_folder_in_explorer(path: str) -> dict:
+    """Launch explorer.exe pointing at `path`. Path must exist.
+
+    Returns {"ok": True, "path": path} or {"ok": False, "error": ...}.
+    """
+    ok, cleaned = _validate_analyze_path(path)
+    if not ok:
+        # Also allow files (not just directories) — re-check as a file
+        if path and isinstance(path, str):
+            tentative = _safe_ps_path(path)
+            if tentative and os.path.isfile(tentative):
+                cleaned = tentative
+                ok = True
+        if not ok:
+            return {"ok": False, "error": cleaned}
+    try:
+        subprocess.Popen(["explorer.exe", cleaned])  # noqa: S603
+        return {"ok": True, "path": cleaned}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # NETWORK MONITOR
 # ══════════════════════════════════════════════════════════════════════════════
@@ -7276,6 +7714,44 @@ def startup_toggle():
 @app.route("/api/disk/data")
 def disk_data_route():
     return jsonify(get_disk_health())
+
+
+@app.route("/api/disk/analyze", methods=["POST"])
+def disk_analyze_route():
+    """Analyze a path on disk — returns top N largest immediate children."""
+    data = request.get_json() or {}
+    path = data.get("path")
+    if not path:
+        return jsonify({"ok": False, "error": "Missing required field: path"}), 400
+    try:
+        top_n = int(data.get("top_n") or 25)
+    except (TypeError, ValueError):
+        top_n = 25
+    top_n = max(5, min(top_n, 200))  # clamp
+    result = analyze_disk_path(path, top_n=top_n)
+    status = 200 if result.get("ok") else 422
+    return jsonify(result), status
+
+
+@app.route("/api/disk/quickwins")
+def disk_quickwins_route():
+    """Return well-known bloat locations (Recycle Bin, Temp, Downloads, ...)."""
+    drive = request.args.get("drive", "C")
+    result = get_disk_quickwins(drive)
+    status = 200 if result.get("ok") else 422
+    return jsonify(result), status
+
+
+@app.route("/api/disk/open", methods=["POST"])
+def disk_open_route():
+    """Open a folder or file in Windows Explorer."""
+    data = request.get_json() or {}
+    path = data.get("path")
+    if not path:
+        return jsonify({"ok": False, "error": "Missing required field: path"}), 400
+    result = open_folder_in_explorer(path)
+    status = 200 if result.get("ok") else 422
+    return jsonify(result), status
 
 
 @app.route("/api/network/data")
