@@ -23,6 +23,25 @@ def _propagate_logs():
 
 
 class TestConfigure:
+    def test_pytest_uses_null_handler_not_file(self):
+        """Regression: test runs must NEVER write to the production log file.
+
+        Before this fix, pytest runs that exercised the subprocess wrapper wrote
+        fake TIMEOUT / rc=1 warnings to Logs/app.log, polluting the production
+        log. The configure() function must detect pytest and attach a
+        NullHandler instead of a RotatingFileHandler.
+        """
+        import logging as _logging
+
+        root = applogging.configure()
+        # We're inside pytest, so there must be exactly one handler and it must
+        # be a NullHandler -- no file handler should ever be attached during tests
+        assert len(root.handlers) == 1
+        assert isinstance(root.handlers[0], _logging.NullHandler)
+        # Confirm no RotatingFileHandler snuck in
+        for h in root.handlers:
+            assert not isinstance(h, _logging.handlers.RotatingFileHandler)
+
     def test_configure_is_idempotent(self):
         """Calling configure() twice should not add duplicate handlers."""
         # Already configured on import — calling again must be a no-op.
@@ -44,6 +63,33 @@ class TestReadRecent:
     def test_empty_when_file_missing(self, monkeypatch):
         monkeypatch.setattr(applogging, "LOG_FILE", os.path.join(tempfile.gettempdir(), "nonexistent_wdm_test.log"))
         assert applogging.read_recent(lines=100) == []
+
+    def test_parses_enriched_format(self, tmp_path, monkeypatch):
+        """Enriched format includes msec, thread name, and module:line."""
+        log_path = tmp_path / "test.log"
+        log_path.write_text(
+            "2026-04-10 12:00:00.123 INFO    [MainThread    ] "
+            "windesktopmgr.flask      windesktopmgr.py:6789 GET /api/logs status=200 "
+            "elapsed=5ms size=1024b client=127.0.0.1\n"
+            "2026-04-10 12:00:01.456 WARNING [ThreadPoolEx-3] "
+            "windesktopmgr.ps         windesktopmgr.py:1234 rc=1 elapsed=500ms "
+            "bytes=0 caller=windesktopmgr.py:1595 (_lookup) cmd=powershell\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(applogging, "LOG_FILE", str(log_path))
+        entries = applogging.read_recent(lines=100)
+        assert len(entries) == 2
+        # Newest first
+        e0 = entries[0]
+        assert e0["level"] == "WARNING"
+        assert e0["thread"] == "ThreadPoolEx-3"
+        assert e0["logger"] == "windesktopmgr.ps"
+        assert e0["source"] == "windesktopmgr.py:1234"
+        assert "rc=1" in e0["message"]
+        e1 = entries[1]
+        assert e1["thread"] == "MainThread"
+        assert e1["source"] == "windesktopmgr.py:6789"
+        assert "client=127.0.0.1" in e1["message"]
 
     def test_parses_well_formed_lines(self, tmp_path, monkeypatch):
         log_path = tmp_path / "test.log"
@@ -154,7 +200,7 @@ class TestLogsDownloadEndpoint:
         assert resp.headers["Content-Type"].startswith("text/csv")
         assert ".csv" in resp.headers["Content-Disposition"]
         text = resp.data.decode("utf-8")
-        assert "timestamp,level,logger,message" in text
+        assert "timestamp,level,thread,logger,source,message" in text
         assert "INFO" in text and "WARNING" in text
 
     def test_download_csv_escapes_commas(self, client, mocker):

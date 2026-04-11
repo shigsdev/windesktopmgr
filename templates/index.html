@@ -3932,9 +3932,14 @@ function logRender(entries) {
   };
   const html = entries.map(e => {
     const color = colors[e.level] || "#ccc";
-    return `<div><span style="color:#666">${esc(e.timestamp)}</span> `
+    const thread = e.thread ? `<span style="color:#555">[${esc(e.thread)}]</span> ` : "";
+    const source = e.source ? `<span style="color:#5a7a9a">${esc(e.source)}</span> ` : "";
+    return `<div style="margin-bottom:2px">`
+         + `<span style="color:#666">${esc(e.timestamp)}</span> `
          + `<span style="color:${color};font-weight:600">${esc(e.level.padEnd(8))}</span> `
+         + thread
          + `<span style="color:#9fb3c8">${esc(e.logger)}</span> `
+         + source
          + `<span>${esc(e.message)}</span></div>`;
   }).join("");
   container.innerHTML = html;

@@ -50,37 +50,92 @@ def _summarize_cmd(args) -> str:
     return text
 
 
+def _caller_info(depth: int = 3) -> str:
+    """Return 'file:line (func)' for the Python frame that invoked subprocess.run.
+
+    depth=3 skips _caller_info, _headless_subprocess_run, and subprocess.run.
+    Used to label PS log entries with the actual call site inside windesktopmgr.
+    """
+    try:
+        frame = sys._getframe(depth)
+        filename = os.path.basename(frame.f_code.co_filename)
+        return f"{filename}:{frame.f_lineno} ({frame.f_code.co_name})"
+    except Exception:  # noqa: BLE001
+        return "?"
+
+
 def _headless_subprocess_run(*args, **kwargs):
     """Wrapper that adds CREATE_NO_WINDOW flag when in headless/tray mode
     and logs every subprocess call via the windesktopmgr.ps logger.
+
+    Logged fields per call:
+        caller   -- file:line (function) that invoked subprocess.run
+        cmd      -- short summary of the command (max 200 chars)
+        timeout  -- the kwarg timeout if set
+        rc       -- process returncode
+        elapsed  -- wall-clock duration in ms
+        bytes    -- stdout size on success
+        stderr   -- first 200 chars of stderr on failure
     """
     if HEADLESS_MODE and os.name == "nt" and "creationflags" not in kwargs:
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
     cmd = args[0] if args else kwargs.get("args", "")
     cmd_summary = _summarize_cmd(cmd)
+    timeout = kwargs.get("timeout", "-")
+    caller = _caller_info()
     start = time.time()
     try:
         result = _original_subprocess_run(*args, **kwargs)
     except subprocess.TimeoutExpired:
         elapsed_ms = int((time.time() - start) * 1000)
-        _ps_log.warning("TIMEOUT (%d ms) %s", elapsed_ms, cmd_summary)
+        _ps_log.warning(
+            "TIMEOUT after=%dms limit=%ss caller=%s cmd=%s",
+            elapsed_ms,
+            timeout,
+            caller,
+            cmd_summary,
+        )
         raise
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         elapsed_ms = int((time.time() - start) * 1000)
-        _ps_log.error("EXCEPTION (%d ms) %s -- %s", elapsed_ms, cmd_summary, e)
+        _ps_log.error(
+            "EXCEPTION after=%dms caller=%s cmd=%s exc=%s: %s",
+            elapsed_ms,
+            caller,
+            cmd_summary,
+            type(e).__name__,
+            e,
+        )
         raise
 
     elapsed_ms = int((time.time() - start) * 1000)
     rc = getattr(result, "returncode", 0)
+    stdout = getattr(result, "stdout", "") or ""
+    stdout_bytes = len(stdout.encode("utf-8", errors="replace")) if isinstance(stdout, str) else len(stdout or b"")
+
     if rc == 0:
-        _ps_log.debug("ok rc=0 (%d ms) %s", elapsed_ms, cmd_summary)
+        _ps_log.debug(
+            "rc=0 elapsed=%dms bytes=%d caller=%s cmd=%s",
+            elapsed_ms,
+            stdout_bytes,
+            caller,
+            cmd_summary,
+        )
     else:
         stderr = getattr(result, "stderr", "") or ""
         if isinstance(stderr, bytes):
             stderr = stderr.decode("utf-8", errors="replace")
         stderr_snip = stderr.strip().replace("\n", " ")[:200]
-        _ps_log.warning("rc=%s (%d ms) %s -- %s", rc, elapsed_ms, cmd_summary, stderr_snip)
+        _ps_log.warning(
+            "rc=%s elapsed=%dms bytes=%d caller=%s cmd=%s stderr=%s",
+            rc,
+            elapsed_ms,
+            stdout_bytes,
+            caller,
+            cmd_summary,
+            stderr_snip or "<empty>",
+        )
     return result
 
 
@@ -6830,7 +6885,9 @@ def _log_request_start():
 
 @app.after_request
 def _log_request_end(response):
-    """Log every HTTP request. Skip /api/health to avoid polluting the log."""
+    """Log every HTTP request with method, path, status, duration, size,
+    client IP, and query string. Skip /api/health to avoid polluting the log.
+    """
     try:
         path = request.path or ""
         # Suppress heartbeat polls -- they would dominate the log
@@ -6838,13 +6895,29 @@ def _log_request_end(response):
             return response
         start = getattr(request, "_wdm_start_time", None)
         elapsed_ms = int((time.time() - start) * 1000) if start else 0
+
+        # Client info
+        remote = request.headers.get("X-Forwarded-For", request.remote_addr or "-").split(",")[0].strip()
+        qs = request.query_string.decode("utf-8", errors="replace") if request.query_string else ""
+        qs_snip = ("?" + qs[:120]) if qs else ""
+
+        # Response size if known
+        try:
+            size = response.calculate_content_length()
+        except Exception:  # noqa: BLE001
+            size = None
+        size_str = f"{size}b" if size is not None else "-"
+
         level = _flask_log.warning if response.status_code >= 400 else _flask_log.info
         level(
-            "%s %s -> %s (%d ms)",
+            "%s %s%s status=%d elapsed=%dms size=%s client=%s",
             request.method,
             path,
+            qs_snip,
             response.status_code,
             elapsed_ms,
+            size_str,
+            remote,
         )
     except Exception:  # noqa: BLE001
         pass  # never break a request just because logging failed
@@ -6915,9 +6988,18 @@ def api_logs_download():
     if fmt == "csv":
         buf = io.StringIO()
         writer = csv.writer(buf, lineterminator="\n")
-        writer.writerow(["timestamp", "level", "logger", "message"])
+        writer.writerow(["timestamp", "level", "thread", "logger", "source", "message"])
         for e in entries:
-            writer.writerow([e.get("timestamp", ""), e.get("level", ""), e.get("logger", ""), e.get("message", "")])
+            writer.writerow(
+                [
+                    e.get("timestamp", ""),
+                    e.get("level", ""),
+                    e.get("thread", ""),
+                    e.get("logger", ""),
+                    e.get("source", ""),
+                    e.get("message", ""),
+                ]
+            )
         resp = make_response(buf.getvalue())
         resp.headers["Content-Type"] = "text/csv; charset=utf-8"
         resp.headers["Content-Disposition"] = f'attachment; filename="windesktopmgr_logs_{ts}.csv"'

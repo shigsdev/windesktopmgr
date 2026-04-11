@@ -23,15 +23,28 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import os
+import sys
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_DIR = os.path.join(APP_DIR, "Logs")
 LOG_FILE = os.path.join(LOG_DIR, "app.log")
 
+
+def _is_running_under_pytest() -> bool:
+    """Detect test runs so we never pollute the production log file."""
+    return "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ
+
+
 MAX_BYTES = 10 * 1024 * 1024  # 10 MB per file
 BACKUP_COUNT = 5  # 5 rotated backups → 60 MB cap total
 
-LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)-24s %(message)s"
+# Richer format: timestamp, level, thread name, logger, module:line, then the
+# actual message. The thread name lets you see which parallel worker ran a PS
+# call (useful for selftest's ThreadPoolExecutor). module:line lets you grep
+# straight to the calling site.
+LOG_FORMAT = (
+    "%(asctime)s.%(msecs)03d %(levelname)-7s [%(threadName)-14s] %(name)-24s %(module)s:%(lineno)-4d %(message)s"
+)
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 _configured = False
@@ -47,8 +60,6 @@ def configure(level: int = logging.INFO) -> logging.Logger:
     if _configured:
         return root
 
-    os.makedirs(LOG_DIR, exist_ok=True)
-
     root.setLevel(level)
     root.propagate = False  # don't leak to the python root logger
 
@@ -56,8 +67,15 @@ def configure(level: int = logging.INFO) -> logging.Logger:
     for h in list(root.handlers):
         root.removeHandler(h)
 
-    formatter = logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT)
+    # Under pytest: attach a NullHandler so messages are swallowed.
+    # Production logs must never be polluted by mocked test subprocess calls.
+    if _is_running_under_pytest():
+        root.addHandler(logging.NullHandler())
+        _configured = True
+        return root
 
+    os.makedirs(LOG_DIR, exist_ok=True)
+    formatter = logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT)
     file_handler = logging.handlers.RotatingFileHandler(
         LOG_FILE,
         maxBytes=MAX_BYTES,
@@ -119,29 +137,74 @@ _VALID_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
 
 def _parse_line(line: str) -> dict | None:
-    """Parse a single log line into structured fields, or None if invalid."""
+    """Parse a single log line into structured fields, or None if invalid.
+
+    Supported formats:
+
+        Legacy (pre-enrichment):
+            YYYY-MM-DD HH:MM:SS LEVEL  logger.name    message
+
+        Enriched (current):
+            YYYY-MM-DD HH:MM:SS.mmm LEVEL [thread-name] logger.name module:line message
+    """
     line = line.rstrip("\r\n")
     if not line:
         return None
-    # Format: "YYYY-MM-DD HH:MM:SS LEVEL    logger.name            message"
-    parts = line.split(None, 3)
-    if len(parts) < 4:
+
+    parts = line.split(None, 2)
+    if len(parts) < 3:
         return None
-    date, time_, level, rest = parts
-    level = level.strip().upper()
-    if level not in _VALID_LEVELS:
-        return None
+    date, time_raw, rest = parts
+
     # Minimal date/time shape check so garbage lines don't parse
     if len(date) != 10 or date[4] != "-" or date[7] != "-":
         return None
-    if len(time_) != 8 or time_[2] != ":" or time_[5] != ":":
+    # time may be "HH:MM:SS" or "HH:MM:SS.mmm"
+    time_base = time_raw.split(".")[0]
+    if len(time_base) != 8 or time_base[2] != ":" or time_base[5] != ":":
         return None
-    logger_name, _, message = rest.partition(" ")
+
+    # Next token is the level
+    level_parts = rest.split(None, 1)
+    if len(level_parts) < 2:
+        return None
+    level = level_parts[0].strip().upper()
+    if level not in _VALID_LEVELS:
+        return None
+    rest = level_parts[1]
+
+    # Optional thread name block: "[thread-name] "
+    thread = ""
+    if rest.startswith("["):
+        close = rest.find("]")
+        if close != -1:
+            thread = rest[1:close].strip()
+            rest = rest[close + 1 :].lstrip()
+
+    # Next token is the logger name
+    logger_parts = rest.split(None, 1)
+    if len(logger_parts) < 2:
+        return None
+    logger_name = logger_parts[0].strip()
+    rest = logger_parts[1]
+
+    # Optional module:line block (enriched format only)
+    source = ""
+    maybe_src, _, maybe_rest = rest.partition(" ")
+    if ":" in maybe_src and not maybe_src.startswith("http"):
+        # Looks like module:line
+        mod, _, lineno = maybe_src.partition(":")
+        if lineno.isdigit():
+            source = maybe_src
+            rest = maybe_rest
+
     return {
-        "timestamp": f"{date} {time_}",
+        "timestamp": f"{date} {time_raw}",
         "level": level,
-        "logger": logger_name.strip(),
-        "message": message.strip(),
+        "thread": thread,
+        "logger": logger_name,
+        "source": source,
+        "message": rest.strip(),
     }
 
 
