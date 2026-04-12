@@ -1733,8 +1733,11 @@ function dkJsArg(s) {
     .replace(/"/g, '&quot;');
 }
 
+const _dkAnalyzeCache = new Map();
+
 function dkAnalyzeOpen(letter) {
   _dkAnalyzeDrive = letter;
+  _dkAnalyzeCache.clear();
   const root = letter + ':\\';
   document.getElementById('dk-analyze-modal').style.display = 'block';
   dkAnalyzeLoad(root);
@@ -1744,16 +1747,57 @@ function dkAnalyzeOpen(letter) {
 function dkAnalyzeClose() {
   document.getElementById('dk-analyze-modal').style.display = 'none';
   _dkAnalyzePath = null;
+  _dkAnalyzeCache.clear();
+}
+
+function _dkRenderAnalyzeResult(d) {
+  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/'/g,'&#39;').replace(/"/g,'&quot;');
+  const entries = d.entries || [];
+  const total = d.total_bytes || 0;
+  const cloudTotal = d.total_cloud_bytes || 0;
+  const cloudSuffix = cloudTotal > 0
+    ? ` — plus ${dkHuman(cloudTotal)} in cloud (iCloud/OneDrive/Dropbox, not using local disk)`
+    : '';
+  document.getElementById('dk-analyze-total').textContent =
+    `Scanned total: ${dkHuman(total)} across ${entries.length} items${cloudSuffix}`;
+  if (!entries.length) {
+    document.getElementById('dk-analyze-tbody').innerHTML =
+      '<tr><td colspan="4" style="padding:24px;text-align:center;color:var(--muted)">No items found</td></tr>';
+    return;
+  }
+  const rows = entries.map(e => {
+    const pct = e.pct || 0;
+    const col = pct > 40 ? 'var(--red)' : pct > 15 ? 'var(--orange)' : 'var(--cyan)';
+    const icon = e.type === 'dir' ? '📁' : '📄';
+    const drillBtn = e.type === 'dir'
+      ? `<button class="btn-action" style="padding:4px 10px;font-size:11px;margin-right:4px" onclick="dkAnalyzeLoad('${dkJsArg(e.path)}')">Drill in</button>`
+      : '';
+    const cloudBadge = (e.cloud_bytes && e.cloud_bytes > 0)
+      ? `<span title="Cloud-only files (iCloud/OneDrive/Dropbox) — not on local disk" style="display:inline-block;margin-left:6px;padding:1px 6px;font-size:9px;background:#3b82f633;color:#93c5fd;border-radius:3px;font-weight:600">☁ ${esc(e.cloud_human)}</span>`
+      : '';
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:6px 10px;font-family:monospace;font-size:12px">${icon} ${esc(e.name)}</td>
+      <td style="padding:6px 10px;text-align:right;font-weight:600;color:${col}">${esc(e.size_human)}${cloudBadge}</td>
+      <td style="padding:6px 10px;width:200px">
+        <div style="background:#ffffff11;border-radius:3px;height:6px"><div style="background:${col};height:100%;border-radius:3px;width:${pct}%"></div></div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">${pct}% • ${e.item_count||0} items</div>
+      </td>
+      <td style="padding:6px 10px">
+        ${drillBtn}
+        <button class="btn-action" style="padding:4px 10px;font-size:11px" onclick="dkOpenFolder('${dkJsArg(e.path)}')">Open</button>
+      </td>
+    </tr>`;
+  }).join('');
+  document.getElementById('dk-analyze-tbody').innerHTML = rows;
 }
 
 async function dkAnalyzeLoad(path) {
   _dkAnalyzePath = path;
   const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/'/g,'&#39;').replace(/"/g,'&quot;');
-  document.getElementById('dk-analyze-loading').style.display = 'block';
   document.getElementById('dk-analyze-error').style.display = 'none';
   document.getElementById('dk-analyze-tbody').innerHTML = '';
   document.getElementById('dk-analyze-total').textContent = '';
-  // Breadcrumb: show path + back button if we're not at drive root
+  // Breadcrumb
   const bc = document.getElementById('dk-analyze-breadcrumb');
   const segments = path.replace(/\\$/,'').split('\\');
   let bcHtml = '';
@@ -1768,11 +1812,21 @@ async function dkAnalyzeLoad(path) {
     }
   });
   bc.innerHTML = bcHtml;
+
+  // Check cache — instant back-navigation when drilling back up
+  const cacheKey = path.replace(/\\+$/, '').toUpperCase();
+  if (_dkAnalyzeCache.has(cacheKey)) {
+    document.getElementById('dk-analyze-loading').style.display = 'none';
+    _dkRenderAnalyzeResult(_dkAnalyzeCache.get(cacheKey));
+    return;
+  }
+
+  const loadEl = document.getElementById('dk-analyze-loading');
+  loadEl.textContent = 'Scanning — large folders with cloud files can take several minutes\u2026';
+  loadEl.style.display = 'block';
   try {
     const _ac = new AbortController();
-    const _tid = setTimeout(() => _ac.abort(), 660000); // 660s — slightly above backend's 600s
-    const loadEl = document.getElementById('dk-analyze-loading');
-    loadEl.textContent = 'Scanning — large folders with cloud files can take several minutes…';
+    const _tid = setTimeout(() => _ac.abort(), 660000);
     const r = await fetch('/api/disk/analyze', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -1788,46 +1842,11 @@ async function dkAnalyzeLoad(path) {
       err.style.display = 'block';
       return;
     }
-    const entries = d.entries || [];
-    const total = d.total_bytes || 0;
-    const cloudTotal = d.total_cloud_bytes || 0;
-    const cloudSuffix = cloudTotal > 0
-      ? ` — plus ${dkHuman(cloudTotal)} in cloud (iCloud/OneDrive/Dropbox, not using local disk)`
-      : '';
-    document.getElementById('dk-analyze-total').textContent =
-      `Scanned total: ${dkHuman(total)} across ${entries.length} items${cloudSuffix}`;
-    if (!entries.length) {
-      document.getElementById('dk-analyze-tbody').innerHTML =
-        '<tr><td colspan="4" style="padding:24px;text-align:center;color:var(--muted)">No items found</td></tr>';
-      return;
-    }
-    const rows = entries.map(e => {
-      const pct = e.pct || 0;
-      const col = pct > 40 ? 'var(--red)' : pct > 15 ? 'var(--orange)' : 'var(--cyan)';
-      const icon = e.type === 'dir' ? '📁' : '📄';
-      const drillBtn = e.type === 'dir'
-        ? `<button class="btn-action" style="padding:4px 10px;font-size:11px;margin-right:4px" onclick="dkAnalyzeLoad('${dkJsArg(e.path)}')">Drill in</button>`
-        : '';
-      const cloudBadge = (e.cloud_bytes && e.cloud_bytes > 0)
-        ? `<span title="Cloud-only files (iCloud/OneDrive/Dropbox) — not on local disk" style="display:inline-block;margin-left:6px;padding:1px 6px;font-size:9px;background:#3b82f633;color:#93c5fd;border-radius:3px;font-weight:600">☁ ${esc(e.cloud_human)}</span>`
-        : '';
-      return `<tr style="border-bottom:1px solid var(--border)">
-        <td style="padding:6px 10px;font-family:monospace;font-size:12px">${icon} ${esc(e.name)}</td>
-        <td style="padding:6px 10px;text-align:right;font-weight:600;color:${col}">${esc(e.size_human)}${cloudBadge}</td>
-        <td style="padding:6px 10px;width:200px">
-          <div style="background:#ffffff11;border-radius:3px;height:6px"><div style="background:${col};height:100%;border-radius:3px;width:${pct}%"></div></div>
-          <div style="font-size:10px;color:var(--muted);margin-top:2px">${pct}% • ${e.item_count||0} items</div>
-        </td>
-        <td style="padding:6px 10px">
-          ${drillBtn}
-          <button class="btn-action" style="padding:4px 10px;font-size:11px" onclick="dkOpenFolder('${dkJsArg(e.path)}')">Open</button>
-        </td>
-      </tr>`;
-    }).join('');
-    document.getElementById('dk-analyze-tbody').innerHTML = rows;
+    _dkAnalyzeCache.set(cacheKey, d);
+    _dkRenderAnalyzeResult(d);
   } catch(e) {
     console.error('analyze failed', e);
-    document.getElementById('dk-analyze-loading').style.display = 'none';
+    loadEl.style.display = 'none';
     const err = document.getElementById('dk-analyze-error');
     if (e.name === 'AbortError') {
       err.textContent = 'Scan timed out — this folder is very large. Try drilling into a subfolder instead.';

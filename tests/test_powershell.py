@@ -2812,7 +2812,8 @@ class TestAnalyzeDiskPath:
 
     def test_command_uses_robocopy_for_fast_sizing(self, mocker):
         """Sizing each subdir must use `robocopy /L /BYTES /XA:O` (native
-        Win32 walk, 5-10x faster than `Get-ChildItem -Recurse | Measure-Object`)."""
+        Win32 walk, 5-10x faster than `Get-ChildItem -Recurse | Measure-Object`).
+        Robocopy runs in parallel via a RunspacePool (up to 8 threads)."""
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
         m = _mock_run(mocker, stdout="[]")
         wdm.analyze_disk_path("C:\\")
@@ -2822,6 +2823,9 @@ class TestAnalyzeDiskPath:
         # Per-subdir size comes from robocopy in list-only mode
         assert "robocopy" in ps_string
         assert "/BYTES" in ps_string
+        # Parallel execution via RunspacePool
+        assert "RunspaceFactory" in ps_string or "RunspacePool" in ps_string
+        assert "BeginInvoke" in ps_string
         # Still sorts + exits cleanly
         assert "Sort-Object" in ps_string
         assert "exit 0" in ps_string
@@ -2838,9 +2842,9 @@ class TestAnalyzeDiskPath:
         ps_string = " ".join(m.call_args[0][0])
         # The Bytes row parser must capture at least 3 columns (Total + Copied
         # + Skipped) and compute local = Total - Skipped
-        assert "$total - $skipped" in ps_string or "$bytes = $total - $skipped" in ps_string
+        assert "$total - $skipped" in ps_string
         # Negative guard (should never happen but defensive)
-        assert "$bytes -lt 0" in ps_string
+        assert "-lt 0" in ps_string
 
     def test_command_excludes_offline_cloud_placeholders(self, mocker):
         """Must pass /XA:O to robocopy so iCloud/OneDrive/Dropbox cloud-only

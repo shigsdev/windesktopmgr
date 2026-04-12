@@ -2189,61 +2189,82 @@ def analyze_disk_path(path: str, top_n: int = 25) -> dict:
     # real local size is `Total - Skipped`. Skipped alone is the cloud-only
     # footprint. Without this subtraction, cloud files end up counted twice
     # (once in local, once in cloud) and the UI reports inflated local usage.
+    # RunspacePool pattern: runs up to 8 robocopy instances in parallel
+    # instead of one-at-a-time.  PS 5.1 compatible (no ForEach-Object -Parallel).
+    # Files at root are instant (no robocopy needed); only dirs use the pool.
+    # ArrayList instead of += avoids O(n^2) array re-creation.
     ps = rf"""
 $ErrorActionPreference = 'SilentlyContinue'
 $root = '{cleaned}'
 $items = Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue
-$results = @()
+$results = [System.Collections.ArrayList]::new()
+
+# ── Files: instant sizing, no robocopy needed ──
+$dirs = [System.Collections.ArrayList]::new()
 foreach ($it in $items) {{
     if ($it.PSIsContainer) {{
-        $bytes = [int64]0
-        $cloudBytes = [int64]0
-        $count = 0
-        $rc = robocopy $it.FullName NULL /L /E /NFL /NDL /NJH /NC /BYTES /XA:O /XJ /R:0 /W:0 2>$null
+        [void]$dirs.Add($it)
+    }} else {{
+        $isOffline = ($it.Attributes -band [IO.FileAttributes]::Offline) -ne 0
+        if ($isOffline) {{
+            [void]$results.Add([PSCustomObject]@{{
+                Name = $it.Name; Path = $it.FullName; Type = 'file'
+                Bytes = [int64]0; CloudBytes = [int64]$it.Length; Count = 1
+            }})
+        }} else {{
+            [void]$results.Add([PSCustomObject]@{{
+                Name = $it.Name; Path = $it.FullName; Type = 'file'
+                Bytes = [int64]$it.Length; CloudBytes = [int64]0; Count = 1
+            }})
+        }}
+    }}
+}}
+
+# ── Dirs: parallel robocopy via RunspacePool (up to 8 threads) ──
+if ($dirs.Count -gt 0) {{
+    $maxT = [Math]::Min(8, $dirs.Count)
+    $pool = [RunspaceFactory]::CreateRunspacePool(1, $maxT)
+    $pool.Open()
+    $sb = {{
+        param($dirPath)
+        $b = [int64]0; $cb = [int64]0; $cnt = 0
+        $rc = robocopy $dirPath NULL /L /E /NFL /NDL /NJH /NC /BYTES /XA:O /XJ /R:0 /W:0 2>$null
         foreach ($line in $rc) {{
             if ($line -match '^\s*Bytes\s*:\s*(\d+)\s+(\d+)\s+(\d+)') {{
                 $total   = [int64]$matches[1]
                 $skipped = [int64]$matches[3]
-                $bytes = $total - $skipped   # Actual local bytes
-                if ($bytes -lt 0) {{ $bytes = [int64]0 }}
-                $cloudBytes = $skipped
+                $b = $total - $skipped
+                if ($b -lt 0) {{ $b = [int64]0 }}
+                $cb = $skipped
             }} elseif ($line -match '^\s*Files\s*:\s*(\d+)') {{
-                $count = [int]$matches[1]
+                $cnt = [int]$matches[1]
             }}
         }}
-        $results += [PSCustomObject]@{{
-            Name       = $it.Name
-            Path       = $it.FullName
-            Type       = 'dir'
-            Bytes      = $bytes
-            CloudBytes = $cloudBytes
-            Count      = $count
-        }}
-    }} else {{
-        # File attribute O = Offline (cloud placeholder). If set, count as
-        # cloud-only so the row is still visible but doesn't inflate local use.
-        $isOffline = ($it.Attributes -band [IO.FileAttributes]::Offline) -ne 0
-        if ($isOffline) {{
-            $results += [PSCustomObject]@{{
-                Name       = $it.Name
-                Path       = $it.FullName
-                Type       = 'file'
-                Bytes      = [int64]0
-                CloudBytes = [int64]$it.Length
-                Count      = 1
-            }}
-        }} else {{
-            $results += [PSCustomObject]@{{
-                Name       = $it.Name
-                Path       = $it.FullName
-                Type       = 'file'
-                Bytes      = [int64]$it.Length
-                CloudBytes = [int64]0
-                Count      = 1
-            }}
-        }}
+        return @{{ B = $b; CB = $cb; C = $cnt }}
     }}
+    $jobs = [System.Collections.ArrayList]::new()
+    foreach ($d in $dirs) {{
+        $ps = [PowerShell]::Create().AddScript($sb).AddArgument($d.FullName)
+        $ps.RunspacePool = $pool
+        [void]$jobs.Add(@{{ Pipe = $ps; Handle = $ps.BeginInvoke(); Dir = $d }})
+    }}
+    foreach ($j in $jobs) {{
+        $out = $j.Pipe.EndInvoke($j.Handle)
+        $j.Pipe.Dispose()
+        $r = $null
+        if ($out -and $out.Count -gt 0) {{ $r = $out[0] }}
+        $bVal  = if ($r) {{ [int64]$r.B  }} else {{ [int64]0 }}
+        $cbVal = if ($r) {{ [int64]$r.CB }} else {{ [int64]0 }}
+        $cVal  = if ($r) {{ [int]$r.C    }} else {{ 0 }}
+        [void]$results.Add([PSCustomObject]@{{
+            Name = $j.Dir.Name; Path = $j.Dir.FullName; Type = 'dir'
+            Bytes = $bVal; CloudBytes = $cbVal; Count = $cVal
+        }})
+    }}
+    $pool.Close()
+    $pool.Dispose()
 }}
+
 $results | Sort-Object -Property Bytes -Descending | Select-Object -First {int(top_n)} |
     ConvertTo-Json -Depth 3
 exit 0
