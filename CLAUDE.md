@@ -1,5 +1,28 @@
 # WinDesktopMgr — Claude Code Guidelines
 
+## ⚠️ MANDATORY WORKFLOW — Follow This Exact Order Every Change
+
+**Every** code change (feature, bug fix, refactor) MUST follow this sequence.
+No step may be skipped. No exceptions.
+
+```
+1. Code the change
+2. ruff check + format       →  python -m ruff check . && python -m ruff format .
+3. pytest                    →  python -m pytest tests/ -v
+4. git commit + push         →  (pre-commit hooks re-run ruff + pytest)
+5. python dev.py verify      →  POST /api/restart + /api/health + /api/selftest
+6. Print SOP Compliance Report (Phase 11 checklist — see bottom of this file)
+```
+
+**Step 5 is NON-OPTIONAL.** It is the only gate that runs real PowerShell against
+the live instance. Mocked tests alone are insufficient — `dev.py verify` catches
+mock-vs-reality drift, startup crashes, and PS output format regressions.
+
+**Step 6 is NON-OPTIONAL.** The SOP Compliance Report must be the LAST thing
+printed for every code change. See the template at the bottom of this file.
+
+---
+
 ## Quality Gates (MANDATORY)
 
 Every code change — new feature, bug fix, or refactor — **must** pass all quality
@@ -228,3 +251,71 @@ pytest tests/ -v -s
   regressions in the actual PowerShell query being built
 - **Keep tests fast** — all mocked, no I/O, no Windows dependency
 - **One assert per concept** — clear failure messages beat multi-assert blobs
+
+---
+
+## Post-Push Live Verification (MANDATORY)
+
+After every `git push`, run:
+
+```bash
+python dev.py verify
+```
+
+This command:
+1. POSTs to `/api/restart` to restart the running tray instance
+2. Polls `/api/health` until the new instance responds (45s budget)
+3. Runs `/api/selftest` — 14 real PowerShell-backed health checks in parallel
+4. Any failure means the push broke something mocked tests didn't catch
+
+**What verify catches that mocked tests cannot:**
+- PowerShell output format drift (real system output differs from mocks)
+- File path regressions (e.g., hardcoded paths that don't exist on this machine)
+- Startup crashes (missing import, syntax error only triggered at runtime)
+- External service changes (NVIDIA API, router firmware, WMI schema)
+- Dependency issues (missing package, wrong version)
+
+---
+
+## SOP Compliance Report — Phase 11 (MANDATORY)
+
+At the end of **every** code change, print this checklist as the LAST thing in
+the response. Mark each step: ✅ Done, ⏭️ Skipped (reason), or ❌ Not done (reason).
+
+```
+SOP Compliance Report — <short description of change>
+──────────────────────────────────────────────────────
+Phase 1  Planning
+  [ ] Checked backlog
+  [ ] Scoped work
+  [ ] Identified affected files
+Phase 2  Git Workflow
+  [ ] Pulled latest main
+  [ ] Small logical commits
+  [ ] Pushed to remote
+Phase 3  Coding Standards
+  [ ] Boundary safety (escaping, validation)
+  [ ] Graceful fallbacks for external calls
+Phase 4  Quality Gates
+  [ ] ruff check + format
+  [ ] pytest (all pass, ≥80% coverage)
+  [ ] pre-commit hooks passed
+  [ ] python dev.py verify (post-restart live check)
+Phase 5  Tests
+  [ ] New/modified code has test coverage
+Phase 9  Documentation
+  [ ] Backlog updated (if applicable)
+  [ ] architecture.html updated (if applicable)
+Phase 10 Post-Incident (bug fixes only)
+  [ ] Root cause + gap type documented
+  [ ] Regression test added
+  [ ] Prevention: line in commit message
+Summary: X done, Y skipped, Z not done
+Commit(s): <hashes>
+```
+
+**Rules:**
+- This checklist MUST be printed — it is not optional
+- Never silently skip a step — always mark and explain
+- ❌ Not done without justification means the change is incomplete
+- For the full SOP details, see `feedback_github_sop.md` in project memory
