@@ -2826,6 +2826,22 @@ class TestAnalyzeDiskPath:
         assert "Sort-Object" in ps_string
         assert "exit 0" in ps_string
 
+    def test_command_computes_local_as_total_minus_skipped(self, mocker):
+        """Bug regression: robocopy's Total column INCLUDES files that were
+        later skipped by /XA:O — it is the raw enumeration, not the filtered
+        total. Real local bytes = Total - Skipped. Without this subtraction,
+        a fully-cloud folder like iCloudPhotos reports its full logical size
+        as 'local', inflating the top-N list and hiding real local consumers."""
+        mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
+        m = _mock_run(mocker, stdout="[]")
+        wdm.analyze_disk_path("C:\\")
+        ps_string = " ".join(m.call_args[0][0])
+        # The Bytes row parser must capture at least 3 columns (Total + Copied
+        # + Skipped) and compute local = Total - Skipped
+        assert "$total - $skipped" in ps_string or "$bytes = $total - $skipped" in ps_string
+        # Negative guard (should never happen but defensive)
+        assert "$bytes -lt 0" in ps_string
+
     def test_command_excludes_offline_cloud_placeholders(self, mocker):
         """Must pass /XA:O to robocopy so iCloud/OneDrive/Dropbox cloud-only
         files (Offline attribute) don't inflate local disk usage. Cloud files
@@ -2892,7 +2908,11 @@ class TestAnalyzeDiskPath:
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
         m = _mock_run(mocker, stdout="[]")
         wdm.get_disk_quickwins("C")
-        ps_string = " ".join(m.call_args[0][0])
+        # quickwins now makes TWO subprocess calls: the PowerShell sizer and
+        # a DISM call for WinSxS. Find the powershell invocation.
+        ps_calls = [c for c in m.call_args_list if len(c[0]) > 0 and c[0][0] and c[0][0][0] == "powershell"]
+        assert ps_calls, "expected at least one powershell invocation"
+        ps_string = " ".join(ps_calls[0][0][0])
         assert "/XA:O" in ps_string
         # The elseif (single file) branch must also skip Offline files
         assert "FileAttributes]::Offline" in ps_string
@@ -2995,7 +3015,11 @@ class TestGetDiskQuickwins:
         self._stub_paths(mocker)
         m = _mock_run(mocker, stdout="[]")
         wdm.get_disk_quickwins("C")
-        ps_string = " ".join(m.call_args[0][0])
+        # quickwins now makes TWO subprocess calls: the PowerShell sizer and
+        # a DISM call for WinSxS. Find the powershell invocation.
+        ps_calls = [c for c in m.call_args_list if len(c[0]) > 0 and c[0][0] and c[0][0][0] == "powershell"]
+        assert ps_calls, "expected at least one powershell invocation"
+        ps_string = " ".join(ps_calls[0][0][0])
         assert "$Recycle.Bin" in ps_string
         assert "Windows\\Temp" in ps_string
         # Quick-wins sizes directories via robocopy too (/L /BYTES)
@@ -3235,6 +3259,101 @@ class TestLaunchCleanupTool:
                 assert "install_url" in spec, (
                     "Third-party tools must include install_url for the frontend's not-installed fallback"
                 )
+
+
+class TestGetWinsxsActualSize:
+    """Tests for the DISM-based WinSxS sizer. WinSxS is mostly hardlinks to
+    C:\\Windows, so robocopy reports 2-4x the true on-disk footprint. DISM
+    /AnalyzeComponentStore is the only authoritative source."""
+
+    SAMPLE_DISM_OUTPUT = """
+Deployment Image Servicing and Management tool
+Version: 10.0.26100.5074
+
+Image Version: 10.0.26200.8037
+
+[==========================100.0%==========================]
+
+Component Store (WinSxS) information:
+
+Windows Explorer Reported Size of Component Store : 10.64 GB
+Actual Size of Component Store : 5.23 GB
+
+   Shared with Windows : 4.10 GB
+   Backups and Disabled Features : 0.81 GB
+   Cache and Temporary Data : 0.32 GB
+
+Date of Last Cleanup : 2025-12-09
+
+Number of Reclaimable Packages : 0
+Component Store Cleanup Recommended : No
+
+The operation completed successfully.
+"""
+
+    def _reset_cache(self):
+        wdm._winsxs_cache["ts"] = 0.0
+        wdm._winsxs_cache["data"] = None
+
+    def test_happy_path_parses_all_fields(self, mocker):
+        self._reset_cache()
+        _mock_run(mocker, stdout=self.SAMPLE_DISM_OUTPUT)
+        result = wdm._get_winsxs_actual_size()
+        assert result is not None
+        # 10.64 GB in bytes
+        assert 10 * (1024**3) < result["reported_bytes"] < 11 * (1024**3)
+        # 5.23 GB in bytes (actual)
+        assert 5 * (1024**3) < result["actual_bytes"] < 6 * (1024**3)
+        # 4.10 GB shared
+        assert 4 * (1024**3) < result["shared_bytes"] < 5 * (1024**3)
+        assert result["cleanup_recommended"] is False
+
+    def test_cleanup_recommended_yes(self, mocker):
+        self._reset_cache()
+        out = self.SAMPLE_DISM_OUTPUT.replace(
+            "Component Store Cleanup Recommended : No",
+            "Component Store Cleanup Recommended : Yes",
+        )
+        _mock_run(mocker, stdout=out)
+        result = wdm._get_winsxs_actual_size()
+        assert result["cleanup_recommended"] is True
+
+    def test_command_uses_analyze_component_store(self, mocker):
+        self._reset_cache()
+        m = _mock_run(mocker, stdout=self.SAMPLE_DISM_OUTPUT)
+        wdm._get_winsxs_actual_size()
+        argv = m.call_args[0][0]
+        assert argv[0] == "Dism.exe"
+        assert "/Online" in argv
+        assert "/Cleanup-Image" in argv
+        assert "/AnalyzeComponentStore" in argv
+
+    def test_timeout_returns_none(self, mocker):
+        self._reset_cache()
+        mocker.patch(
+            "windesktopmgr.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="Dism.exe", timeout=120),
+        )
+        assert wdm._get_winsxs_actual_size() is None
+
+    def test_dism_missing_returns_none(self, mocker):
+        self._reset_cache()
+        mocker.patch("windesktopmgr.subprocess.run", side_effect=FileNotFoundError("Dism.exe"))
+        assert wdm._get_winsxs_actual_size() is None
+
+    def test_garbage_output_returns_none(self, mocker):
+        self._reset_cache()
+        _mock_run(mocker, stdout="not DISM output")
+        assert wdm._get_winsxs_actual_size() is None
+
+    def test_result_is_cached(self, mocker):
+        """Second call within TTL must NOT re-run DISM."""
+        self._reset_cache()
+        m = _mock_run(mocker, stdout=self.SAMPLE_DISM_OUTPUT)
+        a = wdm._get_winsxs_actual_size()
+        b = wdm._get_winsxs_actual_size()
+        assert a == b
+        assert m.call_count == 1  # DISM only invoked once
 
 
 class TestOpenFolderInExplorer:

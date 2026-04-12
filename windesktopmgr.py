@@ -2178,14 +2178,17 @@ def analyze_disk_path(path: str, top_n: int = 25) -> dict:
     # — a native Win32 walk that is 5-10x faster than `Get-ChildItem -Recurse`.
     # `/XA:O` excludes files with the Offline attribute (cloud placeholders:
     # iCloud, OneDrive Files On-Demand, Dropbox Smart Sync), so downloaded
-    # files are counted but cloud-only stubs are skipped. The skipped bytes
-    # still appear in robocopy's "Skipped" column (col 3 of the Bytes row),
-    # which we capture separately as `cloud_bytes` for the UI.
+    # files are counted but cloud-only stubs are skipped.
     #
     # Robocopy output format with /BYTES (integer columns):
     #                Total    Copied   Skipped  Mismatch    FAILED    Extras
     #     Bytes :   123456         0    789012         0         0         0
-    # We parse by splitting on whitespace after the "Bytes :" label.
+    #
+    # IMPORTANT: the "Total" column includes files that were later skipped by
+    # /XA:O — it is the raw enumeration total, not the filtered total. So the
+    # real local size is `Total - Skipped`. Skipped alone is the cloud-only
+    # footprint. Without this subtraction, cloud files end up counted twice
+    # (once in local, once in cloud) and the UI reports inflated local usage.
     ps = rf"""
 $ErrorActionPreference = 'SilentlyContinue'
 $root = '{cleaned}'
@@ -2199,8 +2202,11 @@ foreach ($it in $items) {{
         $rc = robocopy $it.FullName NULL /L /E /NFL /NDL /NJH /NC /BYTES /XA:O /XJ /R:0 /W:0 2>$null
         foreach ($line in $rc) {{
             if ($line -match '^\s*Bytes\s*:\s*(\d+)\s+(\d+)\s+(\d+)') {{
-                $bytes = [int64]$matches[1]
-                $cloudBytes = [int64]$matches[3]
+                $total   = [int64]$matches[1]
+                $skipped = [int64]$matches[3]
+                $bytes = $total - $skipped   # Actual local bytes
+                if ($bytes -lt 0) {{ $bytes = [int64]0 }}
+                $cloudBytes = $skipped
             }} elseif ($line -match '^\s*Files\s*:\s*(\d+)') {{
                 $count = [int]$matches[1]
             }}
@@ -2247,7 +2253,7 @@ exit 0
             ["powershell", "-NonInteractive", "-Command", ps],
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=600,
         )
         raw = (r.stdout or "").strip()
         if not raw:
@@ -2536,12 +2542,17 @@ foreach ($p in $paths) {{
         if ($item -and $item.PSIsContainer) {{
             # Fast native walk via robocopy /L /BYTES /XA:O — ~10x faster than
             # Get-ChildItem -Recurse for large trees like WinSxS.
-            # /XA:O excludes cloud placeholders (iCloud/OneDrive/Dropbox
-            # Files On-Demand); those bytes show up in the Skipped column.
+            # /XA:O excludes cloud placeholders; real local bytes =
+            # Total - Skipped (see analyze_disk_path for full explanation).
             $bytes = [int64]0
             $rc = robocopy $p NULL /L /E /NFL /NDL /NJH /NC /BYTES /XA:O /XJ /R:0 /W:0 2>$null
             foreach ($line in $rc) {{
-                if ($line -match '^\s*Bytes\s*:\s*(\d+)') {{ $bytes = [int64]$matches[1] }}
+                if ($line -match '^\s*Bytes\s*:\s*(\d+)\s+(\d+)\s+(\d+)') {{
+                    $total   = [int64]$matches[1]
+                    $skipped = [int64]$matches[3]
+                    $bytes = $total - $skipped
+                    if ($bytes -lt 0) {{ $bytes = [int64]0 }}
+                }}
             }}
         }} elseif ($item) {{
             # Skip Offline (cloud-only) files in quickwins too
@@ -2621,6 +2632,34 @@ exit 0
 
     locations = [_row(c) for c in candidates]
     user_locations = [_row(c) for c in user_candidates]
+
+    # WinSxS is a special case: it is mostly hardlinks to files in
+    # C:\Windows, so robocopy reports 2-4x the real on-disk footprint.
+    # Microsoft provides the authoritative number via
+    # `Dism /Online /Cleanup-Image /AnalyzeComponentStore`.
+    # Override the winsxs row with the DISM numbers if it's on the OS drive.
+    if userprofile and userprofile[0].upper() == letter:
+        dism_info = _get_winsxs_actual_size()
+        if dism_info:
+            for loc in locations:
+                if loc["key"] == "winsxs":
+                    loc["size_bytes"] = dism_info["actual_bytes"]
+                    loc["size_human"] = _human_bytes(dism_info["actual_bytes"])
+                    loc["reported_bytes"] = dism_info["reported_bytes"]
+                    loc["reported_human"] = _human_bytes(dism_info["reported_bytes"])
+                    loc["cleanup_recommended"] = dism_info["cleanup_recommended"]
+                    note_extra = (
+                        " Cleanup recommended by DISM."
+                        if dism_info["cleanup_recommended"]
+                        else " DISM reports no cleanup needed."
+                    )
+                    loc["description"] = (
+                        f"Windows component store. Mostly hardlinks to C:\\Windows — "
+                        f"real footprint {loc['size_human']} (explorer reports "
+                        f"{loc['reported_human']}).{note_extra}"
+                    )
+                    break
+
     # Sort each list by size descending so biggest hits float to the top
     locations.sort(key=lambda x: x["size_bytes"], reverse=True)
     user_locations.sort(key=lambda x: x["size_bytes"], reverse=True)
@@ -2630,6 +2669,81 @@ exit 0
         "locations": locations,
         "user_locations": user_locations,
     }
+
+
+# Cache the last DISM result — analyzing the component store takes 15-60s
+# and the number barely changes. Refresh at most once per hour.
+_winsxs_cache: dict = {"ts": 0.0, "data": None}
+_WINSXS_CACHE_TTL_SEC = 3600
+
+
+def _get_winsxs_actual_size() -> dict | None:
+    """Run DISM /AnalyzeComponentStore and return actual WinSxS footprint.
+
+    Returns a dict like::
+
+        {
+            "actual_bytes":        5_234_567_890,   # real on-disk footprint
+            "reported_bytes":     10_600_000_000,   # what explorer shows
+            "shared_bytes":        4_100_000_000,   # hardlinked to Windows
+            "cleanup_recommended": False,
+        }
+
+    or ``None`` if DISM isn't available, times out, or output can't be parsed.
+    Cached in-process for one hour (`_WINSXS_CACHE_TTL_SEC`) because DISM
+    /AnalyzeComponentStore is slow (15-60s) and the real number changes only
+    after Windows Update events.
+    """
+    now = time.time()
+    if _winsxs_cache["data"] and (now - _winsxs_cache["ts"]) < _WINSXS_CACHE_TTL_SEC:
+        return _winsxs_cache["data"]
+    try:
+        r = subprocess.run(
+            ["Dism.exe", "/Online", "/Cleanup-Image", "/AnalyzeComponentStore", "/English"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+    raw = r.stdout or ""
+    if not raw:
+        return None
+
+    # DISM prints sizes as "5.23 GB" / "812.45 MB" / "123 KB".
+    # Parse all three size lines and the "Cleanup Recommended" flag.
+    def _parse_size(label: str) -> int | None:
+        import re as _re
+
+        m = _re.search(rf"{label}\s*:\s*([\d.]+)\s*(KB|MB|GB|TB)\b", raw, _re.IGNORECASE)
+        if not m:
+            return None
+        n = float(m.group(1))
+        unit = m.group(2).upper()
+        mult = {"KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}[unit]
+        return int(n * mult)
+
+    reported = _parse_size(r"Windows Explorer Reported Size of Component Store")
+    actual = _parse_size(r"Actual Size of Component Store")
+    shared = _parse_size(r"Shared with Windows") or 0
+    if actual is None or reported is None:
+        return None
+    cleanup_rec = False
+    import re as _re
+
+    m = _re.search(r"Component Store Cleanup Recommended\s*:\s*(\w+)", raw, _re.IGNORECASE)
+    if m:
+        cleanup_rec = m.group(1).strip().lower() == "yes"
+
+    data = {
+        "actual_bytes": actual,
+        "reported_bytes": reported,
+        "shared_bytes": shared,
+        "cleanup_recommended": cleanup_rec,
+    }
+    _winsxs_cache["ts"] = now
+    _winsxs_cache["data"] = data
+    return data
 
 
 def open_folder_in_explorer(path: str) -> dict:

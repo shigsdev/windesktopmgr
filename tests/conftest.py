@@ -101,6 +101,10 @@ def reset_globals():
     wdm._process_in_flight.clear()
     wdm._services_in_flight.clear()
 
+    # Disk analyzer caches (_winsxs_cache persists DISM results for 1h)
+    wdm._winsxs_cache["ts"] = 0.0
+    wdm._winsxs_cache["data"] = None
+
     yield  # run the test
 
     # Post-test cleanup (same as pre-test for symmetry)
