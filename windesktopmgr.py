@@ -2174,11 +2174,18 @@ def analyze_disk_path(path: str, top_n: int = 25) -> dict:
     # Embed `cleaned` as a SINGLE-quoted PS literal so $-expansion is disabled.
     # The sanitiser above already stripped `'` from user input, so the literal
     # cannot be broken out of.
-    # Per-subdir sizing uses `robocopy /L /E /BYTES` in list-only mode — a
-    # native Win32 walk that is 5-10x faster than `Get-ChildItem -Recurse`
-    # and avoids building a .NET FileSystemInfo object per file. We parse the
-    # "Bytes :" and "Files :" summary lines. Robocopy prints totals under a
-    # single "Total" column; we grab the FIRST integer after the label.
+    # Per-subdir sizing uses `robocopy /L /E /BYTES /XA:O` in list-only mode
+    # — a native Win32 walk that is 5-10x faster than `Get-ChildItem -Recurse`.
+    # `/XA:O` excludes files with the Offline attribute (cloud placeholders:
+    # iCloud, OneDrive Files On-Demand, Dropbox Smart Sync), so downloaded
+    # files are counted but cloud-only stubs are skipped. The skipped bytes
+    # still appear in robocopy's "Skipped" column (col 3 of the Bytes row),
+    # which we capture separately as `cloud_bytes` for the UI.
+    #
+    # Robocopy output format with /BYTES (integer columns):
+    #                Total    Copied   Skipped  Mismatch    FAILED    Extras
+    #     Bytes :   123456         0    789012         0         0         0
+    # We parse by splitting on whitespace after the "Bytes :" label.
     ps = rf"""
 $ErrorActionPreference = 'SilentlyContinue'
 $root = '{cleaned}'
@@ -2187,26 +2194,47 @@ $results = @()
 foreach ($it in $items) {{
     if ($it.PSIsContainer) {{
         $bytes = [int64]0
+        $cloudBytes = [int64]0
         $count = 0
-        $rc = robocopy $it.FullName NULL /L /E /NFL /NDL /NJH /NC /BYTES /XJ /R:0 /W:0 2>$null
+        $rc = robocopy $it.FullName NULL /L /E /NFL /NDL /NJH /NC /BYTES /XA:O /XJ /R:0 /W:0 2>$null
         foreach ($line in $rc) {{
-            if ($line -match '^\s*Bytes\s*:\s*(\d+)') {{ $bytes = [int64]$matches[1] }}
-            elseif ($line -match '^\s*Files\s*:\s*(\d+)') {{ $count = [int]$matches[1] }}
+            if ($line -match '^\s*Bytes\s*:\s*(\d+)\s+(\d+)\s+(\d+)') {{
+                $bytes = [int64]$matches[1]
+                $cloudBytes = [int64]$matches[3]
+            }} elseif ($line -match '^\s*Files\s*:\s*(\d+)') {{
+                $count = [int]$matches[1]
+            }}
         }}
         $results += [PSCustomObject]@{{
-            Name  = $it.Name
-            Path  = $it.FullName
-            Type  = 'dir'
-            Bytes = $bytes
-            Count = $count
+            Name       = $it.Name
+            Path       = $it.FullName
+            Type       = 'dir'
+            Bytes      = $bytes
+            CloudBytes = $cloudBytes
+            Count      = $count
         }}
     }} else {{
-        $results += [PSCustomObject]@{{
-            Name  = $it.Name
-            Path  = $it.FullName
-            Type  = 'file'
-            Bytes = [int64]$it.Length
-            Count = 1
+        # File attribute O = Offline (cloud placeholder). If set, count as
+        # cloud-only so the row is still visible but doesn't inflate local use.
+        $isOffline = ($it.Attributes -band [IO.FileAttributes]::Offline) -ne 0
+        if ($isOffline) {{
+            $results += [PSCustomObject]@{{
+                Name       = $it.Name
+                Path       = $it.FullName
+                Type       = 'file'
+                Bytes      = [int64]0
+                CloudBytes = [int64]$it.Length
+                Count      = 1
+            }}
+        }} else {{
+            $results += [PSCustomObject]@{{
+                Name       = $it.Name
+                Path       = $it.FullName
+                Type       = 'file'
+                Bytes      = [int64]$it.Length
+                CloudBytes = [int64]0
+                Count      = 1
+            }}
         }}
     }}
 }}
@@ -2235,11 +2263,14 @@ exit 0
             parsed = [parsed]
         entries: list[dict] = []
         total = 0
+        total_cloud = 0
         for row in parsed:
             if not isinstance(row, dict):
                 continue
             size = int(row.get("Bytes") or 0)
+            cloud = int(row.get("CloudBytes") or 0)
             total += size
+            total_cloud += cloud
             entries.append(
                 {
                     "name": row.get("Name") or "",
@@ -2247,6 +2278,8 @@ exit 0
                     "type": row.get("Type") or "dir",
                     "size_bytes": size,
                     "size_human": _human_bytes(size),
+                    "cloud_bytes": cloud,
+                    "cloud_human": _human_bytes(cloud) if cloud > 0 else "",
                     "item_count": int(row.get("Count") or 0),
                 }
             )
@@ -2267,6 +2300,8 @@ exit 0
             "path": cleaned,
             "parent": parent,
             "total_bytes": total,
+            "total_cloud_bytes": total_cloud,
+            "total_cloud_human": _human_bytes(total_cloud) if total_cloud > 0 else "",
             "entries": entries,
         }
     except subprocess.TimeoutExpired:
@@ -2287,6 +2322,11 @@ exit 0
 # via /api/disk/run-tool — prevents arbitrary-command execution from the
 # frontend. Paths are absolute where possible and use only well-known
 # Windows system binaries.
+#
+# For third-party tools (PatchCleaner), the argv may contain placeholders
+# that get resolved at launch time against a list of candidate install paths.
+# If none exist, the launch returns an error with a download URL so the
+# frontend can show the user how to install it.
 _CLEANUP_TOOLS: dict[str, dict] = {
     "cleanmgr": {
         "label": "Disk Cleanup",
@@ -2307,6 +2347,19 @@ _CLEANUP_TOOLS: dict[str, dict] = {
         "label": "Storage Settings",
         "argv": ["explorer.exe", "ms-settings:storagesense"],
         "description": "Opens Windows Storage Settings / Storage Sense.",
+    },
+    "patchcleaner": {
+        "label": "PatchCleaner",
+        # Third-party — resolved at launch against known install paths.
+        "candidate_paths": [
+            r"C:\Program Files\homedev\PatchCleaner\PatchCleaner.exe",
+            r"C:\Program Files (x86)\homedev\PatchCleaner\PatchCleaner.exe",
+        ],
+        "install_url": "https://www.homedev.com.au/Free/PatchCleaner",
+        "description": (
+            "Scans C:\\Windows\\Installer for orphaned MSI/MSP patches "
+            "(programs already uninstalled) that are safe to remove."
+        ),
     },
 }
 
@@ -2353,9 +2406,13 @@ _QUICKWIN_LOCATIONS: list[dict] = [
         "key": "windows_installer",
         "label": "Windows Installer cache",
         "rel": r"Windows\Installer",
-        "description": "MSI patch cache. Do NOT delete manually — use Disk Cleanup (or PatchCleaner).",
+        "description": (
+            "MSI patch cache. Regular Disk Cleanup does NOT touch this folder — "
+            "use PatchCleaner to find orphaned patches."
+        ),
         "action_kind": "run_tool",
-        "tool": "cleanmgr",
+        "tool": "patchcleaner",
+        "extra_tools": ["cleanmgr"],
     },
     {
         "key": "winsxs",
@@ -2477,15 +2534,19 @@ foreach ($p in $paths) {{
     if (Test-Path -LiteralPath $p) {{
         $item = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
         if ($item -and $item.PSIsContainer) {{
-            # Fast native walk via robocopy /L /BYTES — ~10x faster than
+            # Fast native walk via robocopy /L /BYTES /XA:O — ~10x faster than
             # Get-ChildItem -Recurse for large trees like WinSxS.
+            # /XA:O excludes cloud placeholders (iCloud/OneDrive/Dropbox
+            # Files On-Demand); those bytes show up in the Skipped column.
             $bytes = [int64]0
-            $rc = robocopy $p NULL /L /E /NFL /NDL /NJH /NC /BYTES /XJ /R:0 /W:0 2>$null
+            $rc = robocopy $p NULL /L /E /NFL /NDL /NJH /NC /BYTES /XA:O /XJ /R:0 /W:0 2>$null
             foreach ($line in $rc) {{
                 if ($line -match '^\s*Bytes\s*:\s*(\d+)') {{ $bytes = [int64]$matches[1] }}
             }}
         }} elseif ($item) {{
-            $bytes = [int64]$item.Length
+            # Skip Offline (cloud-only) files in quickwins too
+            $isOffline = ($item.Attributes -band [IO.FileAttributes]::Offline) -ne 0
+            if ($isOffline) {{ $bytes = [int64]0 }} else {{ $bytes = [int64]$item.Length }}
         }} else {{
             $bytes = [int64]0
         }}
@@ -2549,6 +2610,13 @@ exit 0
                 row["tool_label"] = tool_spec["label"]
         elif action_kind == "info_only":
             row["cli"] = c.get("cli", "")
+        # Optional secondary tool buttons (e.g. Windows Installer offers both
+        # PatchCleaner (primary) and Disk Cleanup (secondary))
+        extras = c.get("extra_tools") or []
+        if extras:
+            row["extra_tools"] = [
+                {"tool": k, "label": _CLEANUP_TOOLS[k]["label"]} for k in extras if k in _CLEANUP_TOOLS
+            ]
         return row
 
     locations = [_row(c) for c in candidates]
@@ -2590,18 +2658,47 @@ def launch_cleanup_tool(tool_key: str) -> dict:
     """Launch a whitelisted cleanup tool by key.
 
     Only keys present in ``_CLEANUP_TOOLS`` are allowed — this prevents the
-    frontend from invoking arbitrary commands. Returns::
+    frontend from invoking arbitrary commands.
+
+    Tools with a ``candidate_paths`` list (e.g. third-party PatchCleaner) are
+    resolved by checking each path in order; the first one that exists wins.
+    If none exist, the result includes ``install_url`` so the frontend can
+    prompt the user to install the tool.
+
+    Returns::
 
         {"ok": True, "tool": "cleanmgr", "label": "Disk Cleanup"}
 
-    or ``{"ok": False, "error": "..."}``.
+    or::
+
+        {"ok": False, "error": "...", "install_url": "..." (optional)}
     """
     if not tool_key or not isinstance(tool_key, str):
         return {"ok": False, "error": "Missing required field: tool"}
     spec = _CLEANUP_TOOLS.get(tool_key)
     if not spec:
         return {"ok": False, "error": f"Unknown cleanup tool: {tool_key}"}
-    argv = list(spec["argv"])
+
+    # Resolve argv — either a fixed `argv` list (system tools) or
+    # a `candidate_paths` search (third-party tools).
+    argv: list[str]
+    if "candidate_paths" in spec:
+        resolved = None
+        for candidate in spec["candidate_paths"]:
+            if os.path.isfile(candidate):
+                resolved = candidate
+                break
+        if not resolved:
+            return {
+                "ok": False,
+                "error": f"{spec['label']} is not installed",
+                "install_url": spec.get("install_url", ""),
+                "tool": tool_key,
+            }
+        argv = [resolved]
+    else:
+        argv = list(spec["argv"])
+
     try:
         subprocess.Popen(argv)  # noqa: S603
         return {
@@ -2612,6 +2709,24 @@ def launch_cleanup_tool(tool_key: str) -> dict:
         }
     except FileNotFoundError:
         return {"ok": False, "error": f"Tool not found on PATH: {argv[0]}"}
+    except OSError as e:
+        # WinError 740 = ERROR_ELEVATION_REQUIRED. The target executable has
+        # `requireAdministrator` in its manifest (PatchCleaner does). Retry
+        # via os.startfile(), which uses ShellExecute under the hood and
+        # correctly triggers the Windows UAC prompt.
+        if getattr(e, "winerror", None) == 740 and len(argv) == 1:
+            try:
+                os.startfile(argv[0])  # noqa: S606
+                return {
+                    "ok": True,
+                    "tool": tool_key,
+                    "label": spec["label"],
+                    "argv": argv,
+                    "elevated": True,
+                }
+            except Exception as e2:  # noqa: BLE001
+                return {"ok": False, "error": f"Elevation failed: {e2}"}
+        return {"ok": False, "error": str(e)}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)}
 

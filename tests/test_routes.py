@@ -2504,6 +2504,25 @@ class TestDiskRunToolRoute:
         assert r.status_code == 422
         assert r.get_json()["ok"] is False
 
+    def test_not_installed_returns_422_with_install_url(self, client, mocker):
+        """When a third-party tool isn't installed, the route must still
+        return 422 but include install_url so the frontend can offer a
+        download button."""
+        mocker.patch(
+            "windesktopmgr.launch_cleanup_tool",
+            return_value={
+                "ok": False,
+                "error": "PatchCleaner is not installed",
+                "install_url": "https://www.homedev.com.au/Free/PatchCleaner",
+                "tool": "patchcleaner",
+            },
+        )
+        r = client.post("/api/disk/run-tool", json={"tool": "patchcleaner"})
+        assert r.status_code == 422
+        body = r.get_json()
+        assert body["ok"] is False
+        assert body["install_url"].startswith("https://")
+
     def test_passes_tool_key_through(self, client, mocker):
         m = mocker.patch(
             "windesktopmgr.launch_cleanup_tool",

@@ -1784,8 +1784,12 @@ async function dkAnalyzeLoad(path) {
     }
     const entries = d.entries || [];
     const total = d.total_bytes || 0;
+    const cloudTotal = d.total_cloud_bytes || 0;
+    const cloudSuffix = cloudTotal > 0
+      ? ` — plus ${dkHuman(cloudTotal)} in cloud (iCloud/OneDrive/Dropbox, not using local disk)`
+      : '';
     document.getElementById('dk-analyze-total').textContent =
-      `Scanned total: ${dkHuman(total)} across ${entries.length} items`;
+      `Scanned total: ${dkHuman(total)} across ${entries.length} items${cloudSuffix}`;
     if (!entries.length) {
       document.getElementById('dk-analyze-tbody').innerHTML =
         '<tr><td colspan="4" style="padding:24px;text-align:center;color:var(--muted)">No items found</td></tr>';
@@ -1798,9 +1802,12 @@ async function dkAnalyzeLoad(path) {
       const drillBtn = e.type === 'dir'
         ? `<button class="btn-action" style="padding:4px 10px;font-size:11px;margin-right:4px" onclick="dkAnalyzeLoad('${dkJsArg(e.path)}')">Drill in</button>`
         : '';
+      const cloudBadge = (e.cloud_bytes && e.cloud_bytes > 0)
+        ? `<span title="Cloud-only files (iCloud/OneDrive/Dropbox) — not on local disk" style="display:inline-block;margin-left:6px;padding:1px 6px;font-size:9px;background:#3b82f633;color:#93c5fd;border-radius:3px;font-weight:600">☁ ${esc(e.cloud_human)}</span>`
+        : '';
       return `<tr style="border-bottom:1px solid var(--border)">
         <td style="padding:6px 10px;font-family:monospace;font-size:12px">${icon} ${esc(e.name)}</td>
-        <td style="padding:6px 10px;text-align:right;font-weight:600;color:${col}">${esc(e.size_human)}</td>
+        <td style="padding:6px 10px;text-align:right;font-weight:600;color:${col}">${esc(e.size_human)}${cloudBadge}</td>
         <td style="padding:6px 10px;width:200px">
           <div style="background:#ffffff11;border-radius:3px;height:6px"><div style="background:${col};height:100%;border-radius:3px;width:${pct}%"></div></div>
           <div style="font-size:10px;color:var(--muted);margin-top:2px">${pct}% • ${e.item_count||0} items</div>
@@ -1868,22 +1875,27 @@ async function dkQuickWinsLoad(letter) {
 
 // Render the action buttons for a single quick-win item. Dispatches based on
 // `action_kind` (open_folder | run_tool | info_only) returned by the backend.
+// Items may also carry `extra_tools: [{tool, label}, ...]` for secondary
+// tool buttons (e.g. Windows Installer offers PatchCleaner + Disk Cleanup).
 function dkRenderQuickWinActions(it) {
   const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/'/g,'&#39;').replace(/"/g,'&quot;');
   const kind = it.action_kind || 'open_folder';
   const openBtn = `<button class="btn-action" style="padding:3px 8px;font-size:10px" onclick="dkOpenFolder('${dkJsArg(it.path)}')">📁 Open folder</button>`;
+  const extraBtns = (it.extra_tools || []).map(x =>
+    `<button class="btn-action" style="padding:3px 8px;font-size:10px" onclick="dkRunTool('${dkJsArg(x.tool)}','${dkJsArg(x.label)}')">🧹 ${esc(x.label)}</button>`
+  ).join('');
   if (kind === 'run_tool') {
     const toolLabel = it.tool_label || it.tool || 'tool';
     const runBtn = `<button class="btn-action" style="padding:3px 8px;font-size:10px;background:var(--cyan);color:#000" onclick="dkRunTool('${dkJsArg(it.tool||'')}','${dkJsArg(toolLabel)}')">🧹 Launch ${esc(toolLabel)}</button>`;
-    return runBtn + openBtn;
+    return runBtn + extraBtns + openBtn;
   }
   if (kind === 'info_only') {
     const cli = it.cli || '';
     const cliBtn = `<button class="btn-action" style="padding:3px 8px;font-size:10px;background:var(--orange);color:#000" onclick="dkShowCli('${dkJsArg(it.label)}','${dkJsArg(cli)}','${dkJsArg(it.description||'')}')">📋 Show command</button>`;
-    return cliBtn + openBtn;
+    return cliBtn + extraBtns + openBtn;
   }
   // default: open_folder
-  return openBtn;
+  return openBtn + extraBtns;
 }
 
 async function dkRunTool(tool, label) {
@@ -1896,7 +1908,16 @@ async function dkRunTool(tool, label) {
     });
     const d = await r.json();
     if (!d.ok) {
-      alert('Could not launch ' + (label || tool) + ': ' + (d.error || 'unknown error'));
+      // Third-party tools may report an install_url when not yet installed
+      if (d.install_url) {
+        const go = confirm(
+          (d.error || (label + ' is not installed')) +
+          '\n\nOpen the download page?\n' + d.install_url
+        );
+        if (go) window.open(d.install_url, '_blank', 'noopener,noreferrer');
+      } else {
+        alert('Could not launch ' + (label || tool) + ': ' + (d.error || 'unknown error'));
+      }
     }
   } catch(e) {
     alert('Network error: ' + e.message);

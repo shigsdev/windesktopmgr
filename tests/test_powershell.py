@@ -2811,8 +2811,8 @@ class TestAnalyzeDiskPath:
         assert root_line.count("'") == 2
 
     def test_command_uses_robocopy_for_fast_sizing(self, mocker):
-        """Sizing each subdir must use `robocopy /L /BYTES` (native Win32 walk,
-        5-10x faster than `Get-ChildItem -Recurse | Measure-Object`)."""
+        """Sizing each subdir must use `robocopy /L /BYTES /XA:O` (native
+        Win32 walk, 5-10x faster than `Get-ChildItem -Recurse | Measure-Object`)."""
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
         m = _mock_run(mocker, stdout="[]")
         wdm.analyze_disk_path("C:\\")
@@ -2825,6 +2825,77 @@ class TestAnalyzeDiskPath:
         # Still sorts + exits cleanly
         assert "Sort-Object" in ps_string
         assert "exit 0" in ps_string
+
+    def test_command_excludes_offline_cloud_placeholders(self, mocker):
+        """Must pass /XA:O to robocopy so iCloud/OneDrive/Dropbox cloud-only
+        files (Offline attribute) don't inflate local disk usage. Cloud files
+        get downloaded on demand — counting them as local bytes was the bug.
+        Also must inspect per-file Attributes for the Offline bit when
+        handling direct file entries at the scanned root."""
+        mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
+        m = _mock_run(mocker, stdout="[]")
+        wdm.analyze_disk_path("C:\\")
+        ps_string = " ".join(m.call_args[0][0])
+        assert "/XA:O" in ps_string, "robocopy must exclude Offline (cloud-only) files"
+        # Direct-file branch must also check the Offline flag
+        assert "FileAttributes]::Offline" in ps_string
+
+    def test_cloud_bytes_surfaced_in_response(self, mocker):
+        """Robocopy's Skipped column (col 3 of the Bytes row) contains the
+        bytes excluded by /XA:O — cloud-only placeholders. The PS script
+        returns both `Bytes` (local) and `CloudBytes` (cloud-only) per row,
+        and the Python parser must expose them as `size_bytes` + `cloud_bytes`.
+        """
+        mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
+        stdout = json.dumps(
+            [
+                # Photos folder: 500 MB local, 20 GB in cloud
+                {
+                    "Name": "iCloud Photos",
+                    "Path": "C:\\Users\\me\\Pictures\\iCloud Photos",
+                    "Type": "dir",
+                    "Bytes": 500_000_000,
+                    "CloudBytes": 20_000_000_000,
+                    "Count": 5000,
+                },
+                # Windows folder: 30 GB local, 0 cloud
+                {
+                    "Name": "Windows",
+                    "Path": "C:\\Windows",
+                    "Type": "dir",
+                    "Bytes": 30_000_000_000,
+                    "CloudBytes": 0,
+                    "Count": 98765,
+                },
+            ]
+        )
+        _mock_run(mocker, stdout=stdout)
+        result = wdm.analyze_disk_path("C:\\")
+        assert result["ok"] is True
+        # Local total ignores cloud bytes
+        assert result["total_bytes"] == 30_500_000_000
+        assert result["total_cloud_bytes"] == 20_000_000_000
+        assert result["total_cloud_human"].endswith("GB")
+        photos = [e for e in result["entries"] if e["name"] == "iCloud Photos"][0]
+        assert photos["size_bytes"] == 500_000_000
+        assert photos["cloud_bytes"] == 20_000_000_000
+        assert photos["cloud_human"].endswith("GB")
+        # Non-cloud entry has empty cloud_human (no badge)
+        win = [e for e in result["entries"] if e["name"] == "Windows"][0]
+        assert win["cloud_bytes"] == 0
+        assert win["cloud_human"] == ""
+
+    def test_quickwins_command_excludes_offline(self, mocker):
+        """get_disk_quickwins must also pass /XA:O — so cloud-only folders
+        (rare in system locations, but possible in user Downloads on OneDrive)
+        don't over-report local usage."""
+        mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
+        m = _mock_run(mocker, stdout="[]")
+        wdm.get_disk_quickwins("C")
+        ps_string = " ".join(m.call_args[0][0])
+        assert "/XA:O" in ps_string
+        # The elseif (single file) branch must also skip Offline files
+        assert "FileAttributes]::Offline" in ps_string
 
     def test_parent_set_for_non_root_path(self, mocker):
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
@@ -2959,11 +3030,28 @@ class TestQuickwinsActionDispatch:
         self._stub(mocker)
         result = wdm.get_disk_quickwins("C")
         by_key = {loc["key"]: loc for loc in result["locations"]}
-        # windows_installer should launch Disk Cleanup
+        # windows_installer's primary action is PatchCleaner (the only tool
+        # that can actually clean C:\Windows\Installer safely). Regular
+        # Disk Cleanup does not touch this folder — user-reported confusion.
         wi = by_key["windows_installer"]
         assert wi["action_kind"] == "run_tool"
-        assert wi["tool"] == "cleanmgr"
-        assert "Disk Cleanup" in wi.get("tool_label", "")
+        assert wi["tool"] == "patchcleaner"
+        assert "PatchCleaner" in wi.get("tool_label", "")
+
+    def test_windows_installer_offers_disk_cleanup_as_extra(self, mocker):
+        """Windows Installer primary = PatchCleaner; Disk Cleanup is offered
+        as a secondary button via `extra_tools` so users still have a way
+        to trigger the (limited) Microsoft cleanup path."""
+        self._stub(mocker)
+        result = wdm.get_disk_quickwins("C")
+        by_key = {loc["key"]: loc for loc in result["locations"]}
+        wi = by_key["windows_installer"]
+        extras = wi.get("extra_tools") or []
+        extra_keys = [x["tool"] for x in extras]
+        assert "cleanmgr" in extra_keys
+        # Each extra carries a human label too
+        for x in extras:
+            assert "label" in x and x["label"]
 
     def test_info_only_entries_include_cli_string(self, mocker):
         self._stub(mocker)
@@ -3052,14 +3140,101 @@ class TestLaunchCleanupTool:
         assert result["ok"] is False
         assert "access denied" in result["error"].lower()
 
+    def test_patchcleaner_launches_when_installed(self, mocker):
+        """PatchCleaner is third-party — its spec uses candidate_paths instead
+        of a fixed argv. When the file exists at one of the candidates, we
+        launch it with that resolved absolute path."""
+        resolved_path = r"C:\Program Files\homedev\PatchCleaner\PatchCleaner.exe"
+
+        def fake_isfile(p):
+            return p == resolved_path
+
+        mocker.patch("windesktopmgr.os.path.isfile", side_effect=fake_isfile)
+        popen = mocker.patch("windesktopmgr.subprocess.Popen")
+        result = wdm.launch_cleanup_tool("patchcleaner")
+        assert result["ok"] is True
+        assert result["tool"] == "patchcleaner"
+        popen.assert_called_once()
+        argv = popen.call_args[0][0]
+        assert argv[0] == resolved_path
+
+    def test_patchcleaner_not_installed_returns_install_url(self, mocker):
+        """When no candidate path exists, the launch must return an error
+        AND the install_url so the frontend can offer a download button.
+        Popen must NOT be called in this case."""
+        mocker.patch("windesktopmgr.os.path.isfile", return_value=False)
+        popen = mocker.patch("windesktopmgr.subprocess.Popen")
+        result = wdm.launch_cleanup_tool("patchcleaner")
+        assert result["ok"] is False
+        assert "not installed" in result["error"].lower()
+        assert "install_url" in result
+        assert result["install_url"].startswith("https://")
+        assert "patchcleaner" in result["install_url"].lower()
+        popen.assert_not_called()
+
+    def test_patchcleaner_first_matching_candidate_wins(self, mocker):
+        """If both Program Files and Program Files (x86) paths exist, the
+        first one in the candidate list is used."""
+        mocker.patch("windesktopmgr.os.path.isfile", return_value=True)
+        popen = mocker.patch("windesktopmgr.subprocess.Popen")
+        result = wdm.launch_cleanup_tool("patchcleaner")
+        assert result["ok"] is True
+        argv = popen.call_args[0][0]
+        assert "Program Files\\homedev" in argv[0]
+
+    def test_elevation_required_falls_back_to_startfile(self, mocker):
+        """PatchCleaner has `requireAdministrator` in its manifest. Plain
+        subprocess.Popen fails with WinError 740. The launcher must detect
+        this and retry via os.startfile() which uses ShellExecute and
+        triggers the Windows UAC prompt."""
+        mocker.patch("windesktopmgr.os.path.isfile", return_value=True)
+        err = OSError("elevation required")
+        err.winerror = 740
+        mocker.patch("windesktopmgr.subprocess.Popen", side_effect=err)
+        startfile = mocker.patch("windesktopmgr.os.startfile", create=True)
+        result = wdm.launch_cleanup_tool("patchcleaner")
+        assert result["ok"] is True
+        assert result.get("elevated") is True
+        startfile.assert_called_once()
+
+    def test_elevation_fallback_failure_returns_error(self, mocker):
+        """If os.startfile() also fails (user declined UAC, etc.), we must
+        surface a clear error — not a silent success."""
+        mocker.patch("windesktopmgr.os.path.isfile", return_value=True)
+        err = OSError("elevation required")
+        err.winerror = 740
+        mocker.patch("windesktopmgr.subprocess.Popen", side_effect=err)
+        mocker.patch(
+            "windesktopmgr.os.startfile",
+            side_effect=OSError("UAC declined"),
+            create=True,
+        )
+        result = wdm.launch_cleanup_tool("patchcleaner")
+        assert result["ok"] is False
+        assert "elevation failed" in result["error"].lower()
+
     def test_allowlist_contains_expected_tools(self):
-        """The allowlist must include the tools the frontend expects to launch."""
+        """The allowlist must include the tools the frontend expects to launch.
+        Each spec must carry a label and either a fixed `argv` (system tools)
+        or `candidate_paths` + `install_url` (third-party tools)."""
         assert "cleanmgr" in wdm._CLEANUP_TOOLS
         assert "sysdm_advanced" in wdm._CLEANUP_TOOLS
+        assert "patchcleaner" in wdm._CLEANUP_TOOLS
         for spec in wdm._CLEANUP_TOOLS.values():
-            assert "label" in spec and "argv" in spec
-            assert isinstance(spec["argv"], list) and len(spec["argv"]) >= 1
-            assert spec["argv"][0].lower().endswith((".exe",)) or spec["argv"][0] == "explorer.exe"
+            assert "label" in spec
+            has_argv = "argv" in spec
+            has_candidates = "candidate_paths" in spec
+            assert has_argv or has_candidates, (
+                "Each tool must have either `argv` (system tool) or `candidate_paths` (third-party tool)"
+            )
+            if has_argv:
+                assert isinstance(spec["argv"], list) and len(spec["argv"]) >= 1
+            if has_candidates:
+                assert isinstance(spec["candidate_paths"], list)
+                assert len(spec["candidate_paths"]) >= 1
+                assert "install_url" in spec, (
+                    "Third-party tools must include install_url for the frontend's not-installed fallback"
+                )
 
 
 class TestOpenFolderInExplorer:
