@@ -1769,13 +1769,19 @@ async function dkAnalyzeLoad(path) {
   });
   bc.innerHTML = bcHtml;
   try {
+    const _ac = new AbortController();
+    const _tid = setTimeout(() => _ac.abort(), 660000); // 660s — slightly above backend's 600s
+    const loadEl = document.getElementById('dk-analyze-loading');
+    loadEl.textContent = 'Scanning — large folders with cloud files can take several minutes…';
     const r = await fetch('/api/disk/analyze', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({path: path, top_n: 30})
+      body: JSON.stringify({path: path, top_n: 30}),
+      signal: _ac.signal
     });
+    clearTimeout(_tid);
     const d = await r.json();
-    document.getElementById('dk-analyze-loading').style.display = 'none';
+    loadEl.style.display = 'none';
     if (!d.ok) {
       const err = document.getElementById('dk-analyze-error');
       err.textContent = 'Scan failed: ' + (d.error || 'unknown error');
@@ -1823,7 +1829,11 @@ async function dkAnalyzeLoad(path) {
     console.error('analyze failed', e);
     document.getElementById('dk-analyze-loading').style.display = 'none';
     const err = document.getElementById('dk-analyze-error');
-    err.textContent = 'Network error: ' + e.message;
+    if (e.name === 'AbortError') {
+      err.textContent = 'Scan timed out — this folder is very large. Try drilling into a subfolder instead.';
+    } else {
+      err.textContent = 'Scan failed: ' + e.message + ' — try drilling into a smaller subfolder.';
+    }
     err.style.display = 'block';
   }
 }

@@ -2313,7 +2313,7 @@ exit 0
     except subprocess.TimeoutExpired:
         return {
             "ok": False,
-            "error": "Scan timed out after 300s — try a smaller subfolder",
+            "error": "Scan timed out after 600s — try drilling into a smaller subfolder",
             "path": cleaned,
             "entries": [],
         }
