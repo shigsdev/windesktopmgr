@@ -89,7 +89,7 @@ def _headless_subprocess_run(*args, **kwargs):
         result = _original_subprocess_run(*args, **kwargs)
     except subprocess.TimeoutExpired:
         elapsed_ms = int((time.time() - start) * 1000)
-        _ps_log.warning(
+        _ps_log.error(
             "TIMEOUT after=%dms limit=%ss caller=%s cmd=%s",
             elapsed_ms,
             timeout,
@@ -2057,7 +2057,7 @@ $result | ConvertTo-Json -Depth 2
 """
     try:
         r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=30
+            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=60
         )
         data = json.loads(r.stdout.strip() or "{}")
         drives = data.get("drives") or []
@@ -2070,7 +2070,7 @@ $result | ConvertTo-Json -Depth 2
         io_data = []
         try:
             r2 = subprocess.run(
-                ["powershell", "-NonInteractive", "-Command", ps_io], capture_output=True, text=True, timeout=15
+                ["powershell", "-NonInteractive", "-Command", ps_io], capture_output=True, text=True, timeout=30
             )
             io_raw = json.loads(r2.stdout.strip() or "[]")
             io_data = io_raw if isinstance(io_raw, list) else [io_raw]

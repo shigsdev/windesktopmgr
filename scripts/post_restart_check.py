@@ -118,6 +118,39 @@ def print_results(body: dict) -> None:
         print(f"  {RED}{BOLD}{failed}/{total} checks failed{RESET}")
 
 
+def check_logs(host: str) -> bool:
+    """Fetch recent ERROR and WARNING log entries after restart/selftest.
+
+    Reports counts and prints the first few entries so regressions are visible.
+    Returns False if any ERROR-level entries are found.
+    """
+    print(f"\n{BOLD}Checking logs for errors/warnings{RESET}")
+    ok = True
+    for level in ("ERROR", "WARNING"):
+        body = _get_json(f"{host}/api/logs?level={level}&lines=50", timeout=10)
+        if body is None:
+            print(f"  {YELLOW}{level}{RESET}: could not fetch logs")
+            continue
+        entries = body.get("entries", [])
+        count = len(entries)
+        if count == 0:
+            print(f"  {GREEN}{level}{RESET}: 0 entries")
+            continue
+        color = RED if level == "ERROR" else YELLOW
+        print(f"  {color}{level}{RESET}: {count} entries")
+        for entry in entries[:5]:
+            msg = entry.get("message", str(entry))
+            # Truncate long messages
+            if len(msg) > 120:
+                msg = msg[:117] + "..."
+            print(f"    {DIM}{msg}{RESET}")
+        if count > 5:
+            print(f"    {DIM}... and {count - 5} more{RESET}")
+        if level == "ERROR":
+            ok = False
+    return ok
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Restart + smoke-test WinDesktopMgr")
     parser.add_argument("--host", default=DEFAULT_HOST, help="Base URL (default: %(default)s)")
@@ -134,7 +167,15 @@ def main() -> int:
     if not body:
         return 2
     print_results(body)
-    return 0 if body.get("ok") else 1
+
+    # Post-selftest log check — surface errors/warnings
+    logs_ok = check_logs(args.host)
+    selftest_ok = body.get("ok", False)
+
+    if selftest_ok and not logs_ok:
+        print(f"\n  {YELLOW}{BOLD}Selftest passed but log errors detected{RESET}")
+        return 1
+    return 0 if selftest_ok else 1
 
 
 if __name__ == "__main__":
