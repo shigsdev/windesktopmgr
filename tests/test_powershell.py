@@ -2692,81 +2692,117 @@ class TestGetNvidiaUpdateInfo:
 
 
 class TestAnalyzeDiskPath:
-    SAMPLE = json.dumps(
-        [
-            {"Name": "Users", "Path": "C:\\Users", "Type": "dir", "Bytes": 40_000_000_000, "Count": 12345},
-            {"Name": "Windows", "Path": "C:\\Windows", "Type": "dir", "Bytes": 30_000_000_000, "Count": 98765},
-            {"Name": "pagefile.sys", "Path": "C:\\pagefile.sys", "Type": "file", "Bytes": 10_000_000_000, "Count": 1},
-        ]
-    )
+    """Tests for analyze_disk_path() — pure Python os.scandir() implementation.
+
+    Mocking strategy: mock os.scandir for immediate children listing and
+    _walk_dir_size for recursive directory sizing.  No subprocess involved.
+    """
+
+    @staticmethod
+    def _make_direntry(name, path, is_dir=False, size=0, is_offline=False, is_junction=False):
+        """Create a fake os.DirEntry-like object."""
+        import stat as _stat
+
+        attrs = 0x10 if is_dir else 0  # FILE_ATTRIBUTE_DIRECTORY
+        if is_offline:
+            attrs |= _stat.FILE_ATTRIBUTE_OFFLINE
+
+        stat_result = type(
+            "FakeStat",
+            (),
+            {"st_size": size, "st_file_attributes": attrs},
+        )()
+        return type(
+            "FakeDirEntry",
+            (),
+            {
+                "name": name,
+                "path": path,
+                "is_dir": lambda self, follow_symlinks=True: is_dir,
+                "is_junction": lambda self: is_junction,
+                "stat": lambda self, follow_symlinks=True: stat_result,
+            },
+        )()
+
+    def _mock_scandir(self, mocker, entries):
+        """Mock os.scandir to return the given entries (iterable + context manager)."""
+        ctx = type(
+            "FakeScandir",
+            (),
+            {
+                "__enter__": lambda self: self,
+                "__exit__": lambda self, *a: None,
+                "__iter__": lambda self: iter(entries),
+            },
+        )()
+        return mocker.patch("windesktopmgr.os.scandir", return_value=ctx)
 
     def test_happy_path_returns_sorted_entries(self, mocker):
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
-        _mock_run(mocker, stdout=self.SAMPLE)
+        entries = [
+            self._make_direntry("Users", "C:\\Users", is_dir=True),
+            self._make_direntry("Windows", "C:\\Windows", is_dir=True),
+            self._make_direntry("pagefile.sys", "C:\\pagefile.sys", size=10_000_000_000),
+        ]
+        self._mock_scandir(mocker, entries)
+        mocker.patch(
+            "windesktopmgr._walk_dir_size",
+            side_effect=[
+                {"local": 40_000_000_000, "cloud": 0, "count": 12345},
+                {"local": 30_000_000_000, "cloud": 0, "count": 98765},
+            ],
+        )
         result = wdm.analyze_disk_path("C:\\")
         assert result["ok"] is True
         assert result["path"] == "C:\\"
-        assert result["parent"] is None  # drive root has no parent
+        assert result["parent"] is None
         assert len(result["entries"]) == 3
-        # Total is sum of all entries
         assert result["total_bytes"] == 80_000_000_000
-        # First entry is biggest
         assert result["entries"][0]["name"] == "Users"
         assert result["entries"][0]["size_bytes"] == 40_000_000_000
         assert result["entries"][0]["size_human"].endswith("GB")
         assert result["entries"][0]["pct"] == 50.0
         assert result["entries"][0]["type"] == "dir"
-        # File entry carries its own type
         file_entry = [e for e in result["entries"] if e["name"] == "pagefile.sys"][0]
         assert file_entry["type"] == "file"
         assert file_entry["item_count"] == 1
 
-    def test_single_object_normalised_to_list(self, mocker):
+    def test_single_dir_entry(self, mocker):
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
-        _mock_run(
-            mocker,
-            stdout=json.dumps({"Name": "Users", "Path": "C:\\Users", "Type": "dir", "Bytes": 100, "Count": 2}),
-        )
+        entries = [self._make_direntry("Users", "C:\\Users", is_dir=True)]
+        self._mock_scandir(mocker, entries)
+        mocker.patch("windesktopmgr._walk_dir_size", return_value={"local": 100, "cloud": 0, "count": 2})
         result = wdm.analyze_disk_path("C:\\")
         assert result["ok"] is True
         assert len(result["entries"]) == 1
         assert result["entries"][0]["name"] == "Users"
 
-    def test_empty_stdout_returns_empty_entries(self, mocker):
+    def test_empty_dir_returns_empty_entries(self, mocker):
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
-        _mock_run(mocker, stdout="")
+        self._mock_scandir(mocker, [])
         result = wdm.analyze_disk_path("C:\\")
         assert result["ok"] is True
         assert result["entries"] == []
         assert result["total_bytes"] == 0
 
-    def test_malformed_json_returns_error(self, mocker):
+    def test_scandir_oserror_returns_error(self, mocker):
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
-        _mock_run(mocker, stdout="not valid json {{{")
+        mocker.patch("windesktopmgr.os.scandir", side_effect=OSError("Access denied"))
         result = wdm.analyze_disk_path("C:\\")
         assert result["ok"] is False
-        assert "parse" in result["error"].lower()
+        assert "access denied" in result["error"].lower()
         assert result["entries"] == []
 
-    def test_timeout_returns_safe_fallback(self, mocker):
+    def test_walk_dir_size_failure_returns_zero(self, mocker):
+        """If _walk_dir_size raises, the dir entry gets zero bytes (graceful)."""
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
-        mocker.patch(
-            "windesktopmgr.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=180),
-        )
+        entries = [self._make_direntry("Broken", "C:\\Broken", is_dir=True)]
+        self._mock_scandir(mocker, entries)
+        mocker.patch("windesktopmgr._walk_dir_size", side_effect=RuntimeError("boom"))
         result = wdm.analyze_disk_path("C:\\")
-        assert result["ok"] is False
-        assert "timed out" in result["error"].lower()
-        assert result["entries"] == []
-
-    def test_nonzero_returncode_still_parses_stdout(self, mocker):
-        """PS returns rc!=0 but still writes valid JSON — we parse it anyway."""
-        mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
-        _mock_run(mocker, stdout=self.SAMPLE, returncode=1, stderr="warning")
-        result = wdm.analyze_disk_path("C:\\")
-        # JSON was parseable so function returns ok=True
         assert result["ok"] is True
-        assert len(result["entries"]) == 3
+        assert len(result["entries"]) == 1
+        assert result["entries"][0]["size_bytes"] == 0
 
     def test_missing_path_rejected(self, mocker):
         result = wdm.analyze_disk_path("")
@@ -2790,109 +2826,33 @@ class TestAnalyzeDiskPath:
         assert "absolute" in result["error"].lower()
 
     def test_injection_chars_stripped(self, mocker):
-        """Semicolons, quotes, $(), and other metacharacters must be stripped
-        before the user-supplied path is embedded into the PowerShell script.
-        The path is embedded as a single-quoted PS literal, so any `'` chars
-        from user input must also be removed.
-        """
+        """Metacharacters are stripped from path before it reaches os.scandir."""
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
-        m = _mock_run(mocker, stdout="[]")
+        mock_scan = self._mock_scandir(mocker, [])
         wdm.analyze_disk_path("C:\\Users'; Remove-Item C:\\ -Recurse; #")
-        ps_string = " ".join(m.call_args[0][0])
-        # The $root assignment line must not contain the injection payload
-        root_line = [ln for ln in ps_string.split("\n") if "$root" in ln][0]
-        # Metacharacters that could break out of the single-quoted literal
-        # must all be stripped:
-        assert ";" not in root_line
-        assert "#" not in root_line
-        # Exactly two single quotes: the two wrapping quotes from our template.
-        # If a stray `'` from user input had survived, we'd see more than two
-        # — allowing the attacker to close the literal and run `Remove-Item`.
-        assert root_line.count("'") == 2
-
-    def test_command_uses_robocopy_for_fast_sizing(self, mocker):
-        """Sizing each subdir must use `robocopy /L /BYTES /XA:O` (native
-        Win32 walk, 5-10x faster than `Get-ChildItem -Recurse | Measure-Object`).
-        Robocopy runs in parallel via a RunspacePool (up to 8 threads)."""
-        mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
-        m = _mock_run(mocker, stdout="[]")
-        wdm.analyze_disk_path("C:\\")
-        ps_string = " ".join(m.call_args[0][0])
-        # Immediate-children listing still uses Get-ChildItem (no -Recurse)
-        assert "Get-ChildItem -LiteralPath $root" in ps_string
-        # Per-subdir size comes from robocopy in list-only mode
-        assert "robocopy" in ps_string
-        assert "/BYTES" in ps_string
-        # Parallel execution via RunspacePool
-        assert "RunspaceFactory" in ps_string or "RunspacePool" in ps_string
-        assert "BeginInvoke" in ps_string
-        # Still sorts + exits cleanly
-        assert "Sort-Object" in ps_string
-        assert "exit 0" in ps_string
-
-    def test_command_computes_local_as_total_minus_skipped(self, mocker):
-        """Bug regression: robocopy's Total column INCLUDES files that were
-        later skipped by /XA:O — it is the raw enumeration, not the filtered
-        total. Real local bytes = Total - Skipped. Without this subtraction,
-        a fully-cloud folder like iCloudPhotos reports its full logical size
-        as 'local', inflating the top-N list and hiding real local consumers."""
-        mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
-        m = _mock_run(mocker, stdout="[]")
-        wdm.analyze_disk_path("C:\\")
-        ps_string = " ".join(m.call_args[0][0])
-        # The Bytes row parser must capture at least 3 columns (Total + Copied
-        # + Skipped) and compute local = Total - Skipped
-        assert "$total - $skipped" in ps_string
-        # Negative guard (should never happen but defensive)
-        assert "-lt 0" in ps_string
-
-    def test_command_excludes_offline_cloud_placeholders(self, mocker):
-        """Must pass /XA:O to robocopy so iCloud/OneDrive/Dropbox cloud-only
-        files (Offline attribute) don't inflate local disk usage. Cloud files
-        get downloaded on demand — counting them as local bytes was the bug.
-        Also must inspect per-file Attributes for the Offline bit when
-        handling direct file entries at the scanned root."""
-        mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
-        m = _mock_run(mocker, stdout="[]")
-        wdm.analyze_disk_path("C:\\")
-        ps_string = " ".join(m.call_args[0][0])
-        assert "/XA:O" in ps_string, "robocopy must exclude Offline (cloud-only) files"
-        # Direct-file branch must also check the Offline flag
-        assert "FileAttributes]::Offline" in ps_string
+        call_path = mock_scan.call_args[0][0]
+        assert ";" not in call_path
+        assert "#" not in call_path
+        assert "'" not in call_path
 
     def test_cloud_bytes_surfaced_in_response(self, mocker):
-        """Robocopy's Skipped column (col 3 of the Bytes row) contains the
-        bytes excluded by /XA:O — cloud-only placeholders. The PS script
-        returns both `Bytes` (local) and `CloudBytes` (cloud-only) per row,
-        and the Python parser must expose them as `size_bytes` + `cloud_bytes`.
-        """
+        """Cloud-only files (FILE_ATTRIBUTE_OFFLINE) are counted as cloud_bytes,
+        not local bytes, in both dirs (via _walk_dir_size) and files."""
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
-        stdout = json.dumps(
-            [
-                # Photos folder: 500 MB local, 20 GB in cloud
-                {
-                    "Name": "iCloud Photos",
-                    "Path": "C:\\Users\\me\\Pictures\\iCloud Photos",
-                    "Type": "dir",
-                    "Bytes": 500_000_000,
-                    "CloudBytes": 20_000_000_000,
-                    "Count": 5000,
-                },
-                # Windows folder: 30 GB local, 0 cloud
-                {
-                    "Name": "Windows",
-                    "Path": "C:\\Windows",
-                    "Type": "dir",
-                    "Bytes": 30_000_000_000,
-                    "CloudBytes": 0,
-                    "Count": 98765,
-                },
-            ]
+        entries = [
+            self._make_direntry("iCloud Photos", "C:\\Users\\me\\iCloud Photos", is_dir=True),
+            self._make_direntry("Windows", "C:\\Windows", is_dir=True),
+        ]
+        self._mock_scandir(mocker, entries)
+        mocker.patch(
+            "windesktopmgr._walk_dir_size",
+            side_effect=[
+                {"local": 500_000_000, "cloud": 20_000_000_000, "count": 5000},
+                {"local": 30_000_000_000, "cloud": 0, "count": 98765},
+            ],
         )
-        _mock_run(mocker, stdout=stdout)
         result = wdm.analyze_disk_path("C:\\")
         assert result["ok"] is True
-        # Local total ignores cloud bytes
         assert result["total_bytes"] == 30_500_000_000
         assert result["total_cloud_bytes"] == 20_000_000_000
         assert result["total_cloud_human"].endswith("GB")
@@ -2900,10 +2860,48 @@ class TestAnalyzeDiskPath:
         assert photos["size_bytes"] == 500_000_000
         assert photos["cloud_bytes"] == 20_000_000_000
         assert photos["cloud_human"].endswith("GB")
-        # Non-cloud entry has empty cloud_human (no badge)
         win = [e for e in result["entries"] if e["name"] == "Windows"][0]
         assert win["cloud_bytes"] == 0
         assert win["cloud_human"] == ""
+
+    def test_offline_file_counted_as_cloud(self, mocker):
+        """A file with FILE_ATTRIBUTE_OFFLINE at root level counts as cloud."""
+        mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
+        entries = [
+            self._make_direntry("cloud.txt", "C:\\cloud.txt", size=1_000_000, is_offline=True),
+            self._make_direntry("local.txt", "C:\\local.txt", size=2_000_000),
+        ]
+        self._mock_scandir(mocker, entries)
+        result = wdm.analyze_disk_path("C:\\")
+        assert result["ok"] is True
+        cloud_file = [e for e in result["entries"] if e["name"] == "cloud.txt"][0]
+        assert cloud_file["size_bytes"] == 0
+        assert cloud_file["cloud_bytes"] == 1_000_000
+        local_file = [e for e in result["entries"] if e["name"] == "local.txt"][0]
+        assert local_file["size_bytes"] == 2_000_000
+        assert local_file["cloud_bytes"] == 0
+
+    def test_junction_dirs_skipped(self, mocker):
+        """Junction points should be skipped (like robocopy /XJ)."""
+        mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
+        entries = [
+            self._make_direntry("RealDir", "C:\\RealDir", is_dir=True),
+            self._make_direntry("JunctionDir", "C:\\JunctionDir", is_dir=True, is_junction=True),
+        ]
+        self._mock_scandir(mocker, entries)
+        mocker.patch("windesktopmgr._walk_dir_size", return_value={"local": 100, "cloud": 0, "count": 1})
+        result = wdm.analyze_disk_path("C:\\")
+        assert result["ok"] is True
+        assert len(result["entries"]) == 1
+        assert result["entries"][0]["name"] == "RealDir"
+
+    def test_no_subprocess_calls(self, mocker):
+        """analyze_disk_path must NOT call subprocess.run — it's pure Python."""
+        mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
+        self._mock_scandir(mocker, [])
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        wdm.analyze_disk_path("C:\\")
+        m.assert_not_called()
 
     def test_quickwins_command_excludes_offline(self, mocker):
         """get_disk_quickwins must also pass /XA:O — so cloud-only folders
@@ -2923,16 +2921,22 @@ class TestAnalyzeDiskPath:
 
     def test_parent_set_for_non_root_path(self, mocker):
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
-        _mock_run(mocker, stdout="[]")
+        self._mock_scandir(mocker, [])
         result = wdm.analyze_disk_path("C:\\Users\\me")
         assert result["parent"] == "C:\\Users"
 
-    def test_top_n_clamped_into_command(self, mocker):
+    def test_top_n_limits_results(self, mocker):
+        """top_n parameter limits the number of returned entries."""
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
-        m = _mock_run(mocker, stdout="[]")
-        wdm.analyze_disk_path("C:\\", top_n=7)
-        ps_string = " ".join(m.call_args[0][0])
-        assert "Select-Object -First 7" in ps_string
+        entries = [self._make_direntry(f"dir{i}", f"C:\\dir{i}", is_dir=True) for i in range(10)]
+        self._mock_scandir(mocker, entries)
+        mocker.patch(
+            "windesktopmgr._walk_dir_size",
+            return_value={"local": 100, "cloud": 0, "count": 1},
+        )
+        result = wdm.analyze_disk_path("C:\\", top_n=5)
+        assert result["ok"] is True
+        assert len(result["entries"]) == 5
 
 
 class TestGetDiskQuickwins:

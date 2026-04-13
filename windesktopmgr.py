@@ -2142,13 +2142,58 @@ def _human_bytes(n: int | float) -> str:
     return f"{n:.1f} EB"
 
 
+def _walk_dir_size(dir_path: str) -> dict:
+    """Recursively sum local + cloud bytes for a directory using os.scandir().
+
+    Uses the same Win32 API (FindFirstFileW) as robocopy but with zero
+    subprocess overhead.  FILE_ATTRIBUTE_OFFLINE (0x1000) marks cloud-only
+    placeholders (iCloud, OneDrive Files On-Demand, Dropbox Smart Sync).
+    Those bytes are counted as cloud_bytes, not local.
+
+    Returns ``{"local": int, "cloud": int, "count": int}``.
+    """
+    import stat as _stat  # noqa: I001
+
+    _OFFLINE = _stat.FILE_ATTRIBUTE_OFFLINE
+    local = 0
+    cloud = 0
+    count = 0
+    stack = [dir_path]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            # Skip junction points (like robocopy /XJ)
+                            if not entry.is_junction():
+                                stack.append(entry.path)
+                        else:
+                            st = entry.stat(follow_symlinks=False)
+                            count += 1
+                            if hasattr(st, "st_file_attributes") and st.st_file_attributes & _OFFLINE:
+                                cloud += st.st_size
+                            else:
+                                local += st.st_size
+                    except OSError:
+                        pass  # permission denied, etc — skip silently
+        except OSError:
+            pass  # can't open dir — skip
+    return {"local": local, "cloud": cloud, "count": count}
+
+
 def analyze_disk_path(path: str, top_n: int = 25) -> dict:
     """Return the top `top_n` largest immediate children of `path` by total size.
 
-    Uses a PowerShell breadth-first scan: lists direct children of `path`, and
-    for each subdirectory sums the recursive size of every file inside. Files
-    at `path` are returned with their own size. The caller can drill into any
-    returned subdirectory by calling this function again with its full path.
+    Pure Python implementation using ``os.scandir()`` for recursive sizing
+    with ``concurrent.futures.ThreadPoolExecutor`` for parallelism across
+    subdirectories.  No subprocess, no PowerShell, no robocopy.
+
+    Cloud detection: ``FILE_ATTRIBUTE_OFFLINE`` (Windows marks cloud-only
+    placeholders from iCloud, OneDrive Files On-Demand, Dropbox Smart Sync
+    with this attribute).  Downloaded files are counted as local; cloud-only
+    stubs as cloud.
 
     Returns a dict like::
 
@@ -2167,181 +2212,120 @@ def analyze_disk_path(path: str, top_n: int = 25) -> dict:
 
     On any failure, returns ``{"ok": False, "error": str, "path": path, "entries": []}``.
     """
+    import stat as _stat  # noqa: I001
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     ok, cleaned = _validate_analyze_path(path)
     if not ok:
         return {"ok": False, "error": cleaned, "path": path, "entries": []}
 
-    # Embed `cleaned` as a SINGLE-quoted PS literal so $-expansion is disabled.
-    # The sanitiser above already stripped `'` from user input, so the literal
-    # cannot be broken out of.
-    # Per-subdir sizing uses `robocopy /L /E /BYTES /XA:O` in list-only mode
-    # — a native Win32 walk that is 5-10x faster than `Get-ChildItem -Recurse`.
-    # `/XA:O` excludes files with the Offline attribute (cloud placeholders:
-    # iCloud, OneDrive Files On-Demand, Dropbox Smart Sync), so downloaded
-    # files are counted but cloud-only stubs are skipped.
-    #
-    # Robocopy output format with /BYTES (integer columns):
-    #                Total    Copied   Skipped  Mismatch    FAILED    Extras
-    #     Bytes :   123456         0    789012         0         0         0
-    #
-    # IMPORTANT: the "Total" column includes files that were later skipped by
-    # /XA:O — it is the raw enumeration total, not the filtered total. So the
-    # real local size is `Total - Skipped`. Skipped alone is the cloud-only
-    # footprint. Without this subtraction, cloud files end up counted twice
-    # (once in local, once in cloud) and the UI reports inflated local usage.
-    # RunspacePool pattern: runs up to 8 robocopy instances in parallel
-    # instead of one-at-a-time.  PS 5.1 compatible (no ForEach-Object -Parallel).
-    # Files at root are instant (no robocopy needed); only dirs use the pool.
-    # ArrayList instead of += avoids O(n^2) array re-creation.
-    ps = rf"""
-$ErrorActionPreference = 'SilentlyContinue'
-$root = '{cleaned}'
-$items = Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue
-$results = [System.Collections.ArrayList]::new()
+    _OFFLINE = _stat.FILE_ATTRIBUTE_OFFLINE
 
-# ── Files: instant sizing, no robocopy needed ──
-$dirs = [System.Collections.ArrayList]::new()
-foreach ($it in $items) {{
-    if ($it.PSIsContainer) {{
-        [void]$dirs.Add($it)
-    }} else {{
-        $isOffline = ($it.Attributes -band [IO.FileAttributes]::Offline) -ne 0
-        if ($isOffline) {{
-            [void]$results.Add([PSCustomObject]@{{
-                Name = $it.Name; Path = $it.FullName; Type = 'file'
-                Bytes = [int64]0; CloudBytes = [int64]$it.Length; Count = 1
-            }})
-        }} else {{
-            [void]$results.Add([PSCustomObject]@{{
-                Name = $it.Name; Path = $it.FullName; Type = 'file'
-                Bytes = [int64]$it.Length; CloudBytes = [int64]0; Count = 1
-            }})
-        }}
-    }}
-}}
-
-# ── Dirs: parallel robocopy via RunspacePool (up to 8 threads) ──
-if ($dirs.Count -gt 0) {{
-    $maxT = [Math]::Min(8, $dirs.Count)
-    $pool = [RunspaceFactory]::CreateRunspacePool(1, $maxT)
-    $pool.Open()
-    $sb = {{
-        param($dirPath)
-        $b = [int64]0; $cb = [int64]0; $cnt = 0
-        $rc = robocopy $dirPath NULL /L /E /NFL /NDL /NJH /NC /BYTES /XA:O /XJ /R:0 /W:0 2>$null
-        foreach ($line in $rc) {{
-            if ($line -match '^\s*Bytes\s*:\s*(\d+)\s+(\d+)\s+(\d+)') {{
-                $total   = [int64]$matches[1]
-                $skipped = [int64]$matches[3]
-                $b = $total - $skipped
-                if ($b -lt 0) {{ $b = [int64]0 }}
-                $cb = $skipped
-            }} elseif ($line -match '^\s*Files\s*:\s*(\d+)') {{
-                $cnt = [int]$matches[1]
-            }}
-        }}
-        return @{{ B = $b; CB = $cb; C = $cnt }}
-    }}
-    $jobs = [System.Collections.ArrayList]::new()
-    foreach ($d in $dirs) {{
-        $ps = [PowerShell]::Create().AddScript($sb).AddArgument($d.FullName)
-        $ps.RunspacePool = $pool
-        [void]$jobs.Add(@{{ Pipe = $ps; Handle = $ps.BeginInvoke(); Dir = $d }})
-    }}
-    foreach ($j in $jobs) {{
-        $out = $j.Pipe.EndInvoke($j.Handle)
-        $j.Pipe.Dispose()
-        $r = $null
-        if ($out -and $out.Count -gt 0) {{ $r = $out[0] }}
-        $bVal  = if ($r) {{ [int64]$r.B  }} else {{ [int64]0 }}
-        $cbVal = if ($r) {{ [int64]$r.CB }} else {{ [int64]0 }}
-        $cVal  = if ($r) {{ [int]$r.C    }} else {{ 0 }}
-        [void]$results.Add([PSCustomObject]@{{
-            Name = $j.Dir.Name; Path = $j.Dir.FullName; Type = 'dir'
-            Bytes = $bVal; CloudBytes = $cbVal; Count = $cVal
-        }})
-    }}
-    $pool.Close()
-    $pool.Dispose()
-}}
-
-$results | Sort-Object -Property Bytes -Descending | Select-Object -First {int(top_n)} |
-    ConvertTo-Json -Depth 3
-exit 0
-"""
+    # ── List immediate children ──────────────────────────────────────────
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps],
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-        raw = (r.stdout or "").strip()
-        if not raw:
-            return {
-                "ok": True,
-                "path": cleaned,
-                "parent": os.path.dirname(cleaned.rstrip("\\")) or None,
-                "total_bytes": 0,
-                "entries": [],
+        children = list(os.scandir(cleaned))
+    except OSError as exc:
+        return {"ok": False, "error": str(exc), "path": cleaned, "entries": []}
+
+    raw_entries: list[dict] = []
+    dir_entries: list[tuple[int, os.DirEntry]] = []  # (index, entry) for dirs
+
+    for child in children:
+        try:
+            if child.is_dir(follow_symlinks=False):
+                if child.is_junction():
+                    continue  # skip junctions (like robocopy /XJ)
+                idx = len(raw_entries)
+                raw_entries.append(
+                    {
+                        "name": child.name,
+                        "path": child.path,
+                        "type": "dir",
+                        "local": 0,
+                        "cloud": 0,
+                        "count": 0,
+                    }
+                )
+                dir_entries.append((idx, child))
+            else:
+                st = child.stat(follow_symlinks=False)
+                is_offline = hasattr(st, "st_file_attributes") and st.st_file_attributes & _OFFLINE
+                raw_entries.append(
+                    {
+                        "name": child.name,
+                        "path": child.path,
+                        "type": "file",
+                        "local": 0 if is_offline else st.st_size,
+                        "cloud": st.st_size if is_offline else 0,
+                        "count": 1,
+                    }
+                )
+        except OSError:
+            pass  # skip inaccessible entries
+
+    # ── Parallel recursive sizing of subdirectories ──────────────────────
+    if dir_entries:
+        max_workers = min(8, len(dir_entries))
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            future_to_idx = {pool.submit(_walk_dir_size, entry.path): idx for idx, entry in dir_entries}
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    result = future.result(timeout=600)
+                    raw_entries[idx]["local"] = result["local"]
+                    raw_entries[idx]["cloud"] = result["cloud"]
+                    raw_entries[idx]["count"] = result["count"]
+                except Exception:  # noqa: BLE001
+                    pass  # leave zeros — graceful fallback
+
+    # ── Sort by local bytes descending, take top_n ───────────────────────
+    raw_entries.sort(key=lambda e: e["local"], reverse=True)
+    raw_entries = raw_entries[:top_n]
+
+    # ── Build response ───────────────────────────────────────────────────
+    entries: list[dict] = []
+    total = 0
+    total_cloud = 0
+    for row in raw_entries:
+        size = row["local"]
+        cloud_val = row["cloud"]
+        total += size
+        total_cloud += cloud_val
+        entries.append(
+            {
+                "name": row["name"],
+                "path": row["path"],
+                "type": row["type"],
+                "size_bytes": size,
+                "size_human": _human_bytes(size),
+                "cloud_bytes": cloud_val,
+                "cloud_human": _human_bytes(cloud_val) if cloud_val > 0 else "",
+                "item_count": row["count"],
             }
-        parsed = json.loads(raw)
-        if isinstance(parsed, dict):
-            parsed = [parsed]
-        entries: list[dict] = []
-        total = 0
-        total_cloud = 0
-        for row in parsed:
-            if not isinstance(row, dict):
-                continue
-            size = int(row.get("Bytes") or 0)
-            cloud = int(row.get("CloudBytes") or 0)
-            total += size
-            total_cloud += cloud
-            entries.append(
-                {
-                    "name": row.get("Name") or "",
-                    "path": row.get("Path") or "",
-                    "type": row.get("Type") or "dir",
-                    "size_bytes": size,
-                    "size_human": _human_bytes(size),
-                    "cloud_bytes": cloud,
-                    "cloud_human": _human_bytes(cloud) if cloud > 0 else "",
-                    "item_count": int(row.get("Count") or 0),
-                }
-            )
-        # Compute percentage of scanned total for each entry
-        for e in entries:
-            e["pct"] = round(e["size_bytes"] / total * 100, 1) if total > 0 else 0.0
-        # Parent = one dir up, unless we're at a drive root like C:\
-        cleaned_rstrip = cleaned.rstrip("\\")
-        parent: str | None
-        if len(cleaned_rstrip) <= 2:  # "C:" — already at drive root
-            parent = None
-        else:
-            parent = os.path.dirname(cleaned_rstrip) or None
-            if parent and len(parent) == 2 and parent[1] == ":":
-                parent = parent + "\\"
-        return {
-            "ok": True,
-            "path": cleaned,
-            "parent": parent,
-            "total_bytes": total,
-            "total_cloud_bytes": total_cloud,
-            "total_cloud_human": _human_bytes(total_cloud) if total_cloud > 0 else "",
-            "entries": entries,
-        }
-    except subprocess.TimeoutExpired:
-        return {
-            "ok": False,
-            "error": "Scan timed out after 600s — try drilling into a smaller subfolder",
-            "path": cleaned,
-            "entries": [],
-        }
-    except json.JSONDecodeError:
-        return {"ok": False, "error": "Failed to parse scan output", "path": cleaned, "entries": []}
-    except Exception as e:  # noqa: BLE001
-        return {"ok": False, "error": str(e), "path": cleaned, "entries": []}
+        )
+
+    for e in entries:
+        e["pct"] = round(e["size_bytes"] / total * 100, 1) if total > 0 else 0.0
+
+    # Parent = one dir up, unless we're at a drive root like C:\
+    cleaned_rstrip = cleaned.rstrip("\\")
+    parent: str | None
+    if len(cleaned_rstrip) <= 2:  # "C:" — already at drive root
+        parent = None
+    else:
+        parent = os.path.dirname(cleaned_rstrip) or None
+        if parent and len(parent) == 2 and parent[1] == ":":
+            parent = parent + "\\"
+
+    return {
+        "ok": True,
+        "path": cleaned,
+        "parent": parent,
+        "total_bytes": total,
+        "total_cloud_bytes": total_cloud,
+        "total_cloud_human": _human_bytes(total_cloud) if total_cloud > 0 else "",
+        "entries": entries,
+    }
 
 
 # ── Cleanup tool allowlist ────────────────────────────────────────────────
