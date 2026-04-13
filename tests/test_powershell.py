@@ -163,10 +163,10 @@ class TestGetWindowsUpdateDrivers:
         result = wdm.get_windows_update_drivers()
         assert result is None
 
-    def test_timeout_returns_none(self, mocker):
-        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=60))
+    def test_timeout_returns_empty_dict(self, mocker):
+        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=120))
         result = wdm.get_windows_update_drivers()
-        assert result is None
+        assert result == {}
 
     def test_command_searches_for_drivers(self, mocker):
         m = _mock_run(mocker, stdout=self.SAMPLE)

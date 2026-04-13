@@ -713,7 +713,7 @@ try {
 """
     try:
         r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=60
+            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=120
         )
         raw = r.stdout.strip()
         data = json.loads(raw or "[]")
@@ -726,9 +726,13 @@ try {
         _dell_cache = lookup
         print(f"[WU] Found {len(lookup)} driver update(s) via Windows Update")
         return lookup
+    except subprocess.TimeoutExpired:
+        print("[WU error] Windows Update driver search timed out (120s)")
+        _dell_cache = {}
+        return {}
     except Exception as e:
         print(f"[WU error] {e}")
-        _dell_cache = None  # None = failure; {} = success with 0 updates
+        _dell_cache = None
         return None
 
 

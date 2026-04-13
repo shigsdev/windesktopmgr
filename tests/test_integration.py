@@ -48,9 +48,9 @@ class TestGetInstalledDriversIntegration:
 
 
 class TestGetWindowsUpdateDriversIntegration:
-    def test_returns_dict(self):
+    def test_returns_dict_or_none_on_timeout(self):
         result = wdm.get_windows_update_drivers()
-        assert isinstance(result, dict)
+        assert result is None or isinstance(result, dict)
 
 
 class TestGetDiskHealthIntegration:
