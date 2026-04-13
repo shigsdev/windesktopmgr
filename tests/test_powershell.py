@@ -2699,13 +2699,18 @@ class TestAnalyzeDiskPath:
     """
 
     @staticmethod
-    def _make_direntry(name, path, is_dir=False, size=0, is_offline=False, is_junction=False):
-        """Create a fake os.DirEntry-like object."""
+    def _make_direntry(name, path, is_dir=False, size=0, is_offline=False, is_junction=False, cloud_attrs=0):
+        """Create a fake os.DirEntry-like object.
+
+        cloud_attrs: raw attribute bits to OR in (e.g. 0x00400000 for RECALL_ON_DATA_ACCESS).
+        is_offline: shorthand that sets FILE_ATTRIBUTE_OFFLINE (0x1000).
+        """
         import stat as _stat
 
         attrs = 0x10 if is_dir else 0  # FILE_ATTRIBUTE_DIRECTORY
         if is_offline:
             attrs |= _stat.FILE_ATTRIBUTE_OFFLINE
+        attrs |= cloud_attrs
 
         stat_result = type(
             "FakeStat",
@@ -2880,6 +2885,38 @@ class TestAnalyzeDiskPath:
         local_file = [e for e in result["entries"] if e["name"] == "local.txt"][0]
         assert local_file["size_bytes"] == 2_000_000
         assert local_file["cloud_bytes"] == 0
+
+    def test_recall_on_data_access_counted_as_cloud(self, mocker):
+        """FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS (iCloud/OneDrive) counts as cloud."""
+        mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
+        _RECALL_DATA = 0x00400000
+        entries = [
+            self._make_direntry("icloud.jpg", "C:\\icloud.jpg", size=5_000_000, cloud_attrs=_RECALL_DATA),
+            self._make_direntry("local.txt", "C:\\local.txt", size=2_000_000),
+        ]
+        self._mock_scandir(mocker, entries)
+        result = wdm.analyze_disk_path("C:\\")
+        assert result["ok"] is True
+        cloud_file = [e for e in result["entries"] if e["name"] == "icloud.jpg"][0]
+        assert cloud_file["size_bytes"] == 0
+        assert cloud_file["cloud_bytes"] == 5_000_000
+        local_file = [e for e in result["entries"] if e["name"] == "local.txt"][0]
+        assert local_file["size_bytes"] == 2_000_000
+        assert local_file["cloud_bytes"] == 0
+
+    def test_recall_on_open_counted_as_cloud(self, mocker):
+        """FILE_ATTRIBUTE_RECALL_ON_OPEN counts as cloud."""
+        mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
+        _RECALL_OPEN = 0x00100000
+        entries = [
+            self._make_direntry("onedrive.docx", "C:\\onedrive.docx", size=3_000_000, cloud_attrs=_RECALL_OPEN),
+        ]
+        self._mock_scandir(mocker, entries)
+        result = wdm.analyze_disk_path("C:\\")
+        assert result["ok"] is True
+        cloud_file = result["entries"][0]
+        assert cloud_file["size_bytes"] == 0
+        assert cloud_file["cloud_bytes"] == 3_000_000
 
     def test_junction_dirs_skipped(self, mocker):
         """Junction points should be skipped (like robocopy /XJ)."""

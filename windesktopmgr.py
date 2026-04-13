@@ -2146,15 +2146,25 @@ def _walk_dir_size(dir_path: str) -> dict:
     """Recursively sum local + cloud bytes for a directory using os.scandir().
 
     Uses the same Win32 API (FindFirstFileW) as robocopy but with zero
-    subprocess overhead.  FILE_ATTRIBUTE_OFFLINE (0x1000) marks cloud-only
-    placeholders (iCloud, OneDrive Files On-Demand, Dropbox Smart Sync).
-    Those bytes are counted as cloud_bytes, not local.
+    subprocess overhead.
+
+    Cloud placeholder detection uses three Windows file attribute flags:
+      - ``FILE_ATTRIBUTE_OFFLINE``             (0x1000) — classic offline flag
+      - ``FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`` (0x400000) — modern cloud
+        placeholder (iCloud, OneDrive Files On-Demand, Dropbox Smart Sync)
+      - ``FILE_ATTRIBUTE_RECALL_ON_OPEN``      (0x100000) — content fetched on open
+
+    Any file matching these is counted as cloud-only; its st_size (the
+    *logical* size visible in Explorer) goes into cloud_bytes, not local.
 
     Returns ``{"local": int, "cloud": int, "count": int}``.
     """
     import stat as _stat  # noqa: I001
 
-    _OFFLINE = _stat.FILE_ATTRIBUTE_OFFLINE
+    _OFFLINE = _stat.FILE_ATTRIBUTE_OFFLINE  # 0x1000
+    _RECALL_DATA = 0x00400000  # FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
+    _RECALL_OPEN = 0x00100000  # FILE_ATTRIBUTE_RECALL_ON_OPEN
+    _CLOUD_MASK = _OFFLINE | _RECALL_DATA | _RECALL_OPEN
     local = 0
     cloud = 0
     count = 0
@@ -2172,7 +2182,7 @@ def _walk_dir_size(dir_path: str) -> dict:
                         else:
                             st = entry.stat(follow_symlinks=False)
                             count += 1
-                            if hasattr(st, "st_file_attributes") and st.st_file_attributes & _OFFLINE:
+                            if hasattr(st, "st_file_attributes") and st.st_file_attributes & _CLOUD_MASK:
                                 cloud += st.st_size
                             else:
                                 local += st.st_size
@@ -2190,10 +2200,11 @@ def analyze_disk_path(path: str, top_n: int = 25) -> dict:
     with ``concurrent.futures.ThreadPoolExecutor`` for parallelism across
     subdirectories.  No subprocess, no PowerShell, no robocopy.
 
-    Cloud detection: ``FILE_ATTRIBUTE_OFFLINE`` (Windows marks cloud-only
-    placeholders from iCloud, OneDrive Files On-Demand, Dropbox Smart Sync
-    with this attribute).  Downloaded files are counted as local; cloud-only
-    stubs as cloud.
+    Cloud detection: checks ``FILE_ATTRIBUTE_OFFLINE`` (0x1000),
+    ``RECALL_ON_DATA_ACCESS`` (0x400000), and ``RECALL_ON_OPEN`` (0x100000).
+    iCloud, OneDrive Files On-Demand, and Dropbox Smart Sync use these
+    attributes on cloud-only placeholders.  Downloaded files are counted
+    as local; cloud-only stubs as cloud.
 
     Returns a dict like::
 
@@ -2219,7 +2230,10 @@ def analyze_disk_path(path: str, top_n: int = 25) -> dict:
     if not ok:
         return {"ok": False, "error": cleaned, "path": path, "entries": []}
 
-    _OFFLINE = _stat.FILE_ATTRIBUTE_OFFLINE
+    _OFFLINE = _stat.FILE_ATTRIBUTE_OFFLINE  # 0x1000
+    _RECALL_DATA = 0x00400000  # FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
+    _RECALL_OPEN = 0x00100000  # FILE_ATTRIBUTE_RECALL_ON_OPEN
+    _CLOUD_MASK = _OFFLINE | _RECALL_DATA | _RECALL_OPEN
 
     # ── List immediate children ──────────────────────────────────────────
     try:
@@ -2249,7 +2263,7 @@ def analyze_disk_path(path: str, top_n: int = 25) -> dict:
                 dir_entries.append((idx, child))
             else:
                 st = child.stat(follow_symlinks=False)
-                is_offline = hasattr(st, "st_file_attributes") and st.st_file_attributes & _OFFLINE
+                is_offline = hasattr(st, "st_file_attributes") and st.st_file_attributes & _CLOUD_MASK
                 raw_entries.append(
                     {
                         "name": child.name,
