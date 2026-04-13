@@ -23,6 +23,40 @@ printed for every code change. See the template at the bottom of this file.
 
 ---
 
+## Python First, PowerShell Secondary (MANDATORY)
+
+Always prefer Python stdlib or pip packages over PowerShell/subprocess calls.
+PowerShell is only acceptable when **no reasonable Python alternative exists**.
+
+### Decision checklist — before writing `subprocess.run("powershell …")`
+
+1. **Can Python do it?** — `os.scandir`, `psutil`, `wmi`, `winreg`, `ctypes`,
+   `socket`, `platform`, `shutil.disk_usage`, `pathlib`, etc.
+   → **Use Python.** Faster, testable, no PS startup cost.
+2. **Is there a pip package?** — `wmi`, `pywin32`, `comtypes`, etc.
+   → **Use the package** if it's already in `requirements.txt` or lightweight.
+3. **Does it require a COM object, WMI class, or cmdlet with no Python binding?**
+   → PowerShell is acceptable. Wrap it with the standard safety pattern
+   (timeout, JSON output, fallback on error, input sanitisation).
+
+### Why
+
+| | Python | PowerShell |
+|---|--------|-----------|
+| **Startup** | 0 ms (in-process) | 200-500 ms (new process) |
+| **Testability** | Mock stdlib, fast | Mock subprocess, fragile |
+| **Error handling** | Try/except, typed | Parse stderr strings |
+| **Parallelism** | ThreadPoolExecutor | RunspacePool (complex) |
+| **Portability** | Cross-platform | Windows only |
+
+### Examples of successful migrations
+
+| Before (PowerShell) | After (Python) | Speedup |
+|---------------------|---------------|---------|
+| `robocopy /L` for disk analysis | `os.scandir()` + `ThreadPoolExecutor` | 6x |
+
+---
+
 ## Quality Gates (MANDATORY)
 
 Every code change — new feature, bug fix, or refactor — **must** pass all quality
@@ -294,6 +328,7 @@ Phase 2  Git Workflow
   [ ] Small logical commits
   [ ] Pushed to remote
 Phase 3  Coding Standards
+  [ ] Python first, PowerShell secondary
   [ ] Boundary safety (escaping, validation)
   [ ] Graceful fallbacks for external calls
 Phase 4  Quality Gates
