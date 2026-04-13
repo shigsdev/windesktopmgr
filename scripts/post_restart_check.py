@@ -118,20 +118,32 @@ def print_results(body: dict) -> None:
         print(f"  {RED}{BOLD}{failed}/{total} checks failed{RESET}")
 
 
-def check_logs(host: str) -> bool:
-    """Fetch recent ERROR and WARNING log entries after restart/selftest.
+def check_logs(host: str, since: str | None = None) -> bool:
+    """Fetch recent ERROR and WARNING log entries and report them.
 
-    Reports counts and prints the first few entries so regressions are visible.
-    Returns False if any ERROR-level entries are found.
+    Args:
+        host: Base URL of the running app.
+        since: ISO timestamp — only report entries after this time.
+               If None, reports all recent entries.
+
+    Returns False if any ERROR-level entries are found after ``since``.
     """
+    from datetime import datetime
+
     print(f"\n{BOLD}Checking logs for errors/warnings{RESET}")
+    if since:
+        print(f"  {DIM}(entries since {since}){RESET}")
     ok = True
     for level in ("ERROR", "WARNING"):
-        body = _get_json(f"{host}/api/logs?level={level}&lines=50", timeout=10)
+        body = _get_json(f"{host}/api/logs?level={level}&lines=200", timeout=10)
         if body is None:
             print(f"  {YELLOW}{level}{RESET}: could not fetch logs")
             continue
         entries = body.get("entries", [])
+        # Filter to entries after the restart timestamp
+        if since:
+            cutoff = datetime.fromisoformat(since)
+            entries = [e for e in entries if datetime.fromisoformat(e.get("timestamp", "2000-01-01")) >= cutoff]
         count = len(entries)
         if count == 0:
             print(f"  {GREEN}{level}{RESET}: 0 entries")
@@ -139,11 +151,12 @@ def check_logs(host: str) -> bool:
         color = RED if level == "ERROR" else YELLOW
         print(f"  {color}{level}{RESET}: {count} entries")
         for entry in entries[:5]:
+            ts = entry.get("timestamp", "")
             msg = entry.get("message", str(entry))
             # Truncate long messages
-            if len(msg) > 120:
-                msg = msg[:117] + "..."
-            print(f"    {DIM}{msg}{RESET}")
+            if len(msg) > 100:
+                msg = msg[:97] + "..."
+            print(f"    {DIM}{ts}  {msg}{RESET}")
         if count > 5:
             print(f"    {DIM}... and {count - 5} more{RESET}")
         if level == "ERROR":
@@ -152,10 +165,15 @@ def check_logs(host: str) -> bool:
 
 
 def main() -> int:
+    from datetime import datetime
+
     parser = argparse.ArgumentParser(description="Restart + smoke-test WinDesktopMgr")
     parser.add_argument("--host", default=DEFAULT_HOST, help="Base URL (default: %(default)s)")
     parser.add_argument("--no-restart", action="store_true", help="Skip restart, just run /api/selftest")
     args = parser.parse_args()
+
+    # Record the time just before restart so we only check logs generated after
+    restart_ts = datetime.now().isoformat(timespec="seconds")
 
     if not args.no_restart:
         if not trigger_restart(args.host):
@@ -168,8 +186,8 @@ def main() -> int:
         return 2
     print_results(body)
 
-    # Post-selftest log check — surface errors/warnings
-    logs_ok = check_logs(args.host)
+    # Post-selftest log check — only entries since restart
+    logs_ok = check_logs(args.host, since=restart_ts)
     selftest_ok = body.get("ok", False)
 
     if selftest_ok and not logs_ok:
