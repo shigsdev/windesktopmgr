@@ -204,3 +204,94 @@ class TestGetHealthReportHistoryIntegration:
         result = wdm.get_health_report_history()
         assert isinstance(result, dict)
         assert "reports" in result
+
+
+class TestEnumerateLogicalDrivesIntegration:
+    """Snapshot/contract test for the pure-Python disk enumeration path.
+
+    Exercises real psutil + ctypes so we catch drift if psutil changes
+    its disk_partitions opts strings, or if WNetGetConnectionW / GetVolumeInformationW
+    behavior shifts. No subprocess — runs fast.
+    """
+
+    def test_returns_list(self):
+        result = wdm._enumerate_logical_drives()
+        assert isinstance(result, list)
+
+    def test_has_at_least_one_drive(self):
+        result = wdm._enumerate_logical_drives()
+        assert len(result) > 0, "Expected at least one logical drive on this machine"
+
+    def test_every_drive_has_contract_keys(self):
+        result = wdm._enumerate_logical_drives()
+        required = {
+            "Letter",
+            "Label",
+            "UsedGB",
+            "FreeGB",
+            "TotalGB",
+            "PctUsed",
+            "DriveType",
+            "DriveTypeName",
+            "FileSystem",
+            "UNCPath",
+        }
+        for d in result:
+            missing = required - set(d.keys())
+            assert not missing, f"Drive {d.get('Letter')} missing keys: {missing}"
+
+    def test_field_types_are_correct(self):
+        result = wdm._enumerate_logical_drives()
+        for d in result:
+            assert isinstance(d["Letter"], str)
+            assert isinstance(d["Label"], str)
+            assert isinstance(d["UsedGB"], int | float)
+            assert isinstance(d["FreeGB"], int | float)
+            assert isinstance(d["TotalGB"], int | float)
+            assert isinstance(d["PctUsed"], int | float)
+            assert isinstance(d["DriveType"], int)
+            assert isinstance(d["DriveTypeName"], str)
+            assert isinstance(d["FileSystem"], str)
+            assert d["UNCPath"] is None or isinstance(d["UNCPath"], str)
+
+    def test_drive_types_are_valid_enum_values(self):
+        result = wdm._enumerate_logical_drives()
+        valid = {2, 3, 4}
+        for d in result:
+            assert d["DriveType"] in valid, f"Unexpected DriveType {d['DriveType']} on drive {d['Letter']}"
+
+    def test_drive_type_name_matches_drive_type(self):
+        result = wdm._enumerate_logical_drives()
+        mapping = {2: "removable", 3: "local", 4: "network"}
+        for d in result:
+            assert d["DriveTypeName"] == mapping[d["DriveType"]]
+
+    def test_no_cdrom_or_ramdisk_present(self):
+        result = wdm._enumerate_logical_drives()
+        for d in result:
+            assert d["DriveType"] not in (5, 6), f"Drive {d['Letter']} should have been filtered"
+
+    def test_system_drive_c_is_local(self):
+        result = wdm._enumerate_logical_drives()
+        c_drive = next((d for d in result if d["Letter"] == "C"), None)
+        assert c_drive is not None, "C: drive should always be present"
+        assert c_drive["DriveType"] == 3
+        assert c_drive["DriveTypeName"] == "local"
+        assert c_drive["TotalGB"] > 0
+        assert c_drive["UNCPath"] is None
+
+    def test_network_drives_have_unc_path(self):
+        result = wdm._enumerate_logical_drives()
+        for d in result:
+            if d["DriveType"] == 4:
+                assert d["UNCPath"] is not None, f"Network drive {d['Letter']} should have UNCPath"
+                assert d["UNCPath"].startswith("\\\\"), f"UNCPath {d['UNCPath']} should start with \\\\"
+
+    def test_pctused_matches_used_total(self):
+        result = wdm._enumerate_logical_drives()
+        for d in result:
+            if d["TotalGB"] > 0:
+                computed = (d["UsedGB"] / d["TotalGB"]) * 100
+                assert abs(computed - d["PctUsed"]) < 5.0, (
+                    f"Drive {d['Letter']}: PctUsed={d['PctUsed']} vs computed={computed:.1f}"
+                )
