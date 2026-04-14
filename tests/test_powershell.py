@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import disk
+import remediation
 import windesktopmgr as wdm
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -31,6 +32,19 @@ import windesktopmgr as wdm
 def _mock_run(mocker, stdout="[]", returncode=0, stderr="", side_effect=None):
     """Patch subprocess.run and return the mock."""
     m = mocker.patch("windesktopmgr.subprocess.run")
+    if side_effect:
+        m.side_effect = side_effect
+    else:
+        m.return_value.stdout = stdout
+        m.return_value.returncode = returncode
+        m.return_value.stderr = stderr
+    return m
+
+
+def _mock_rem_run(mocker, stdout="", returncode=0, stderr="", side_effect=None):
+    """Patch remediation.subprocess.run — used by TestRemediationCommands since the
+    remediation action handlers moved to remediation.py (backlog #22)."""
+    m = mocker.patch("remediation.subprocess.run")
     if side_effect:
         m.side_effect = side_effect
     else:
@@ -2273,172 +2287,172 @@ class TestRemediationCommands:
     # ── flush_dns ─────────────────────────────────────────────────────────────
 
     def test_flush_dns_command_uses_ipconfig(self, mocker):
-        m = _mock_run(mocker, stdout="", returncode=0)
-        wdm._rem_flush_dns()
+        m = _mock_rem_run(mocker, stdout="", returncode=0)
+        remediation._rem_flush_dns()
         cmd = m.call_args[0][0][-1]
         assert "ipconfig" in cmd
         assert "flushdns" in cmd
 
     def test_flush_dns_ok_on_success(self, mocker):
-        _mock_run(mocker, stdout="", returncode=0)
-        assert wdm._rem_flush_dns()["ok"] is True
+        _mock_rem_run(mocker, stdout="", returncode=0)
+        assert remediation._rem_flush_dns()["ok"] is True
 
     def test_flush_dns_fail_on_nonzero(self, mocker):
-        _mock_run(mocker, stdout="", returncode=1, stderr="failed")
-        assert wdm._rem_flush_dns()["ok"] is False
+        _mock_rem_run(mocker, stdout="", returncode=1, stderr="failed")
+        assert remediation._rem_flush_dns()["ok"] is False
 
     def test_flush_dns_timeout(self, mocker):
-        _mock_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 15))
-        assert wdm._rem_flush_dns()["ok"] is False
+        _mock_rem_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 15))
+        assert remediation._rem_flush_dns()["ok"] is False
 
     # ── reset_winsock ─────────────────────────────────────────────────────────
 
     def test_reset_winsock_command_uses_netsh(self, mocker):
-        m = _mock_run(mocker, stdout="", returncode=0)
-        wdm._rem_reset_winsock()
+        m = _mock_rem_run(mocker, stdout="", returncode=0)
+        remediation._rem_reset_winsock()
         cmd = m.call_args[0][0][-1]
         assert "netsh" in cmd
         assert "winsock" in cmd
         assert "reset" in cmd
 
     def test_reset_winsock_timeout(self, mocker):
-        _mock_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 30))
-        assert wdm._rem_reset_winsock()["ok"] is False
+        _mock_rem_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 30))
+        assert remediation._rem_reset_winsock()["ok"] is False
 
     # ── reset_tcpip ───────────────────────────────────────────────────────────
 
     def test_reset_tcpip_command_uses_netsh_tcp(self, mocker):
-        m = _mock_run(mocker, stdout="", returncode=0)
-        wdm._rem_reset_tcpip()
+        m = _mock_rem_run(mocker, stdout="", returncode=0)
+        remediation._rem_reset_tcpip()
         cmd = m.call_args[0][0][-1]
         assert "netsh" in cmd
         assert "tcp" in cmd
 
     def test_reset_tcpip_ok_on_success(self, mocker):
-        _mock_run(mocker, stdout="", returncode=0)
-        assert wdm._rem_reset_tcpip()["ok"] is True
+        _mock_rem_run(mocker, stdout="", returncode=0)
+        assert remediation._rem_reset_tcpip()["ok"] is True
 
     # ── clear_temp ────────────────────────────────────────────────────────────
 
     def test_clear_temp_command_uses_remove_item(self, mocker):
-        m = _mock_run(mocker, stdout="Removed:5 Errors:0", returncode=0)
-        wdm._rem_clear_temp()
+        m = _mock_rem_run(mocker, stdout="Removed:5 Errors:0", returncode=0)
+        remediation._rem_clear_temp()
         cmd = m.call_args[0][0][-1]
         assert "Remove-Item" in cmd
 
     def test_clear_temp_parses_removed_count(self, mocker):
-        _mock_run(mocker, stdout="Removed:42 Errors:3", returncode=0)
-        result = wdm._rem_clear_temp()
+        _mock_rem_run(mocker, stdout="Removed:42 Errors:3", returncode=0)
+        result = remediation._rem_clear_temp()
         assert result["ok"] is True
         assert "42" in result["message"]
 
     def test_clear_temp_timeout(self, mocker):
-        _mock_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 120))
-        assert wdm._rem_clear_temp()["ok"] is False
+        _mock_rem_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 120))
+        assert remediation._rem_clear_temp()["ok"] is False
 
     # ── repair_image ──────────────────────────────────────────────────────────
 
     def test_repair_image_command_uses_dism_and_sfc(self, mocker):
-        m = _mock_run(mocker, stdout="DISM_DONE SFC_DONE OK:True", returncode=0)
-        wdm._rem_repair_image()
+        m = _mock_rem_run(mocker, stdout="DISM_DONE SFC_DONE OK:True", returncode=0)
+        remediation._rem_repair_image()
         cmd = m.call_args[0][0][-1]
         assert "dism" in cmd.lower()
         assert "sfc" in cmd.lower()
 
     def test_repair_image_ok_true_on_success(self, mocker):
-        _mock_run(mocker, stdout="DISM_DONE SFC_DONE OK:True", returncode=0)
-        assert wdm._rem_repair_image()["ok"] is True
+        _mock_rem_run(mocker, stdout="DISM_DONE SFC_DONE OK:True", returncode=0)
+        assert remediation._rem_repair_image()["ok"] is True
 
     def test_repair_image_ok_false_on_failure(self, mocker):
-        _mock_run(mocker, stdout="DISM_DONE SFC_DONE OK:False", returncode=0)
-        assert wdm._rem_repair_image()["ok"] is False
+        _mock_rem_run(mocker, stdout="DISM_DONE SFC_DONE OK:False", returncode=0)
+        assert remediation._rem_repair_image()["ok"] is False
 
     # ── clear_wu_cache ────────────────────────────────────────────────────────
 
     def test_clear_wu_cache_command_stops_wuauserv(self, mocker):
-        m = _mock_run(mocker, stdout="OK", returncode=0)
-        wdm._rem_clear_wu_cache()
+        m = _mock_rem_run(mocker, stdout="OK", returncode=0)
+        remediation._rem_clear_wu_cache()
         cmd = m.call_args[0][0][-1]
         assert "Stop-Service" in cmd
         assert "wuauserv" in cmd
 
     def test_clear_wu_cache_command_clears_softwaredistribution(self, mocker):
-        m = _mock_run(mocker, stdout="OK", returncode=0)
-        wdm._rem_clear_wu_cache()
+        m = _mock_rem_run(mocker, stdout="OK", returncode=0)
+        remediation._rem_clear_wu_cache()
         cmd = m.call_args[0][0][-1]
         assert "SoftwareDistribution" in cmd
 
     def test_clear_wu_cache_ok_on_success(self, mocker):
-        _mock_run(mocker, stdout="OK", returncode=0)
-        assert wdm._rem_clear_wu_cache()["ok"] is True
+        _mock_rem_run(mocker, stdout="OK", returncode=0)
+        assert remediation._rem_clear_wu_cache()["ok"] is True
 
     def test_clear_wu_cache_error_string_returns_ok_false(self, mocker):
-        _mock_run(mocker, stdout="ERROR: service not found", returncode=0)
-        assert wdm._rem_clear_wu_cache()["ok"] is False
+        _mock_rem_run(mocker, stdout="ERROR: service not found", returncode=0)
+        assert remediation._rem_clear_wu_cache()["ok"] is False
 
     # ── restart_spooler ───────────────────────────────────────────────────────
 
     def test_restart_spooler_command_stops_and_starts(self, mocker):
-        m = _mock_run(mocker, stdout="OK", returncode=0)
-        wdm._rem_restart_spooler()
+        m = _mock_rem_run(mocker, stdout="OK", returncode=0)
+        remediation._rem_restart_spooler()
         cmd = m.call_args[0][0][-1]
         assert "Stop-Service" in cmd
         assert "Start-Service" in cmd
         assert "Spooler" in cmd
 
     def test_restart_spooler_ok_on_success(self, mocker):
-        _mock_run(mocker, stdout="OK", returncode=0)
-        assert wdm._rem_restart_spooler()["ok"] is True
+        _mock_rem_run(mocker, stdout="OK", returncode=0)
+        assert remediation._rem_restart_spooler()["ok"] is True
 
     # ── reset_network_adapter ─────────────────────────────────────────────────
 
     def test_reset_adapter_command_uses_netadapter(self, mocker):
-        m = _mock_run(mocker, stdout="RESET:2", returncode=0)
-        wdm._rem_reset_network_adapter()
+        m = _mock_rem_run(mocker, stdout="RESET:2", returncode=0)
+        remediation._rem_reset_network_adapter()
         cmd = m.call_args[0][0][-1]
         assert "Get-NetAdapter" in cmd
         assert "Disable-NetAdapter" in cmd
         assert "Enable-NetAdapter" in cmd
 
     def test_reset_adapter_parses_count(self, mocker):
-        _mock_run(mocker, stdout="RESET:3", returncode=0)
-        result = wdm._rem_reset_network_adapter()
+        _mock_rem_run(mocker, stdout="RESET:3", returncode=0)
+        result = remediation._rem_reset_network_adapter()
         assert result["ok"] is True
         assert "3" in result["message"]
 
     def test_reset_adapter_zero_count_returns_ok_false(self, mocker):
-        _mock_run(mocker, stdout="RESET:0", returncode=0)
-        assert wdm._rem_reset_network_adapter()["ok"] is False
+        _mock_rem_run(mocker, stdout="RESET:0", returncode=0)
+        assert remediation._rem_reset_network_adapter()["ok"] is False
 
     # ── clear_icon_cache ──────────────────────────────────────────────────────
 
     def test_clear_icon_cache_command_stops_explorer(self, mocker):
-        m = _mock_run(mocker, stdout="OK", returncode=0)
-        wdm._rem_clear_icon_cache()
+        m = _mock_rem_run(mocker, stdout="OK", returncode=0)
+        remediation._rem_clear_icon_cache()
         cmd = m.call_args[0][0][-1]
         assert "explorer" in cmd.lower()
         assert "IconCache" in cmd
 
     def test_clear_icon_cache_ok_on_success(self, mocker):
-        _mock_run(mocker, stdout="OK", returncode=0)
-        assert wdm._rem_clear_icon_cache()["ok"] is True
+        _mock_rem_run(mocker, stdout="OK", returncode=0)
+        assert remediation._rem_clear_icon_cache()["ok"] is True
 
     # ── reboot_system ─────────────────────────────────────────────────────────
 
     def test_reboot_command_uses_shutdown(self, mocker):
-        m = _mock_run(mocker, stdout="", returncode=0)
-        wdm._rem_reboot_system()
+        m = _mock_rem_run(mocker, stdout="", returncode=0)
+        remediation._rem_reboot_system()
         cmd = m.call_args[0][0][-1]
         assert "shutdown" in cmd
         assert "/r" in cmd
 
     def test_reboot_ok_on_success(self, mocker):
-        _mock_run(mocker, stdout="", returncode=0)
-        assert wdm._rem_reboot_system()["ok"] is True
+        _mock_rem_run(mocker, stdout="", returncode=0)
+        assert remediation._rem_reboot_system()["ok"] is True
 
     def test_reboot_fail_on_nonzero(self, mocker):
-        _mock_run(mocker, stdout="", returncode=1, stderr="permission denied")
-        assert wdm._rem_reboot_system()["ok"] is False
+        _mock_rem_run(mocker, stdout="", returncode=1, stderr="permission denied")
+        assert remediation._rem_reboot_system()["ok"] is False
 
 
 # ══════════════════════════════════════════════════════════════════════════════
