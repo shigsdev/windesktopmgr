@@ -169,7 +169,12 @@
   @media print {
     body { padding: 16px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     body::before { display: none; }
+    .no-print { display: none !important; }
+    .row, .diagram, .legend { break-inside: avoid; page-break-inside: avoid; }
+    a { color: inherit !important; text-decoration: none; }
   }
+
+  #export-toggle button:hover { background: var(--card) !important; }
 </style>
 </head>
 <body>
@@ -179,10 +184,14 @@
     <div class="logo">Win<span>DesktopMgr</span></div>
     <div class="subtitle">Software Architecture Diagram</div>
   </div>
-  <div style="display:flex;gap:12px;align-items:flex-end">
+  <div style="display:flex;gap:12px;align-items:flex-end" class="toolbar no-print">
     <div id="view-toggle" style="display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;cursor:pointer">
       <div id="btn-simple" onclick="setView('simple')" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:var(--cyan);color:var(--bg);font-weight:700">Simple</div>
       <div id="btn-detail" onclick="setView('detail')" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);color:var(--muted)">Detailed</div>
+    </div>
+    <div id="export-toggle" style="display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden">
+      <button type="button" onclick="exportPDF()" title="Open the browser print dialog — choose 'Save as PDF'" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--yellow);border:none;cursor:pointer;border-right:1px solid var(--border)">Export PDF</button>
+      <button type="button" onclick="exportHTML()" title="Download a self-contained copy of this diagram" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--blue);border:none;cursor:pointer">Export HTML</button>
     </div>
     <div class="badge" style="color:var(--green);border-color:#00e67633">1,286 tests · 85% coverage</div>
     <div class="badge">
@@ -978,8 +987,8 @@
 
     </div>
 
-    <!-- Daily health task -->
-    <div style="margin-top:20px;display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <!-- Daily health task + Deployment pipeline -->
+    <div style="margin-top:20px;display:flex;flex-direction:column;gap:16px">
       <div style="background:#00e67608;border:1px solid #00e67633;border-radius:8px;padding:14px 16px">
         <div style="color:var(--green);font-weight:700;font-size:11px;margin-bottom:8px">📅 Daily at 7:00 AM — SystemHealthDiagnostic Task</div>
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
@@ -996,17 +1005,79 @@
         <div style="font-size:10px;color:var(--muted);margin-top:8px">Includes: warranty readiness · Intel CPU check · BSOD analysis · disk SMART · driver scan · memory · thermals</div>
       </div>
       <div style="background:#ff80ab08;border:1px solid #ff80ab33;border-radius:8px;padding:14px 16px">
-        <div style="color:var(--pink);font-weight:700;font-size:11px;margin-bottom:8px">🧪 Test Pipeline — Every Change</div>
-        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-          <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">Code change</div>
-          <div style="color:var(--muted);font-size:12px">→</div>
-          <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">pytest tests/</div>
-          <div style="color:var(--muted);font-size:12px">→</div>
-          <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">780 tests in 0.7s</div>
-          <div style="color:var(--muted);font-size:12px">→</div>
-          <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">git push main</div>
+        <div style="color:var(--pink);font-weight:700;font-size:11px;margin-bottom:10px">🚀 Deployment Pipeline — Every Code Change (mandatory SOP, see CLAUDE.md)</div>
+        <div style="display:flex;align-items:stretch;gap:0;flex-wrap:nowrap;overflow-x:auto">
+
+          <!-- Step 1: Code -->
+          <div style="flex:0 0 auto;min-width:120px;background:#ff80ab0a;border:1px solid #ff80ab44;border-radius:8px;padding:10px 12px;text-align:center">
+            <div style="font-size:16px;margin-bottom:4px">✍️</div>
+            <div style="color:var(--pink);font-weight:700;font-size:10px">1. CODE CHANGE</div>
+            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">Python first, PowerShell secondary</div>
+          </div>
+          <div style="display:flex;align-items:center;padding:0 4px;color:var(--pink);font-size:14px">→</div>
+
+          <!-- Step 2: Ruff -->
+          <div style="flex:0 0 auto;min-width:120px;background:#ff80ab0a;border:1px solid #ff80ab44;border-radius:8px;padding:10px 12px;text-align:center">
+            <div style="font-size:16px;margin-bottom:4px">🧹</div>
+            <div style="color:var(--pink);font-weight:700;font-size:10px">2. RUFF</div>
+            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">ruff check + ruff format</div>
+          </div>
+          <div style="display:flex;align-items:center;padding:0 4px;color:var(--pink);font-size:14px">→</div>
+
+          <!-- Step 3: Pytest -->
+          <div style="flex:0 0 auto;min-width:120px;background:#ff80ab0a;border:1px solid #ff80ab44;border-radius:8px;padding:10px 12px;text-align:center">
+            <div style="font-size:16px;margin-bottom:4px">🧪</div>
+            <div style="color:var(--pink);font-weight:700;font-size:10px">3. PYTEST</div>
+            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">1,286 tests · 85% cov · ~60s</div>
+          </div>
+          <div style="display:flex;align-items:center;padding:0 4px;color:var(--pink);font-size:14px">→</div>
+
+          <!-- Step 4: Architecture.html -->
+          <div style="flex:0 0 auto;min-width:130px;background:#00d4ff0a;border:1px solid #00d4ff44;border-radius:8px;padding:10px 12px;text-align:center">
+            <div style="font-size:16px;margin-bottom:4px">📐</div>
+            <div style="color:var(--cyan);font-weight:700;font-size:10px">4. ARCHITECTURE</div>
+            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">Update this diagram when triggers hit</div>
+          </div>
+          <div style="display:flex;align-items:center;padding:0 4px;color:var(--cyan);font-size:14px">→</div>
+
+          <!-- Step 5: Git push -->
+          <div style="flex:0 0 auto;min-width:130px;background:#b388ff0a;border:1px solid #b388ff44;border-radius:8px;padding:10px 12px;text-align:center">
+            <div style="font-size:16px;margin-bottom:4px">📤</div>
+            <div style="color:var(--purple);font-weight:700;font-size:10px">5. GIT PUSH</div>
+            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">pre-commit re-runs ruff + pytest</div>
+          </div>
+          <div style="display:flex;align-items:center;padding:0 4px;color:var(--purple);font-size:14px">→</div>
+
+          <!-- Step 6: Verify (this is the expanded one) -->
+          <div style="flex:1 1 auto;min-width:240px;background:#00e6760a;border:2px solid #00e67666;border-radius:8px;padding:10px 12px">
+            <div style="text-align:center;margin-bottom:6px">
+              <span style="font-size:16px">🩺</span>
+              <span style="color:var(--green);font-weight:700;font-size:10px;margin-left:4px">6. python dev.py verify — POST-PUSH LIVE CHECK</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;justify-content:center">
+              <div style="background:#00e6760d;border:1px solid #00e67633;border-radius:4px;padding:2px 7px;font-size:9px;color:var(--green)">POST /api/restart</div>
+              <div style="color:var(--muted);font-size:10px">→</div>
+              <div style="background:#00e6760d;border:1px solid #00e67633;border-radius:4px;padding:2px 7px;font-size:9px;color:var(--green)">poll /api/health</div>
+              <div style="color:var(--muted);font-size:10px">→</div>
+              <div style="background:#00e6760d;border:1px solid #00e67633;border-radius:4px;padding:2px 7px;font-size:9px;color:var(--green)">GET /api/selftest (14 checks)</div>
+              <div style="color:var(--muted);font-size:10px">→</div>
+              <div style="background:#00e6760d;border:1px solid #00e67633;border-radius:4px;padding:2px 7px;font-size:9px;color:var(--green)">GET /api/logs ERROR+WARN since restart_ts</div>
+            </div>
+            <div style="color:var(--muted);font-size:9px;margin-top:6px;text-align:center;line-height:1.35">Only gate that runs real PowerShell + real registry + real WMI against the live instance. Catches mock-vs-reality drift, startup crashes, and silent timeouts that mocked tests miss.</div>
+          </div>
+          <div style="display:flex;align-items:center;padding:0 4px;color:var(--green);font-size:14px">→</div>
+
+          <!-- Step 7: SOP report -->
+          <div style="flex:0 0 auto;min-width:120px;background:#ffd7400a;border:1px solid #ffd74044;border-radius:8px;padding:10px 12px;text-align:center">
+            <div style="font-size:16px;margin-bottom:4px">📋</div>
+            <div style="color:var(--yellow);font-weight:700;font-size:10px">7. SOP REPORT</div>
+            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">Phase 11 compliance checklist</div>
+          </div>
+
         </div>
-        <div style="font-size:10px;color:var(--muted);margin-top:8px">Rule: every new feature ships with tests. Flask routes, PowerShell mocks, and pure Python all covered.</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:10px;padding-top:8px;border-top:1px dashed #ff80ab33">
+          <span style="color:var(--pink);font-weight:700">Rule:</span> no step may be skipped. Steps 4, 6, and 7 were added after mocked tests let silent bugs ship — log severity promoted from WARNING to ERROR so the post-restart log scan catches PowerShell timeouts that quietly return empty data.
+        </div>
       </div>
     </div>
 
@@ -1099,7 +1170,7 @@
 
 
 <div class="footer">
-  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 780 tests · ~18,600 lines</span>
+  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 1,286 tests · ~21,140 lines</span>
   <span>github.com/shigsdev/windesktopmgr · Updated 2026-04-13</span>
 </div>
 
@@ -1262,6 +1333,41 @@
       bs.style.background = ''; bs.style.color = 'var(--muted)'; bs.style.fontWeight = '';
       raf(); // redraw arrows when switching to detail
     }
+  };
+
+  // Export: PDF via browser print dialog (user chooses "Save as PDF")
+  window.exportPDF = function() {
+    // Force detailed view so arrows are visible in the PDF
+    const wasSimple = document.body.classList.contains('view-simple');
+    if (wasSimple) window.setView('detail');
+    // Give the layout one frame to redraw before print
+    setTimeout(() => {
+      window.print();
+      if (wasSimple) setTimeout(() => window.setView('simple'), 200);
+    }, 150);
+  };
+
+  // Export: self-contained HTML download
+  // Serializes the live DOM (so current view/arrows are captured) into a
+  // single .html file the user can share or archive.
+  window.exportHTML = function() {
+    // Clone doc so we can strip toolbar buttons and freeze computed SVG
+    const clone = document.documentElement.cloneNode(true);
+    clone.querySelectorAll('.no-print').forEach(el => el.remove());
+    // Strip the export script block so the downloaded copy is static
+    clone.querySelectorAll('script').forEach(el => el.remove());
+
+    const ts = new Date().toISOString().slice(0, 10);
+    const html = '<!DOCTYPE html>\n' + clone.outerHTML;
+    const blob = new Blob([html], {type: 'text/html;charset=utf-8'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `windesktopmgr-architecture-${ts}.html`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 })();
 </script>
