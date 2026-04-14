@@ -327,43 +327,70 @@ class TestSummarizeDisk:
     # ── CIFS / network drive classification (bug fix 2026-04) ────────────────
     # Previously all drives were treated uniformly — a NAS share at 95% full
     # would trigger a bogus "critical" alert for the local machine. The fix:
-    # only DriveType=3 (local) drives should ever be critical or warning.
+    # - DriveType=3 (local): critical @ 90%+, warning @ 75-89% (unchanged)
+    # - DriveType=4 (network): warning at both thresholds, NEVER critical
+    #   (a full NAS is worth surfacing but won't crash this machine).
 
-    def test_network_drive_full_not_critical(self):
-        """A mapped CIFS share at 95% full is not a local-disk problem."""
+    def test_network_drive_full_is_warning_not_critical(self):
+        """A mapped CIFS share at 95% full is a warning, not a local-disk critical."""
         data = {
             "drives": [_drive("Q", 95, free_gb=100, drive_type=4, unc_path=r"\\nas\photos")],
             "physical": [_physical("Samsung SSD")],
         }
         result = wdm.summarize_disk(data)
-        assert result["status"] == "ok"
-        # No critical or warning insights at all
+        assert result["status"] == "warning"
         levels = [i["level"] for i in result["insights"]]
+        # Warnings allowed, but no criticals
+        assert "warning" in levels
         assert "critical" not in levels
-        assert "warning" not in levels
 
-    def test_network_drive_full_adds_info_insight(self):
-        """A near-full network share produces an info-level insight identifying it as remote."""
+    def test_network_drive_full_insight_labels_as_remote(self):
+        """A near-full network share is clearly labelled as remote NAS, not a local disk."""
         data = {
             "drives": [_drive("Q", 96, free_gb=80, drive_type=4, unc_path=r"\\nas\photos")],
             "physical": [_physical("Samsung SSD")],
         }
         result = wdm.summarize_disk(data)
         texts = " ".join(i["text"] for i in result["insights"])
-        assert "Network share" in texts or "network" in texts.lower()
+        assert "Network share" in texts
         assert "Q" in texts
+        assert r"\\nas\photos" in texts
 
-    def test_network_drive_does_not_block_local_ok_status(self):
-        """Local drive healthy + network drive at 92% full → overall ok."""
+    def test_network_drive_75_to_89_warning_approaching(self):
+        """Network drives should still get an 'approaching capacity' warning."""
+        data = {
+            "drives": [_drive("N", 82, drive_type=4, unc_path=r"\\nas\plex")],
+            "physical": [_physical("Samsung SSD")],
+        }
+        result = wdm.summarize_disk(data)
+        assert result["status"] == "warning"
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "approaching capacity" in texts
+
+    def test_network_drive_below_75_no_warning(self):
+        """Network drive at 50% should not trigger any warning."""
         data = {
             "drives": [
                 _drive("C", 40),
-                _drive("Q", 92, drive_type=4, unc_path=r"\\nas\photos"),
+                _drive("Q", 50, drive_type=4, unc_path=r"\\nas\photos"),
             ],
             "physical": [_physical("Samsung SSD")],
         }
         result = wdm.summarize_disk(data)
         assert result["status"] == "ok"
+
+    def test_full_network_does_not_escalate_to_critical(self):
+        """Multiple full network drives must never push status to critical."""
+        data = {
+            "drives": [
+                _drive("C", 40),
+                _drive("N", 95, drive_type=4, unc_path=r"\\nas\plex"),
+                _drive("Q", 98, drive_type=4, unc_path=r"\\nas\photos"),
+            ],
+            "physical": [_physical("Samsung SSD")],
+        }
+        result = wdm.summarize_disk(data)
+        assert result["status"] == "warning"
 
     def test_local_drive_still_critical_when_network_present(self):
         """Mixing drive types: critical local drive is still critical."""

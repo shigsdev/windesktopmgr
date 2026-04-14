@@ -195,6 +195,15 @@ class TestGetWindowsUpdateDrivers:
 
 
 class TestGetDiskHealth:
+    """get_disk_health() orchestrator — drives come from Python, physical+io from PS.
+
+    The drives list is produced by ``_enumerate_logical_drives()`` (psutil +
+    ctypes) — that function has its own test class below. Here we only care
+    that get_disk_health() stitches the Python and PowerShell halves together
+    correctly, and that the PS half (Get-PhysicalDisk + Get-Counter) handles
+    the usual failure modes.
+    """
+
     DRIVES = [
         {
             "Letter": "C",
@@ -210,7 +219,7 @@ class TestGetDiskHealth:
         },
         {
             "Letter": "Q",
-            "Label": "nas-photos",
+            "Label": "",
             "UsedGB": 1800.0,
             "FreeGB": 200.0,
             "TotalGB": 2000.0,
@@ -236,11 +245,16 @@ class TestGetDiskHealth:
     ]
 
     def _make_mock(self, mocker):
+        """Mock _enumerate_logical_drives + subprocess.run for physical/io PS calls.
+
+        Returns the subprocess mock so tests can inspect call_args if needed.
+        """
+        mocker.patch("windesktopmgr._enumerate_logical_drives", return_value=self.DRIVES)
         m = mocker.patch("windesktopmgr.subprocess.run")
-        main_out = json.dumps({"drives": self.DRIVES, "physical": self.PHYSICAL})
+        phys_out = json.dumps(self.PHYSICAL)
         io_out = json.dumps(self.IO)
         m.side_effect = [
-            type("R", (), {"stdout": main_out, "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": phys_out, "returncode": 0, "stderr": ""})(),
             type("R", (), {"stdout": io_out, "returncode": 0, "stderr": ""})(),
         ]
         return m
@@ -283,18 +297,21 @@ class TestGetDiskHealth:
         result = wdm.get_disk_health()
         assert result["physical"][0]["Health"] == "Healthy"
 
-    def test_single_drive_object_normalised(self, mocker):
+    def test_single_physical_object_normalised(self, mocker):
+        """Single physical disk comes back as a dict from PS — normalise to list."""
+        mocker.patch("windesktopmgr._enumerate_logical_drives", return_value=[])
         m = mocker.patch("windesktopmgr.subprocess.run")
-        main_out = json.dumps({"drives": self.DRIVES[0], "physical": self.PHYSICAL[0]})
+        phys_out = json.dumps(self.PHYSICAL[0])
         m.side_effect = [
-            type("R", (), {"stdout": main_out, "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": phys_out, "returncode": 0, "stderr": ""})(),
             type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
         ]
         result = wdm.get_disk_health()
-        assert isinstance(result["drives"], list)
         assert isinstance(result["physical"], list)
+        assert len(result["physical"]) == 1
 
-    def test_empty_main_output_returns_fallback(self, mocker):
+    def test_empty_physical_output_returns_fallback(self, mocker):
+        mocker.patch("windesktopmgr._enumerate_logical_drives", return_value=[])
         m = mocker.patch("windesktopmgr.subprocess.run")
         m.side_effect = [
             type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})(),
@@ -303,56 +320,178 @@ class TestGetDiskHealth:
         result = wdm.get_disk_health()
         assert result == {"drives": [], "physical": [], "io": []}
 
-    def test_malformed_json_returns_fallback(self, mocker):
+    def test_malformed_physical_json_falls_back(self, mocker):
+        """Garbage from Get-PhysicalDisk must not take down the whole endpoint."""
+        mocker.patch("windesktopmgr._enumerate_logical_drives", return_value=self.DRIVES)
         m = mocker.patch("windesktopmgr.subprocess.run")
         m.side_effect = [
             type("R", (), {"stdout": "INVALID{", "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
         ]
         result = wdm.get_disk_health()
-        assert result == {"drives": [], "physical": [], "io": []}
+        # Drives still populated from Python, physical falls back to empty
+        assert len(result["drives"]) == len(self.DRIVES)
+        assert result["physical"] == []
 
-    def test_timeout_returns_fallback(self, mocker):
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = subprocess.TimeoutExpired(cmd="powershell", timeout=30)
+    def test_physical_timeout_returns_fallback(self, mocker):
+        mocker.patch("windesktopmgr._enumerate_logical_drives", return_value=self.DRIVES)
+        mocker.patch(
+            "windesktopmgr.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=60),
+        )
         result = wdm.get_disk_health()
-        assert result == {"drives": [], "physical": [], "io": []}
+        assert result["physical"] == []
+        assert result["io"] == []
+        # Drives still come through — they don't depend on subprocess
+        assert len(result["drives"]) == len(self.DRIVES)
 
     def test_io_failure_does_not_break_main_result(self, mocker):
+        mocker.patch("windesktopmgr._enumerate_logical_drives", return_value=self.DRIVES)
         m = mocker.patch("windesktopmgr.subprocess.run")
-        main_out = json.dumps({"drives": self.DRIVES, "physical": self.PHYSICAL})
         m.side_effect = [
-            type("R", (), {"stdout": main_out, "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": json.dumps(self.PHYSICAL), "returncode": 0, "stderr": ""})(),
             type("R", (), {"stdout": "BAD JSON", "returncode": 0, "stderr": ""})(),
         ]
         result = wdm.get_disk_health()
         assert len(result["drives"]) == len(self.DRIVES)
+        assert len(result["physical"]) == len(self.PHYSICAL)
         assert result["io"] == []
 
-    def test_command_uses_win32_logicaldisk(self, mocker):
-        """CIFS drive bug fix (2026-04): must use Win32_LogicalDisk, not Get-PSDrive.
+    def test_command_does_not_use_getpsdrive(self, mocker):
+        """Regression guard: never fall back to Get-PSDrive for logical drives.
 
         Get-PSDrive doesn't expose DriveType, so network-mapped drives show up
         indistinguishable from local disks, triggering false "disk full" alerts.
+        The logical-drive enumeration now lives in pure Python (psutil+ctypes).
         """
         m = self._make_mock(mocker)
         wdm.get_disk_health()
-        cmd = m.call_args_list[0][0][0][-1]
-        assert "Win32_LogicalDisk" in cmd
-        assert "Get-PSDrive" not in cmd
-
-    def test_command_filters_cd_and_ram_drives(self, mocker):
-        """DriveType 5 (CD/DVD) and 6 (RAM) must be filtered out."""
-        m = self._make_mock(mocker)
-        wdm.get_disk_health()
-        cmd = m.call_args_list[0][0][0][-1]
-        assert "DriveType -ne 5" in cmd
-        assert "DriveType -ne 6" in cmd
+        for call in m.call_args_list:
+            cmd = call[0][0][-1]
+            assert "Get-PSDrive" not in cmd
+            assert "Win32_LogicalDisk" not in cmd
 
     def test_command_uses_get_physicaldisk(self, mocker):
+        """Physical disks (Health/MediaType/BusType) still need Get-PhysicalDisk —
+        psutil doesn't wrap the Windows Storage Management API."""
         m = self._make_mock(mocker)
         wdm.get_disk_health()
-        cmd = m.call_args_list[0][0][0][-1]
-        assert "Get-PhysicalDisk" in cmd
+        phys_cmd = m.call_args_list[0][0][0][-1]
+        assert "Get-PhysicalDisk" in phys_cmd
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# _enumerate_logical_drives — pure Python replacement for Get-PSDrive
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestEnumerateLogicalDrives:
+    """Mocks psutil.disk_partitions, psutil.disk_usage, and _get_unc_path
+    so tests run anywhere (no real disks required)."""
+
+    def _part(self, device, fstype="NTFS", opts="rw,fixed"):
+        return type("Part", (), {"device": device, "mountpoint": device, "fstype": fstype, "opts": opts})()
+
+    def _usage(self, total_gb, pct_used):
+        total = int(total_gb * (1024**3))
+        used = int(total * pct_used / 100)
+        free = total - used
+        return type("Usage", (), {"total": total, "used": used, "free": free, "percent": pct_used})()
+
+    def test_local_drive_classified(self, mocker):
+        mocker.patch("windesktopmgr.psutil.disk_partitions", return_value=[self._part("C:\\")])
+        mocker.patch("windesktopmgr.psutil.disk_usage", return_value=self._usage(500, 40))
+        mocker.patch("windesktopmgr._get_unc_path", return_value=None)
+        mocker.patch("windesktopmgr._get_volume_label", return_value="Windows")
+        drives = wdm._enumerate_logical_drives()
+        assert len(drives) == 1
+        assert drives[0]["Letter"] == "C"
+        assert drives[0]["DriveType"] == 3
+        assert drives[0]["DriveTypeName"] == "local"
+        assert drives[0]["UNCPath"] is None
+        assert drives[0]["Label"] == "Windows"
+
+    def test_network_drive_classified_with_unc(self, mocker):
+        mocker.patch(
+            "windesktopmgr.psutil.disk_partitions",
+            return_value=[self._part("Q:\\", opts="rw,remote")],
+        )
+        mocker.patch("windesktopmgr.psutil.disk_usage", return_value=self._usage(2000, 90))
+        mocker.patch("windesktopmgr._get_unc_path", return_value=r"\\nas\photos")
+        drives = wdm._enumerate_logical_drives()
+        assert drives[0]["DriveType"] == 4
+        assert drives[0]["DriveTypeName"] == "network"
+        assert drives[0]["UNCPath"] == r"\\nas\photos"
+        # Network drives don't populate Label (avoids blocking on NAS lookup)
+        assert drives[0]["Label"] == ""
+
+    def test_removable_drive_classified(self, mocker):
+        mocker.patch(
+            "windesktopmgr.psutil.disk_partitions",
+            return_value=[self._part("E:\\", opts="rw,removable")],
+        )
+        mocker.patch("windesktopmgr.psutil.disk_usage", return_value=self._usage(32, 20))
+        mocker.patch("windesktopmgr._get_unc_path", return_value=None)
+        mocker.patch("windesktopmgr._get_volume_label", return_value="")
+        drives = wdm._enumerate_logical_drives()
+        assert drives[0]["DriveType"] == 2
+        assert drives[0]["DriveTypeName"] == "removable"
+
+    def test_cdrom_drives_filtered_out(self, mocker):
+        mocker.patch(
+            "windesktopmgr.psutil.disk_partitions",
+            return_value=[
+                self._part("C:\\"),
+                self._part("D:\\", opts="ro,cdrom"),
+            ],
+        )
+        mocker.patch("windesktopmgr.psutil.disk_usage", return_value=self._usage(500, 40))
+        mocker.patch("windesktopmgr._get_unc_path", return_value=None)
+        mocker.patch("windesktopmgr._get_volume_label", return_value="")
+        drives = wdm._enumerate_logical_drives()
+        assert len(drives) == 1
+        assert drives[0]["Letter"] == "C"
+
+    def test_ramdisk_filtered_out(self, mocker):
+        mocker.patch(
+            "windesktopmgr.psutil.disk_partitions",
+            return_value=[self._part("R:\\", opts="rw,ramdisk")],
+        )
+        mocker.patch("windesktopmgr._get_unc_path", return_value=None)
+        mocker.patch("windesktopmgr._get_volume_label", return_value="")
+        drives = wdm._enumerate_logical_drives()
+        assert drives == []
+
+    def test_unreachable_network_drive_returns_zeros(self, mocker):
+        """When a mapped drive's NAS is offline, disk_usage raises OSError.
+        We should still surface the drive with zeroed totals so the UI
+        can show it as a CIFS share instead of hiding it entirely."""
+        mocker.patch(
+            "windesktopmgr.psutil.disk_partitions",
+            return_value=[self._part("P:\\", opts="rw,remote")],
+        )
+        mocker.patch("windesktopmgr.psutil.disk_usage", side_effect=OSError("not reachable"))
+        mocker.patch("windesktopmgr._get_unc_path", return_value=r"\\nas\offline")
+        drives = wdm._enumerate_logical_drives()
+        assert len(drives) == 1
+        assert drives[0]["TotalGB"] == 0.0
+        assert drives[0]["UNCPath"] == r"\\nas\offline"
+
+    def test_disk_partitions_failure_returns_empty(self, mocker):
+        mocker.patch("windesktopmgr.psutil.disk_partitions", side_effect=Exception("boom"))
+        drives = wdm._enumerate_logical_drives()
+        assert drives == []
+
+    def test_drive_usage_rounding(self, mocker):
+        """UsedGB + FreeGB should approximately equal TotalGB within rounding."""
+        mocker.patch("windesktopmgr.psutil.disk_partitions", return_value=[self._part("C:\\")])
+        mocker.patch("windesktopmgr.psutil.disk_usage", return_value=self._usage(931.5, 35.8))
+        mocker.patch("windesktopmgr._get_unc_path", return_value=None)
+        mocker.patch("windesktopmgr._get_volume_label", return_value="Windows")
+        drives = wdm._enumerate_logical_drives()
+        d = drives[0]
+        assert d["TotalGB"] == 931.5
+        assert abs((d["UsedGB"] + d["FreeGB"]) - d["TotalGB"]) < 0.1
 
 
 # ══════════════════════════════════════════════════════════════════════════════

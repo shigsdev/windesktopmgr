@@ -4,6 +4,7 @@ Flask backend — driver update checker + BSOD trend dashboard.
 Reads from Windows Event Log and existing SystemHealthDiag HTML reports.
 """
 
+import ctypes
 import glob
 import json
 import os
@@ -16,8 +17,10 @@ import time
 import urllib.parse
 import urllib.request
 from collections import Counter
+from ctypes import wintypes
 from datetime import datetime, timedelta, timezone
 
+import psutil
 from flask import Flask, jsonify, make_response, render_template, request, send_from_directory
 
 from applogging import get_logger
@@ -2016,45 +2019,138 @@ def toggle_startup_item(name: str, item_type: str, enable: bool) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+# psutil.disk_partitions() reports drive type via the opts keyword (uses
+# GetDriveType() from the Win32 API). Map those keywords to the canonical
+# DriveType enum values used by Win32_LogicalDisk so the summarizer and
+# frontend see a consistent shape regardless of how we enumerated the drives.
+_PSUTIL_DRIVETYPE_MAP = {
+    "fixed": (3, "local"),
+    "remote": (4, "network"),
+    "removable": (2, "removable"),
+    "cdrom": (5, "cdrom"),
+    "ramdisk": (6, "ramdisk"),
+}
+
+# SetErrorMode flag — suppresses the "There is no disk in the drive" system
+# dialog when we probe an empty optical drive or unreachable network share.
+_SEM_FAILCRITICALERRORS = 0x0001
+
+
+def _get_unc_path(letter: str) -> str | None:
+    """Return the UNC path for a mapped network drive (e.g. ``\\\\nas\\share``).
+
+    Uses ``WNetGetConnectionW`` from ``mpr.dll`` via ctypes — no PowerShell,
+    no pywin32 dependency. Returns None for local drives or on any failure.
+    """
+    try:
+        mpr = ctypes.WinDLL("mpr")
+        fn = mpr.WNetGetConnectionW
+        fn.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+        fn.restype = wintypes.DWORD
+        buf_len = wintypes.DWORD(2048)
+        buf = ctypes.create_unicode_buffer(buf_len.value)
+        rc = fn(f"{letter}:", buf, ctypes.byref(buf_len))
+        if rc == 0:  # NO_ERROR
+            return buf.value
+    except Exception:
+        pass
+    return None
+
+
+def _get_volume_label(letter: str) -> str:
+    """Return the volume label for a local drive, or empty string.
+
+    Uses ``GetVolumeInformationW`` via ctypes. Wrapped with SetErrorMode so
+    unreachable drives fail silently instead of popping a system dialog.
+    """
+    try:
+        kernel32 = ctypes.windll.kernel32
+        old_mode = kernel32.SetErrorMode(_SEM_FAILCRITICALERRORS)
+        try:
+            buf = ctypes.create_unicode_buffer(256)
+            ok = kernel32.GetVolumeInformationW(
+                f"{letter}:\\",
+                buf,
+                256,
+                None,
+                None,
+                None,
+                None,
+                0,
+            )
+            return buf.value if ok else ""
+        finally:
+            kernel32.SetErrorMode(old_mode)
+    except Exception:
+        return ""
+
+
+def _enumerate_logical_drives() -> list[dict]:
+    """Enumerate mounted logical drives using pure Python (psutil + ctypes).
+
+    Replaces the older ``Get-PSDrive`` / ``Win32_LogicalDisk`` PowerShell
+    approaches. Benefits per the "Python first, PowerShell secondary" rule:
+    no 200-500 ms PS startup cost, trivially mockable in tests, typed error
+    handling. CD/DVD and RAM disks are filtered out — they're irrelevant to
+    capacity monitoring. Unreachable network drives are still returned (with
+    zeroed totals) so the UI can show them with a clear CIFS badge.
+    """
+    drives: list[dict] = []
+    try:
+        parts = psutil.disk_partitions(all=True)
+    except Exception as e:
+        print(f"[Disk enum error] {e}")
+        return []
+    for p in parts:
+        drive_type, type_name = 3, "local"
+        opts = p.opts or ""
+        for kw, (dt, name) in _PSUTIL_DRIVETYPE_MAP.items():
+            if kw in opts:
+                drive_type, type_name = dt, name
+                break
+        # Filter CD/DVD and RAM disks — no capacity relevance, and they also
+        # tend to raise OSError on disk_usage when empty.
+        if drive_type in (5, 6):
+            continue
+        letter = (p.device[:1] if p.device else "").upper()
+        try:
+            u = psutil.disk_usage(p.mountpoint)
+            total_gb = round(u.total / (1024**3), 2)
+            free_gb = round(u.free / (1024**3), 2)
+            used_gb = round(u.used / (1024**3), 2)
+            pct_used = round(u.percent, 1)
+        except OSError:
+            # Unreachable (e.g. NAS offline) — surface the drive with zeros
+            total_gb = free_gb = used_gb = 0.0
+            pct_used = 0.0
+        unc = _get_unc_path(letter) if drive_type == 4 else None
+        label = _get_volume_label(letter) if drive_type == 3 else ""
+        drives.append(
+            {
+                "Letter": letter,
+                "Label": label,
+                "UsedGB": used_gb,
+                "FreeGB": free_gb,
+                "TotalGB": total_gb,
+                "PctUsed": pct_used,
+                "DriveType": drive_type,
+                "DriveTypeName": type_name,
+                "FileSystem": p.fstype or "",
+                "UNCPath": unc,
+            }
+        )
+    return drives
+
+
 def get_disk_health() -> dict:
-    # Win32_LogicalDisk gives us DriveType (2=Removable, 3=Local, 4=Network,
-    # 5=CD, 6=RAM) and ProviderName (populated only for mapped network drives,
-    # e.g. \\nas\share). Previous implementation used Get-PSDrive which doesn't
-    # expose DriveType — so CIFS/SMB mapped drives (O:, P:, N:, Q:, R:) were
-    # rendered and flagged as local, triggering false "disk full" criticals
-    # for NAS shares that are not this machine's local storage.
-    #
-    # DriveType 5 (CD/DVD) and 6 (RAM) are filtered out — we don't care about
-    # capacity on optical drives or RAM disks. Removable (2), Local (3), and
-    # Network (4) are all returned with a classification the summarizer and
-    # frontend use to render and warn differently.
-    ps = r"""
-$drives = Get-CimInstance Win32_LogicalDisk -ErrorAction SilentlyContinue |
-    Where-Object { $_.DriveType -ne 5 -and $_.DriveType -ne 6 } |
-    ForEach-Object {
-        $totalGB = if ($_.Size) { [math]::Round($_.Size / 1GB, 2) } else { 0 }
-        $freeGB  = if ($_.FreeSpace) { [math]::Round($_.FreeSpace / 1GB, 2) } else { 0 }
-        $usedGB  = [math]::Round($totalGB - $freeGB, 2)
-        $pctUsed = if ($totalGB -gt 0) { [math]::Round(($usedGB / $totalGB) * 100, 1) } else { 0 }
-        $typeName = switch ($_.DriveType) {
-            2       { 'removable' }
-            3       { 'local' }
-            4       { 'network' }
-            default { 'unknown' }
-        }
-        [PSCustomObject]@{
-            Letter        = $_.DeviceID.TrimEnd(':')
-            Label         = $_.VolumeName
-            UsedGB        = $usedGB
-            FreeGB        = $freeGB
-            TotalGB       = $totalGB
-            PctUsed       = $pctUsed
-            DriveType     = [int]$_.DriveType
-            DriveTypeName = $typeName
-            FileSystem    = $_.FileSystem
-            UNCPath       = $_.ProviderName
-        }
-    }
+    """Return drives + physical disks + disk IO for the dashboard.
+
+    Drives come from ``_enumerate_logical_drives()`` (Python/psutil, no PS).
+    Physical disks still use ``Get-PhysicalDisk`` because Health, MediaType,
+    and BusType are only surfaced by the Windows Storage Management API
+    and psutil doesn't wrap it. IO counters use ``Get-Counter``.
+    """
+    ps_physical = r"""
 $physical = Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
     [PSCustomObject]@{
         Name       = $_.FriendlyName
@@ -2065,12 +2161,7 @@ $physical = Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
         BusType    = $_.BusType
     }
 }
-# Disk temperatures via CIM (works on NVMe/SATA)
-$temps = @()
-try {
-    $t = Get-CimInstance -Namespace "ROOT\Microsoft\Windows\Storage" -ClassName "MSFT_Disk" -EA Stop
-} catch {}
-@{ drives=$drives; physical=$physical } | ConvertTo-Json -Depth 3
+$physical | ConvertTo-Json -Depth 3
 """
     ps_io = r"""
 $diskIO = Get-Counter "\PhysicalDisk(*)\Disk Read Bytes/sec","\PhysicalDisk(*)\Disk Write Bytes/sec" -SampleInterval 1 -MaxSamples 1 -EA SilentlyContinue
@@ -2082,31 +2173,33 @@ if ($diskIO) {
 }
 $result | ConvertTo-Json -Depth 2
 """
+    drives = _enumerate_logical_drives()
+    physical: list[dict] = []
     try:
         r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=60
+            ["powershell", "-NonInteractive", "-Command", ps_physical],
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
-        data = json.loads(r.stdout.strip() or "{}")
-        drives = data.get("drives") or []
-        physical = data.get("physical") or []
-        if isinstance(drives, dict):
-            drives = [drives]
-        if isinstance(physical, dict):
-            physical = [physical]
-        # IO stats (best-effort)
-        io_data = []
-        try:
-            r2 = subprocess.run(
-                ["powershell", "-NonInteractive", "-Command", ps_io], capture_output=True, text=True, timeout=30
-            )
-            io_raw = json.loads(r2.stdout.strip() or "[]")
-            io_data = io_raw if isinstance(io_raw, list) else [io_raw]
-        except Exception:
-            pass
-        return {"drives": drives, "physical": physical, "io": io_data}
+        raw = json.loads(r.stdout.strip() or "[]")
+        physical = raw if isinstance(raw, list) else [raw]
     except Exception as e:
-        print(f"[Disk error] {e}")
-        return {"drives": [], "physical": [], "io": []}
+        print(f"[Disk physical error] {e}")
+        physical = []
+    io_data: list[dict] = []
+    try:
+        r2 = subprocess.run(
+            ["powershell", "-NonInteractive", "-Command", ps_io],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        io_raw = json.loads(r2.stdout.strip() or "[]")
+        io_data = io_raw if isinstance(io_raw, list) else [io_raw]
+    except Exception:
+        io_data = []
+    return {"drives": drives, "physical": physical, "io": io_data}
 
 
 # ── Disk space analyzer (WinDirStat-style breadth-first) ─────────────────────
@@ -3323,16 +3416,19 @@ def summarize_disk(data: dict) -> dict:
     physical = data.get("physical", [])
     insights = []
     actions = []
-    # Only local fixed drives (DriveType=3) should trigger capacity criticals.
-    # Mapped CIFS/SMB network drives (DriveType=4) and removable drives
-    # (DriveType=2) are not "this machine's local storage" and must not
-    # generate false "disk full" alerts. Default missing DriveType to 3
-    # for backward compatibility with older cached payloads.
+    # Split drives by type so network shares can't trigger a false "local disk
+    # full" critical. Default missing DriveType to 3 (local) for backward
+    # compat with any cached payloads written before this field was added.
     local_drives = [d for d in drives if int(d.get("DriveType") or 3) == 3]
     network_drives = [d for d in drives if int(d.get("DriveType") or 3) == 4]
-    critical_drives = [d for d in local_drives if (d.get("PctUsed") or 0) >= 90]
-    warning_drives = [d for d in local_drives if 75 <= (d.get("PctUsed") or 0) < 90]
-    full_network = [d for d in network_drives if (d.get("PctUsed") or 0) >= 95]
+    # Local drives: critical >=90%, warning 75-89% (unchanged)
+    local_critical = [d for d in local_drives if (d.get("PctUsed") or 0) >= 90]
+    local_warning = [d for d in local_drives if 75 <= (d.get("PctUsed") or 0) < 90]
+    # Network drives: warning at both thresholds — never critical. A NAS being
+    # full is a real problem we want to surface, but it won't crash this
+    # machine, so it shouldn't push the overall dashboard into "critical".
+    net_full = [d for d in network_drives if (d.get("PctUsed") or 0) >= 90]
+    net_warn = [d for d in network_drives if 75 <= (d.get("PctUsed") or 0) < 90]
     unhealthy = [p for p in physical if p.get("Health", "").lower() not in ("healthy", "")]
     if unhealthy:
         insights.append(
@@ -3344,8 +3440,8 @@ def summarize_disk(data: dict) -> dict:
             )
         )
         actions.append("Back up data immediately")
-    if critical_drives:
-        for d in critical_drives:
+    if local_critical:
+        for d in local_critical:
             insights.append(
                 _insight(
                     "critical",
@@ -3354,25 +3450,38 @@ def summarize_disk(data: dict) -> dict:
                 )
             )
         actions.append("Free up disk space")
-    if warning_drives:
-        for d in warning_drives:
+    if local_warning:
+        for d in local_warning:
             insights.append(
                 _insight(
                     "warning", f"Drive {d.get('Letter', '?')}: is {d.get('PctUsed', 0)}% full — approaching capacity."
                 )
             )
-    if full_network:
-        for d in full_network:
-            unc = d.get("UNCPath") or ""
-            suffix = f" ({unc})" if unc else ""
+
+    def _net_suffix(drive: dict) -> str:
+        unc = drive.get("UNCPath") or ""
+        return f" ({unc})" if unc else ""
+
+    if net_full:
+        for d in net_full:
             insights.append(
                 _insight(
-                    "info",
-                    f"Network share {d.get('Letter', '?')}:{suffix} is {d.get('PctUsed', 0)}% full — "
-                    "remote storage, not this machine's local disk.",
+                    "warning",
+                    f"Network share {d.get('Letter', '?')}:{_net_suffix(d)} is {d.get('PctUsed', 0)}% full — "
+                    "remote NAS storage, not this machine's local disk.",
+                    "Free up space on the remote share or expand NAS capacity.",
                 )
             )
-    if not unhealthy and not critical_drives and not warning_drives:
+    if net_warn:
+        for d in net_warn:
+            insights.append(
+                _insight(
+                    "warning",
+                    f"Network share {d.get('Letter', '?')}:{_net_suffix(d)} is {d.get('PctUsed', 0)}% full — "
+                    "approaching capacity.",
+                )
+            )
+    if not unhealthy and not local_critical and not local_warning and not net_full and not net_warn:
         insights.append(
             _insight(
                 "ok",
@@ -3392,12 +3501,14 @@ def summarize_disk(data: dict) -> dict:
                     f"{p.get('Name', 'HDD')} is a spinning hard drive — consider upgrading to SSD for better performance.",
                 )
             )
-    status = "critical" if unhealthy or critical_drives else "warning" if warning_drives else "ok"
+    status = (
+        "critical" if unhealthy or local_critical else "warning" if (local_warning or net_full or net_warn) else "ok"
+    )
     headline = (
         f"{len(unhealthy)} unhealthy disk(s) — action required"
         if unhealthy
-        else f"{len(critical_drives)} drive(s) critically full"
-        if critical_drives
+        else f"{len(local_critical)} drive(s) critically full"
+        if local_critical
         else "All drives healthy"
     )
     return {"status": status, "headline": headline, "insights": insights, "actions": actions}
