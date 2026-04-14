@@ -14,7 +14,7 @@ repos:
         entry: python -m pytest tests/ -x -q --no-header
         language: system
         pass_filenames: false
-        always_run: true
+        files: '\.py$'
         stages: [pre-commit]
 
       - id: pytest-integration
