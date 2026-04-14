@@ -2017,17 +2017,44 @@ def toggle_startup_item(name: str, item_type: str, enable: bool) -> dict:
 
 
 def get_disk_health() -> dict:
+    # Win32_LogicalDisk gives us DriveType (2=Removable, 3=Local, 4=Network,
+    # 5=CD, 6=RAM) and ProviderName (populated only for mapped network drives,
+    # e.g. \\nas\share). Previous implementation used Get-PSDrive which doesn't
+    # expose DriveType — so CIFS/SMB mapped drives (O:, P:, N:, Q:, R:) were
+    # rendered and flagged as local, triggering false "disk full" criticals
+    # for NAS shares that are not this machine's local storage.
+    #
+    # DriveType 5 (CD/DVD) and 6 (RAM) are filtered out — we don't care about
+    # capacity on optical drives or RAM disks. Removable (2), Local (3), and
+    # Network (4) are all returned with a classification the summarizer and
+    # frontend use to render and warn differently.
     ps = r"""
-$drives = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Used -ne $null } | ForEach-Object {
-    [PSCustomObject]@{
-        Letter   = $_.Name
-        Label    = $_.Description
-        UsedGB   = [math]::Round($_.Used  / 1GB, 2)
-        FreeGB   = [math]::Round($_.Free  / 1GB, 2)
-        TotalGB  = [math]::Round(($_.Used + $_.Free) / 1GB, 2)
-        PctUsed  = if (($_.Used + $_.Free) -gt 0) { [math]::Round($_.Used / ($_.Used + $_.Free) * 100, 1) } else { 0 }
+$drives = Get-CimInstance Win32_LogicalDisk -ErrorAction SilentlyContinue |
+    Where-Object { $_.DriveType -ne 5 -and $_.DriveType -ne 6 } |
+    ForEach-Object {
+        $totalGB = if ($_.Size) { [math]::Round($_.Size / 1GB, 2) } else { 0 }
+        $freeGB  = if ($_.FreeSpace) { [math]::Round($_.FreeSpace / 1GB, 2) } else { 0 }
+        $usedGB  = [math]::Round($totalGB - $freeGB, 2)
+        $pctUsed = if ($totalGB -gt 0) { [math]::Round(($usedGB / $totalGB) * 100, 1) } else { 0 }
+        $typeName = switch ($_.DriveType) {
+            2       { 'removable' }
+            3       { 'local' }
+            4       { 'network' }
+            default { 'unknown' }
+        }
+        [PSCustomObject]@{
+            Letter        = $_.DeviceID.TrimEnd(':')
+            Label         = $_.VolumeName
+            UsedGB        = $usedGB
+            FreeGB        = $freeGB
+            TotalGB       = $totalGB
+            PctUsed       = $pctUsed
+            DriveType     = [int]$_.DriveType
+            DriveTypeName = $typeName
+            FileSystem    = $_.FileSystem
+            UNCPath       = $_.ProviderName
+        }
     }
-}
 $physical = Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
     [PSCustomObject]@{
         Name       = $_.FriendlyName
@@ -3296,8 +3323,16 @@ def summarize_disk(data: dict) -> dict:
     physical = data.get("physical", [])
     insights = []
     actions = []
-    critical_drives = [d for d in drives if (d.get("PctUsed") or 0) >= 90]
-    warning_drives = [d for d in drives if 75 <= (d.get("PctUsed") or 0) < 90]
+    # Only local fixed drives (DriveType=3) should trigger capacity criticals.
+    # Mapped CIFS/SMB network drives (DriveType=4) and removable drives
+    # (DriveType=2) are not "this machine's local storage" and must not
+    # generate false "disk full" alerts. Default missing DriveType to 3
+    # for backward compatibility with older cached payloads.
+    local_drives = [d for d in drives if int(d.get("DriveType") or 3) == 3]
+    network_drives = [d for d in drives if int(d.get("DriveType") or 3) == 4]
+    critical_drives = [d for d in local_drives if (d.get("PctUsed") or 0) >= 90]
+    warning_drives = [d for d in local_drives if 75 <= (d.get("PctUsed") or 0) < 90]
+    full_network = [d for d in network_drives if (d.get("PctUsed") or 0) >= 95]
     unhealthy = [p for p in physical if p.get("Health", "").lower() not in ("healthy", "")]
     if unhealthy:
         insights.append(
@@ -3326,11 +3361,24 @@ def summarize_disk(data: dict) -> dict:
                     "warning", f"Drive {d.get('Letter', '?')}: is {d.get('PctUsed', 0)}% full — approaching capacity."
                 )
             )
+    if full_network:
+        for d in full_network:
+            unc = d.get("UNCPath") or ""
+            suffix = f" ({unc})" if unc else ""
+            insights.append(
+                _insight(
+                    "info",
+                    f"Network share {d.get('Letter', '?')}:{suffix} is {d.get('PctUsed', 0)}% full — "
+                    "remote storage, not this machine's local disk.",
+                )
+            )
     if not unhealthy and not critical_drives and not warning_drives:
         insights.append(
             _insight(
                 "ok",
-                f"All {len(physical)} disk(s) healthy. "
+                f"All {len(local_drives)} local disk(s) healthy"
+                + (f" · {len(network_drives)} network share(s) mapped" if network_drives else "")
+                + ". "
                 + (
                     f"Largest drive is {max((p.get('SizeGB', 0) for p in physical), default=0)} GB." if physical else ""
                 ),

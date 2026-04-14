@@ -52,8 +52,15 @@ def _bsod_data(crashes, timeline=None, avg_uptime=0, this_month=0):
     }
 
 
-def _drive(letter, pct_used, free_gb=50):
-    return {"Letter": letter, "PctUsed": pct_used, "FreeGB": free_gb}
+def _drive(letter, pct_used, free_gb=50, drive_type=3, unc_path=None):
+    """Build a drive dict. drive_type defaults to 3 (local) to match Win32_LogicalDisk.
+
+    DriveType 3 = local fixed, 4 = network/CIFS, 2 = removable.
+    """
+    d = {"Letter": letter, "PctUsed": pct_used, "FreeGB": free_gb, "DriveType": drive_type}
+    if unc_path:
+        d["UNCPath"] = unc_path
+    return d
 
 
 def _physical(name, health="Healthy", media_type="SSD"):
@@ -316,6 +323,66 @@ class TestSummarizeDisk:
         result = wdm.summarize_disk(data)
         texts = " ".join(i["text"] for i in result["insights"])
         assert "D" in texts
+
+    # ── CIFS / network drive classification (bug fix 2026-04) ────────────────
+    # Previously all drives were treated uniformly — a NAS share at 95% full
+    # would trigger a bogus "critical" alert for the local machine. The fix:
+    # only DriveType=3 (local) drives should ever be critical or warning.
+
+    def test_network_drive_full_not_critical(self):
+        """A mapped CIFS share at 95% full is not a local-disk problem."""
+        data = {
+            "drives": [_drive("Q", 95, free_gb=100, drive_type=4, unc_path=r"\\nas\photos")],
+            "physical": [_physical("Samsung SSD")],
+        }
+        result = wdm.summarize_disk(data)
+        assert result["status"] == "ok"
+        # No critical or warning insights at all
+        levels = [i["level"] for i in result["insights"]]
+        assert "critical" not in levels
+        assert "warning" not in levels
+
+    def test_network_drive_full_adds_info_insight(self):
+        """A near-full network share produces an info-level insight identifying it as remote."""
+        data = {
+            "drives": [_drive("Q", 96, free_gb=80, drive_type=4, unc_path=r"\\nas\photos")],
+            "physical": [_physical("Samsung SSD")],
+        }
+        result = wdm.summarize_disk(data)
+        texts = " ".join(i["text"] for i in result["insights"])
+        assert "Network share" in texts or "network" in texts.lower()
+        assert "Q" in texts
+
+    def test_network_drive_does_not_block_local_ok_status(self):
+        """Local drive healthy + network drive at 92% full → overall ok."""
+        data = {
+            "drives": [
+                _drive("C", 40),
+                _drive("Q", 92, drive_type=4, unc_path=r"\\nas\photos"),
+            ],
+            "physical": [_physical("Samsung SSD")],
+        }
+        result = wdm.summarize_disk(data)
+        assert result["status"] == "ok"
+
+    def test_local_drive_still_critical_when_network_present(self):
+        """Mixing drive types: critical local drive is still critical."""
+        data = {
+            "drives": [
+                _drive("C", 95, free_gb=5),
+                _drive("Q", 50, drive_type=4, unc_path=r"\\nas\photos"),
+            ],
+            "physical": [_physical("Samsung SSD")],
+        }
+        result = wdm.summarize_disk(data)
+        assert result["status"] == "critical"
+
+    def test_missing_drivetype_defaults_to_local(self):
+        """Backward compat: cached payloads without DriveType still trigger critical."""
+        drive_no_type = {"Letter": "C", "PctUsed": 95, "FreeGB": 5}
+        data = {"drives": [drive_no_type], "physical": [_physical("SSD")]}
+        result = wdm.summarize_disk(data)
+        assert result["status"] == "critical"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

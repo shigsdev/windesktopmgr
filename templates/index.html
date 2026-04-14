@@ -1690,19 +1690,39 @@ async function loadDisk() {
     const drives = Array.isArray(d.drives) ? d.drives : [];
     const physical = Array.isArray(d.physical) ? d.physical : [];
     const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
-    document.getElementById('dk-volumes').textContent  = drives.length;
+    // Split by drive type. Default missing type to 'local' for backward compat
+    // with cached payloads from the pre-Win32_LogicalDisk implementation.
+    const dkType = dr => (dr.DriveTypeName || (dr.DriveType === 4 ? 'network' : dr.DriveType === 2 ? 'removable' : 'local'));
+    const localDrives   = drives.filter(dr => dkType(dr) !== 'network');
+    const networkDrives = drives.filter(dr => dkType(dr) === 'network');
+    document.getElementById('dk-volumes').textContent  = localDrives.length
+      + (networkDrives.length ? ` (+${networkDrives.length} net)` : '');
     document.getElementById('dk-physical').textContent = physical.length;
-    const totalGB = drives.reduce((s,dr) => s+(dr.TotalGB||0), 0);
+    // Total Space = local only — mapped NAS shares are not this machine's storage.
+    const totalGB = localDrives.reduce((s,dr) => s+(dr.TotalGB||0), 0);
     document.getElementById('dk-total').textContent = totalGB.toFixed(1)+' GB';
     const issues = physical.filter(p => p.Health && p.Health.toLowerCase()!=='healthy').length;
     document.getElementById('dk-issues').textContent = issues||'0';
-    const drvHtml = drives.map(dr => {
+    const drvHtml = localDrives.map(dr => {
       const pct = dr.PctUsed||0;
       const col = pct>90?'var(--red)':pct>70?'var(--orange)':'var(--cyan)';
       const letter = esc(dr.Letter);
-      return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px"><div style="font-size:28px;font-weight:800;color:${col}">${letter}:</div><div style="color:var(--muted);font-size:12px;margin-bottom:12px">${esc(dr.Label||'Local Disk')}</div><div style="background:#ffffff11;border-radius:4px;height:8px;margin-bottom:10px"><div style="background:${col};height:100%;border-radius:4px;width:${pct}%"></div></div><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:12px"><span style="color:var(--muted)">${dr.UsedGB} GB used</span><span style="color:var(--muted)">${dr.FreeGB} GB free</span><span style="font-weight:700;color:${col}">${pct}%</span></div><button class="btn-action" style="width:100%;padding:8px;font-size:12px" onclick="dkAnalyzeOpen('${letter}')">🔍 Analyze Space</button></div>`;
+      const fsBadge = dr.FileSystem ? `<span style="font-size:10px;color:var(--muted);margin-left:6px">${esc(dr.FileSystem)}</span>` : '';
+      return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px"><div style="font-size:28px;font-weight:800;color:${col}">${letter}:${fsBadge}</div><div style="color:var(--muted);font-size:12px;margin-bottom:12px">${esc(dr.Label||'Local Disk')}</div><div style="background:#ffffff11;border-radius:4px;height:8px;margin-bottom:10px"><div style="background:${col};height:100%;border-radius:4px;width:${pct}%"></div></div><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:12px"><span style="color:var(--muted)">${dr.UsedGB} GB used</span><span style="color:var(--muted)">${dr.FreeGB} GB free</span><span style="font-weight:700;color:${col}">${pct}%</span></div><button class="btn-action" style="width:100%;padding:8px;font-size:12px" onclick="dkAnalyzeOpen('${letter}')">🔍 Analyze Space</button></div>`;
     }).join('');
-    document.getElementById('dk-drives').innerHTML = drvHtml || '<p style="color:var(--muted)">No drives found</p>';
+    document.getElementById('dk-drives').innerHTML = drvHtml || '<p style="color:var(--muted)">No local drives found</p>';
+    // Network shares — render separately, no Analyze button (can't run os.scandir
+    // over SMB without permission quirks), no red coloring (their fullness is a
+    // NAS problem, not a local-disk problem), UNC path badge instead of label.
+    const netHtml = networkDrives.map(dr => {
+      const pct = dr.PctUsed||0;
+      const letter = esc(dr.Letter);
+      const unc = esc(dr.UNCPath || '');
+      const label = esc(dr.Label || 'Network Share');
+      return `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px;opacity:0.92"><div style="font-size:28px;font-weight:800;color:var(--muted)">${letter}: <span style="font-size:11px;color:var(--cyan);font-weight:600;vertical-align:middle">CIFS</span></div><div style="color:var(--muted);font-size:12px;margin-bottom:4px">${label}</div><div style="color:var(--cyan);font-size:11px;font-family:monospace;margin-bottom:10px;word-break:break-all">${unc}</div><div style="background:#ffffff11;border-radius:4px;height:8px;margin-bottom:10px"><div style="background:var(--muted);height:100%;border-radius:4px;width:${pct}%"></div></div><div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--muted)">${dr.UsedGB} GB used</span><span style="color:var(--muted)">${dr.FreeGB} GB free</span><span style="font-weight:700;color:var(--muted)">${pct}%</span></div></div>`;
+    }).join('');
+    document.getElementById('dk-network-drives').innerHTML = netHtml;
+    document.getElementById('dk-network-section').style.display = networkDrives.length ? '' : 'none';
     const physRows = physical.map(p => {
       const hc = (p.Health||'').toLowerCase()==='healthy'?'var(--cyan)':'var(--red)';
       return `<tr style="border-bottom:1px solid var(--border)"><td style="padding:8px 12px;font-weight:600">${esc(p.Name)}</td><td style="padding:8px 12px;color:var(--muted)">${esc(p.MediaType)}</td><td style="padding:8px 12px">${p.SizeGB} GB</td><td style="padding:8px 12px;color:${hc}">${esc(p.Health)}</td><td style="padding:8px 12px;color:var(--muted)">${esc(p.Status)}</td><td style="padding:8px 12px;color:var(--muted)">${esc(p.BusType)}</td></tr>`;
@@ -4546,8 +4566,12 @@ function renderSystemInfo(d) {
     </div>
     <div id="dk-loading" style="text-align:center;padding:60px;color:var(--muted)">Loading disk data…</div>
     <div id="dk-content" style="display:none">
-      <h2 style="margin:24px 0 12px">Drive Usage</h2>
+      <h2 style="margin:24px 0 12px">Local Drives</h2>
       <div id="dk-drives" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px"></div>
+      <div id="dk-network-section" style="display:none">
+        <h2 style="margin:24px 0 12px">Network Shares <span style="font-size:12px;color:var(--muted);font-weight:400">· mapped CIFS/SMB drives (not local storage)</span></h2>
+        <div id="dk-network-drives" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px"></div>
+      </div>
       <h2 style="margin:24px 0 12px">Physical Disks</h2>
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead><tr style="color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">

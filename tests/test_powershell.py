@@ -196,7 +196,30 @@ class TestGetWindowsUpdateDrivers:
 
 class TestGetDiskHealth:
     DRIVES = [
-        {"Letter": "C", "Label": "Windows", "UsedGB": 250.5, "FreeGB": 450.2, "TotalGB": 700.7, "PctUsed": 35.8},
+        {
+            "Letter": "C",
+            "Label": "Windows",
+            "UsedGB": 250.5,
+            "FreeGB": 450.2,
+            "TotalGB": 700.7,
+            "PctUsed": 35.8,
+            "DriveType": 3,
+            "DriveTypeName": "local",
+            "FileSystem": "NTFS",
+            "UNCPath": None,
+        },
+        {
+            "Letter": "Q",
+            "Label": "nas-photos",
+            "UsedGB": 1800.0,
+            "FreeGB": 200.0,
+            "TotalGB": 2000.0,
+            "PctUsed": 90.0,
+            "DriveType": 4,
+            "DriveTypeName": "network",
+            "FileSystem": "NTFS",
+            "UNCPath": r"\\nas\photos",
+        },
     ]
     PHYSICAL = [
         {
@@ -235,6 +258,25 @@ class TestGetDiskHealth:
         drive = result["drives"][0]
         assert drive["Letter"] == "C"
         assert drive["PctUsed"] == 35.8
+
+    def test_drive_type_fields_present(self, mocker):
+        """Local drives report DriveType=3 / DriveTypeName='local' with no UNCPath."""
+        self._make_mock(mocker)
+        result = wdm.get_disk_health()
+        local = next(d for d in result["drives"] if d["Letter"] == "C")
+        assert local["DriveType"] == 3
+        assert local["DriveTypeName"] == "local"
+        assert local["FileSystem"] == "NTFS"
+        assert local["UNCPath"] is None
+
+    def test_network_drive_classified_and_has_unc(self, mocker):
+        """CIFS mapped drives report DriveType=4 / DriveTypeName='network' with UNC path."""
+        self._make_mock(mocker)
+        result = wdm.get_disk_health()
+        network = next(d for d in result["drives"] if d["Letter"] == "Q")
+        assert network["DriveType"] == 4
+        assert network["DriveTypeName"] == "network"
+        assert network["UNCPath"] == r"\\nas\photos"
 
     def test_physical_disk_health_present(self, mocker):
         self._make_mock(mocker)
@@ -283,14 +325,28 @@ class TestGetDiskHealth:
             type("R", (), {"stdout": "BAD JSON", "returncode": 0, "stderr": ""})(),
         ]
         result = wdm.get_disk_health()
-        assert len(result["drives"]) == 1
+        assert len(result["drives"]) == len(self.DRIVES)
         assert result["io"] == []
 
-    def test_command_uses_getpsdrive(self, mocker):
+    def test_command_uses_win32_logicaldisk(self, mocker):
+        """CIFS drive bug fix (2026-04): must use Win32_LogicalDisk, not Get-PSDrive.
+
+        Get-PSDrive doesn't expose DriveType, so network-mapped drives show up
+        indistinguishable from local disks, triggering false "disk full" alerts.
+        """
         m = self._make_mock(mocker)
         wdm.get_disk_health()
         cmd = m.call_args_list[0][0][0][-1]
-        assert "Get-PSDrive" in cmd
+        assert "Win32_LogicalDisk" in cmd
+        assert "Get-PSDrive" not in cmd
+
+    def test_command_filters_cd_and_ram_drives(self, mocker):
+        """DriveType 5 (CD/DVD) and 6 (RAM) must be filtered out."""
+        m = self._make_mock(mocker)
+        wdm.get_disk_health()
+        cmd = m.call_args_list[0][0][0][-1]
+        assert "DriveType -ne 5" in cmd
+        assert "DriveType -ne 6" in cmd
 
     def test_command_uses_get_physicaldisk(self, mocker):
         m = self._make_mock(mocker)
