@@ -184,7 +184,7 @@
       <div id="btn-simple" onclick="setView('simple')" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:var(--cyan);color:var(--bg);font-weight:700">Simple</div>
       <div id="btn-detail" onclick="setView('detail')" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);color:var(--muted)">Detailed</div>
     </div>
-    <div class="badge" style="color:var(--green);border-color:#00e67633">780 tests · 80% coverage</div>
+    <div class="badge" style="color:var(--green);border-color:#00e67633">1,286 tests · 85% coverage</div>
     <div class="badge">
       <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
     </div>
@@ -273,14 +273,14 @@
       <span style="font-size:9px;color:var(--cyan);font-weight:700;letter-spacing:.08em">FETCH / POST</span>
       <svg width="12" height="20"><polygon points="1,6 6,0 11,6" fill="var(--purple)"/><line x1="6" y1="6" x2="6" y2="20" stroke="var(--purple)" stroke-width="2"/></svg>
     </div>
-    <span style="font-size:9px;color:var(--muted);margin-left:12px">HTTP JSON · 58 API endpoints · localhost:5000</span>
+    <span style="font-size:9px;color:var(--muted);margin-left:12px">HTTP JSON · 67 API endpoints · localhost:5000</span>
   </div>
 
   <!-- ── LAYER 2: FLASK BACKEND ───────────────────────────────── -->
   <div class="row row-flask" id="layer-flask">
-    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~8,490 lines + homenet.py Blueprint · ~1,460 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · Remediation Engine</div>
+    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~10,043 lines + homenet.py Blueprint · ~1,458 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · Remediation Engine · applogging.py RotatingFileHandler</div>
     <div style="margin-bottom:10px">
-      <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes (58 endpoints)</div>
+      <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes (67 endpoints)</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
         <div class="route-chip" id="rt-index"><span class="method">GET</span>/</div>
         <div class="route-chip" id="rt-scan"><span class="method">POST</span>/api/scan/start</div>
@@ -328,6 +328,18 @@
         <div class="route-chip" id="rt-rem-actions" style="border-color:#ff704344;background:#ff70430d;color:var(--orange)"><span class="method">GET</span>/api/remediation/actions</div>
         <div class="route-chip" style="border-color:#ff704344;background:#ff70430d;color:var(--orange)"><span class="method">GET</span>/api/remediation/history</div>
         <div class="route-chip" style="border-color:#ff704344;background:#ff70430d;color:var(--orange)"><span class="method">POST</span>/api/remediation/run</div>
+        <div class="route-chip" id="rt-disk-analyze"><span class="method">POST</span>/api/disk/analyze</div>
+        <div class="route-chip"><span class="method">GET</span>/api/disk/quickwins</div>
+        <div class="route-chip"><span class="method">POST</span>/api/disk/open</div>
+        <div class="route-chip"><span class="method">POST</span>/api/disk/run-tool</div>
+        <div class="route-chip"><span class="method">POST</span>/api/launch/nvidia-app</div>
+        <!-- Ops / Observability (health · selftest · restart · logs) -->
+        <div style="display:inline-flex;align-items:center;gap:4px;background:#00e67615;border:1px dashed #00e67644;border-radius:5px;padding:2px 8px;font-size:9px;color:var(--green);font-weight:700;letter-spacing:.06em;text-transform:uppercase" title="Ops endpoints used by dev.py verify + tray health poller">OPS: selftest · verify</div>
+        <div class="route-chip" id="rt-health" style="border-color:#00e67644;background:#00e6760d;color:var(--green)"><span class="method">GET</span>/api/health</div>
+        <div class="route-chip" style="border-color:#00e67644;background:#00e6760d;color:var(--green)"><span class="method">GET</span>/api/selftest</div>
+        <div class="route-chip" style="border-color:#00e67644;background:#00e6760d;color:var(--green)"><span class="method">POST</span>/api/restart</div>
+        <div class="route-chip" style="border-color:#00e67644;background:#00e6760d;color:var(--green)"><span class="method">GET</span>/api/logs</div>
+        <div class="route-chip" style="border-color:#00e67644;background:#00e6760d;color:var(--green)"><span class="method">GET</span>/api/logs/download</div>
         <!-- homenet.py Blueprint (10 routes) -->
         <div style="display:inline-flex;align-items:center;gap:4px;background:#448aff15;border:1px dashed #448aff44;border-radius:5px;padding:2px 8px;font-size:9px;color:var(--blue);font-weight:700;letter-spacing:.06em;text-transform:uppercase" title="Served by homenet.py Flask Blueprint">BLUEPRINT: homenet.py</div>
         <div class="route-chip" id="rt-homenet-creds" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">GET</span>/api/homenet/credentials</div>
@@ -609,15 +621,19 @@
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <div class="fs-chip">
             <div class="fs-title">windesktopmgr.py</div>
-            <div class="fs-sub">Flask backend · ~8,490 lines</div>
+            <div class="fs-sub">Flask backend · ~10,043 lines</div>
           </div>
           <div class="fs-chip" style="border-color:#448aff33">
             <div class="fs-title" style="color:var(--blue)">homenet.py</div>
-            <div class="fs-sub">Home Network Blueprint · ~1,460 lines · Flask Blueprint</div>
+            <div class="fs-sub">Home Network Blueprint · ~1,458 lines · Flask Blueprint</div>
+          </div>
+          <div class="fs-chip">
+            <div class="fs-title">applogging.py</div>
+            <div class="fs-sub">RotatingFileHandler · ~212 lines · 10MB × 5 backups · /api/logs source</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">templates/index.html</div>
-            <div class="fs-sub">Single-page frontend · ~5,150 lines</div>
+            <div class="fs-sub">Single-page frontend · ~5,630 lines</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">tray.py</div>
@@ -625,7 +641,7 @@
           </div>
           <div class="fs-chip">
             <div class="fs-title">SystemHealthDiag.py</div>
-            <div class="fs-sub">Daily health diagnostic · ~1,883 lines · 13 checks · PDF + email</div>
+            <div class="fs-sub">Daily health diagnostic · ~1,884 lines · 13 checks · PDF + email</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">setup-startup.ps1</div>
@@ -633,7 +649,11 @@
           </div>
           <div class="fs-chip">
             <div class="fs-title">dev.py</div>
-            <div class="fs-sub">Quality gate runner · ~107 lines · lint + format + test</div>
+            <div class="fs-sub">Quality gate runner · ~127 lines · check/fix/test/verify/ship</div>
+          </div>
+          <div class="fs-chip">
+            <div class="fs-title">scripts/post_restart_check.py</div>
+            <div class="fs-sub">Restart + /api/selftest + log scan · ~200 lines · dev.py verify target</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">architecture.html</div>
@@ -675,27 +695,27 @@
 
   <!-- ── LAYER 7: TEST SUITE ──────────────────────────────────── -->
   <div class="row row-tests" id="layer-tests">
-    <div class="row-label">🧪 Test Suite — 780 tests · pytest · 80% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation</div>
+    <div class="row-label">🧪 Test Suite — 1,286 tests · pytest · 85% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + E2E</div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
       <div class="test-chip">
         <div class="test-title">test_routes.py</div>
-        <div class="test-sub">144 tests · all 45 Flask endpoints · server config · warranty · sysinfo · stale data</div>
+        <div class="test-sub">199 tests · all Flask endpoints · server config · warranty · sysinfo · stale data</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_powershell.py</div>
-        <div class="test-sub">114 tests · subprocess mocking · single-item normalization · timeouts</div>
+        <div class="test-sub">324 tests · subprocess mocking · single-item normalization · timeouts · cloud attrs</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_system_health_diag.py</div>
-        <div class="test-sub">121 tests · 29 functions · warranty · cross-platform mocks</div>
+        <div class="test-sub">162 tests · 29 functions · warranty · cross-platform mocks</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_summarizers.py</div>
-        <div class="test-sub">76 tests · all 12 summarizer functions · insight engine · memory type · GPU mfr</div>
+        <div class="test-sub">127 tests · all summarizer functions · insight engine · memory type · GPU mfr</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_pure_functions.py</div>
-        <div class="test-sub">46 tests · categorize · version compare · timestamp parse</div>
+        <div class="test-sub">37 tests · categorize · version compare · timestamp parse</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_bsod_parsing.py</div>
@@ -703,7 +723,7 @@
       </div>
       <div class="test-chip">
         <div class="test-title">test_cache_systems.py</div>
-        <div class="test-sub">Cache lookup workers · queue management · thread safety</div>
+        <div class="test-sub">105 tests · cache lookup workers · queue management · thread safety</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_nlq.py</div>
@@ -711,15 +731,31 @@
       </div>
       <div class="test-chip">
         <div class="test-title">test_tray.py</div>
-        <div class="test-sub">32 tests · icon gen · HealthMonitor · polling loop · notifications · tooltips</div>
+        <div class="test-sub">36 tests · icon gen · HealthMonitor · polling loop · notifications · tooltips</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_remediation.py</div>
-        <div class="test-sub">51 tests · 10 action functions · history logging · routes · NLQ integration · sanitization</div>
+        <div class="test-sub">53 tests · action functions · history logging · routes · NLQ integration · sanitization</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_headless.py</div>
         <div class="test-sub">6 tests · subprocess wrapper · CREATE_NO_WINDOW · monkey-patch verification</div>
+      </div>
+      <div class="test-chip">
+        <div class="test-title">test_homenet.py</div>
+        <div class="test-sub">123 tests · Verizon · Orbi SOAP · SNMP · ARP · credentials · blueprint routes</div>
+      </div>
+      <div class="test-chip">
+        <div class="test-title">test_logging.py</div>
+        <div class="test-sub">24 tests · RotatingFileHandler · /api/logs · level filter · timestamp parse</div>
+      </div>
+      <div class="test-chip">
+        <div class="test-title">test_snapshots.py</div>
+        <div class="test-sub">18 tests · JSON response snapshots · schema drift detection</div>
+      </div>
+      <div class="test-chip">
+        <div class="test-title">test_e2e_smoke.py</div>
+        <div class="test-sub">22 tests · end-to-end routes · post-restart verify · /api/selftest integration</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_integration.py</div>
@@ -808,7 +844,7 @@
       <div style="flex-shrink:0;width:150px;background:#b388ff0a;border:1px solid #b388ff33;border-radius:8px;padding:14px 12px;text-align:center">
         <div style="font-size:18px;margin-bottom:6px">🐍</div>
         <div style="color:var(--purple);font-weight:700;font-size:11px;margin-bottom:4px">FLASK ROUTE</div>
-        <div style="color:var(--muted);font-size:10px;line-height:1.4">Matches one of 49 API endpoints</div>
+        <div style="color:var(--muted);font-size:10px;line-height:1.4">Matches one of 67 API endpoints</div>
       </div>
       <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 6px;flex-shrink:0">
         <div style="font-size:10px;color:var(--purple);font-weight:700;white-space:nowrap">subprocess</div>
@@ -1064,7 +1100,7 @@
 
 <div class="footer">
   <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 780 tests · ~18,600 lines</span>
-  <span>github.com/shigsdev/windesktopmgr · Updated 2026-03-20</span>
+  <span>github.com/shigsdev/windesktopmgr · Updated 2026-04-13</span>
 </div>
 
 

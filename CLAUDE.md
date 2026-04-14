@@ -9,16 +9,30 @@ No step may be skipped. No exceptions.
 1. Code the change
 2. ruff check + format       →  python -m ruff check . && python -m ruff format .
 3. pytest                    →  python -m pytest tests/ -v
-4. git commit + push         →  (pre-commit hooks re-run ruff + pytest)
-5. python dev.py verify      →  POST /api/restart + /api/health + /api/selftest
-6. Print SOP Compliance Report (Phase 11 checklist — see bottom of this file)
+4. Update architecture.html  →  REQUIRED if any of the triggers below apply
+5. git commit + push         →  (pre-commit hooks re-run ruff + pytest)
+6. python dev.py verify      →  POST /api/restart + /api/health + /api/selftest
+7. Print SOP Compliance Report (Phase 11 checklist — see bottom of this file)
 ```
 
-**Step 5 is NON-OPTIONAL.** It is the only gate that runs real PowerShell against
+**Step 4 is NON-OPTIONAL when any of these triggers apply.** If you skip it,
+the diagram rots and the checklist is a lie. Triggers:
+- New or removed file in the repo root (e.g. `applogging.py`, `scripts/*`)
+- New or removed Flask route in `windesktopmgr.py` or `homenet.py`
+- New or removed external service, data source, cache file, or worker thread
+- New or removed test file under `tests/`
+- Line counts shifted by more than ~5% on any file chip already in the diagram
+- New or removed tab in `templates/index.html`
+- Test count or coverage percentage changed
+
+If none of those triggers apply, mark Phase 9 `architecture.html` as ⏭️ Skipped
+with a one-line reason in the SOP Compliance Report. Never silently skip.
+
+**Step 6 is NON-OPTIONAL.** It is the only gate that runs real PowerShell against
 the live instance. Mocked tests alone are insufficient — `dev.py verify` catches
 mock-vs-reality drift, startup crashes, and PS output format regressions.
 
-**Step 6 is NON-OPTIONAL.** The SOP Compliance Report must be the LAST thing
+**Step 7 is NON-OPTIONAL.** The SOP Compliance Report must be the LAST thing
 printed for every code change. See the template at the bottom of this file.
 
 ---
