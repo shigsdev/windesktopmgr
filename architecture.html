@@ -287,7 +287,7 @@
 
   <!-- ── LAYER 2: FLASK BACKEND ───────────────────────────────── -->
   <div class="row row-flask" id="layer-flask">
-    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~10,043 lines + homenet.py Blueprint · ~1,458 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · Remediation Engine · applogging.py RotatingFileHandler</div>
+    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~9,079 lines + homenet.py Blueprint · ~1,458 lines + disk.py Blueprint · ~1,179 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · Remediation Engine · applogging.py RotatingFileHandler</div>
     <div style="margin-bottom:10px">
       <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes (67 endpoints)</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
@@ -304,7 +304,7 @@
         <div class="route-chip"><span class="method">GET</span>/api/startup/lookup-status</div>
         <div class="route-chip"><span class="method">GET</span>/api/startup/cache</div>
         <div class="route-chip"><span class="method">POST</span>/api/startup/toggle</div>
-        <div class="route-chip" id="rt-disk"><span class="method">GET</span>/api/disk/data</div>
+        <div class="route-chip" id="rt-disk" style="border-color:#ffd74044;background:#ffd7400d;color:var(--yellow)"><span class="method">GET</span>/api/disk/data</div>
         <div class="route-chip" id="rt-network"><span class="method">GET</span>/api/network/data</div>
         <div class="route-chip" id="rt-updates"><span class="method">GET</span>/api/updates/history</div>
         <div class="route-chip" id="rt-events"><span class="method">POST</span>/api/events/query</div>
@@ -337,10 +337,12 @@
         <div class="route-chip" id="rt-rem-actions" style="border-color:#ff704344;background:#ff70430d;color:var(--orange)"><span class="method">GET</span>/api/remediation/actions</div>
         <div class="route-chip" style="border-color:#ff704344;background:#ff70430d;color:var(--orange)"><span class="method">GET</span>/api/remediation/history</div>
         <div class="route-chip" style="border-color:#ff704344;background:#ff70430d;color:var(--orange)"><span class="method">POST</span>/api/remediation/run</div>
-        <div class="route-chip" id="rt-disk-analyze"><span class="method">POST</span>/api/disk/analyze</div>
-        <div class="route-chip"><span class="method">GET</span>/api/disk/quickwins</div>
-        <div class="route-chip"><span class="method">POST</span>/api/disk/open</div>
-        <div class="route-chip"><span class="method">POST</span>/api/disk/run-tool</div>
+        <!-- disk.py Blueprint (5 routes) -->
+        <div style="display:inline-flex;align-items:center;gap:4px;background:#ffd74015;border:1px dashed #ffd74044;border-radius:5px;padding:2px 8px;font-size:9px;color:var(--yellow);font-weight:700;letter-spacing:.06em;text-transform:uppercase" title="Served by disk.py Flask Blueprint">BLUEPRINT: disk.py</div>
+        <div class="route-chip" id="rt-disk-analyze" style="border-color:#ffd74044;background:#ffd7400d;color:var(--yellow)"><span class="method">POST</span>/api/disk/analyze</div>
+        <div class="route-chip" style="border-color:#ffd74044;background:#ffd7400d;color:var(--yellow)"><span class="method">GET</span>/api/disk/quickwins</div>
+        <div class="route-chip" style="border-color:#ffd74044;background:#ffd7400d;color:var(--yellow)"><span class="method">POST</span>/api/disk/open</div>
+        <div class="route-chip" style="border-color:#ffd74044;background:#ffd7400d;color:var(--yellow)"><span class="method">POST</span>/api/disk/run-tool</div>
         <div class="route-chip"><span class="method">POST</span>/api/launch/nvidia-app</div>
         <!-- Ops / Observability (health · selftest · restart · logs) -->
         <div style="display:inline-flex;align-items:center;gap:4px;background:#00e67615;border:1px dashed #00e67644;border-radius:5px;padding:2px 8px;font-size:9px;color:var(--green);font-weight:700;letter-spacing:.06em;text-transform:uppercase" title="Ops endpoints used by dev.py verify + tray health poller">OPS: selftest · verify</div>
@@ -630,11 +632,15 @@
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <div class="fs-chip">
             <div class="fs-title">windesktopmgr.py</div>
-            <div class="fs-sub">Flask backend · ~10,043 lines</div>
+            <div class="fs-sub">Flask backend · ~9,079 lines</div>
           </div>
           <div class="fs-chip" style="border-color:#448aff33">
             <div class="fs-title" style="color:var(--blue)">homenet.py</div>
             <div class="fs-sub">Home Network Blueprint · ~1,458 lines · Flask Blueprint</div>
+          </div>
+          <div class="fs-chip" style="border-color:#ffd74033">
+            <div class="fs-title" style="color:var(--yellow)">disk.py</div>
+            <div class="fs-sub">Disk Health Blueprint · ~1,179 lines · Flask Blueprint</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">applogging.py</div>
@@ -1170,8 +1176,8 @@
 
 
 <div class="footer">
-  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 1,286 tests · ~21,140 lines</span>
-  <span>github.com/shigsdev/windesktopmgr · Updated 2026-04-13</span>
+  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 1,286 tests · ~21,355 lines</span>
+  <span>github.com/shigsdev/windesktopmgr · Updated 2026-04-14</span>
 </div>
 
 

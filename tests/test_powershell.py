@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import disk
 import windesktopmgr as wdm
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -249,7 +250,7 @@ class TestGetDiskHealth:
 
         Returns the subprocess mock so tests can inspect call_args if needed.
         """
-        mocker.patch("windesktopmgr._enumerate_logical_drives", return_value=self.DRIVES)
+        mocker.patch("disk._enumerate_logical_drives", return_value=self.DRIVES)
         m = mocker.patch("windesktopmgr.subprocess.run")
         phys_out = json.dumps(self.PHYSICAL)
         io_out = json.dumps(self.IO)
@@ -299,7 +300,7 @@ class TestGetDiskHealth:
 
     def test_single_physical_object_normalised(self, mocker):
         """Single physical disk comes back as a dict from PS — normalise to list."""
-        mocker.patch("windesktopmgr._enumerate_logical_drives", return_value=[])
+        mocker.patch("disk._enumerate_logical_drives", return_value=[])
         m = mocker.patch("windesktopmgr.subprocess.run")
         phys_out = json.dumps(self.PHYSICAL[0])
         m.side_effect = [
@@ -311,7 +312,7 @@ class TestGetDiskHealth:
         assert len(result["physical"]) == 1
 
     def test_empty_physical_output_returns_fallback(self, mocker):
-        mocker.patch("windesktopmgr._enumerate_logical_drives", return_value=[])
+        mocker.patch("disk._enumerate_logical_drives", return_value=[])
         m = mocker.patch("windesktopmgr.subprocess.run")
         m.side_effect = [
             type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})(),
@@ -322,7 +323,7 @@ class TestGetDiskHealth:
 
     def test_malformed_physical_json_falls_back(self, mocker):
         """Garbage from Get-PhysicalDisk must not take down the whole endpoint."""
-        mocker.patch("windesktopmgr._enumerate_logical_drives", return_value=self.DRIVES)
+        mocker.patch("disk._enumerate_logical_drives", return_value=self.DRIVES)
         m = mocker.patch("windesktopmgr.subprocess.run")
         m.side_effect = [
             type("R", (), {"stdout": "INVALID{", "returncode": 0, "stderr": ""})(),
@@ -334,7 +335,7 @@ class TestGetDiskHealth:
         assert result["physical"] == []
 
     def test_physical_timeout_returns_fallback(self, mocker):
-        mocker.patch("windesktopmgr._enumerate_logical_drives", return_value=self.DRIVES)
+        mocker.patch("disk._enumerate_logical_drives", return_value=self.DRIVES)
         mocker.patch(
             "windesktopmgr.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=60),
@@ -346,7 +347,7 @@ class TestGetDiskHealth:
         assert len(result["drives"]) == len(self.DRIVES)
 
     def test_io_failure_does_not_break_main_result(self, mocker):
-        mocker.patch("windesktopmgr._enumerate_logical_drives", return_value=self.DRIVES)
+        mocker.patch("disk._enumerate_logical_drives", return_value=self.DRIVES)
         m = mocker.patch("windesktopmgr.subprocess.run")
         m.side_effect = [
             type("R", (), {"stdout": json.dumps(self.PHYSICAL), "returncode": 0, "stderr": ""})(),
@@ -399,11 +400,11 @@ class TestEnumerateLogicalDrives:
         return type("Usage", (), {"total": total, "used": used, "free": free, "percent": pct_used})()
 
     def test_local_drive_classified(self, mocker):
-        mocker.patch("windesktopmgr.psutil.disk_partitions", return_value=[self._part("C:\\")])
-        mocker.patch("windesktopmgr.psutil.disk_usage", return_value=self._usage(500, 40))
-        mocker.patch("windesktopmgr._get_unc_path", return_value=None)
-        mocker.patch("windesktopmgr._get_volume_label", return_value="Windows")
-        drives = wdm._enumerate_logical_drives()
+        mocker.patch("disk.psutil.disk_partitions", return_value=[self._part("C:\\")])
+        mocker.patch("disk.psutil.disk_usage", return_value=self._usage(500, 40))
+        mocker.patch("disk._get_unc_path", return_value=None)
+        mocker.patch("disk._get_volume_label", return_value="Windows")
+        drives = disk._enumerate_logical_drives()
         assert len(drives) == 1
         assert drives[0]["Letter"] == "C"
         assert drives[0]["DriveType"] == 3
@@ -413,12 +414,12 @@ class TestEnumerateLogicalDrives:
 
     def test_network_drive_classified_with_unc(self, mocker):
         mocker.patch(
-            "windesktopmgr.psutil.disk_partitions",
+            "disk.psutil.disk_partitions",
             return_value=[self._part("Q:\\", opts="rw,remote")],
         )
-        mocker.patch("windesktopmgr.psutil.disk_usage", return_value=self._usage(2000, 90))
-        mocker.patch("windesktopmgr._get_unc_path", return_value=r"\\nas\photos")
-        drives = wdm._enumerate_logical_drives()
+        mocker.patch("disk.psutil.disk_usage", return_value=self._usage(2000, 90))
+        mocker.patch("disk._get_unc_path", return_value=r"\\nas\photos")
+        drives = disk._enumerate_logical_drives()
         assert drives[0]["DriveType"] == 4
         assert drives[0]["DriveTypeName"] == "network"
         assert drives[0]["UNCPath"] == r"\\nas\photos"
@@ -427,39 +428,39 @@ class TestEnumerateLogicalDrives:
 
     def test_removable_drive_classified(self, mocker):
         mocker.patch(
-            "windesktopmgr.psutil.disk_partitions",
+            "disk.psutil.disk_partitions",
             return_value=[self._part("E:\\", opts="rw,removable")],
         )
-        mocker.patch("windesktopmgr.psutil.disk_usage", return_value=self._usage(32, 20))
-        mocker.patch("windesktopmgr._get_unc_path", return_value=None)
-        mocker.patch("windesktopmgr._get_volume_label", return_value="")
-        drives = wdm._enumerate_logical_drives()
+        mocker.patch("disk.psutil.disk_usage", return_value=self._usage(32, 20))
+        mocker.patch("disk._get_unc_path", return_value=None)
+        mocker.patch("disk._get_volume_label", return_value="")
+        drives = disk._enumerate_logical_drives()
         assert drives[0]["DriveType"] == 2
         assert drives[0]["DriveTypeName"] == "removable"
 
     def test_cdrom_drives_filtered_out(self, mocker):
         mocker.patch(
-            "windesktopmgr.psutil.disk_partitions",
+            "disk.psutil.disk_partitions",
             return_value=[
                 self._part("C:\\"),
                 self._part("D:\\", opts="ro,cdrom"),
             ],
         )
-        mocker.patch("windesktopmgr.psutil.disk_usage", return_value=self._usage(500, 40))
-        mocker.patch("windesktopmgr._get_unc_path", return_value=None)
-        mocker.patch("windesktopmgr._get_volume_label", return_value="")
-        drives = wdm._enumerate_logical_drives()
+        mocker.patch("disk.psutil.disk_usage", return_value=self._usage(500, 40))
+        mocker.patch("disk._get_unc_path", return_value=None)
+        mocker.patch("disk._get_volume_label", return_value="")
+        drives = disk._enumerate_logical_drives()
         assert len(drives) == 1
         assert drives[0]["Letter"] == "C"
 
     def test_ramdisk_filtered_out(self, mocker):
         mocker.patch(
-            "windesktopmgr.psutil.disk_partitions",
+            "disk.psutil.disk_partitions",
             return_value=[self._part("R:\\", opts="rw,ramdisk")],
         )
-        mocker.patch("windesktopmgr._get_unc_path", return_value=None)
-        mocker.patch("windesktopmgr._get_volume_label", return_value="")
-        drives = wdm._enumerate_logical_drives()
+        mocker.patch("disk._get_unc_path", return_value=None)
+        mocker.patch("disk._get_volume_label", return_value="")
+        drives = disk._enumerate_logical_drives()
         assert drives == []
 
     def test_unreachable_network_drive_returns_zeros(self, mocker):
@@ -467,28 +468,28 @@ class TestEnumerateLogicalDrives:
         We should still surface the drive with zeroed totals so the UI
         can show it as a CIFS share instead of hiding it entirely."""
         mocker.patch(
-            "windesktopmgr.psutil.disk_partitions",
+            "disk.psutil.disk_partitions",
             return_value=[self._part("P:\\", opts="rw,remote")],
         )
-        mocker.patch("windesktopmgr.psutil.disk_usage", side_effect=OSError("not reachable"))
-        mocker.patch("windesktopmgr._get_unc_path", return_value=r"\\nas\offline")
-        drives = wdm._enumerate_logical_drives()
+        mocker.patch("disk.psutil.disk_usage", side_effect=OSError("not reachable"))
+        mocker.patch("disk._get_unc_path", return_value=r"\\nas\offline")
+        drives = disk._enumerate_logical_drives()
         assert len(drives) == 1
         assert drives[0]["TotalGB"] == 0.0
         assert drives[0]["UNCPath"] == r"\\nas\offline"
 
     def test_disk_partitions_failure_returns_empty(self, mocker):
-        mocker.patch("windesktopmgr.psutil.disk_partitions", side_effect=Exception("boom"))
-        drives = wdm._enumerate_logical_drives()
+        mocker.patch("disk.psutil.disk_partitions", side_effect=Exception("boom"))
+        drives = disk._enumerate_logical_drives()
         assert drives == []
 
     def test_drive_usage_rounding(self, mocker):
         """UsedGB + FreeGB should approximately equal TotalGB within rounding."""
-        mocker.patch("windesktopmgr.psutil.disk_partitions", return_value=[self._part("C:\\")])
-        mocker.patch("windesktopmgr.psutil.disk_usage", return_value=self._usage(931.5, 35.8))
-        mocker.patch("windesktopmgr._get_unc_path", return_value=None)
-        mocker.patch("windesktopmgr._get_volume_label", return_value="Windows")
-        drives = wdm._enumerate_logical_drives()
+        mocker.patch("disk.psutil.disk_partitions", return_value=[self._part("C:\\")])
+        mocker.patch("disk.psutil.disk_usage", return_value=self._usage(931.5, 35.8))
+        mocker.patch("disk._get_unc_path", return_value=None)
+        mocker.patch("disk._get_volume_label", return_value="Windows")
+        drives = disk._enumerate_logical_drives()
         d = drives[0]
         assert d["TotalGB"] == 931.5
         assert abs((d["UsedGB"] + d["FreeGB"]) - d["TotalGB"]) < 0.1
@@ -2946,13 +2947,13 @@ class TestAnalyzeDiskPath:
         ]
         self._mock_scandir(mocker, entries)
         mocker.patch(
-            "windesktopmgr._walk_dir_size",
+            "disk._walk_dir_size",
             side_effect=[
                 {"local": 40_000_000_000, "cloud": 0, "count": 12345},
                 {"local": 30_000_000_000, "cloud": 0, "count": 98765},
             ],
         )
-        result = wdm.analyze_disk_path("C:\\")
+        result = disk.analyze_disk_path("C:\\")
         assert result["ok"] is True
         assert result["path"] == "C:\\"
         assert result["parent"] is None
@@ -2971,8 +2972,8 @@ class TestAnalyzeDiskPath:
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
         entries = [self._make_direntry("Users", "C:\\Users", is_dir=True)]
         self._mock_scandir(mocker, entries)
-        mocker.patch("windesktopmgr._walk_dir_size", return_value={"local": 100, "cloud": 0, "count": 2})
-        result = wdm.analyze_disk_path("C:\\")
+        mocker.patch("disk._walk_dir_size", return_value={"local": 100, "cloud": 0, "count": 2})
+        result = disk.analyze_disk_path("C:\\")
         assert result["ok"] is True
         assert len(result["entries"]) == 1
         assert result["entries"][0]["name"] == "Users"
@@ -2980,7 +2981,7 @@ class TestAnalyzeDiskPath:
     def test_empty_dir_returns_empty_entries(self, mocker):
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
         self._mock_scandir(mocker, [])
-        result = wdm.analyze_disk_path("C:\\")
+        result = disk.analyze_disk_path("C:\\")
         assert result["ok"] is True
         assert result["entries"] == []
         assert result["total_bytes"] == 0
@@ -2988,7 +2989,7 @@ class TestAnalyzeDiskPath:
     def test_scandir_oserror_returns_error(self, mocker):
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
         mocker.patch("windesktopmgr.os.scandir", side_effect=OSError("Access denied"))
-        result = wdm.analyze_disk_path("C:\\")
+        result = disk.analyze_disk_path("C:\\")
         assert result["ok"] is False
         assert "access denied" in result["error"].lower()
         assert result["entries"] == []
@@ -2998,30 +2999,30 @@ class TestAnalyzeDiskPath:
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
         entries = [self._make_direntry("Broken", "C:\\Broken", is_dir=True)]
         self._mock_scandir(mocker, entries)
-        mocker.patch("windesktopmgr._walk_dir_size", side_effect=RuntimeError("boom"))
-        result = wdm.analyze_disk_path("C:\\")
+        mocker.patch("disk._walk_dir_size", side_effect=RuntimeError("boom"))
+        result = disk.analyze_disk_path("C:\\")
         assert result["ok"] is True
         assert len(result["entries"]) == 1
         assert result["entries"][0]["size_bytes"] == 0
 
     def test_missing_path_rejected(self, mocker):
-        result = wdm.analyze_disk_path("")
+        result = disk.analyze_disk_path("")
         assert result["ok"] is False
         assert "path" in result["error"].lower()
 
     def test_nonexistent_path_rejected(self, mocker):
         mocker.patch("windesktopmgr.os.path.isdir", return_value=False)
-        result = wdm.analyze_disk_path("C:\\DoesNotExist")
+        result = disk.analyze_disk_path("C:\\DoesNotExist")
         assert result["ok"] is False
         assert "does not exist" in result["error"].lower()
 
     def test_unc_path_rejected(self, mocker):
-        result = wdm.analyze_disk_path("\\\\server\\share")
+        result = disk.analyze_disk_path("\\\\server\\share")
         assert result["ok"] is False
         assert "unc" in result["error"].lower()
 
     def test_relative_path_rejected(self, mocker):
-        result = wdm.analyze_disk_path("Users\\me")
+        result = disk.analyze_disk_path("Users\\me")
         assert result["ok"] is False
         assert "absolute" in result["error"].lower()
 
@@ -3029,7 +3030,7 @@ class TestAnalyzeDiskPath:
         """Metacharacters are stripped from path before it reaches os.scandir."""
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
         mock_scan = self._mock_scandir(mocker, [])
-        wdm.analyze_disk_path("C:\\Users'; Remove-Item C:\\ -Recurse; #")
+        disk.analyze_disk_path("C:\\Users'; Remove-Item C:\\ -Recurse; #")
         call_path = mock_scan.call_args[0][0]
         assert ";" not in call_path
         assert "#" not in call_path
@@ -3045,13 +3046,13 @@ class TestAnalyzeDiskPath:
         ]
         self._mock_scandir(mocker, entries)
         mocker.patch(
-            "windesktopmgr._walk_dir_size",
+            "disk._walk_dir_size",
             side_effect=[
                 {"local": 500_000_000, "cloud": 20_000_000_000, "count": 5000},
                 {"local": 30_000_000_000, "cloud": 0, "count": 98765},
             ],
         )
-        result = wdm.analyze_disk_path("C:\\")
+        result = disk.analyze_disk_path("C:\\")
         assert result["ok"] is True
         assert result["total_bytes"] == 30_500_000_000
         assert result["total_cloud_bytes"] == 20_000_000_000
@@ -3072,7 +3073,7 @@ class TestAnalyzeDiskPath:
             self._make_direntry("local.txt", "C:\\local.txt", size=2_000_000),
         ]
         self._mock_scandir(mocker, entries)
-        result = wdm.analyze_disk_path("C:\\")
+        result = disk.analyze_disk_path("C:\\")
         assert result["ok"] is True
         cloud_file = [e for e in result["entries"] if e["name"] == "cloud.txt"][0]
         assert cloud_file["size_bytes"] == 0
@@ -3090,7 +3091,7 @@ class TestAnalyzeDiskPath:
             self._make_direntry("local.txt", "C:\\local.txt", size=2_000_000),
         ]
         self._mock_scandir(mocker, entries)
-        result = wdm.analyze_disk_path("C:\\")
+        result = disk.analyze_disk_path("C:\\")
         assert result["ok"] is True
         cloud_file = [e for e in result["entries"] if e["name"] == "icloud.jpg"][0]
         assert cloud_file["size_bytes"] == 0
@@ -3107,7 +3108,7 @@ class TestAnalyzeDiskPath:
             self._make_direntry("onedrive.docx", "C:\\onedrive.docx", size=3_000_000, cloud_attrs=_RECALL_OPEN),
         ]
         self._mock_scandir(mocker, entries)
-        result = wdm.analyze_disk_path("C:\\")
+        result = disk.analyze_disk_path("C:\\")
         assert result["ok"] is True
         cloud_file = result["entries"][0]
         assert cloud_file["size_bytes"] == 0
@@ -3121,8 +3122,8 @@ class TestAnalyzeDiskPath:
             self._make_direntry("JunctionDir", "C:\\JunctionDir", is_dir=True, is_junction=True),
         ]
         self._mock_scandir(mocker, entries)
-        mocker.patch("windesktopmgr._walk_dir_size", return_value={"local": 100, "cloud": 0, "count": 1})
-        result = wdm.analyze_disk_path("C:\\")
+        mocker.patch("disk._walk_dir_size", return_value={"local": 100, "cloud": 0, "count": 1})
+        result = disk.analyze_disk_path("C:\\")
         assert result["ok"] is True
         assert len(result["entries"]) == 1
         assert result["entries"][0]["name"] == "RealDir"
@@ -3132,7 +3133,7 @@ class TestAnalyzeDiskPath:
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
         self._mock_scandir(mocker, [])
         m = mocker.patch("windesktopmgr.subprocess.run")
-        wdm.analyze_disk_path("C:\\")
+        disk.analyze_disk_path("C:\\")
         m.assert_not_called()
 
     def test_quickwins_command_excludes_offline(self, mocker):
@@ -3141,7 +3142,7 @@ class TestAnalyzeDiskPath:
         don't over-report local usage."""
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
         m = _mock_run(mocker, stdout="[]")
-        wdm.get_disk_quickwins("C")
+        disk.get_disk_quickwins("C")
         # quickwins now makes TWO subprocess calls: the PowerShell sizer and
         # a DISM call for WinSxS. Find the powershell invocation.
         ps_calls = [c for c in m.call_args_list if len(c[0]) > 0 and c[0][0] and c[0][0][0] == "powershell"]
@@ -3154,7 +3155,7 @@ class TestAnalyzeDiskPath:
     def test_parent_set_for_non_root_path(self, mocker):
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
         self._mock_scandir(mocker, [])
-        result = wdm.analyze_disk_path("C:\\Users\\me")
+        result = disk.analyze_disk_path("C:\\Users\\me")
         assert result["parent"] == "C:\\Users"
 
     def test_top_n_limits_results(self, mocker):
@@ -3163,10 +3164,10 @@ class TestAnalyzeDiskPath:
         entries = [self._make_direntry(f"dir{i}", f"C:\\dir{i}", is_dir=True) for i in range(10)]
         self._mock_scandir(mocker, entries)
         mocker.patch(
-            "windesktopmgr._walk_dir_size",
+            "disk._walk_dir_size",
             return_value={"local": 100, "cloud": 0, "count": 1},
         )
-        result = wdm.analyze_disk_path("C:\\", top_n=5)
+        result = disk.analyze_disk_path("C:\\", top_n=5)
         assert result["ok"] is True
         assert len(result["entries"]) == 5
 
@@ -3186,7 +3187,7 @@ class TestGetDiskQuickwins:
             ]
         )
         _mock_run(mocker, stdout=stdout)
-        result = wdm.get_disk_quickwins("C")
+        result = disk.get_disk_quickwins("C")
         assert result["ok"] is True
         assert result["drive"] == "C:\\"
         # Locations must be sorted by size descending
@@ -3201,36 +3202,36 @@ class TestGetDiskQuickwins:
     def test_drive_lowercase_accepted(self, mocker):
         self._stub_paths(mocker)
         _mock_run(mocker, stdout="[]")
-        result = wdm.get_disk_quickwins("c")
+        result = disk.get_disk_quickwins("c")
         assert result["ok"] is True
         assert result["drive"] == "C:\\"
 
     def test_drive_with_colon_accepted(self, mocker):
         self._stub_paths(mocker)
         _mock_run(mocker, stdout="[]")
-        result = wdm.get_disk_quickwins("D:")
+        result = disk.get_disk_quickwins("D:")
         assert result["ok"] is True
         assert result["drive"] == "D:\\"
 
     def test_invalid_drive_rejected(self, mocker):
-        result = wdm.get_disk_quickwins("notadrive")
+        result = disk.get_disk_quickwins("notadrive")
         assert result["ok"] is False
         assert "drive" in result["error"].lower()
 
     def test_missing_drive_returns_error(self, mocker):
-        result = wdm.get_disk_quickwins("")
+        result = disk.get_disk_quickwins("")
         assert result["ok"] is False
 
     def test_nonexistent_drive_rejected(self, mocker):
         mocker.patch("windesktopmgr.os.path.isdir", return_value=False)
-        result = wdm.get_disk_quickwins("Z")
+        result = disk.get_disk_quickwins("Z")
         assert result["ok"] is False
         assert "not found" in result["error"].lower()
 
     def test_empty_ps_output_returns_zeros(self, mocker):
         self._stub_paths(mocker)
         _mock_run(mocker, stdout="")
-        result = wdm.get_disk_quickwins("C")
+        result = disk.get_disk_quickwins("C")
         assert result["ok"] is True
         assert all(loc["size_bytes"] == 0 for loc in result["locations"])
         assert all(loc["exists"] is False for loc in result["locations"])
@@ -3241,20 +3242,20 @@ class TestGetDiskQuickwins:
             "windesktopmgr.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=180),
         )
-        result = wdm.get_disk_quickwins("C")
+        result = disk.get_disk_quickwins("C")
         assert result["ok"] is False
         assert "timed out" in result["error"].lower()
 
     def test_malformed_json_returns_error(self, mocker):
         self._stub_paths(mocker)
         _mock_run(mocker, stdout="garbage {{{")
-        result = wdm.get_disk_quickwins("C")
+        result = disk.get_disk_quickwins("C")
         assert result["ok"] is False
 
     def test_command_checks_recycle_bin_and_temp(self, mocker):
         self._stub_paths(mocker)
         m = _mock_run(mocker, stdout="[]")
-        wdm.get_disk_quickwins("C")
+        disk.get_disk_quickwins("C")
         # quickwins now makes TWO subprocess calls: the PowerShell sizer and
         # a DISM call for WinSxS. Find the powershell invocation.
         ps_calls = [c for c in m.call_args_list if len(c[0]) > 0 and c[0][0] and c[0][0][0] == "powershell"]
@@ -3272,8 +3273,8 @@ class TestGetDiskQuickwins:
         self._stub_paths(mocker)
         monkeypatch.setenv("USERPROFILE", "C:\\Users\\tester")
         _mock_run(mocker, stdout="[]")
-        r_c = wdm.get_disk_quickwins("C")
-        r_d = wdm.get_disk_quickwins("D")
+        r_c = disk.get_disk_quickwins("C")
+        r_d = disk.get_disk_quickwins("D")
         assert r_c["ok"] and r_d["ok"]
         c_keys = {loc["key"] for loc in r_c["user_locations"]}
         d_keys = {loc["key"] for loc in r_d["user_locations"]}
@@ -3292,7 +3293,7 @@ class TestQuickwinsActionDispatch:
 
     def test_run_tool_entries_include_tool_key(self, mocker):
         self._stub(mocker)
-        result = wdm.get_disk_quickwins("C")
+        result = disk.get_disk_quickwins("C")
         by_key = {loc["key"]: loc for loc in result["locations"]}
         # windows_installer's primary action is PatchCleaner (the only tool
         # that can actually clean C:\Windows\Installer safely). Regular
@@ -3307,7 +3308,7 @@ class TestQuickwinsActionDispatch:
         as a secondary button via `extra_tools` so users still have a way
         to trigger the (limited) Microsoft cleanup path."""
         self._stub(mocker)
-        result = wdm.get_disk_quickwins("C")
+        result = disk.get_disk_quickwins("C")
         by_key = {loc["key"]: loc for loc in result["locations"]}
         wi = by_key["windows_installer"]
         extras = wi.get("extra_tools") or []
@@ -3319,7 +3320,7 @@ class TestQuickwinsActionDispatch:
 
     def test_info_only_entries_include_cli_string(self, mocker):
         self._stub(mocker)
-        result = wdm.get_disk_quickwins("C")
+        result = disk.get_disk_quickwins("C")
         by_key = {loc["key"]: loc for loc in result["locations"]}
         winsxs = by_key["winsxs"]
         assert winsxs["action_kind"] == "info_only"
@@ -3332,7 +3333,7 @@ class TestQuickwinsActionDispatch:
 
     def test_open_folder_entries_have_no_tool_or_cli(self, mocker):
         self._stub(mocker)
-        result = wdm.get_disk_quickwins("C")
+        result = disk.get_disk_quickwins("C")
         by_key = {loc["key"]: loc for loc in result["locations"]}
         rb = by_key["recycle_bin"]
         assert rb["action_kind"] == "open_folder"
@@ -3342,17 +3343,17 @@ class TestQuickwinsActionDispatch:
     def test_run_tool_entries_reference_only_allowlisted_tools(self, mocker, monkeypatch):
         self._stub(mocker)
         monkeypatch.setenv("USERPROFILE", "C:\\Users\\tester")
-        result = wdm.get_disk_quickwins("C")
+        result = disk.get_disk_quickwins("C")
         all_rows = result["locations"] + result["user_locations"]
         for row in all_rows:
             if row["action_kind"] == "run_tool":
-                assert row["tool"] in wdm._CLEANUP_TOOLS, f"Entry {row['key']} references unknown tool {row['tool']!r}"
+                assert row["tool"] in disk._CLEANUP_TOOLS, f"Entry {row['key']} references unknown tool {row['tool']!r}"
 
 
 class TestLaunchCleanupTool:
     def test_known_tool_launches(self, mocker):
         popen = mocker.patch("windesktopmgr.subprocess.Popen")
-        result = wdm.launch_cleanup_tool("cleanmgr")
+        result = disk.launch_cleanup_tool("cleanmgr")
         assert result["ok"] is True
         assert result["tool"] == "cleanmgr"
         assert result["label"] == "Disk Cleanup"
@@ -3362,27 +3363,27 @@ class TestLaunchCleanupTool:
 
     def test_sysdm_advanced_launches(self, mocker):
         popen = mocker.patch("windesktopmgr.subprocess.Popen")
-        result = wdm.launch_cleanup_tool("sysdm_advanced")
+        result = disk.launch_cleanup_tool("sysdm_advanced")
         assert result["ok"] is True
         popen.assert_called_once()
         assert popen.call_args[0][0][0] == "SystemPropertiesAdvanced.exe"
 
     def test_unknown_tool_rejected(self, mocker):
         popen = mocker.patch("windesktopmgr.subprocess.Popen")
-        result = wdm.launch_cleanup_tool("rm_rf_slash")
+        result = disk.launch_cleanup_tool("rm_rf_slash")
         assert result["ok"] is False
         assert "unknown" in result["error"].lower()
         popen.assert_not_called()
 
     def test_missing_tool_rejected(self, mocker):
         popen = mocker.patch("windesktopmgr.subprocess.Popen")
-        result = wdm.launch_cleanup_tool("")
+        result = disk.launch_cleanup_tool("")
         assert result["ok"] is False
         popen.assert_not_called()
 
     def test_none_tool_rejected(self, mocker):
         popen = mocker.patch("windesktopmgr.subprocess.Popen")
-        result = wdm.launch_cleanup_tool(None)
+        result = disk.launch_cleanup_tool(None)
         assert result["ok"] is False
         popen.assert_not_called()
 
@@ -3391,7 +3392,7 @@ class TestLaunchCleanupTool:
             "windesktopmgr.subprocess.Popen",
             side_effect=FileNotFoundError("cleanmgr.exe not found"),
         )
-        result = wdm.launch_cleanup_tool("cleanmgr")
+        result = disk.launch_cleanup_tool("cleanmgr")
         assert result["ok"] is False
         assert "not found" in result["error"].lower()
 
@@ -3400,7 +3401,7 @@ class TestLaunchCleanupTool:
             "windesktopmgr.subprocess.Popen",
             side_effect=OSError("access denied"),
         )
-        result = wdm.launch_cleanup_tool("cleanmgr")
+        result = disk.launch_cleanup_tool("cleanmgr")
         assert result["ok"] is False
         assert "access denied" in result["error"].lower()
 
@@ -3415,7 +3416,7 @@ class TestLaunchCleanupTool:
 
         mocker.patch("windesktopmgr.os.path.isfile", side_effect=fake_isfile)
         popen = mocker.patch("windesktopmgr.subprocess.Popen")
-        result = wdm.launch_cleanup_tool("patchcleaner")
+        result = disk.launch_cleanup_tool("patchcleaner")
         assert result["ok"] is True
         assert result["tool"] == "patchcleaner"
         popen.assert_called_once()
@@ -3428,7 +3429,7 @@ class TestLaunchCleanupTool:
         Popen must NOT be called in this case."""
         mocker.patch("windesktopmgr.os.path.isfile", return_value=False)
         popen = mocker.patch("windesktopmgr.subprocess.Popen")
-        result = wdm.launch_cleanup_tool("patchcleaner")
+        result = disk.launch_cleanup_tool("patchcleaner")
         assert result["ok"] is False
         assert "not installed" in result["error"].lower()
         assert "install_url" in result
@@ -3441,7 +3442,7 @@ class TestLaunchCleanupTool:
         first one in the candidate list is used."""
         mocker.patch("windesktopmgr.os.path.isfile", return_value=True)
         popen = mocker.patch("windesktopmgr.subprocess.Popen")
-        result = wdm.launch_cleanup_tool("patchcleaner")
+        result = disk.launch_cleanup_tool("patchcleaner")
         assert result["ok"] is True
         argv = popen.call_args[0][0]
         assert "Program Files\\homedev" in argv[0]
@@ -3456,7 +3457,7 @@ class TestLaunchCleanupTool:
         err.winerror = 740
         mocker.patch("windesktopmgr.subprocess.Popen", side_effect=err)
         startfile = mocker.patch("windesktopmgr.os.startfile", create=True)
-        result = wdm.launch_cleanup_tool("patchcleaner")
+        result = disk.launch_cleanup_tool("patchcleaner")
         assert result["ok"] is True
         assert result.get("elevated") is True
         startfile.assert_called_once()
@@ -3473,7 +3474,7 @@ class TestLaunchCleanupTool:
             side_effect=OSError("UAC declined"),
             create=True,
         )
-        result = wdm.launch_cleanup_tool("patchcleaner")
+        result = disk.launch_cleanup_tool("patchcleaner")
         assert result["ok"] is False
         assert "elevation failed" in result["error"].lower()
 
@@ -3481,10 +3482,10 @@ class TestLaunchCleanupTool:
         """The allowlist must include the tools the frontend expects to launch.
         Each spec must carry a label and either a fixed `argv` (system tools)
         or `candidate_paths` + `install_url` (third-party tools)."""
-        assert "cleanmgr" in wdm._CLEANUP_TOOLS
-        assert "sysdm_advanced" in wdm._CLEANUP_TOOLS
-        assert "patchcleaner" in wdm._CLEANUP_TOOLS
-        for spec in wdm._CLEANUP_TOOLS.values():
+        assert "cleanmgr" in disk._CLEANUP_TOOLS
+        assert "sysdm_advanced" in disk._CLEANUP_TOOLS
+        assert "patchcleaner" in disk._CLEANUP_TOOLS
+        for spec in disk._CLEANUP_TOOLS.values():
             assert "label" in spec
             has_argv = "argv" in spec
             has_candidates = "candidate_paths" in spec
@@ -3532,13 +3533,13 @@ The operation completed successfully.
 """
 
     def _reset_cache(self):
-        wdm._winsxs_cache["ts"] = 0.0
-        wdm._winsxs_cache["data"] = None
+        disk._winsxs_cache["ts"] = 0.0
+        disk._winsxs_cache["data"] = None
 
     def test_happy_path_parses_all_fields(self, mocker):
         self._reset_cache()
         _mock_run(mocker, stdout=self.SAMPLE_DISM_OUTPUT)
-        result = wdm._get_winsxs_actual_size()
+        result = disk._get_winsxs_actual_size()
         assert result is not None
         # 10.64 GB in bytes
         assert 10 * (1024**3) < result["reported_bytes"] < 11 * (1024**3)
@@ -3555,13 +3556,13 @@ The operation completed successfully.
             "Component Store Cleanup Recommended : Yes",
         )
         _mock_run(mocker, stdout=out)
-        result = wdm._get_winsxs_actual_size()
+        result = disk._get_winsxs_actual_size()
         assert result["cleanup_recommended"] is True
 
     def test_command_uses_analyze_component_store(self, mocker):
         self._reset_cache()
         m = _mock_run(mocker, stdout=self.SAMPLE_DISM_OUTPUT)
-        wdm._get_winsxs_actual_size()
+        disk._get_winsxs_actual_size()
         argv = m.call_args[0][0]
         assert argv[0] == "Dism.exe"
         assert "/Online" in argv
@@ -3574,24 +3575,24 @@ The operation completed successfully.
             "windesktopmgr.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="Dism.exe", timeout=120),
         )
-        assert wdm._get_winsxs_actual_size() is None
+        assert disk._get_winsxs_actual_size() is None
 
     def test_dism_missing_returns_none(self, mocker):
         self._reset_cache()
         mocker.patch("windesktopmgr.subprocess.run", side_effect=FileNotFoundError("Dism.exe"))
-        assert wdm._get_winsxs_actual_size() is None
+        assert disk._get_winsxs_actual_size() is None
 
     def test_garbage_output_returns_none(self, mocker):
         self._reset_cache()
         _mock_run(mocker, stdout="not DISM output")
-        assert wdm._get_winsxs_actual_size() is None
+        assert disk._get_winsxs_actual_size() is None
 
     def test_result_is_cached(self, mocker):
         """Second call within TTL must NOT re-run DISM."""
         self._reset_cache()
         m = _mock_run(mocker, stdout=self.SAMPLE_DISM_OUTPUT)
-        a = wdm._get_winsxs_actual_size()
-        b = wdm._get_winsxs_actual_size()
+        a = disk._get_winsxs_actual_size()
+        b = disk._get_winsxs_actual_size()
         assert a == b
         assert m.call_count == 1  # DISM only invoked once
 
@@ -3600,7 +3601,7 @@ class TestOpenFolderInExplorer:
     def test_happy_path_launches_explorer(self, mocker):
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
         popen = mocker.patch("windesktopmgr.subprocess.Popen")
-        result = wdm.open_folder_in_explorer("C:\\Users")
+        result = disk.open_folder_in_explorer("C:\\Users")
         assert result["ok"] is True
         assert result["path"] == "C:\\Users"
         popen.assert_called_once()
@@ -3612,23 +3613,23 @@ class TestOpenFolderInExplorer:
         mocker.patch("windesktopmgr.os.path.isdir", return_value=False)
         mocker.patch("windesktopmgr.os.path.isfile", return_value=True)
         popen = mocker.patch("windesktopmgr.subprocess.Popen")
-        result = wdm.open_folder_in_explorer("C:\\pagefile.sys")
+        result = disk.open_folder_in_explorer("C:\\pagefile.sys")
         assert result["ok"] is True
         popen.assert_called_once()
 
     def test_missing_path_rejected(self, mocker):
-        result = wdm.open_folder_in_explorer("")
+        result = disk.open_folder_in_explorer("")
         assert result["ok"] is False
 
     def test_nonexistent_path_rejected(self, mocker):
         mocker.patch("windesktopmgr.os.path.isdir", return_value=False)
         mocker.patch("windesktopmgr.os.path.isfile", return_value=False)
-        result = wdm.open_folder_in_explorer("C:\\Ghost")
+        result = disk.open_folder_in_explorer("C:\\Ghost")
         assert result["ok"] is False
 
     def test_popen_failure_returns_error(self, mocker):
         mocker.patch("windesktopmgr.os.path.isdir", return_value=True)
         mocker.patch("windesktopmgr.subprocess.Popen", side_effect=OSError("boom"))
-        result = wdm.open_folder_in_explorer("C:\\Users")
+        result = disk.open_folder_in_explorer("C:\\Users")
         assert result["ok"] is False
         assert "boom" in result["error"]

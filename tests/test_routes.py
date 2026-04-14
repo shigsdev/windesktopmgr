@@ -413,7 +413,7 @@ class TestStartupToggleRoute:
 
 class TestDiskDataRoute:
     def test_returns_200_with_keys(self, client, mocker):
-        mocker.patch("windesktopmgr.get_disk_health", return_value={"drives": [], "physical": [], "io": []})
+        mocker.patch("disk.get_disk_health", return_value={"drives": [], "physical": [], "io": []})
         resp = client.get("/api/disk/data")
         assert resp.status_code == 200
         data = resp.get_json()
@@ -422,7 +422,7 @@ class TestDiskDataRoute:
         assert "io" in data
 
     def test_returns_json(self, client, mocker):
-        mocker.patch("windesktopmgr.get_disk_health", return_value={"drives": [], "physical": [], "io": []})
+        mocker.patch("disk.get_disk_health", return_value={"drives": [], "physical": [], "io": []})
         resp = client.get("/api/disk/data")
         assert resp.content_type.startswith("application/json")
 
@@ -2332,7 +2332,7 @@ class TestDiskAnalyzeRoute:
 
     def test_returns_200_on_success(self, client, mocker):
         mocker.patch(
-            "windesktopmgr.analyze_disk_path",
+            "disk.analyze_disk_path",
             return_value={
                 "ok": True,
                 "path": "C:\\",
@@ -2364,7 +2364,7 @@ class TestDiskAnalyzeRoute:
 
     def test_backend_error_returns_422(self, client, mocker):
         mocker.patch(
-            "windesktopmgr.analyze_disk_path",
+            "disk.analyze_disk_path",
             return_value={"ok": False, "error": "Path does not exist", "path": "X:\\", "entries": []},
         )
         r = client.post("/api/disk/analyze", json={"path": "X:\\nope"})
@@ -2372,7 +2372,7 @@ class TestDiskAnalyzeRoute:
 
     def test_top_n_clamped_upper_and_lower(self, client, mocker):
         mock = mocker.patch(
-            "windesktopmgr.analyze_disk_path",
+            "disk.analyze_disk_path",
             return_value={"ok": True, "path": "C:\\", "entries": [], "total_bytes": 0, "parent": None},
         )
         client.post("/api/disk/analyze", json={"path": "C:\\", "top_n": 9999})
@@ -2382,7 +2382,7 @@ class TestDiskAnalyzeRoute:
 
     def test_invalid_top_n_defaults_to_25(self, client, mocker):
         mock = mocker.patch(
-            "windesktopmgr.analyze_disk_path",
+            "disk.analyze_disk_path",
             return_value={"ok": True, "path": "C:\\", "entries": [], "total_bytes": 0, "parent": None},
         )
         client.post("/api/disk/analyze", json={"path": "C:\\", "top_n": "banana"})
@@ -2394,7 +2394,7 @@ class TestDiskQuickwinsRoute:
 
     def test_returns_200_on_success(self, client, mocker):
         mocker.patch(
-            "windesktopmgr.get_disk_quickwins",
+            "disk.get_disk_quickwins",
             return_value={
                 "ok": True,
                 "drive": "C:\\",
@@ -2421,7 +2421,7 @@ class TestDiskQuickwinsRoute:
 
     def test_defaults_to_c_drive(self, client, mocker):
         mock = mocker.patch(
-            "windesktopmgr.get_disk_quickwins",
+            "disk.get_disk_quickwins",
             return_value={"ok": True, "drive": "C:\\", "locations": [], "user_locations": []},
         )
         client.get("/api/disk/quickwins")
@@ -2429,7 +2429,7 @@ class TestDiskQuickwinsRoute:
 
     def test_passes_drive_arg(self, client, mocker):
         mock = mocker.patch(
-            "windesktopmgr.get_disk_quickwins",
+            "disk.get_disk_quickwins",
             return_value={"ok": True, "drive": "D:\\", "locations": [], "user_locations": []},
         )
         client.get("/api/disk/quickwins?drive=D")
@@ -2437,7 +2437,7 @@ class TestDiskQuickwinsRoute:
 
     def test_backend_error_returns_422(self, client, mocker):
         mocker.patch(
-            "windesktopmgr.get_disk_quickwins",
+            "disk.get_disk_quickwins",
             return_value={"ok": False, "error": "Drive not found", "locations": []},
         )
         r = client.get("/api/disk/quickwins?drive=Z")
@@ -2449,7 +2449,7 @@ class TestDiskOpenRoute:
 
     def test_returns_200_on_success(self, client, mocker):
         mocker.patch(
-            "windesktopmgr.open_folder_in_explorer",
+            "disk.open_folder_in_explorer",
             return_value={"ok": True, "path": "C:\\Users"},
         )
         r = client.post("/api/disk/open", json={"path": "C:\\Users"})
@@ -2463,7 +2463,7 @@ class TestDiskOpenRoute:
 
     def test_backend_error_returns_422(self, client, mocker):
         mocker.patch(
-            "windesktopmgr.open_folder_in_explorer",
+            "disk.open_folder_in_explorer",
             return_value={"ok": False, "error": "Path does not exist"},
         )
         r = client.post("/api/disk/open", json={"path": "C:\\Ghost"})
@@ -2475,7 +2475,7 @@ class TestDiskRunToolRoute:
 
     def test_returns_200_on_success(self, client, mocker):
         mocker.patch(
-            "windesktopmgr.launch_cleanup_tool",
+            "disk.launch_cleanup_tool",
             return_value={"ok": True, "tool": "cleanmgr", "label": "Disk Cleanup"},
         )
         r = client.post("/api/disk/run-tool", json={"tool": "cleanmgr"})
@@ -2497,7 +2497,7 @@ class TestDiskRunToolRoute:
 
     def test_unknown_tool_returns_422(self, client, mocker):
         mocker.patch(
-            "windesktopmgr.launch_cleanup_tool",
+            "disk.launch_cleanup_tool",
             return_value={"ok": False, "error": "Unknown cleanup tool: evil"},
         )
         r = client.post("/api/disk/run-tool", json={"tool": "evil"})
@@ -2509,7 +2509,7 @@ class TestDiskRunToolRoute:
         return 422 but include install_url so the frontend can offer a
         download button."""
         mocker.patch(
-            "windesktopmgr.launch_cleanup_tool",
+            "disk.launch_cleanup_tool",
             return_value={
                 "ok": False,
                 "error": "PatchCleaner is not installed",
@@ -2525,7 +2525,7 @@ class TestDiskRunToolRoute:
 
     def test_passes_tool_key_through(self, client, mocker):
         m = mocker.patch(
-            "windesktopmgr.launch_cleanup_tool",
+            "disk.launch_cleanup_tool",
             return_value={"ok": True, "tool": "sysdm_advanced", "label": "System Properties → Advanced"},
         )
         client.post("/api/disk/run-tool", json={"tool": "sysdm_advanced"})

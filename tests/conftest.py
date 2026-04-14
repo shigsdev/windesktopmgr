@@ -24,6 +24,7 @@ if PROJECT_ROOT not in sys.path:
 
 import pytest
 
+import disk
 import windesktopmgr as wdm
 
 # ── Fixture loading helpers ───────────────────────────────────────────────────
@@ -101,9 +102,10 @@ def reset_globals():
     wdm._process_in_flight.clear()
     wdm._services_in_flight.clear()
 
-    # Disk analyzer caches (_winsxs_cache persists DISM results for 1h)
-    wdm._winsxs_cache["ts"] = 0.0
-    wdm._winsxs_cache["data"] = None
+    # Disk analyzer caches (_winsxs_cache persists DISM results for 1h).
+    # Lives in the `disk` blueprint module after the backlog-#22 extraction.
+    disk._winsxs_cache["ts"] = 0.0
+    disk._winsxs_cache["data"] = None
 
     yield  # run the test
 
