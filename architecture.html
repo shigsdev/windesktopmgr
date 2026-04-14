@@ -1335,16 +1335,13 @@
     }
   };
 
-  // Export: PDF via browser print dialog (user chooses "Save as PDF")
+  // Export: PDF via browser print dialog (user chooses "Save as PDF").
+  // Exports whatever view is currently on screen — do NOT force-switch
+  // the view, because window.print() return timing is inconsistent
+  // across browsers and the revert can race the dialog, leaving the
+  // view stuck on the wrong mode.
   window.exportPDF = function() {
-    // Force detailed view so arrows are visible in the PDF
-    const wasSimple = document.body.classList.contains('view-simple');
-    if (wasSimple) window.setView('detail');
-    // Give the layout one frame to redraw before print
-    setTimeout(() => {
-      window.print();
-      if (wasSimple) setTimeout(() => window.setView('simple'), 200);
-    }, 150);
+    window.print();
   };
 
   // Export: self-contained HTML download
