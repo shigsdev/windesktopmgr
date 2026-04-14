@@ -28,12 +28,67 @@ the diagram rots and the checklist is a lie. Triggers:
 If none of those triggers apply, mark Phase 9 `architecture.html` as ⏭️ Skipped
 with a one-line reason in the SOP Compliance Report. Never silently skip.
 
-**Step 6 is NON-OPTIONAL.** It is the only gate that runs real PowerShell against
-the live instance. Mocked tests alone are insufficient — `dev.py verify` catches
-mock-vs-reality drift, startup crashes, and PS output format regressions.
+**Step 6 is NON-OPTIONAL (for code changes).** It is the only gate that runs
+real PowerShell against the live instance. Mocked tests alone are insufficient
+— `dev.py verify` catches mock-vs-reality drift, startup crashes, and PS
+output format regressions. See the Docs-Only Fast Path below for the one
+exception.
 
 **Step 7 is NON-OPTIONAL.** The SOP Compliance Report must be the LAST thing
 printed for every code change. See the template at the bottom of this file.
+
+---
+
+## 📝 Docs-Only Fast Path — Skip Testing When No Code Changed
+
+If a change touches **only documentation files** and no runtime behavior,
+Steps 2 (ruff), 3 (pytest), and 6 (dev.py verify) add no value and should
+be explicitly skipped. Running them on a doc-only commit just wastes ~90
+seconds per change and trains the habit of ignoring green output.
+
+### What counts as docs-only
+
+A change is docs-only if **every** modified file matches one of these:
+
+- `CLAUDE.md`
+- `architecture.html`
+- `README.md`, `*.md` at the repo root
+- `docs/**/*.md` or any other markdown outside `tests/`
+- Files under `~/.claude/projects/*/memory/` (feedback_*.md, project_*.md, etc.)
+
+If **any** of these are touched, it is NOT docs-only — run the full workflow:
+
+- `*.py` (including tests, scripts, tools)
+- `templates/index.html` or any other file under `templates/`
+- `static/**` (JS, CSS, images that ship with the app)
+- `pyproject.toml`, `requirements*.txt`, `.pre-commit-config.yaml`
+- PowerShell scripts (`*.ps1`), batch files (`*.bat`)
+- Anything the running Flask process or tray imports or reads at runtime
+
+### Docs-only fast path workflow
+
+```
+1. Edit the docs
+2. git commit + push         →  pre-commit hook still runs, but ruff/pytest
+                                no-op when no .py files changed
+3. Print SOP Compliance Report with Steps 2, 3, and 6 marked:
+   ⏭️ Skipped (docs-only — no runtime code changed)
+```
+
+**Still mandatory on the fast path:**
+- The SOP Compliance Report itself (Step 7). Skipping steps is fine;
+  silently skipping is not.
+- Any triggers from Step 4. A doc change that doesn't touch
+  `architecture.html` when it should (e.g. adding a new SOP section that
+  references the diagram) still needs the diagram update.
+- Spell/link sanity check on the prose you just wrote.
+
+**Never use the fast path for:**
+- Changes that touch docstrings in `.py` files — those are code changes.
+- "Refactors" that rename something in both code and docs — not docs-only.
+- Anything where you're unsure. When in doubt, run the full workflow;
+  the cost of a false negative (shipping a broken change) is much higher
+  than the cost of a false positive (running tests on a doc tweak).
 
 ---
 
