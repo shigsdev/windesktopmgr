@@ -1,10 +1,16 @@
 """
-tests/test_powershell.py — PowerShell integration tests for WinDesktopMgr.
+tests/test_powershell.py — PowerShell + psutil integration tests.
 
 Strategy
 --------
 Every subprocess.run call is mocked so tests run on any OS (no Windows
-required).  Each test group covers:
+required). After backlog #24 batch A, several hot-path functions use
+``psutil`` instead of PowerShell — those test classes mock
+``windesktopmgr.psutil.<fn>`` returning ``types.SimpleNamespace`` objects
+shaped like the psutil named-tuples. Everything else still uses the
+subprocess.run mock pattern below.
+
+Each PS test group covers:
 
   1. Happy path   — realistic PS JSON output parsed correctly
   2. Single-item  — PS returns a JSON object (not array); must be normalised
@@ -260,18 +266,16 @@ class TestGetDiskHealth:
     ]
 
     def _make_mock(self, mocker):
-        """Mock _enumerate_logical_drives + subprocess.run for physical/io PS calls.
-
-        Returns the subprocess mock so tests can inspect call_args if needed.
-        """
+        """Mock _enumerate_logical_drives + subprocess.run (physical PS)
+        + disk.psutil.disk_io_counters (batch A). Returns the subprocess
+        mock so tests can inspect call_args if needed."""
         mocker.patch("disk._enumerate_logical_drives", return_value=self.DRIVES)
         m = mocker.patch("windesktopmgr.subprocess.run")
         phys_out = json.dumps(self.PHYSICAL)
-        io_out = json.dumps(self.IO)
-        m.side_effect = [
-            type("R", (), {"stdout": phys_out, "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": io_out, "returncode": 0, "stderr": ""})(),
-        ]
+        m.return_value = type("R", (), {"stdout": phys_out, "returncode": 0, "stderr": ""})()
+        # IO now uses psutil; return empty so the io list is deterministic.
+        mocker.patch("disk.psutil.disk_io_counters", return_value={})
+        mocker.patch("disk.time.sleep", return_value=None)
         return m
 
     def test_happy_path_returns_all_keys(self, mocker):
@@ -317,10 +321,9 @@ class TestGetDiskHealth:
         mocker.patch("disk._enumerate_logical_drives", return_value=[])
         m = mocker.patch("windesktopmgr.subprocess.run")
         phys_out = json.dumps(self.PHYSICAL[0])
-        m.side_effect = [
-            type("R", (), {"stdout": phys_out, "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
-        ]
+        m.return_value = type("R", (), {"stdout": phys_out, "returncode": 0, "stderr": ""})()
+        mocker.patch("disk.psutil.disk_io_counters", return_value={})
+        mocker.patch("disk.time.sleep", return_value=None)
         result = wdm.get_disk_health()
         assert isinstance(result["physical"], list)
         assert len(result["physical"]) == 1
@@ -328,10 +331,9 @@ class TestGetDiskHealth:
     def test_empty_physical_output_returns_fallback(self, mocker):
         mocker.patch("disk._enumerate_logical_drives", return_value=[])
         m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = [
-            type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
-        ]
+        m.return_value = type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})()
+        mocker.patch("disk.psutil.disk_io_counters", return_value={})
+        mocker.patch("disk.time.sleep", return_value=None)
         result = wdm.get_disk_health()
         assert result == {"drives": [], "physical": [], "io": []}
 
@@ -339,10 +341,9 @@ class TestGetDiskHealth:
         """Garbage from Get-PhysicalDisk must not take down the whole endpoint."""
         mocker.patch("disk._enumerate_logical_drives", return_value=self.DRIVES)
         m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = [
-            type("R", (), {"stdout": "INVALID{", "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
-        ]
+        m.return_value = type("R", (), {"stdout": "INVALID{", "returncode": 0, "stderr": ""})()
+        mocker.patch("disk.psutil.disk_io_counters", return_value={})
+        mocker.patch("disk.time.sleep", return_value=None)
         result = wdm.get_disk_health()
         # Drives still populated from Python, physical falls back to empty
         assert len(result["drives"]) == len(self.DRIVES)
@@ -354,6 +355,8 @@ class TestGetDiskHealth:
             "windesktopmgr.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=60),
         )
+        mocker.patch("disk.psutil.disk_io_counters", return_value={})
+        mocker.patch("disk.time.sleep", return_value=None)
         result = wdm.get_disk_health()
         assert result["physical"] == []
         assert result["io"] == []
@@ -363,10 +366,9 @@ class TestGetDiskHealth:
     def test_io_failure_does_not_break_main_result(self, mocker):
         mocker.patch("disk._enumerate_logical_drives", return_value=self.DRIVES)
         m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = [
-            type("R", (), {"stdout": json.dumps(self.PHYSICAL), "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": "BAD JSON", "returncode": 0, "stderr": ""})(),
-        ]
+        m.return_value = type("R", (), {"stdout": json.dumps(self.PHYSICAL), "returncode": 0, "stderr": ""})()
+        mocker.patch("disk.psutil.disk_io_counters", side_effect=RuntimeError("boom"))
+        mocker.patch("disk.time.sleep", return_value=None)
         result = wdm.get_disk_health()
         assert len(result["drives"]) == len(self.DRIVES)
         assert len(result["physical"]) == len(self.PHYSICAL)
@@ -393,6 +395,30 @@ class TestGetDiskHealth:
         wdm.get_disk_health()
         phys_cmd = m.call_args_list[0][0][0][-1]
         assert "Get-PhysicalDisk" in phys_cmd
+
+    def test_io_populated_from_psutil_samples(self, mocker):
+        """Two psutil samples ~1 s apart → rate in KB/s per disk, both read + write."""
+        import types
+
+        mocker.patch("disk._enumerate_logical_drives", return_value=[])
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.return_value = type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})()
+        # Two samples: 1 MB read + 512 KB write delta on disk 0.
+        first = {"PhysicalDrive0": types.SimpleNamespace(read_bytes=0, write_bytes=0)}
+        second = {"PhysicalDrive0": types.SimpleNamespace(read_bytes=1024 * 1024, write_bytes=512 * 1024)}
+        io_mock = mocker.patch("disk.psutil.disk_io_counters", side_effect=[first, second])
+        sleep_mock = mocker.patch("disk.time.sleep")
+        result = wdm.get_disk_health()
+        assert io_mock.call_count == 2
+        sleep_mock.assert_called_once_with(1.0)
+        counters = {entry["Counter"]: entry["Value"] for entry in result["io"]}
+        read_key = r"\physicaldisk(PhysicalDrive0)\disk read bytes/sec"
+        write_key = r"\physicaldisk(PhysicalDrive0)\disk write bytes/sec"
+        assert read_key in counters
+        assert write_key in counters
+        # 1 MB / 1 KB = 1024 KB/s; 512 KB / 1 KB = 512 KB/s.
+        assert counters[read_key] == pytest.approx(1024.0, abs=1)
+        assert counters[write_key] == pytest.approx(512.0, abs=1)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -514,128 +540,161 @@ class TestEnumerateLogicalDrives:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-class TestGetNetworkData:
-    CONNS = json.dumps(
-        [
-            {
-                "LocalAddress": "192.168.1.100",
-                "LocalPort": 54321,
-                "RemoteAddress": "142.250.80.46",
-                "RemotePort": 443,
-                "State": "Established",
-                "PID": 1234,
-                "Process": "chrome",
-            },
-            {
-                "LocalAddress": "0.0.0.0",
-                "LocalPort": 445,
-                "RemoteAddress": "0.0.0.0",
-                "RemotePort": 0,
-                "State": "Listen",
-                "PID": 4,
-                "Process": "System",
-            },
-        ]
-    )
-    ADAPTERS = json.dumps(
-        [
-            {"Name": "Ethernet", "SentMB": 1024.5, "ReceivedMB": 4096.2, "Status": "Up", "LinkSpeedMb": 1000},
-        ]
-    )
+def _fake_sconn(laddr_ip="", laddr_port=0, raddr_ip="", raddr_port=0, status="NONE", pid=0):
+    """Build a psutil.sconn-style namedtuple for net_connections mocking."""
+    import types
 
-    def _make_mock(self, mocker, conns=None, adapters=None):
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = [
-            type("R", (), {"stdout": conns or self.CONNS, "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": adapters or self.ADAPTERS, "returncode": 0, "stderr": ""})(),
+    laddr = types.SimpleNamespace(ip=laddr_ip, port=laddr_port) if laddr_ip or laddr_port else None
+    raddr = types.SimpleNamespace(ip=raddr_ip, port=raddr_port) if raddr_ip or raddr_port else None
+    return types.SimpleNamespace(laddr=laddr, raddr=raddr, status=status, pid=pid)
+
+
+def _fake_netio(bytes_sent=0, bytes_recv=0):
+    import types
+
+    return types.SimpleNamespace(bytes_sent=bytes_sent, bytes_recv=bytes_recv)
+
+
+def _fake_ifstats(isup=True, speed=1000):
+    import types
+
+    return types.SimpleNamespace(isup=isup, speed=speed)
+
+
+class TestGetNetworkData:
+    """Post-PS→psutil tests (backlog #24 batch A). ``get_network_data``
+    now uses ``psutil.net_connections`` + ``net_io_counters`` +
+    ``net_if_stats`` instead of PowerShell ``Get-NetTCPConnection`` /
+    ``Get-NetAdapterStatistics``. Output contract is unchanged."""
+
+    def _patch(self, mocker, conns=None, io_counters=None, if_stats=None, pid_names=None):
+        import types
+
+        import psutil as _psutil
+
+        # Use the real psutil status constants so the state-map works.
+        default_conns = [
+            _fake_sconn(
+                laddr_ip="192.168.1.100",
+                laddr_port=54321,
+                raddr_ip="142.250.80.46",
+                raddr_port=443,
+                status=_psutil.CONN_ESTABLISHED,
+                pid=1234,
+            ),
+            _fake_sconn(
+                laddr_ip="0.0.0.0",
+                laddr_port=445,
+                status=_psutil.CONN_LISTEN,
+                pid=4,
+            ),
         ]
-        return m
+        default_io = {"Ethernet": _fake_netio(bytes_sent=1024 * 1024 * 1024, bytes_recv=4096 * 1024 * 1024)}
+        default_stats = {"Ethernet": _fake_ifstats(isup=True, speed=1000)}
+        default_names = {1234: "chrome", 4: "System"}
+
+        # Build iter-style mocks for process_iter.
+        names = pid_names if pid_names is not None else default_names
+        procs = [types.SimpleNamespace(info={"pid": p, "name": n}) for p, n in names.items()]
+        mocker.patch("windesktopmgr.psutil.process_iter", return_value=iter(procs))
+        mocker.patch(
+            "windesktopmgr.psutil.net_connections",
+            return_value=conns if conns is not None else default_conns,
+        )
+        mocker.patch(
+            "windesktopmgr.psutil.net_io_counters",
+            return_value=io_counters if io_counters is not None else default_io,
+        )
+        mocker.patch(
+            "windesktopmgr.psutil.net_if_stats",
+            return_value=if_stats if if_stats is not None else default_stats,
+        )
 
     def test_happy_path_keys(self, mocker):
-        self._make_mock(mocker)
+        self._patch(mocker)
         result = wdm.get_network_data()
         for key in ("established", "listening", "adapters", "top_processes", "total_connections", "total_listening"):
             assert key in result
 
     def test_connection_state_split(self, mocker):
-        self._make_mock(mocker)
+        self._patch(mocker)
         result = wdm.get_network_data()
         assert result["total_connections"] == 1
         assert result["total_listening"] == 1
 
     def test_top_processes_built(self, mocker):
-        self._make_mock(mocker)
+        self._patch(mocker)
         result = wdm.get_network_data()
         assert result["top_processes"][0]["process"] == "chrome"
         assert result["top_processes"][0]["connections"] == 1
 
+    def test_process_name_resolved_from_pid_map(self, mocker):
+        """Connections with a PID must be tagged with the matching process name."""
+        self._patch(mocker)
+        result = wdm.get_network_data()
+        established = result["established"][0]
+        assert established["Process"] == "chrome"
+        assert established["PID"] == 1234
+
+    def test_unknown_pid_falls_back_to_unknown(self, mocker):
+        """If process_iter doesn't surface a PID, tag the conn as Unknown."""
+        self._patch(mocker, pid_names={})  # no pid → name map
+        result = wdm.get_network_data()
+        assert result["established"][0]["Process"] == "Unknown"
+
     def test_empty_connections_returns_zeros(self, mocker):
-        self._make_mock(mocker, conns="[]")
+        self._patch(mocker, conns=[])
         result = wdm.get_network_data()
         assert result["total_connections"] == 0
         assert result["total_listening"] == 0
 
-    def test_single_connection_object_normalised(self, mocker):
-        single = json.dumps(
-            {
-                "LocalAddress": "127.0.0.1",
-                "LocalPort": 5000,
-                "RemoteAddress": "0.0.0.0",
-                "RemotePort": 0,
-                "State": "Listen",
-                "PID": 99,
-                "Process": "flask",
-            }
-        )
-        self._make_mock(mocker, conns=single)
-        result = wdm.get_network_data()
-        assert result["total_listening"] == 1
+    def test_net_connections_access_denied_falls_back(self, mocker):
+        """Non-admin Windows gives AccessDenied — must degrade to empty conns."""
+        import psutil as _psutil
 
-    def test_malformed_connections_returns_fallback(self, mocker):
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = [
-            type("R", (), {"stdout": "NOT JSON", "returncode": 0, "stderr": ""})(),
-        ]
+        mocker.patch("windesktopmgr.psutil.process_iter", return_value=iter([]))
+        mocker.patch("windesktopmgr.psutil.net_connections", side_effect=_psutil.AccessDenied())
+        mocker.patch("windesktopmgr.psutil.net_io_counters", return_value={})
+        mocker.patch("windesktopmgr.psutil.net_if_stats", return_value={})
         result = wdm.get_network_data()
         assert result["total_connections"] == 0
-
-    def test_timeout_returns_fallback(self, mocker):
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = subprocess.TimeoutExpired(cmd="powershell", timeout=20)
-        result = wdm.get_network_data()
         assert result["established"] == []
 
-    def test_conns_command_uses_get_nettcpconnection(self, mocker):
-        m = self._make_mock(mocker)
-        wdm.get_network_data()
-        cmd = m.call_args_list[0][0][0][-1]
-        assert "Get-NetTCPConnection" in cmd
+    def test_runtime_error_returns_fallback(self, mocker):
+        mocker.patch("windesktopmgr.psutil.process_iter", side_effect=RuntimeError("boom"))
+        result = wdm.get_network_data()
+        assert result["established"] == []
+        assert result["adapters"] == []
 
-    def test_adapters_command_uses_get_netadapterstatistics(self, mocker):
-        m = self._make_mock(mocker)
-        wdm.get_network_data()
-        cmd = m.call_args_list[1][0][0][-1]
-        assert "Get-NetAdapterStatistics" in cmd
+    def test_adapter_sentmb_converted_from_bytes(self, mocker):
+        """psutil reports bytes; we must round to MB to match the PS output."""
+        self._patch(
+            mocker,
+            io_counters={"Wi-Fi": _fake_netio(bytes_sent=5 * 1024 * 1024, bytes_recv=10 * 1024 * 1024)},
+            if_stats={"Wi-Fi": _fake_ifstats(isup=True, speed=867)},
+        )
+        result = wdm.get_network_data()
+        adapter = next(a for a in result["adapters"] if a["Name"] == "Wi-Fi")
+        assert adapter["SentMB"] == pytest.approx(5.0, abs=0.01)
+        assert adapter["ReceivedMB"] == pytest.approx(10.0, abs=0.01)
+        assert adapter["LinkSpeedMb"] == 867
+        assert adapter["Status"] == "Up"
 
-    def test_adapters_command_parses_linkspeed_string(self, mocker):
-        """Regression: 'Cannot convert value "1 Gbps" to Int32' warning.
+    def test_adapter_down_status_reported(self, mocker):
+        self._patch(
+            mocker,
+            io_counters={"Ethernet": _fake_netio()},
+            if_stats={"Ethernet": _fake_ifstats(isup=False, speed=0)},
+        )
+        result = wdm.get_network_data()
+        assert result["adapters"][0]["Status"] == "Down"
 
-        LinkSpeed is a string from Get-NetAdapter, not an Int32. The PS script
-        must parse it as a string (not divide by 1MB) or the subprocess returns
-        rc=1 and pollutes the log.
-        """
-        m = self._make_mock(mocker)
+    def test_uses_psutil_not_powershell(self, mocker):
+        """Regression guard: no PS calls on this path after batch A."""
+        ps_mock = mocker.patch("windesktopmgr.subprocess.run")
+        self._patch(mocker)
         wdm.get_network_data()
-        cmd = m.call_args_list[1][0][0][-1]
-        # Must NOT use the broken numeric division that fails on "1 Gbps"
-        assert "$a.LinkSpeed / 1MB" not in cmd
-        # Must parse the string with a split on space
-        assert ".Split(' ')" in cmd or '.Split(" ")' in cmd
-        # Must handle Gbps, Mbps, bps variants
-        assert "gbps" in cmd.lower()
-        assert "mbps" in cmd.lower()
-        # Must explicitly exit 0 so non-fatal warnings don't produce rc=1
-        assert "exit 0" in cmd
+        assert ps_mock.call_count == 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -702,36 +761,76 @@ class TestGetUpdateHistory:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-class TestGetProcessList:
-    SAMPLE = json.dumps(
-        [
-            {
-                "PID": 1234,
-                "Name": "chrome",
-                "CPU": 12.5,
-                "MemMB": 512.0,
-                "Threads": 30,
-                "Handles": 400,
-                "Path": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                "Description": "Google Chrome",
-                "CmdLine": "chrome.exe --headless",
-            },
-            {
-                "PID": 4,
-                "Name": "System",
-                "CPU": 0.1,
-                "MemMB": 8.0,
-                "Threads": 200,
-                "Handles": 10000,
-                "Path": "",
-                "Description": "",
-                "CmdLine": "",
-            },
-        ]
+def _fake_psutil_proc(
+    pid=0,
+    name="",
+    cpu_user=0.0,
+    cpu_sys=0.0,
+    mem_rss_mb=0.0,
+    threads=0,
+    handles=0,
+    exe="",
+    cmdline=None,
+):
+    """Build a psutil-style proc object for process_iter mocking.
+
+    Matches the attribute shape ``get_process_list`` reads from
+    ``proc.info`` after passing the attrs list. ``cpu_times`` and
+    ``memory_info`` are namedtuple-ish objects with the same fields
+    psutil would populate.
+    """
+    import types
+
+    return types.SimpleNamespace(
+        info={
+            "pid": pid,
+            "name": name,
+            "cpu_times": types.SimpleNamespace(user=cpu_user, system=cpu_sys),
+            "memory_info": types.SimpleNamespace(rss=int(mem_rss_mb * 1024 * 1024)),
+            "num_threads": threads,
+            "num_handles": handles,
+            "exe": exe,
+            "cmdline": cmdline or [],
+        }
     )
 
+
+class TestGetProcessList:
+    """Post-PS→psutil tests (backlog #24 batch A). The old PS fixture was
+    JSON mocking subprocess.run; now we mock ``psutil.process_iter`` and
+    assert the same output contract."""
+
+    SAMPLE_PROCS = [
+        _fake_psutil_proc(
+            pid=1234,
+            name="chrome",
+            cpu_user=8.0,
+            cpu_sys=4.5,
+            mem_rss_mb=512.0,
+            threads=30,
+            handles=400,
+            exe=r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            cmdline=["chrome.exe", "--headless"],
+        ),
+        _fake_psutil_proc(
+            pid=4,
+            name="System",
+            cpu_user=0.1,
+            cpu_sys=0.0,
+            mem_rss_mb=8.0,
+            threads=200,
+            handles=10000,
+        ),
+    ]
+
+    def _patch(self, mocker, procs=None):
+        return mocker.patch(
+            "windesktopmgr.psutil.process_iter",
+            return_value=iter(procs if procs is not None else self.SAMPLE_PROCS),
+        )
+
     def test_happy_path_returns_structure(self, mocker):
-        _mock_run(mocker, stdout=self.SAMPLE)
+        self._patch(mocker)
         result = wdm.get_process_list()
         assert "processes" in result
         assert "total" in result
@@ -739,40 +838,55 @@ class TestGetProcessList:
         assert result["total"] == 2
 
     def test_total_mem_summed(self, mocker):
-        _mock_run(mocker, stdout=self.SAMPLE)
+        self._patch(mocker)
         result = wdm.get_process_list()
         assert result["total_mem_mb"] == pytest.approx(520.0, abs=1)
 
+    def test_cpu_is_cumulative_seconds(self, mocker):
+        """Regression: CPU must preserve PS ``Get-Process .CPU`` semantics —
+        cumulative seconds (user + system), NOT a percentage."""
+        self._patch(mocker)
+        result = wdm.get_process_list()
+        chrome = next(p for p in result["processes"] if p["Name"] == "chrome")
+        assert chrome["CPU"] == pytest.approx(12.5, abs=0.1)
+
     def test_empty_output_returns_fallback(self, mocker):
-        _mock_run(mocker, stdout="")
+        self._patch(mocker, procs=[])
         result = wdm.get_process_list()
         assert result["processes"] == []
         assert result["total"] == 0
 
-    def test_malformed_json_returns_fallback(self, mocker):
-        _mock_run(mocker, stdout="{bad}")
+    def test_iter_exception_returns_fallback(self, mocker):
+        mocker.patch("windesktopmgr.psutil.process_iter", side_effect=RuntimeError("oops"))
         result = wdm.get_process_list()
         assert result["processes"] == []
-
-    def test_timeout_returns_fallback(self, mocker):
-        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=45))
-        result = wdm.get_process_list()
         assert result["total"] == 0
+        assert result["flagged"] == []
 
-    def test_command_uses_get_process(self, mocker):
-        m = _mock_run(mocker, stdout=self.SAMPLE)
-        wdm.get_process_list()
-        cmd = m.call_args[0][0][-1]
-        assert "Get-Process" in cmd
+    def test_dead_process_is_skipped(self, mocker):
+        """Processes that exit mid-iteration raise NoSuchProcess — must skip."""
+        import psutil as _psutil
 
-    def test_command_uses_win32_process_for_paths(self, mocker):
-        m = _mock_run(mocker, stdout=self.SAMPLE)
+        class Dead:
+            @property
+            def info(self):
+                raise _psutil.NoSuchProcess(pid=9999)
+
+        good = self.SAMPLE_PROCS[0]
+        mocker.patch("windesktopmgr.psutil.process_iter", return_value=iter([good, Dead()]))
+        result = wdm.get_process_list()
+        # Only the healthy proc should come through.
+        assert result["total"] == 1
+
+    def test_uses_psutil_not_powershell(self, mocker):
+        """Regression guard: backlog #24 removed PowerShell from this path."""
+        ps_mock = mocker.patch("windesktopmgr.subprocess.run")
+        self._patch(mocker)
         wdm.get_process_list()
-        cmd = m.call_args[0][0][-1]
-        assert "Win32_Process" in cmd
+        assert ps_mock.call_count == 0
 
     def test_flagged_list_only_contains_flagged(self, mocker):
-        _mock_run(mocker, stdout=self.SAMPLE)
+        self._patch(mocker)
         result = wdm.get_process_list()
         for p in result["flagged"]:
             assert p["flag"] in ("warning", "critical")
@@ -784,37 +898,67 @@ class TestGetProcessList:
 
 
 class TestKillProcess:
+    """Post-PS→psutil tests (backlog #24 batch A). ``kill_process`` now
+    calls ``psutil.Process(pid).kill()`` — no subprocess at all. Tests
+    mock ``psutil.Process`` and assert the same ``{ok, error}`` contract."""
+
+    def _patch(self, mocker, kill_side_effect=None):
+        proc = mocker.MagicMock()
+        if kill_side_effect:
+            proc.kill.side_effect = kill_side_effect
+        return mocker.patch("windesktopmgr.psutil.Process", return_value=proc)
+
     def test_success_returns_ok_true(self, mocker):
-        _mock_run(mocker, stdout="", returncode=0)
+        self._patch(mocker)
         result = wdm.kill_process(1234)
         assert result["ok"] is True
+        assert result["error"] == ""
 
-    def test_failure_returns_ok_false_with_error(self, mocker):
-        _mock_run(mocker, stdout="", returncode=1, stderr="Access is denied")
+    def test_access_denied_returns_ok_false(self, mocker):
+        import psutil as _psutil
+
+        self._patch(mocker, kill_side_effect=_psutil.AccessDenied(pid=1234))
         result = wdm.kill_process(1234)
         assert result["ok"] is False
         assert "Access is denied" in result["error"]
 
-    def test_timeout_returns_ok_false(self, mocker):
-        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=10))
+    def test_no_such_process_returns_ok_false(self, mocker):
+        import psutil as _psutil
+
+        mocker.patch("windesktopmgr.psutil.Process", side_effect=_psutil.NoSuchProcess(pid=9999))
+        result = wdm.kill_process(9999)
+        assert result["ok"] is False
+        assert "No such process" in result["error"]
+
+    def test_generic_exception_returns_ok_false(self, mocker):
+        self._patch(mocker, kill_side_effect=RuntimeError("boom"))
         result = wdm.kill_process(1234)
         assert result["ok"] is False
+        assert "boom" in result["error"]
 
-    def test_pid_is_integer_cast_in_command(self, mocker):
-        m = _mock_run(mocker, stdout="", returncode=0)
+    def test_pid_is_integer_cast(self, mocker):
+        m = self._patch(mocker)
         wdm.kill_process(9999)
-        cmd = m.call_args[0][0][-1]
-        assert "9999" in cmd
-        assert "Stop-Process" in cmd
+        # The int() cast is what prevents injection — verify psutil.Process
+        # was called with a real integer, not whatever the caller passed.
+        args, _ = m.call_args
+        assert args[0] == 9999
+        assert isinstance(args[0], int)
 
-    def test_non_integer_pid_does_not_inject_arbitrary_code(self, mocker):
-        """int() cast must prevent shell injection via PID."""
-        m = _mock_run(mocker, stdout="", returncode=0)
-        # Passing a float — should be cast cleanly to int
+    def test_non_integer_pid_is_cleanly_cast(self, mocker):
+        """int() cast must prevent any garbage from reaching psutil."""
+        m = self._patch(mocker)
         wdm.kill_process(1234.9)
-        cmd = m.call_args[0][0][-1]
-        assert "1234" in cmd
-        assert "." not in cmd.split("-Id")[1].split()[0]
+        args, _ = m.call_args
+        assert args[0] == 1234
+        assert isinstance(args[0], int)
+
+    def test_uses_psutil_not_powershell(self, mocker):
+        """Regression guard: no subprocess calls on this path after batch A."""
+        ps_mock = mocker.patch("windesktopmgr.subprocess.run")
+        self._patch(mocker)
+        wdm.kill_process(1234)
+        assert ps_mock.call_count == 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -901,79 +1045,132 @@ class TestGetThermals:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+def _fake_svc(
+    name="",
+    display_name="",
+    status="running",
+    start_type="automatic",
+    pid=0,
+    description="",
+    binpath="",
+):
+    """Build a psutil.win_service_iter()-style object with as_dict()."""
+    svc = type("Svc", (), {})()
+    svc.as_dict = lambda: {  # noqa: B023 — intentional closure over vars
+        "name": name,
+        "display_name": display_name,
+        "status": status,
+        "start_type": start_type,
+        "pid": pid,
+        "description": description,
+        "binpath": binpath,
+    }
+    return svc
+
+
 class TestGetServicesList:
-    SAMPLE = json.dumps(
-        [
-            {
-                "Name": "wuauserv",
-                "DisplayName": "Windows Update",
-                "Status": "Running",
-                "StartMode": "Auto",
-                "ProcessId": 1234,
-                "Description": "Enables Windows Update",
-                "PathName": r"C:\Windows\system32\svchost.exe",
-            },
-            {
-                "Name": "diagtrack",
-                "DisplayName": "Connected User Experiences",
-                "Status": "Running",
-                "StartMode": "Auto",
-                "ProcessId": 5678,
-                "Description": "Telemetry",
-                "PathName": r"C:\Windows\system32\svchost.exe",
-            },
-        ]
-    )
+    """Post-PS→psutil tests (backlog #24 batch A). ``get_services_list``
+    now uses ``psutil.win_service_iter`` instead of
+    ``Get-WmiObject Win32_Service``. Status + StartMode must be
+    remapped to the title-case strings the JS renderer expects."""
+
+    SAMPLE_SVCS = [
+        _fake_svc(
+            name="wuauserv",
+            display_name="Windows Update",
+            status="running",
+            start_type="automatic",
+            pid=1234,
+            description="Enables Windows Update",
+            binpath=r"C:\Windows\system32\svchost.exe",
+        ),
+        _fake_svc(
+            name="diagtrack",
+            display_name="Connected User Experiences",
+            status="running",
+            start_type="automatic",
+            pid=5678,
+            description="Telemetry",
+            binpath=r"C:\Windows\system32\svchost.exe",
+        ),
+    ]
+
+    def _patch(self, mocker, svcs=None):
+        return mocker.patch(
+            "windesktopmgr.psutil.win_service_iter",
+            return_value=iter(svcs if svcs is not None else self.SAMPLE_SVCS),
+        )
 
     def test_happy_path_returns_list(self, mocker):
-        _mock_run(mocker, stdout=self.SAMPLE)
+        self._patch(mocker)
         result = wdm.get_services_list()
         assert isinstance(result, list)
         assert len(result) == 2
 
     def test_info_field_attached(self, mocker):
-        _mock_run(mocker, stdout=self.SAMPLE)
+        self._patch(mocker)
         result = wdm.get_services_list()
         for s in result:
             assert "info" in s
 
-    def test_empty_output_returns_empty_list(self, mocker):
-        _mock_run(mocker, stdout="")
+    def test_status_remapped_to_title_case(self, mocker):
+        """psutil returns 'running'/'stopped' lowercase — must map to title-case."""
+        self._patch(mocker)
+        result = wdm.get_services_list()
+        assert all(s["Status"] == "Running" for s in result)
+
+    def test_start_mode_remapped_to_auto(self, mocker):
+        """psutil 'automatic' → PS 'Auto' (for compat with summarize_services)."""
+        self._patch(mocker)
+        result = wdm.get_services_list()
+        assert all(s["StartMode"] == "Auto" for s in result)
+
+    def test_stopped_and_disabled_mapped(self, mocker):
+        svcs = [
+            _fake_svc(name="foo", display_name="Foo", status="stopped", start_type="disabled"),
+            _fake_svc(name="bar", display_name="Bar", status="stopped", start_type="manual"),
+        ]
+        self._patch(mocker, svcs=svcs)
+        result = wdm.get_services_list()
+        statuses = {s["Name"]: (s["Status"], s["StartMode"]) for s in result}
+        assert statuses["foo"] == ("Stopped", "Disabled")
+        assert statuses["bar"] == ("Stopped", "Manual")
+
+    def test_empty_iter_returns_empty_list(self, mocker):
+        self._patch(mocker, svcs=[])
         result = wdm.get_services_list()
         assert result == []
 
-    def test_malformed_json_returns_empty_list(self, mocker):
-        _mock_run(mocker, stdout="error text")
+    def test_exception_returns_empty_list(self, mocker):
+        mocker.patch("windesktopmgr.psutil.win_service_iter", side_effect=RuntimeError("boom"))
         result = wdm.get_services_list()
         assert result == []
 
-    def test_timeout_returns_empty_list(self, mocker):
-        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=30))
+    def test_as_dict_failure_skips_service(self, mocker):
+        bad = type("Bad", (), {"as_dict": lambda self: (_ for _ in ()).throw(RuntimeError("nope"))})()
+        good = self.SAMPLE_SVCS[0]
+        self._patch(mocker, svcs=[bad, good])
         result = wdm.get_services_list()
-        assert result == []
-
-    def test_single_service_object_normalised(self, mocker):
-        single = json.dumps(
-            {
-                "Name": "wuauserv",
-                "DisplayName": "Windows Update",
-                "Status": "Running",
-                "StartMode": "Auto",
-                "ProcessId": 1,
-                "Description": "",
-                "PathName": "",
-            }
-        )
-        _mock_run(mocker, stdout=single)
-        result = wdm.get_services_list()
-        assert isinstance(result, list)
         assert len(result) == 1
+        assert result[0]["Name"] == "wuauserv"
 
-    def test_command_uses_win32_service(self, mocker):
-        m = _mock_run(mocker, stdout=self.SAMPLE)
+    def test_services_sorted_by_display_name(self, mocker):
+        svcs = [
+            _fake_svc(name="zulu", display_name="Zulu"),
+            _fake_svc(name="alpha", display_name="Alpha"),
+            _fake_svc(name="mike", display_name="Mike"),
+        ]
+        self._patch(mocker, svcs=svcs)
+        result = wdm.get_services_list()
+        names = [s["DisplayName"] for s in result]
+        assert names == sorted(names)
+
+    def test_uses_psutil_not_powershell(self, mocker):
+        """Regression guard: no PS calls on this path after batch A."""
+        ps_mock = mocker.patch("windesktopmgr.subprocess.run")
+        self._patch(mocker)
         wdm.get_services_list()
-        cmd = m.call_args[0][0][-1]
-        assert "Win32_Service" in cmd
+        assert ps_mock.call_count == 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1099,26 +1296,51 @@ class TestToggleStartupItem:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-class TestGetMemoryAnalysis:
-    PROCS = json.dumps(
-        [
-            {"ProcessName": "chrome", "MemMB": 1024.0},
-            {"ProcessName": "msmpeng", "MemMB": 180.0},
-            {"ProcessName": "mfemms", "MemMB": 350.0},
-        ]
-    )
-    SYSINFO = json.dumps({"TotalMB": 32768, "FreeMB": 16000})
+def _fake_mem_proc(name="", mem_mb=0.0):
+    """Build a psutil-style proc object for ``process_iter(['name','memory_info'])``."""
+    import types
 
-    def _make_mock(self, mocker, procs=None, sysinfo=None):
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = [
-            type("R", (), {"stdout": procs or self.PROCS, "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": sysinfo or self.SYSINFO, "returncode": 0, "stderr": ""})(),
-        ]
-        return m
+    return types.SimpleNamespace(
+        info={
+            "name": name,
+            "memory_info": types.SimpleNamespace(rss=int(mem_mb * 1024 * 1024)),
+        }
+    )
+
+
+def _fake_vmem(total_mb=32768, available_mb=16000):
+    """Build a psutil.virtual_memory()-style namedtuple."""
+    import types
+
+    return types.SimpleNamespace(
+        total=int(total_mb * 1024 * 1024),
+        available=int(available_mb * 1024 * 1024),
+    )
+
+
+class TestGetMemoryAnalysis:
+    """Post-PS→psutil tests (backlog #24 batch A). ``get_memory_analysis``
+    now uses ``psutil.virtual_memory`` + ``process_iter`` instead of
+    ``Get-Process`` + ``Get-WmiObject Win32_OperatingSystem``."""
+
+    SAMPLE_PROCS = [
+        _fake_mem_proc(name="chrome", mem_mb=1024.0),
+        _fake_mem_proc(name="msmpeng", mem_mb=180.0),
+        _fake_mem_proc(name="mfemms", mem_mb=350.0),
+    ]
+
+    def _patch(self, mocker, procs=None, vmem=None):
+        mocker.patch(
+            "windesktopmgr.psutil.process_iter",
+            return_value=iter(procs if procs is not None else self.SAMPLE_PROCS),
+        )
+        mocker.patch(
+            "windesktopmgr.psutil.virtual_memory",
+            return_value=vmem or _fake_vmem(total_mb=32768, available_mb=16000),
+        )
 
     def test_happy_path_keys(self, mocker):
-        self._make_mock(mocker)
+        self._patch(mocker)
         result = wdm.get_memory_analysis()
         for key in (
             "total_mb",
@@ -1133,49 +1355,58 @@ class TestGetMemoryAnalysis:
             assert key in result
 
     def test_totals_calculated(self, mocker):
-        self._make_mock(mocker)
+        self._patch(mocker)
         result = wdm.get_memory_analysis()
         assert result["total_mb"] == 32768
         assert result["free_mb"] == 16000
         assert result["used_mb"] == 32768 - 16000
 
     def test_mcafee_detected(self, mocker):
-        self._make_mock(mocker)
+        self._patch(mocker)
         result = wdm.get_memory_analysis()
         assert result["has_mcafee"] is True
         assert result["mcafee_mb"] > 0
 
     def test_top_procs_sorted_by_mem_descending(self, mocker):
-        self._make_mock(mocker)
+        self._patch(mocker)
         result = wdm.get_memory_analysis()
         mems = [p["mem"] for p in result["top_procs"]]
         assert mems == sorted(mems, reverse=True)
 
-    def test_empty_process_output_returns_empty_dict(self, mocker):
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = subprocess.TimeoutExpired(cmd="powershell", timeout=20)
+    def test_virtual_memory_failure_returns_empty_dict(self, mocker):
+        mocker.patch("windesktopmgr.psutil.process_iter", return_value=iter([]))
+        mocker.patch("windesktopmgr.psutil.virtual_memory", side_effect=RuntimeError("boom"))
         result = wdm.get_memory_analysis()
         assert result == {}
 
-    def test_malformed_json_returns_empty_dict(self, mocker):
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = [
-            type("R", (), {"stdout": "NOT JSON", "returncode": 0, "stderr": ""})(),
-        ]
+    def test_process_iter_failure_returns_empty_dict(self, mocker):
+        mocker.patch("windesktopmgr.psutil.process_iter", side_effect=RuntimeError("boom"))
         result = wdm.get_memory_analysis()
         assert result == {}
 
-    def test_procs_command_uses_get_process(self, mocker):
-        m = self._make_mock(mocker)
-        wdm.get_memory_analysis()
-        cmd = m.call_args_list[0][0][0][-1]
-        assert "Get-Process" in cmd
+    def test_dead_process_is_skipped(self, mocker):
+        import psutil as _psutil
 
-    def test_sysinfo_command_uses_win32_operatingsystem(self, mocker):
-        m = self._make_mock(mocker)
+        class Dead:
+            @property
+            def info(self):
+                raise _psutil.NoSuchProcess(pid=1)
+
+        mocker.patch(
+            "windesktopmgr.psutil.process_iter",
+            return_value=iter([Dead(), self.SAMPLE_PROCS[0]]),
+        )
+        mocker.patch("windesktopmgr.psutil.virtual_memory", return_value=_fake_vmem())
+        result = wdm.get_memory_analysis()
+        # Chrome should still come through despite the dead process first.
+        assert result["top_procs"][0]["name"] == "chrome"
+
+    def test_uses_psutil_not_powershell(self, mocker):
+        """Regression guard: no PS calls on this path after batch A."""
+        ps_mock = mocker.patch("windesktopmgr.subprocess.run")
+        self._patch(mocker)
         wdm.get_memory_analysis()
-        cmd = m.call_args_list[1][0][0][-1]
-        assert "Win32_OperatingSystem" in cmd
+        assert ps_mock.call_count == 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1917,30 +2148,61 @@ class TestCheckDellBiosUpdate:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-class TestGetDiskHealthIOCommand:
-    """Command-content tests for the IO sub-command (2nd subprocess call)."""
+class TestGetDiskHealthIOSampling:
+    """Batch A (backlog #24): disk IO now comes from psutil.disk_io_counters,
+    sampled twice ~1 s apart — no more PowerShell ``Get-Counter``. These
+    tests guard the new sampling path and ensure the PS command is gone."""
 
-    def _make_mock(self, mocker):
+    def _patch_physical(self, mocker):
+        mocker.patch("disk._enumerate_logical_drives", return_value=[])
         m = mocker.patch("windesktopmgr.subprocess.run")
-        main_out = json.dumps({"drives": [], "physical": []})
-        m.side_effect = [
-            type("R", (), {"stdout": main_out, "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
-        ]
+        m.return_value = type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})()
         return m
 
-    def test_io_command_uses_get_counter(self, mocker):
-        m = self._make_mock(mocker)
-        wdm.get_disk_health()
-        cmd = m.call_args_list[1][0][0][-1]
-        assert "Get-Counter" in cmd
+    def test_no_getcounter_subprocess_calls(self, mocker):
+        """Regression guard: backlog #24 removed PS ``Get-Counter`` from this path.
 
-    def test_io_command_requests_read_and_write_bytes(self, mocker):
-        m = self._make_mock(mocker)
+        Only the physical-disk PS command is allowed; nothing containing
+        ``Get-Counter`` should be invoked."""
+        import types
+
+        m = self._patch_physical(mocker)
+        first = {"d0": types.SimpleNamespace(read_bytes=0, write_bytes=0)}
+        second = {"d0": types.SimpleNamespace(read_bytes=0, write_bytes=0)}
+        mocker.patch("disk.psutil.disk_io_counters", side_effect=[first, second])
+        mocker.patch("disk.time.sleep", return_value=None)
         wdm.get_disk_health()
-        cmd = m.call_args_list[1][0][0][-1]
-        assert "Disk Read Bytes/sec" in cmd
-        assert "Disk Write Bytes/sec" in cmd
+        for call in m.call_args_list:
+            cmd = call[0][0][-1]
+            assert "Get-Counter" not in cmd
+            assert "Disk Read Bytes/sec" not in cmd
+            assert "Disk Write Bytes/sec" not in cmd
+
+    def test_empty_first_sample_returns_empty_io(self, mocker):
+        """disk_io_counters returning {} early → no sampling interval, [] io."""
+        self._patch_physical(mocker)
+        mocker.patch("disk.psutil.disk_io_counters", return_value={})
+        sleep_mock = mocker.patch("disk.time.sleep")
+        result = wdm.get_disk_health()
+        assert result["io"] == []
+        sleep_mock.assert_not_called()
+
+    def test_missing_disk_on_second_sample_is_skipped(self, mocker):
+        """If a disk disappears between samples, skip it — don't divide on None."""
+        import types
+
+        self._patch_physical(mocker)
+        first = {
+            "d0": types.SimpleNamespace(read_bytes=0, write_bytes=0),
+            "d1": types.SimpleNamespace(read_bytes=0, write_bytes=0),
+        }
+        second = {"d0": types.SimpleNamespace(read_bytes=1024, write_bytes=0)}
+        mocker.patch("disk.psutil.disk_io_counters", side_effect=[first, second])
+        mocker.patch("disk.time.sleep", return_value=None)
+        result = wdm.get_disk_health()
+        # Only d0 survives both samples.
+        disks = {entry["Counter"].split("(")[1].split(")")[0] for entry in result["io"]}
+        assert disks == {"d0"}
 
 
 class TestGetThermsFansCommand:

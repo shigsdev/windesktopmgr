@@ -218,20 +218,20 @@ Each of these is **≤ 2 hours** of work including tests. Ten items = roughly on
 
 ## Recommended migration batches
 
-### Batch A — psutil-only quick wins (7 sites)
+### Batch A — psutil-only quick wins (7 sites) — ✅ SHIPPED 2026-04-14
 All are drop-in `psutil` substitutions with no new pypi dependencies (`psutil` is already pinned to `>=5.9.0,<8.0.0`).
 
-| Site | Function | Replacement |
-|---|---|---|
-| #19 | `get_disk_health` IO counters | `psutil.disk_io_counters(perdisk=True)` |
-| #22 | `get_network_data` connections | `psutil.net_connections(kind='tcp')` |
-| #23 | `get_network_data` adapters | `psutil.net_if_{addrs,stats}` + `net_io_counters` |
-| #29 | `get_process_list` | `psutil.process_iter` |
-| #30 | `kill_process` | `psutil.Process.kill` |
-| #34 | `get_services_list` | `psutil.win_service_iter` |
-| #36/#37 | `get_memory_analysis` | `psutil.virtual_memory` + `psutil.process_iter` |
+| Site | Function | Replacement | Status |
+|---|---|---|---|
+| #19 | `get_disk_health` IO counters | `psutil.disk_io_counters(perdisk=True)` sampled twice ~1 s apart | ✅ |
+| #22 | `get_network_data` connections | `psutil.net_connections(kind='tcp')` + pid→name map from `process_iter` | ✅ |
+| #23 | `get_network_data` adapters | `psutil.net_if_stats` + `net_io_counters(pernic=True)` | ✅ |
+| #29 | `get_process_list` | `psutil.process_iter` (CPU preserves cumulative-seconds semantics) | ✅ |
+| #30 | `kill_process` | `psutil.Process.kill` | ✅ |
+| #34 | `get_services_list` | `psutil.win_service_iter` + title-case Status/StartMode remap | ✅ |
+| #36/#37 | `get_memory_analysis` | `psutil.virtual_memory` + `process_iter(['name','memory_info'])` | ✅ |
 
-**Effort:** ~1 day. **Risk:** low (psutil is the most mature Windows sysinfo library in Python). **Testability:** huge — each test file currently needs `mocker.patch("windesktopmgr.subprocess.run")` plus JSON payload fixtures; after migration those become `mocker.patch("windesktopmgr.psutil.<fn>")` returning named tuples.
+**Effort actual:** ~1 day (matches estimate). **Risk:** realized low — all 60 rewritten tests passed first-run, full suite 1332/1332 green at 85% coverage. **Test-target rewrite cost:** 6 classes + 1 route test + 2 snapshot tests + 2 e2e smoke tests; each class now mocks `psutil.*` returning `types.SimpleNamespace` objects instead of `subprocess.run` JSON payloads.
 
 ### Batch B — `wmi` package wins (9 sites)
 Adds `wmi>=1.5.1` to `requirements.txt`. One persistent connection covers multiple queries.

@@ -165,13 +165,53 @@ def _enumerate_logical_drives() -> list[dict]:
     return drives
 
 
+def _sample_disk_io() -> list[dict]:
+    """Sample per-disk read/write rate using psutil (no PowerShell).
+
+    Replaces the legacy ``Get-Counter "\\PhysicalDisk(*)\\Disk Read Bytes/sec"``
+    pipeline (backlog #24 batch A, site #19). ``psutil.disk_io_counters``
+    exposes monotonic byte counters — we sample twice ~1 s apart and
+    divide the delta to get bytes/sec, then convert to KB/s to match the
+    Value semantics the PS pipeline used.
+
+    Output preserves the legacy ``[{Counter, Value}]`` shape so tests and
+    the existing ``io`` field contract keep working. Counter paths follow
+    the PerfMon-style ``physicaldisk(<name>)\\disk (read|write) bytes/sec``
+    string so anything filtering on substrings still matches.
+    """
+    try:
+        first = psutil.disk_io_counters(perdisk=True) or {}
+    except Exception:
+        return []
+    if not first:
+        return []
+    time.sleep(1.0)
+    try:
+        second = psutil.disk_io_counters(perdisk=True) or {}
+    except Exception:
+        return []
+
+    out: list[dict] = []
+    for name, s2 in second.items():
+        s1 = first.get(name)
+        if not s1:
+            continue
+        # Bytes per second over the ~1 s interval → KB/s for output.
+        read_kbs = round(max(0, s2.read_bytes - s1.read_bytes) / 1024, 1)
+        write_kbs = round(max(0, s2.write_bytes - s1.write_bytes) / 1024, 1)
+        out.append({"Counter": f"\\physicaldisk({name})\\disk read bytes/sec", "Value": read_kbs})
+        out.append({"Counter": f"\\physicaldisk({name})\\disk write bytes/sec", "Value": write_kbs})
+    return out
+
+
 def get_disk_health() -> dict:
     """Return drives + physical disks + disk IO for the dashboard.
 
     Drives come from ``_enumerate_logical_drives()`` (Python/psutil, no PS).
     Physical disks still use ``Get-PhysicalDisk`` because Health, MediaType,
     and BusType are only surfaced by the Windows Storage Management API
-    and psutil doesn't wrap it. IO counters use ``Get-Counter``.
+    and psutil doesn't wrap it. IO counters use ``psutil.disk_io_counters``
+    sampled twice (backlog #24 batch A).
     """
     ps_physical = r"""
 $physical = Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
@@ -185,16 +225,6 @@ $physical = Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
     }
 }
 $physical | ConvertTo-Json -Depth 3
-"""
-    ps_io = r"""
-$diskIO = Get-Counter "\PhysicalDisk(*)\Disk Read Bytes/sec","\PhysicalDisk(*)\Disk Write Bytes/sec" -SampleInterval 1 -MaxSamples 1 -EA SilentlyContinue
-$result = @()
-if ($diskIO) {
-    $diskIO.CounterSamples | ForEach-Object {
-        $result += [PSCustomObject]@{ Counter=$_.Path; Value=[math]::Round($_.CookedValue/1KB,1) }
-    }
-}
-$result | ConvertTo-Json -Depth 2
 """
     drives = _enumerate_logical_drives()
     physical: list[dict] = []
@@ -210,17 +240,10 @@ $result | ConvertTo-Json -Depth 2
     except Exception as e:
         print(f"[Disk physical error] {e}")
         physical = []
-    io_data: list[dict] = []
     try:
-        r2 = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps_io],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        io_raw = json.loads(r2.stdout.strip() or "[]")
-        io_data = io_raw if isinstance(io_raw, list) else [io_raw]
-    except Exception:
+        io_data = _sample_disk_io()
+    except Exception as e:
+        print(f"[Disk IO error] {e}")
         io_data = []
     return {"drives": drives, "physical": physical, "io": io_data}
 

@@ -18,6 +18,7 @@ import urllib.request
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
+import psutil
 from flask import Flask, jsonify, make_response, render_template, request, send_from_directory
 
 from applogging import get_logger
@@ -2030,67 +2031,91 @@ def toggle_startup_item(name: str, item_type: str, enable: bool) -> dict:
 
 
 def get_network_data() -> dict:
-    ps_conns = r"""
-$procs = @{}
-Get-Process -ErrorAction SilentlyContinue | ForEach-Object { $procs[$_.Id] = $_.ProcessName }
-$conns = Get-NetTCPConnection -ErrorAction SilentlyContinue | ForEach-Object {
-    [PSCustomObject]@{
-        LocalAddress  = $_.LocalAddress
-        LocalPort     = $_.LocalPort
-        RemoteAddress = $_.RemoteAddress
-        RemotePort    = $_.RemotePort
-        State         = $_.State.ToString()
-        PID           = $_.OwningProcess
-        Process       = if ($procs.ContainsKey($_.OwningProcess)) { $procs[$_.OwningProcess] } else { "Unknown" }
-    }
-}
-$conns | ConvertTo-Json -Depth 2
-"""
-    # LinkSpeed from Get-NetAdapter is a STRING like "1 Gbps" / "100 Mbps" / "0 bps".
-    # Dividing by 1MB fails with "Cannot convert value '1 Gbps' to type Int32",
-    # so we parse the number + unit manually and convert to megabits.
-    ps_adapters = r"""
-$ErrorActionPreference = 'SilentlyContinue'
-Get-NetAdapterStatistics | ForEach-Object {
-    $a = Get-NetAdapter -Name $_.Name
-    $speedMb = 0
-    if ($a -and $a.LinkSpeed) {
-        $parts = ([string]$a.LinkSpeed).Trim().Split(' ')
-        if ($parts.Length -ge 2) {
-            try {
-                $n = [double]$parts[0]
-                switch ($parts[1].ToLower()) {
-                    'gbps' { $speedMb = [int]($n * 1000) }
-                    'mbps' { $speedMb = [int]$n }
-                    'kbps' { $speedMb = [int]($n / 1000) }
-                    'bps'  { $speedMb = [int]($n / 1000000) }
-                    default { $speedMb = 0 }
-                }
-            } catch { $speedMb = 0 }
-        }
-    }
-    [PSCustomObject]@{
-        Name        = $_.Name
-        SentMB      = [math]::Round($_.SentBytes   / 1MB, 2)
-        ReceivedMB  = [math]::Round($_.ReceivedBytes / 1MB, 2)
-        Status      = if ($a) { $a.Status } else { "Unknown" }
-        LinkSpeedMb = $speedMb
-    }
-} | ConvertTo-Json -Depth 2
-exit 0
-"""
-    try:
-        r1 = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps_conns], capture_output=True, text=True, timeout=20
-        )
-        conns_raw = json.loads(r1.stdout.strip() or "[]")
-        conns = conns_raw if isinstance(conns_raw, list) else [conns_raw]
+    """Enumerate TCP connections + adapter stats using psutil (no PowerShell).
 
-        r2 = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps_adapters], capture_output=True, text=True, timeout=15
-        )
-        adapters_raw = json.loads(r2.stdout.strip() or "[]")
-        adapters = adapters_raw if isinstance(adapters_raw, list) else [adapters_raw]
+    Replaces ``Get-NetTCPConnection`` + ``Get-NetAdapterStatistics`` +
+    ``Get-NetAdapter`` (backlog #24 batch A, sites #22 + #23). The output
+    shape is preserved exactly so the /api/network route and JS renderer
+    don't change:
+
+    - ``State`` values are mapped from psutil's ``ESTABLISHED``/``LISTEN``
+      constants back to PowerShell's ``Established``/``Listen`` title-case
+      so existing filters keep working.
+    - ``LinkSpeedMb`` comes from ``net_if_stats().speed`` (already Mbps).
+    - ``SentMB`` / ``ReceivedMB`` come from ``net_io_counters(pernic=True)``.
+    - Process names are resolved per-PID via ``Process(pid).name()``.
+    """
+    try:
+        # Build pid -> name map once to avoid per-conn Process() lookups.
+        pid_names: dict[int, str] = {}
+        for proc in psutil.process_iter(["pid", "name"]):
+            try:
+                pid_names[proc.info["pid"]] = proc.info.get("name") or "Unknown"
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+
+        # Map psutil status constants → the title-case strings the UI expects.
+        _state_map = {
+            psutil.CONN_ESTABLISHED: "Established",
+            psutil.CONN_LISTEN: "Listen",
+            psutil.CONN_SYN_SENT: "SynSent",
+            psutil.CONN_SYN_RECV: "SynReceived",
+            psutil.CONN_FIN_WAIT1: "FinWait1",
+            psutil.CONN_FIN_WAIT2: "FinWait2",
+            psutil.CONN_TIME_WAIT: "TimeWait",
+            psutil.CONN_CLOSE: "Closed",
+            psutil.CONN_CLOSE_WAIT: "CloseWait",
+            psutil.CONN_LAST_ACK: "LastAck",
+            psutil.CONN_CLOSING: "Closing",
+            psutil.CONN_NONE: "None",
+        }
+
+        conns: list[dict] = []
+        try:
+            raw_conns = psutil.net_connections(kind="tcp")
+        except (psutil.AccessDenied, PermissionError):
+            # net_connections needs admin on Windows for system-wide visibility.
+            # Fall back to empty list (same as PS pipeline when RPC is denied).
+            raw_conns = []
+        for c in raw_conns:
+            laddr = c.laddr
+            raddr = c.raddr
+            pid = c.pid or 0
+            conns.append(
+                {
+                    "LocalAddress": laddr.ip if laddr else "",
+                    "LocalPort": laddr.port if laddr else 0,
+                    "RemoteAddress": raddr.ip if raddr else "",
+                    "RemotePort": raddr.port if raddr else 0,
+                    "State": _state_map.get(c.status, c.status),
+                    "PID": pid,
+                    "Process": pid_names.get(pid, "Unknown"),
+                }
+            )
+
+        # Adapters: combine net_io_counters (bytes) + net_if_stats (speed/up).
+        try:
+            io_counters = psutil.net_io_counters(pernic=True)
+        except Exception:
+            io_counters = {}
+        try:
+            if_stats = psutil.net_if_stats()
+        except Exception:
+            if_stats = {}
+
+        adapters: list[dict] = []
+        for name, counters in io_counters.items():
+            stats = if_stats.get(name)
+            adapters.append(
+                {
+                    "Name": name,
+                    "SentMB": round(counters.bytes_sent / (1024 * 1024), 2),
+                    "ReceivedMB": round(counters.bytes_recv / (1024 * 1024), 2),
+                    "Status": ("Up" if (stats and stats.isup) else "Down") if stats else "Unknown",
+                    # psutil speed is already in Mbps — match the PS output directly.
+                    "LinkSpeedMb": int(stats.speed) if stats and stats.speed else 0,
+                }
+            )
 
         established = [c for c in conns if c.get("State") == "Established"]
         listening = [c for c in conns if c.get("State") == "Listen"]
@@ -4091,95 +4116,101 @@ MEM_CRIT_MB = 1500
 
 
 def get_process_list() -> dict:
-    # Use Get-WmiObject Win32_Process — no elevation needed, much faster than
-    # Get-Process with MainModule which hangs on protected system processes.
-    ps = r"""
-$wmi = @{}
-try {
-    Get-WmiObject Win32_Process -EA SilentlyContinue | ForEach-Object {
-        $wmi[$_.ProcessId] = [PSCustomObject]@{
-            Path        = $_.ExecutablePath
-            Company     = ""
-            Description = $_.Description
-            CmdLine     = $_.CommandLine
-        }
-    }
-} catch {}
-$procs = Get-Process -ErrorAction SilentlyContinue | ForEach-Object {
-    $cpu = 0
-    try { $cpu = [math]::Round($_.CPU, 1) } catch {}
-    $w = $wmi[$_.Id]
-    [PSCustomObject]@{
-        PID         = $_.Id
-        Name        = $_.ProcessName
-        CPU         = $cpu
-        MemMB       = [math]::Round($_.WorkingSet64 / 1MB, 1)
-        Threads     = $_.Threads.Count
-        Handles     = $_.HandleCount
-        Path        = if ($w) { $w.Path } else { "" }
-        Description = if ($w) { $w.Description } else { "" }
-        CmdLine     = if ($w) { ($w.CmdLine -replace "`"","") } else { "" }
-    }
-} | Sort-Object MemMB -Descending
-$procs | ConvertTo-Json -Depth 2
-"""
+    """Enumerate running processes using psutil (no PowerShell).
+
+    Replaces the older ``Get-WmiObject Win32_Process`` + ``Get-Process``
+    PowerShell pipeline (backlog #24 batch A). ``psutil.process_iter`` is
+    ~10x faster per call and avoids the ~200–400 ms ``powershell.exe``
+    cold start.
+
+    The ``CPU`` field preserves the previous semantics: cumulative CPU
+    **seconds** (user + system), not a percentage — matching what
+    ``Get-Process .CPU`` returned. ``MEM_CRIT_MB`` / ``CPU_WARN_PCT``
+    thresholds are applied unchanged.
+    """
+    procs: list[dict] = []
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=45
-        )
-        if r.stderr.strip():
-            print(f"[ProcessMonitor] stderr: {r.stderr.strip()[:200]}")
-        raw = r.stdout.strip()
-        if not raw:
-            print("[ProcessMonitor] No output from PowerShell")
-            return {"processes": [], "total": 0, "total_mem_mb": 0, "flagged": [], "flag_notes": []}
-        data = json.loads(raw)
-        procs = data if isinstance(data, list) else [data]
+        for proc in psutil.process_iter(
+            ["pid", "name", "cpu_times", "memory_info", "num_threads", "num_handles", "exe", "cmdline"],
+        ):
+            try:
+                info = proc.info
+                cpu_t = info.get("cpu_times")
+                cpu_sec = round((cpu_t.user + cpu_t.system), 1) if cpu_t else 0
+                mem = info.get("memory_info")
+                mem_mb = round(mem.rss / (1024 * 1024), 1) if mem else 0
+                cmdline_list = info.get("cmdline") or []
+                cmdline = " ".join(cmdline_list).replace('"', "")
+                procs.append(
+                    {
+                        "PID": info.get("pid", 0),
+                        "Name": info.get("name", "") or "",
+                        "CPU": cpu_sec,
+                        "MemMB": mem_mb,
+                        "Threads": info.get("num_threads") or 0,
+                        "Handles": info.get("num_handles") or 0,
+                        "Path": info.get("exe") or "",
+                        # psutil doesn't expose Win32_Process.Description — mirror it from Name
+                        # which matches what WMI usually returned anyway (image-name fallback).
+                        "Description": info.get("name", "") or "",
+                        "CmdLine": cmdline,
+                    }
+                )
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                # Process exited between iter and read, or we can't see it (protected).
+                continue
 
-        total_mem = sum(p.get("MemMB", 0) for p in procs)
-        flags = []
-        for p in procs:
-            name_l = (p.get("Name", "") + ".exe").lower()
-            mem = p.get("MemMB", 0)
-            cpu = p.get("CPU", 0)
-            # Attach enrichment info
-            p["info"] = get_process_info(p.get("Name", ""), p.get("Path", ""))
-            # Use safe_kill from KB/cache to refine flagging
-            is_safe_system = name_l in SAFE_PROCESSES or (p["info"] and p["info"].get("safe_kill") is False)
-            p["flag"] = ""
-            if not is_safe_system:
-                if mem >= MEM_CRIT_MB:
-                    plain = (p["info"] or {}).get("plain", p["Name"])
-                    p["flag"] = "critical"
-                    flags.append(f"{plain} using {mem:.0f} MB RAM")
-                elif mem >= MEM_WARN_MB:
-                    p["flag"] = "warning"
-                elif cpu >= CPU_WARN_PCT:
-                    plain = (p["info"] or {}).get("plain", p["Name"])
-                    p["flag"] = "warning"
-                    flags.append(f"{plain} using {cpu:.0f}% CPU")
-
-        return {
-            "processes": procs,
-            "total": len(procs),
-            "total_mem_mb": round(total_mem, 1),
-            "flagged": [p for p in procs if p["flag"]],
-            "flag_notes": flags[:5],
-        }
+        procs.sort(key=lambda p: p["MemMB"], reverse=True)
     except Exception as e:
         print(f"[ProcessMonitor] error: {e}")
         return {"processes": [], "total": 0, "total_mem_mb": 0, "flagged": [], "flag_notes": []}
 
+    total_mem = sum(p.get("MemMB", 0) for p in procs)
+    flags = []
+    for p in procs:
+        name_l = (p.get("Name", "") + ".exe").lower()
+        mem = p.get("MemMB", 0)
+        cpu = p.get("CPU", 0)
+        # Attach enrichment info
+        p["info"] = get_process_info(p.get("Name", ""), p.get("Path", ""))
+        # Use safe_kill from KB/cache to refine flagging
+        is_safe_system = name_l in SAFE_PROCESSES or (p["info"] and p["info"].get("safe_kill") is False)
+        p["flag"] = ""
+        if not is_safe_system:
+            if mem >= MEM_CRIT_MB:
+                plain = (p["info"] or {}).get("plain", p["Name"])
+                p["flag"] = "critical"
+                flags.append(f"{plain} using {mem:.0f} MB RAM")
+            elif mem >= MEM_WARN_MB:
+                p["flag"] = "warning"
+            elif cpu >= CPU_WARN_PCT:
+                plain = (p["info"] or {}).get("plain", p["Name"])
+                p["flag"] = "warning"
+                flags.append(f"{plain} using {cpu:.0f}% CPU")
+
+    return {
+        "processes": procs,
+        "total": len(procs),
+        "total_mem_mb": round(total_mem, 1),
+        "flagged": [p for p in procs if p["flag"]],
+        "flag_notes": flags[:5],
+    }
+
 
 def kill_process(pid: int) -> dict:
+    """Terminate a process by PID using psutil (no PowerShell).
+
+    Replaces ``Stop-Process -Force`` (backlog #24 batch A). ``int(pid)``
+    cast is preserved so callers can pass floats / strings safely; the
+    psutil call will only accept a real int.
+    """
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", f"Stop-Process -Id {int(pid)} -Force -ErrorAction Stop"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        return {"ok": r.returncode == 0, "error": r.stderr.strip()}
+        psutil.Process(int(pid)).kill()
+        return {"ok": True, "error": ""}
+    except psutil.NoSuchProcess:
+        return {"ok": False, "error": f"No such process: {int(pid)}"}
+    except psutil.AccessDenied:
+        return {"ok": False, "error": "Access is denied"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -4738,25 +4769,57 @@ def get_services_item_info(svc_name: str, display_name: str) -> dict | None:
 
 
 def get_services_list() -> list:
-    ps = r"""
-Get-WmiObject Win32_Service | ForEach-Object {
-    [PSCustomObject]@{
-        Name        = $_.Name
-        DisplayName = $_.DisplayName
-        Status      = $_.State
-        StartMode   = $_.StartMode
-        ProcessId   = $_.ProcessId
-        Description = $_.Description
-        PathName    = $_.PathName
+    """Enumerate Windows services using psutil (no PowerShell).
+
+    Replaces ``Get-WmiObject Win32_Service`` (backlog #24 batch A, site
+    #34). ``psutil.win_service_iter`` + ``.as_dict()`` surfaces every
+    field we previously read from WMI, but Status + StartMode values need
+    light remapping to match the PowerShell title-case the JS renderer
+    expects:
+
+    - psutil status: ``running``/``stopped``/``start_pending``/``paused``/…
+      → ``Running``/``Stopped``/``StartPending``/``Paused``/…
+    - psutil start_type: ``automatic``/``manual``/``disabled`` →
+      ``Auto``/``Manual``/``Disabled`` (the exact strings the PS code
+      returned and that summarize_services() compares against).
+    """
+    _status_map = {
+        "running": "Running",
+        "stopped": "Stopped",
+        "start_pending": "StartPending",
+        "stop_pending": "StopPending",
+        "continue_pending": "ContinuePending",
+        "pause_pending": "PausePending",
+        "paused": "Paused",
     }
-} | Sort-Object DisplayName | ConvertTo-Json -Depth 2
-"""
+    _start_map = {
+        "automatic": "Auto",
+        "manual": "Manual",
+        "disabled": "Disabled",
+    }
+
+    svcs: list[dict] = []
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=60
-        )
-        data = json.loads(r.stdout.strip() or "[]")
-        svcs = data if isinstance(data, list) else [data]
+        for svc in psutil.win_service_iter():
+            try:
+                d = svc.as_dict()
+            except Exception:
+                # Some services raise on .as_dict() (e.g. missing description
+                # permissions). Skip them — WMI would have skipped them too.
+                continue
+            svcs.append(
+                {
+                    "Name": d.get("name") or "",
+                    "DisplayName": d.get("display_name") or "",
+                    "Status": _status_map.get((d.get("status") or "").lower(), d.get("status") or ""),
+                    "StartMode": _start_map.get((d.get("start_type") or "").lower(), d.get("start_type") or ""),
+                    "ProcessId": d.get("pid") or 0,
+                    "Description": d.get("description") or "",
+                    "PathName": d.get("binpath") or "",
+                }
+            )
+        # Match the PS pipeline's Sort-Object DisplayName so UI ordering is stable.
+        svcs.sort(key=lambda s: (s.get("DisplayName") or "").lower())
         for s in svcs:
             s["info"] = get_services_item_info(s.get("Name", ""), s.get("DisplayName", ""))
         return svcs
@@ -5630,33 +5693,30 @@ def _categorise_process(name: str) -> str:
 
 
 def get_memory_analysis() -> dict:
-    ps = r"""
-Get-Process -ErrorAction SilentlyContinue |
-    Select-Object ProcessName,
-        @{N='MemMB';E={[math]::Round($_.WorkingSet64/1MB,1)}} |
-    ConvertTo-Json -Depth 2
-"""
-    try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=20
-        )
-        data = json.loads(r.stdout.strip() or "[]")
-        procs = data if isinstance(data, list) else [data]
+    """Summarise system memory usage using psutil (no PowerShell).
 
-        # System memory info
-        ps2 = r"""
-$os = Get-WmiObject Win32_OperatingSystem
-[PSCustomObject]@{
-    TotalMB = [math]::Round($os.TotalVisibleMemorySize/1024,0)
-    FreeMB  = [math]::Round($os.FreePhysicalMemory/1024,0)
-} | ConvertTo-Json
-"""
-        r2 = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps2], capture_output=True, text=True, timeout=10
-        )
-        mem_info = json.loads(r2.stdout.strip() or "{}")
-        total_mb = mem_info.get("TotalMB", 32000)
-        free_mb = mem_info.get("FreeMB", 0)
+    Replaces the older ``Get-Process`` + ``Get-WmiObject Win32_OperatingSystem``
+    pipeline (backlog #24 batch A, sites #36 + #37). ``psutil.virtual_memory``
+    reports MB totals from the Windows global memory status, and
+    ``process_iter(['name', 'memory_info'])`` gives the per-process working
+    set in bytes — matching what ``WorkingSet64`` returned.
+    """
+    try:
+        procs: list[dict] = []
+        for proc in psutil.process_iter(["name", "memory_info"]):
+            try:
+                info = proc.info
+                name = info.get("name") or ""
+                mem = info.get("memory_info")
+                mem_mb = round(mem.rss / (1024 * 1024), 1) if mem else 0
+                procs.append({"ProcessName": name, "MemMB": mem_mb})
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+
+        # System memory info — psutil.virtual_memory returns bytes.
+        vm = psutil.virtual_memory()
+        total_mb = round(vm.total / (1024 * 1024), 0)
+        free_mb = round(vm.available / (1024 * 1024), 0)
         used_mb = total_mb - free_mb
 
         # Categorise

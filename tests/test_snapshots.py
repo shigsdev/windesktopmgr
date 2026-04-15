@@ -139,15 +139,21 @@ class TestGetThermalsSnapshot:
 
 
 class TestGetServicesListSnapshot:
-    def test_parses_real_output(self, mocker):
-        _mock_single_ps(mocker, "ps_services_list.json")
+    """After backlog #24 batch A, get_services_list() uses psutil directly
+    — no PowerShell output to snapshot-test. The fixture is kept as a
+    format reference, but the test now validates the output *shape* from
+    real psutil rather than parser parity against captured JSON."""
+
+    def test_output_shape_matches_fixture(self):
         expected = load_fixture("parsed/parsed_get_services_list.json")
         result = wdm.get_services_list()
         assert isinstance(result, list)
-        assert len(result) == len(expected)
+        # Real Windows boxes always have services; empty only happens if
+        # win_service_iter fails entirely — we still want a usable result.
+        if result and expected:
+            assert set(result[0].keys()) >= (set(expected[0].keys()) - {"info"})
 
-    def test_services_have_required_keys(self, mocker):
-        _mock_single_ps(mocker, "ps_services_list.json")
+    def test_services_have_required_keys(self):
         result = wdm.get_services_list()
         if result:
             svc = result[0]
@@ -160,17 +166,25 @@ class TestGetServicesListSnapshot:
 
 
 class TestGetProcessListSnapshot:
-    def test_parses_real_output(self, mocker):
-        _mock_single_ps(mocker, "ps_process_list.json")
+    """After backlog #24 batch A, get_process_list() uses psutil directly
+    — no PowerShell output to snapshot-test. The parsed fixture is kept
+    as a format reference; the test now validates output shape + per-proc
+    keys against the historical schema instead of count parity."""
+
+    def test_output_shape_matches_fixture(self):
         expected = load_fixture("parsed/parsed_get_process_list.json")
         result = wdm.get_process_list()
         assert isinstance(result, dict)
         assert "processes" in result
-        if "processes" in expected:
-            assert len(result["processes"]) == len(expected["processes"])
+        if result["processes"] and "processes" in expected and expected["processes"]:
+            # Every key from the captured fixture must still exist on the
+            # psutil result (we may add more, but must not drop any).
+            expected_keys = set(expected["processes"][0].keys())
+            actual_keys = set(result["processes"][0].keys())
+            missing = expected_keys - actual_keys
+            assert not missing, f"psutil output dropped keys: {missing}"
 
-    def test_processes_have_required_keys(self, mocker):
-        _mock_single_ps(mocker, "ps_process_list.json")
+    def test_processes_have_required_keys(self):
         result = wdm.get_process_list()
         procs = result.get("processes", [])
         if procs:

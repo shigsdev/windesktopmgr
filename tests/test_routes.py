@@ -647,23 +647,35 @@ class TestProcessLookupStatusRoute:
 
 
 class TestProcessKillRoute:
-    def test_kill_calls_subprocess_with_pid(self, client, mocker):
-        mock_run = _mock_ps(mocker)
+    """After backlog #24 batch A, kill_process() uses ``psutil.Process``
+    not ``Stop-Process``. Tests now mock psutil.Process and check it was
+    invoked with the right integer PID."""
+
+    def _patch_psutil(self, mocker, kill_side_effect=None):
+        proc = mocker.MagicMock()
+        if kill_side_effect:
+            proc.kill.side_effect = kill_side_effect
+        return mocker.patch("windesktopmgr.psutil.Process", return_value=proc)
+
+    def test_kill_calls_psutil_with_pid(self, client, mocker):
+        m = self._patch_psutil(mocker)
         resp = client.post("/api/processes/kill", json={"pid": 1234})
         assert resp.status_code == 200
         assert resp.get_json()["ok"] is True
-        cmd = mock_run.call_args[0][0][-1]
-        assert "1234" in cmd
+        args, _ = m.call_args
+        assert args[0] == 1234
 
-    def test_kill_subprocess_failure_returns_error(self, client, mocker):
-        _mock_ps(mocker, returncode=1, stderr="Access denied")
+    def test_kill_access_denied_returns_error(self, client, mocker):
+        import psutil as _psutil
+
+        self._patch_psutil(mocker, kill_side_effect=_psutil.AccessDenied(pid=999))
         resp = client.post("/api/processes/kill", json={"pid": 999})
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["ok"] is False
 
     def test_missing_pid_defaults_to_zero_rejected(self, client, mocker):
-        _mock_ps(mocker)
+        self._patch_psutil(mocker)
         resp = client.post("/api/processes/kill", json={})
         assert resp.status_code == 400
         data = resp.get_json()
@@ -671,7 +683,7 @@ class TestProcessKillRoute:
         assert "Invalid PID" in data["error"]
 
     def test_non_integer_pid_rejected(self, client, mocker):
-        _mock_ps(mocker)
+        self._patch_psutil(mocker)
         resp = client.post("/api/processes/kill", json={"pid": "abc"})
         assert resp.status_code == 400
         data = resp.get_json()
@@ -679,7 +691,7 @@ class TestProcessKillRoute:
         assert "pid must be an integer" in data["error"]
 
     def test_negative_pid_rejected(self, client, mocker):
-        _mock_ps(mocker)
+        self._patch_psutil(mocker)
         resp = client.post("/api/processes/kill", json={"pid": -5})
         assert resp.status_code == 400
         data = resp.get_json()
@@ -687,7 +699,7 @@ class TestProcessKillRoute:
         assert "Invalid PID" in data["error"]
 
     def test_string_pid_returns_400(self, client, mocker):
-        _mock_ps(mocker)
+        self._patch_psutil(mocker)
         resp = client.post("/api/processes/kill", json={"pid": "not-a-number"})
         assert resp.status_code == 400
         data = resp.get_json()

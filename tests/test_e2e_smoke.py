@@ -95,20 +95,23 @@ class TestThermalsDataE2E:
 
 
 class TestServicesListE2E:
-    def test_returns_200_with_real_fixture(self, client, mocker):
-        _mock_single_ps(mocker, "ps_services_list.json")
+    """After backlog #24 batch A, /api/services/list is backed by
+    ``psutil.win_service_iter`` not PowerShell. The fixture-based count
+    assertion is replaced with a real psutil call shape check."""
+
+    def test_returns_200_with_real_service_list(self, client):
         resp = client.get("/api/services/list")
         assert resp.status_code == 200
         data = resp.get_json()
         assert isinstance(data, list)
         assert len(data) > 0
 
-    def test_service_count_matches(self, client, mocker):
-        _mock_single_ps(mocker, "ps_services_list.json")
-        expected = load_fixture("parsed/parsed_get_services_list.json")
+    def test_service_has_required_keys(self, client):
         resp = client.get("/api/services/list")
         data = resp.get_json()
-        assert len(data) == len(expected)
+        assert data
+        for key in ("Name", "DisplayName", "Status", "StartMode"):
+            assert key in data[0]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -138,21 +141,26 @@ class TestStartupListE2E:
 
 
 class TestProcessListE2E:
-    def test_returns_200_with_real_fixture(self, client, mocker):
-        _mock_single_ps(mocker, "ps_process_list.json")
+    """After backlog #24 batch A, /api/processes/list is backed by
+    ``psutil.process_iter`` not PowerShell. Count-parity against the
+    captured fixture is obsolete — we now hit real psutil and assert
+    the route returns a non-empty well-formed process list."""
+
+    def test_returns_200_with_real_process_list(self, client):
         resp = client.get("/api/processes/list")
         assert resp.status_code == 200
         data = resp.get_json()
         assert isinstance(data, dict)
         assert "processes" in data
+        assert data["total"] > 0
 
-    def test_process_count_matches(self, client, mocker):
-        _mock_single_ps(mocker, "ps_process_list.json")
-        expected = load_fixture("parsed/parsed_get_process_list.json")
+    def test_process_has_required_keys(self, client):
         resp = client.get("/api/processes/list")
         data = resp.get_json()
-        if "processes" in expected:
-            assert len(data["processes"]) == len(expected["processes"])
+        procs = data.get("processes", [])
+        assert procs
+        for key in ("PID", "Name", "CPU", "MemMB"):
+            assert key in procs[0]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
