@@ -329,12 +329,16 @@ class TestRemediationNlq:
         assert "run_remediation_action" in wdm._NLQ_DISPATCH
 
     def test_nlq_tools_has_remediation_entries(self):
-        names = [t["name"] for t in wdm._NLQ_TOOLS]
+        import nlq
+
+        names = [t["name"] for t in nlq._NLQ_TOOLS]
         assert "get_remediation_history" in names
         assert "run_remediation_action" in names
 
     def test_navigate_to_tab_includes_remediation(self):
-        nav_tool = next(t for t in wdm._NLQ_TOOLS if t["name"] == "navigate_to_tab")
+        import nlq
+
+        nav_tool = next(t for t in nlq._NLQ_TOOLS if t["name"] == "navigate_to_tab")
         tabs = nav_tool["input_schema"]["properties"]["tab"]["enum"]
         assert "remediation" in tabs
 

@@ -19,6 +19,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+import nlq
 import windesktopmgr as wdm
 
 
@@ -49,7 +50,7 @@ class TestNlqToolDispatch(unittest.TestCase):
     """Verify all tool names map to callable dispatch functions."""
 
     def test_all_tools_have_dispatch(self):
-        for tool in wdm._NLQ_TOOLS:
+        for tool in nlq._NLQ_TOOLS:
             name = tool["name"]
             assert name in wdm._NLQ_DISPATCH, f"Tool '{name}' missing from _NLQ_DISPATCH"
 
@@ -71,50 +72,50 @@ class TestNlqTruncation(unittest.TestCase):
 
     def test_short_list_unchanged(self):
         data = [1, 2, 3]
-        assert wdm._truncate_for_context(data) == [1, 2, 3]
+        assert nlq._truncate_for_context(data) == [1, 2, 3]
 
     def test_long_list_truncated(self):
         data = list(range(100))
-        result = wdm._truncate_for_context(data, max_items=10)
+        result = nlq._truncate_for_context(data, max_items=10)
         assert len(result) == 11  # 10 items + 1 truncation notice
         assert result[-1]["_truncated"] == "... and 90 more items"
 
     def test_dict_recursion(self):
         data = {"events": list(range(60)), "name": "test"}
-        result = wdm._truncate_for_context(data, max_items=20)
+        result = nlq._truncate_for_context(data, max_items=20)
         assert len(result["events"]) == 21
         assert result["name"] == "test"
 
     def test_scalar_passthrough(self):
-        assert wdm._truncate_for_context("hello") == "hello"
-        assert wdm._truncate_for_context(42) == 42
-        assert wdm._truncate_for_context(None) is None
+        assert nlq._truncate_for_context("hello") == "hello"
+        assert nlq._truncate_for_context(42) == 42
+        assert nlq._truncate_for_context(None) is None
 
 
 class TestNlqToolDefinitions(unittest.TestCase):
     """Verify tool definitions are well-formed for the Claude API."""
 
     def test_all_tools_have_required_fields(self):
-        for tool in wdm._NLQ_TOOLS:
+        for tool in nlq._NLQ_TOOLS:
             assert "name" in tool, f"Tool missing 'name': {tool}"
             assert "description" in tool, f"Tool '{tool['name']}' missing description"
             assert "input_schema" in tool, f"Tool '{tool['name']}' missing input_schema"
 
     def test_tool_schemas_are_valid(self):
-        for tool in wdm._NLQ_TOOLS:
+        for tool in nlq._NLQ_TOOLS:
             schema = tool["input_schema"]
             assert schema["type"] == "object", f"Tool '{tool['name']}' schema type must be 'object'"
             assert "properties" in schema
 
     def test_query_event_log_has_params(self):
-        tool = next(t for t in wdm._NLQ_TOOLS if t["name"] == "query_event_log")
+        tool = next(t for t in nlq._NLQ_TOOLS if t["name"] == "query_event_log")
         props = tool["input_schema"]["properties"]
         assert "log" in props
         assert "level" in props
         assert "search" in props
 
     def test_navigate_to_tab_has_enum(self):
-        tool = next(t for t in wdm._NLQ_TOOLS if t["name"] == "navigate_to_tab")
+        tool = next(t for t in nlq._NLQ_TOOLS if t["name"] == "navigate_to_tab")
         tab_enum = tool["input_schema"]["properties"]["tab"]["enum"]
         assert "dashboard" in tab_enum
         assert "bsod" in tab_enum
@@ -151,7 +152,7 @@ class TestNlqFullLoop(unittest.TestCase):
         return resp
 
     @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=False)
-    @patch("windesktopmgr.anthropic")
+    @patch("nlq.anthropic")
     def test_simple_text_response(self, mock_anthropic_mod):
         """Claude answers directly without calling tools."""
         mock_client = MagicMock()
@@ -165,7 +166,7 @@ class TestNlqFullLoop(unittest.TestCase):
         assert data["navigate_to"] is None
 
     @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=False)
-    @patch("windesktopmgr.anthropic")
+    @patch("nlq.anthropic")
     @patch("windesktopmgr.get_thermals")
     def test_tool_use_then_response(self, mock_thermals, mock_anthropic_mod):
         """Claude calls a tool, gets data, then responds."""
@@ -192,7 +193,7 @@ class TestNlqFullLoop(unittest.TestCase):
         assert mock_thermals.called
 
     @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=False)
-    @patch("windesktopmgr.anthropic")
+    @patch("nlq.anthropic")
     def test_navigate_to_tab(self, mock_anthropic_mod):
         """Claude navigates to a specific tab."""
         mock_client = MagicMock()
@@ -209,7 +210,7 @@ class TestNlqFullLoop(unittest.TestCase):
         assert data["navigate_to"] == "bsod"
 
     @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=False)
-    @patch("windesktopmgr.anthropic")
+    @patch("nlq.anthropic")
     def test_api_error_returns_502(self, mock_anthropic_mod):
         """Claude API error returns 502."""
         mock_client = MagicMock()
@@ -223,7 +224,7 @@ class TestNlqFullLoop(unittest.TestCase):
         assert resp.status_code == 502
 
     @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=False)
-    @patch("windesktopmgr.anthropic")
+    @patch("nlq.anthropic")
     @patch("windesktopmgr.get_disk_health")
     def test_tool_failure_handled(self, mock_disk, mock_anthropic_mod):
         """Tool execution error is passed back to Claude gracefully."""
@@ -245,7 +246,7 @@ class TestNlqFullLoop(unittest.TestCase):
         assert "couldn't" in data["answer"].lower()
 
     @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=False)
-    @patch("windesktopmgr.anthropic")
+    @patch("nlq.anthropic")
     @patch("windesktopmgr.query_event_log")
     def test_event_log_tool_passes_params(self, mock_events, mock_anthropic_mod):
         """query_event_log tool passes filter parameters correctly."""
@@ -267,7 +268,7 @@ class TestNlqFullLoop(unittest.TestCase):
         mock_events.assert_called_once_with({"log": "System", "level": "Error", "max": 10})
 
     @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=False)
-    @patch("windesktopmgr.anthropic")
+    @patch("nlq.anthropic")
     def test_max_rounds_exhausted(self, mock_anthropic_mod):
         """If Claude keeps calling tools forever, we stop after max_rounds."""
         mock_client = MagicMock()

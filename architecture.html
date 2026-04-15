@@ -287,7 +287,7 @@
 
   <!-- ── LAYER 2: FLASK BACKEND ───────────────────────────────── -->
   <div class="row row-flask" id="layer-flask">
-    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~8,700 lines + homenet.py Blueprint · ~1,458 lines + disk.py Blueprint · ~1,179 lines + remediation.py Blueprint · ~438 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · applogging.py RotatingFileHandler</div>
+    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~8,354 lines + homenet.py Blueprint · ~1,458 lines + disk.py Blueprint · ~1,179 lines + remediation.py Blueprint · ~438 lines + nlq.py Blueprint · ~416 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · applogging.py RotatingFileHandler</div>
     <div style="margin-bottom:10px">
       <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes (67 endpoints)</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
@@ -333,6 +333,8 @@
         <div class="route-chip" id="rt-sysinfo"><span class="method">GET</span>/api/sysinfo/data</div>
         <div class="route-chip" id="rt-summary"><span class="method">POST</span>/api/summary/&lt;tab&gt;</div>
         <div class="route-chip" id="rt-dashsum"><span class="method">GET</span>/api/dashboard/summary</div>
+        <!-- nlq.py Blueprint (1 route) -->
+        <div style="display:inline-flex;align-items:center;gap:4px;background:#a855f715;border:1px dashed #a855f744;border-radius:5px;padding:2px 8px;font-size:9px;color:var(--purple);font-weight:700;letter-spacing:.06em;text-transform:uppercase" title="Served by nlq.py Flask Blueprint">BLUEPRINT: nlq.py</div>
         <div class="route-chip" id="rt-nlq" style="border-color:#a855f744;background:#a855f70d;color:var(--purple)"><span class="method">POST</span>/api/nlq/ask</div>
         <!-- remediation.py Blueprint (3 routes) -->
         <div style="display:inline-flex;align-items:center;gap:4px;background:#ff704315;border:1px dashed #ff704344;border-radius:5px;padding:2px 8px;font-size:9px;color:var(--orange);font-weight:700;letter-spacing:.06em;text-transform:uppercase" title="Served by remediation.py Flask Blueprint">BLUEPRINT: remediation.py</div>
@@ -634,7 +636,7 @@
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <div class="fs-chip">
             <div class="fs-title">windesktopmgr.py</div>
-            <div class="fs-sub">Flask backend · ~8,700 lines</div>
+            <div class="fs-sub">Flask backend · ~8,354 lines</div>
           </div>
           <div class="fs-chip" style="border-color:#448aff33">
             <div class="fs-title" style="color:var(--blue)">homenet.py</div>
@@ -647,6 +649,10 @@
           <div class="fs-chip" style="border-color:#ff704333">
             <div class="fs-title" style="color:var(--orange)">remediation.py</div>
             <div class="fs-sub">Remediation Engine Blueprint · ~438 lines · Flask Blueprint · 10 actions</div>
+          </div>
+          <div class="fs-chip" style="border-color:#a855f733">
+            <div class="fs-title" style="color:var(--purple)">nlq.py</div>
+            <div class="fs-sub">Natural Language Query Blueprint · ~416 lines · Flask Blueprint · 19 Claude tools</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">applogging.py</div>
@@ -1182,7 +1188,7 @@
 
 
 <div class="footer">
-  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 1,286 tests · ~21,410 lines</span>
+  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 1,286 tests · ~21,480 lines</span>
   <span>github.com/shigsdev/windesktopmgr · Updated 2026-04-14</span>
 </div>
 

@@ -30,6 +30,7 @@ addopts = [
     "--cov=homenet",
     "--cov=disk",
     "--cov=remediation",
+    "--cov=nlq",
     "--cov-report=term-missing:skip-covered",
     "--cov-fail-under=80",
     "-q",

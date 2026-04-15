@@ -918,7 +918,7 @@ class TestHomeNetNlq:
         assert "get_homenet_inventory" in _NLQ_DISPATCH
 
     def test_nlq_tools_has_homenet(self):
-        from windesktopmgr import _NLQ_TOOLS
+        from nlq import _NLQ_TOOLS
 
         tool_names = [t["name"] for t in _NLQ_TOOLS]
         assert "get_homenet_inventory" in tool_names
