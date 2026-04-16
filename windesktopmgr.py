@@ -8087,12 +8087,24 @@ def dashboard_summary():
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
         futs = {ex.submit(fn): name for name, fn in checks.items()}
-        for fut in concurrent.futures.as_completed(futs, timeout=30):
-            name = futs[fut]
-            try:
-                results[name] = fut.result()
-            except Exception as e:
-                results[name] = {"error": str(e)}
+        try:
+            for fut in concurrent.futures.as_completed(futs, timeout=45):
+                name = futs[fut]
+                try:
+                    results[name] = fut.result()
+                except Exception as e:
+                    results[name] = {"error": str(e)}
+        except TimeoutError:
+            # Some checks didn't finish — collect whatever did complete
+            for fut, name in futs.items():
+                if name not in results:
+                    if fut.done():
+                        try:
+                            results[name] = fut.result()
+                        except Exception as e:
+                            results[name] = {"error": str(e)}
+                    else:
+                        results[name] = {"error": "timed out"}
 
     # ── Pull key signals from each area ──────────────────────────────────────
     concerns = []
