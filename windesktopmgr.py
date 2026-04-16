@@ -20,6 +20,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import psutil
+import pythoncom
 import wmi
 from flask import Flask, jsonify, make_response, render_template, request, send_from_directory
 
@@ -401,9 +402,20 @@ def _wmi_date_to_str(wmi_date: str, fmt: str = "%Y-%m-%d") -> str:
         return wmi_date[:8]
 
 
+def _wmi_conn():
+    """Create a WMI connection with COM initialized for the current thread.
+
+    Flask runs requests in worker threads where COM is not initialized.
+    wmi.WMI() uses COM under the hood (win32com.client.GetObject) and will
+    deadlock or fail if CoInitialize hasn't been called on the thread.
+    """
+    pythoncom.CoInitialize()
+    return wmi.WMI()
+
+
 def get_installed_drivers() -> list:
     try:
-        c = wmi.WMI()
+        c = _wmi_conn()
         result = []
         for d in c.Win32_PnPSignedDriver():
             if d.DeviceName and d.DriverVersion:
@@ -435,7 +447,7 @@ def get_driver_health() -> dict:
     old = []
     prob = []
     try:
-        c = wmi.WMI()
+        c = _wmi_conn()
         for d in c.Win32_PnPSignedDriver():
             if not d.DriverVersion:
                 continue
@@ -523,7 +535,7 @@ def _get_nvidia_gpu_info() -> dict | None:
 
     # Get Windows driver version from WMI
     try:
-        c = wmi.WMI()
+        c = _wmi_conn()
         for vc in c.Win32_VideoController():
             if vc.Name and "NVIDIA" in vc.Name.upper():
                 win_ver = vc.DriverVersion or ""
@@ -5828,7 +5840,7 @@ BIOS_CACHE_FILE = os.path.join(APP_DIR, "bios_cache.json")
 
 def get_current_bios() -> dict:
     try:
-        c = wmi.WMI()
+        c = _wmi_conn()
         bios = c.Win32_BIOS()[0]
         board = c.Win32_BaseBoard()[0]
         raw_date = bios.ReleaseDate or ""
@@ -5875,7 +5887,7 @@ def check_dell_bios_update(board_product: str, current_version: str) -> dict:
     # Get service tag dynamically from WMI
     service_tag = ""
     try:
-        tag = wmi.WMI().Win32_BIOS()[0].SerialNumber
+        tag = _wmi_conn().Win32_BIOS()[0].SerialNumber
         if tag and len(tag) >= 5:
             service_tag = tag
     except Exception:
@@ -6059,7 +6071,7 @@ try {
     # If we didn't get it at the top (e.g. timeout), try once more
     if not result.get("service_tag"):
         try:
-            tag = wmi.WMI().Win32_BIOS()[0].SerialNumber
+            tag = _wmi_conn().Win32_BIOS()[0].SerialNumber
             if tag and len(tag) >= 5:
                 result["service_tag"] = tag
                 result["download_url"] = (
@@ -7541,7 +7553,7 @@ def warranty_data():
     try:
         # CPU / BIOS / System info via WMI
         try:
-            c = wmi.WMI()
+            c = _wmi_conn()
             cpu_obj = c.Win32_Processor()[0]
             bios_obj = c.Win32_BIOS()[0]
             cs_obj = c.Win32_ComputerSystem()[0]
@@ -7639,7 +7651,7 @@ def sysinfo_data():
     error_detail = None
     data = {}
     try:
-        c = wmi.WMI()
+        c = _wmi_conn()
         os_obj = c.Win32_OperatingSystem()[0]
         cs_obj = c.Win32_ComputerSystem()[0]
         cpu_obj = c.Win32_Processor()[0]
