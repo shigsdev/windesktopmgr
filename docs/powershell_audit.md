@@ -233,17 +233,17 @@ All are drop-in `psutil` substitutions with no new pypi dependencies (`psutil` i
 
 **Effort actual:** ~1 day (matches estimate). **Risk:** realized low — all 60 rewritten tests passed first-run, full suite 1332/1332 green at 85% coverage. **Test-target rewrite cost:** 6 classes + 1 route test + 2 snapshot tests + 2 e2e smoke tests; each class now mocks `psutil.*` returning `types.SimpleNamespace` objects instead of `subprocess.run` JSON payloads.
 
-### Batch B — `wmi` package wins (9 sites)
+### Batch B — `wmi` package wins (9 sites) — ✅ SHIPPED 2026-04-16
 Adds `wmi>=1.5.1` to `requirements.txt`. One persistent connection covers multiple queries.
 
-| Sites | Functions |
-|---|---|
-| #1, #2, #3 | driver family (Win32_PnPSignedDriver + Win32_VideoController) |
-| #38, #39, #43 | BIOS (Win32_BIOS) |
-| #47, #48, #49 | warranty (Win32_Processor, Win32_PhysicalMemory, Win32_OperatingSystem) |
-| #50 | sysinfo bulk bundle |
+| Sites | Functions | Status |
+|---|---|---|
+| #1, #2, #3 | driver family (Win32_PnPSignedDriver + Win32_VideoController) | ✅ |
+| #38, #39, #43 | BIOS (Win32_BIOS) | ✅ |
+| #47, #48, #49 | warranty (Win32_Processor, Win32_PhysicalMemory, Win32_OperatingSystem) | ✅ |
+| #50 | sysinfo bulk bundle | ✅ |
 
-**Effort:** ~1 day once `wmi` is added. **Risk:** low (stable 15-year-old package, last release 2024). **Win:** replaces string-parsed JSON with typed Python objects; the existing `subprocess.run` + JSON-parsing fallback code can be deleted.
+**Effort actual:** ~1 day (matches estimate). **Risk:** realized medium — COM threading required `pythoncom.CoInitialize()` wrapper for Flask worker threads, and `dashboard_summary` needed `TimeoutError` handling for `as_completed()`. Full suite 1333/1333 green at 85% coverage. Added `_wmi_conn()` helper, `_wmi_date_to_str()`, plus mapping dicts for FormFactor/MemoryType/Architecture/SlotUsage codes. `sysinfo_data()` was the largest migration (14 WMI queries replacing one massive PS block).
 
 ### Batch C — `winreg` + `win32serviceutil` (6 sites)
 Stdlib + `pywin32` (already installed for the tray). No new deps.
