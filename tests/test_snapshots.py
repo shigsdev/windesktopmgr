@@ -10,6 +10,7 @@ If fixtures are missing, tests are skipped (not failed).
 """
 
 import json
+import types
 
 import pytest
 
@@ -30,6 +31,24 @@ def _mock_single_ps(mocker, ps_fixture):
     return m
 
 
+def _fixture_to_wmi_objs(ps_fixture):
+    """Load a PS JSON fixture and convert each dict to a SimpleNamespace (WMI-like object)."""
+    raw = load_fixture(f"powershell/{ps_fixture}")
+    data = json.loads(raw) if isinstance(raw, str) else raw
+    if isinstance(data, dict):
+        data = [data]
+    return [types.SimpleNamespace(**d) for d in data]
+
+
+def _mock_wmi_snap(mocker, classes):
+    """Patch wmi.WMI() for snapshot tests with a dict of class name → list of objects."""
+    mock_conn = mocker.MagicMock()
+    for name, data in classes.items():
+        setattr(mock_conn, name, mocker.MagicMock(return_value=data))
+    mocker.patch("windesktopmgr.wmi.WMI", return_value=mock_conn)
+    return mock_conn
+
+
 def _mock_multi_ps(mocker, ps_fixtures):
     """Mock subprocess.run with multiple PS fixtures (for multi-call functions)."""
     results = []
@@ -48,14 +67,16 @@ def _mock_multi_ps(mocker, ps_fixtures):
 
 class TestGetInstalledDriversSnapshot:
     def test_parses_real_output(self, mocker):
-        _mock_single_ps(mocker, "ps_installed_drivers.json")
+        wmi_objs = _fixture_to_wmi_objs("ps_installed_drivers.json")
+        _mock_wmi_snap(mocker, {"Win32_PnPSignedDriver": wmi_objs})
         expected = load_fixture("parsed/parsed_get_installed_drivers.json")
         result = wdm.get_installed_drivers()
         assert isinstance(result, list)
         assert len(result) == len(expected)
 
     def test_all_drivers_have_required_keys(self, mocker):
-        _mock_single_ps(mocker, "ps_installed_drivers.json")
+        wmi_objs = _fixture_to_wmi_objs("ps_installed_drivers.json")
+        _mock_wmi_snap(mocker, {"Win32_PnPSignedDriver": wmi_objs})
         result = wdm.get_installed_drivers()
         for drv in result:
             assert "DeviceName" in drv
@@ -68,8 +89,46 @@ class TestGetInstalledDriversSnapshot:
 
 
 class TestGetDriverHealthSnapshot:
+    def _load_fixture_as_wmi(self):
+        """Convert driver health fixture to WMI-like objects for the new wmi-based function."""
+        raw = load_fixture("powershell/ps_driver_health.json")
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        # Build Win32_PnPSignedDriver objects from OldDrivers
+        signed = []
+        for d in parsed.get("OldDrivers", []):
+            date_str = d.get("Date", "")
+            wmi_date = date_str.replace("-", "") + "000000.000000+000" if date_str else ""
+            signed.append(
+                types.SimpleNamespace(
+                    DeviceName=d["DeviceName"],
+                    DriverProviderName=d["Provider"],
+                    DriverVersion=d["Version"],
+                    DriverDate=wmi_date,
+                )
+            )
+        # Build Win32_PnPEntity objects from Problematic
+        entities = []
+        for p in parsed.get("Problematic", []):
+            entities.append(
+                types.SimpleNamespace(
+                    Name=p["DeviceName"],
+                    ConfigManagerErrorCode=p["ErrorCode"],
+                    Status=p.get("Status", ""),
+                )
+            )
+        # Add one OK entity so the filter works
+        entities.append(types.SimpleNamespace(Name="OK Device", ConfigManagerErrorCode=0, Status="OK"))
+        return signed, entities
+
     def test_parses_real_output(self, mocker):
-        _mock_single_ps(mocker, "ps_driver_health.json")
+        signed, entities = self._load_fixture_as_wmi()
+        _mock_wmi_snap(
+            mocker,
+            {
+                "Win32_PnPSignedDriver": signed,
+                "Win32_PnPEntity": entities,
+            },
+        )
         mocker.patch("windesktopmgr.get_nvidia_update_info", return_value=None)
         result = wdm.get_driver_health()
         assert "old_drivers" in result
@@ -79,7 +138,14 @@ class TestGetDriverHealthSnapshot:
         assert isinstance(result["problematic_drivers"], list)
 
     def test_old_drivers_have_required_keys(self, mocker):
-        _mock_single_ps(mocker, "ps_driver_health.json")
+        signed, entities = self._load_fixture_as_wmi()
+        _mock_wmi_snap(
+            mocker,
+            {
+                "Win32_PnPSignedDriver": signed,
+                "Win32_PnPEntity": entities,
+            },
+        )
         mocker.patch("windesktopmgr.get_nvidia_update_info", return_value=None)
         result = wdm.get_driver_health()
         for drv in result["old_drivers"]:
@@ -250,7 +316,18 @@ class TestGetUpdateHistorySnapshot:
 
 class TestGetCurrentBiosSnapshot:
     def test_parses_real_output(self, mocker):
-        _mock_single_ps(mocker, "ps_bios.json")
+        raw = load_fixture("powershell/ps_bios.json")
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        bios_obj = types.SimpleNamespace(
+            SMBIOSBIOSVersion=parsed.get("BIOSVersion", ""),
+            ReleaseDate=parsed.get("ReleaseDate", ""),
+            Manufacturer=parsed.get("Manufacturer", ""),
+        )
+        board_obj = types.SimpleNamespace(
+            Product=parsed.get("BoardProduct", ""),
+            Manufacturer=parsed.get("BoardMfr", ""),
+        )
+        _mock_wmi_snap(mocker, {"Win32_BIOS": [bios_obj], "Win32_BaseBoard": [board_obj]})
         expected = load_fixture("parsed/parsed_get_current_bios.json")
         result = wdm.get_current_bios()
         assert isinstance(result, dict)

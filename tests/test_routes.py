@@ -8,6 +8,7 @@ Coverage: ALL 38 Flask routes defined in windesktopmgr.py
 
 import json
 import os
+import types
 
 import windesktopmgr as wdm
 
@@ -21,6 +22,21 @@ def _mock_ps(mocker, stdout="[]", returncode=0, stderr=""):
     m.return_value.returncode = returncode
     m.return_value.stderr = stderr
     return m
+
+
+def _wmi_obj(**kwargs):
+    """Create a simple namespace that mimics a WMI object with attribute access."""
+    return types.SimpleNamespace(**kwargs)
+
+
+def _mock_wmi(mocker, classes=None):
+    """Patch windesktopmgr.wmi.WMI() returning a fake WMI connection."""
+    classes = classes or {}
+    mock_conn = mocker.MagicMock()
+    for name, data in classes.items():
+        setattr(mock_conn, name, mocker.MagicMock(return_value=data))
+    mocker.patch("windesktopmgr.wmi.WMI", return_value=mock_conn)
+    return mock_conn
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1807,26 +1823,40 @@ class TestServerConfig:
 
 
 class TestWarrantyRoute:
-    """Tests for /api/warranty/data"""
+    """Tests for /api/warranty/data — CPU/BIOS/system via WMI, microcode+counts via subprocess."""
+
+    MCU_OUT = "0x010001B4"
+    COUNTS_OUT = json.dumps({"BSODs30Days": 2, "WHEAErrors": 0, "UnexpectedShutdowns": 1})
+
+    def _setup(
+        self,
+        mocker,
+        cpu_name="Intel(R) Core(TM) i9-14900K",
+        proc_id="BFEBFBFF000B0671",
+        serial="N/A",
+        service_tag="ABC1234",
+        bios_ver="2.18.0",
+        bios_date="20250110000000.000000+000",
+        mfr="Dell Inc.",
+        model="XPS 8960",
+    ):
+        _mock_wmi(
+            mocker,
+            {
+                "Win32_Processor": [_wmi_obj(Name=f"  {cpu_name}  ", ProcessorId=proc_id, SerialNumber=serial)],
+                "Win32_BIOS": [_wmi_obj(SerialNumber=service_tag, SMBIOSBIOSVersion=bios_ver, ReleaseDate=bios_date)],
+                "Win32_ComputerSystem": [_wmi_obj(Manufacturer=mfr, Model=model)],
+            },
+        )
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.side_effect = [
+            type("R", (), {"stdout": self.MCU_OUT, "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": self.COUNTS_OUT, "returncode": 0, "stderr": ""})(),
+        ]
+        return m
 
     def test_returns_ok_with_warranty_data(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        # First call: CPU/BIOS/system info
-        mock_run.return_value.stdout = json.dumps(
-            {
-                "CPUName": "Intel(R) Core(TM) i9-14900K",
-                "ProcessorId": "BFEBFBFF000B0671",
-                "SerialNumber": "N/A",
-                "DellServiceTag": "ABC1234",
-                "BIOSVersion": "2.18.0",
-                "BIOSDate": "2025-01-10",
-                "Manufacturer": "Dell Inc.",
-                "Model": "XPS 8960",
-            }
-        )
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-
+        self._setup(mocker)
         r = client.get("/api/warranty/data")
         assert r.status_code == 200
         d = r.get_json()
@@ -1837,52 +1867,21 @@ class TestWarrantyRoute:
         assert "i9-14900K" in w["CPUModel"]
 
     def test_returns_service_tag(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = json.dumps(
-            {
-                "CPUName": "Intel(R) Core(TM) i9-14900K",
-                "ProcessorId": "TEST",
-                "SerialNumber": "N/A",
-                "DellServiceTag": "XYZ7890",
-                "BIOSVersion": "2.18.0",
-                "BIOSDate": "2025-01-10",
-                "Manufacturer": "Dell Inc.",
-                "Model": "XPS 8960",
-            }
-        )
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-
+        self._setup(mocker, service_tag="XYZ7890")
         r = client.get("/api/warranty/data")
         d = r.get_json()
         assert d["warranty"]["DellServiceTag"] == "XYZ7890"
         assert "XYZ7890" in d["warranty"]["DellSupportURL"]
 
     def test_non_affected_cpu(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = json.dumps(
-            {
-                "CPUName": "AMD Ryzen 9 7950X",
-                "ProcessorId": "TEST",
-                "SerialNumber": "N/A",
-                "DellServiceTag": "N/A",
-                "BIOSVersion": "1.0",
-                "BIOSDate": "2025-01-01",
-                "Manufacturer": "AMD",
-                "Model": "Custom",
-            }
-        )
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-
+        self._setup(mocker, cpu_name="AMD Ryzen 9 7950X", service_tag="N/A", mfr="AMD", model="Custom")
         r = client.get("/api/warranty/data")
         d = r.get_json()
         assert d["warranty"]["IsAffectedCPU"] is False
 
-    def test_handles_subprocess_failure(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.side_effect = Exception("PowerShell failed")
-
+    def test_handles_wmi_failure(self, client, mocker):
+        mocker.patch("windesktopmgr.wmi.WMI", side_effect=Exception("WMI failed"))
+        mocker.patch("windesktopmgr.subprocess.run", side_effect=Exception("PS failed"))
         r = client.get("/api/warranty/data")
         d = r.get_json()
         assert d["status"] == "error"
@@ -1891,6 +1890,17 @@ class TestWarrantyRoute:
     def test_warranty_timeout_handled(self, client, mocker):
         import subprocess
 
+        # WMI works but subprocess times out
+        _mock_wmi(
+            mocker,
+            {
+                "Win32_Processor": [_wmi_obj(Name="Intel i9", ProcessorId="X", SerialNumber="N/A")],
+                "Win32_BIOS": [
+                    _wmi_obj(SerialNumber="TAG", SMBIOSBIOSVersion="1.0", ReleaseDate="20250101000000.000000+000")
+                ],
+                "Win32_ComputerSystem": [_wmi_obj(Manufacturer="Dell", Model="XPS")],
+            },
+        )
         mocker.patch(
             "windesktopmgr.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=15),
@@ -1907,145 +1917,156 @@ class TestWarrantyRoute:
 
 
 class TestSysinfoRoute:
-    """Tests for /api/sysinfo/data"""
+    """Tests for /api/sysinfo/data — now uses wmi.WMI() instead of subprocess."""
 
-    SAMPLE_OUTPUT = json.dumps(
-        {
-            "Computer": {
-                "Name": "DESKTOP-TEST",
-                "Domain": "WORKGROUP",
-                "Manufacturer": "Dell Inc.",
-                "Model": "XPS 8960",
-                "SystemType": "x64-based PC",
-                "TotalRAM_GB": 31.7,
-            },
-            "OS": {
-                "Name": "Microsoft Windows 11 Pro",
-                "Version": "10.0.22631",
-                "Build": "22631",
-                "Architecture": "64-bit",
-                "InstallDate": "2024-01-15",
-                "LastBoot": "2025-03-18 10:00:00",
-                "Uptime": "01.05:30:00",
-                "WindowsDir": "C:\\WINDOWS",
-                "SystemDrive": "C:",
-                "Locale": "English (United States)",
-                "TimeZone": "(UTC-08:00) Pacific Time",
-                "TimeZoneId": "Pacific Standard Time",
-            },
-            "CPU": {
-                "Name": "Intel(R) Core(TM) i9-14900K",
-                "Cores": 24,
-                "LogicalProcs": 32,
-                "MaxClockMHz": 3200,
-                "CurrentClockMHz": 3200,
-                "SocketDesignation": "LGA1700",
-                "L2CacheKB": 32768,
-                "L3CacheKB": 36864,
-                "ProcessorId": "BFEBFBFF000B0671",
-                "Architecture": "x64",
-            },
-            "BIOS": {
-                "Version": "2.22.0",
-                "ReleaseDate": "2025-01-10",
-                "Manufacturer": "Dell Inc.",
-                "SerialNumber": "ABC1234",
-            },
-            "Baseboard": {
-                "Manufacturer": "Dell Inc.",
-                "Product": "0WN7Y6",
-                "Version": "A01",
-                "SerialNumber": "/ABC1234/",
-            },
-            "GPU": [
-                {
-                    "Name": "NVIDIA GeForce RTX 4060 Ti",
-                    "DriverVersion": "32.0.15.9174",
-                    "AdapterRAM": 8589934592,
-                    "CurrentRefreshRate": 144,
-                    "VideoModeDescription": "2560 x 1440 x 32 bits",
-                    "AdapterCompatibility": "NVIDIA",
-                    "PNPDeviceID": "PCI\\VEN_10DE&DEV_2803",
-                },
-            ],
-            "Network": [
-                {
-                    "Description": "Killer E3100G",
-                    "MACAddress": "AA:BB:CC:DD:EE:FF",
-                    "IPAddress": "192.168.1.100",
-                    "DHCPEnabled": True,
-                    "DHCPServer": "192.168.1.1",
-                    "DNSServerSearchOrder": ["8.8.8.8"],
-                },
-            ],
-            "NetworkHardware": [
-                {
-                    "Name": "Killer E3100G 2.5 Gigabit Ethernet Controller",
-                    "Manufacturer": "Intel",
-                    "ProductName": "Killer E3100G",
-                    "NetConnectionID": "Ethernet",
-                    "Speed": 2500000000,
-                    "AdapterType": "Ethernet 802.3",
-                    "MACAddress": "AA:BB:CC:DD:EE:FF",
-                },
-            ],
-            "Memory": [
-                {
-                    "BankLabel": "DIMM1",
-                    "Capacity": 17179869184,
-                    "Speed": 5600,
-                    "Manufacturer": "SK Hynix",
-                    "PartNumber": "HMCG78AGBUA081N",
-                    "ConfiguredClockSpeed": 5600,
-                    "FormFactor": "DIMM",
-                    "MemoryType": "DDR5",
-                    "DataWidth": 64,
-                    "DeviceLocator": "DIMM_A1",
-                },
-            ],
-            "Disks": [
-                {
-                    "Model": "Samsung SSD 990 PRO 2TB",
-                    "Size": 2000398934016,
-                    "InterfaceType": "NVMe",
-                    "MediaType": "SSD",
-                    "SerialNumber": "S123456",
-                    "Partitions": 3,
-                },
-            ],
-            "Volumes": [
-                {"DeviceID": "C:", "VolumeName": "OS", "FileSystem": "NTFS", "SizeGB": 931.5, "FreeGB": 200.0},
-            ],
-            "Sound": [
-                {"Name": "Realtek High Definition Audio", "Manufacturer": "Realtek", "Status": "OK"},
-                {"Name": "NVIDIA Virtual Audio Device", "Manufacturer": "NVIDIA", "Status": "OK"},
-            ],
-            "USBControllers": [
-                {"Name": "Intel USB 3.2 eXtensible Host Controller", "Manufacturer": "Intel", "Status": "OK"},
-            ],
-            "PCIeSlots": [
-                {
-                    "SlotDesignation": "PCIEX16_1",
-                    "CurrentUsage": "In Use",
-                    "Status": "OK",
-                    "Description": "x16 PCI Express",
-                },
-                {
-                    "SlotDesignation": "PCIEX1_1",
-                    "CurrentUsage": "Available",
-                    "Status": "OK",
-                    "Description": "x1 PCI Express",
-                },
-            ],
-        }
+    # WMI mock objects matching the expected output contract
+    CS_OBJ = _wmi_obj(
+        Name="DESKTOP-TEST",
+        Domain="WORKGROUP",
+        Manufacturer="Dell Inc.",
+        Model="XPS 8960",
+        SystemType="x64-based PC",
+        TotalPhysicalMemory="34028134400",  # ~31.7 GB
+    )
+    OS_OBJ = _wmi_obj(
+        Caption="Microsoft Windows 11 Pro",
+        Version="10.0.22631",
+        BuildNumber="22631",
+        OSArchitecture="64-bit",
+        InstallDate="20240115000000.000000+000",
+        LastBootUpTime="20250318100000.000000+000",
+        WindowsDirectory="C:\\WINDOWS",
+        SystemDrive="C:",
+    )
+    CPU_OBJ = _wmi_obj(
+        Name="  Intel(R) Core(TM) i9-14900K  ",
+        NumberOfCores=24,
+        NumberOfLogicalProcessors=32,
+        MaxClockSpeed=3200,
+        CurrentClockSpeed=3200,
+        SocketDesignation="LGA1700",
+        L2CacheSize=32768,
+        L3CacheSize=36864,
+        ProcessorId="BFEBFBFF000B0671",
+        Architecture=9,
+    )
+    BIOS_OBJ = _wmi_obj(
+        SMBIOSBIOSVersion="2.22.0",
+        ReleaseDate="20250110000000.000000+000",
+        Manufacturer="Dell Inc.",
+        SerialNumber="ABC1234",
+    )
+    BB_OBJ = _wmi_obj(
+        Manufacturer="Dell Inc.",
+        Product="0WN7Y6",
+        Version="A01",
+        SerialNumber="/ABC1234/",
+    )
+    GPU_OBJ = _wmi_obj(
+        Name="NVIDIA GeForce RTX 4060 Ti",
+        DriverVersion="32.0.15.9174",
+        DriverDate="20250301000000.000000+000",
+        AdapterRAM=8589934592,
+        VideoProcessor="NVIDIA",
+        CurrentRefreshRate=144,
+        VideoModeDescription="2560 x 1440 x 32 bits",
+        AdapterCompatibility="NVIDIA",
+        PNPDeviceID="PCI\\VEN_10DE&DEV_2803",
+    )
+    NIC_OBJ = _wmi_obj(
+        Description="Killer E3100G",
+        MACAddress="AA:BB:CC:DD:EE:FF",
+        IPAddress=["192.168.1.100"],
+        IPEnabled=True,
+        DHCPEnabled=True,
+        DHCPServer="192.168.1.1",
+        DNSServerSearchOrder=["8.8.8.8"],
+    )
+    NIC_HW_OBJ = _wmi_obj(
+        Name="Killer E3100G 2.5 Gigabit Ethernet Controller",
+        Manufacturer="Intel",
+        ProductName="Killer E3100G",
+        NetConnectionID="Ethernet",
+        Speed="2500000000",
+        AdapterType="Ethernet 802.3",
+        MACAddress="AA:BB:CC:DD:EE:FF",
+    )
+    RAM_OBJ = _wmi_obj(
+        BankLabel="DIMM1",
+        Capacity="17179869184",
+        Speed=5600,
+        Manufacturer="SK Hynix",
+        PartNumber="HMCG78AGBUA081N",
+        ConfiguredClockSpeed=5600,
+        FormFactor=8,
+        SMBIOSMemoryType=34,
+        DataWidth=64,
+        DeviceLocator="DIMM_A1",
+    )
+    DISK_OBJ = _wmi_obj(
+        Model="Samsung SSD 990 PRO 2TB",
+        Size="2000398934016",
+        InterfaceType="NVMe",
+        MediaType="SSD",
+        SerialNumber="S123456",
+        Partitions=3,
+    )
+    VOL_OBJ = _wmi_obj(
+        DeviceID="C:",
+        VolumeName="OS",
+        FileSystem="NTFS",
+        Size="1000000000000",
+        FreeSpace="214748364800",
+    )
+    SOUND_OBJ1 = _wmi_obj(Name="Realtek High Definition Audio", Manufacturer="Realtek", Status="OK")
+    SOUND_OBJ2 = _wmi_obj(Name="NVIDIA Virtual Audio Device", Manufacturer="NVIDIA", Status="OK")
+    USB_OBJ = _wmi_obj(Name="Intel USB 3.2 eXtensible Host Controller", Manufacturer="Intel", Status="OK")
+    SLOT_OBJ1 = _wmi_obj(SlotDesignation="PCIEX16_1", CurrentUsage=4, Status="OK", Description="x16 PCI Express")
+    SLOT_OBJ2 = _wmi_obj(SlotDesignation="PCIEX1_1", CurrentUsage=3, Status="OK", Description="x1 PCI Express")
+    # NIC without connection (should be excluded from NetworkHardware)
+    NIC_DISABLED = _wmi_obj(
+        Name="Bluetooth",
+        Manufacturer="Intel",
+        ProductName="BT",
+        NetConnectionID=None,
+        Speed=None,
+        AdapterType="",
+        MACAddress="",
+    )
+    # NIC config without IP (should be excluded from Network)
+    NIC_NO_IP = _wmi_obj(
+        Description="Loopback",
+        MACAddress="",
+        IPAddress=None,
+        IPEnabled=False,
+        DHCPEnabled=False,
+        DHCPServer="",
+        DNSServerSearchOrder=None,
     )
 
-    def test_returns_ok_with_system_data(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
+    def _setup_wmi(self, mocker):
+        _mock_wmi(
+            mocker,
+            {
+                "Win32_OperatingSystem": [self.OS_OBJ],
+                "Win32_ComputerSystem": [self.CS_OBJ],
+                "Win32_Processor": [self.CPU_OBJ],
+                "Win32_BIOS": [self.BIOS_OBJ],
+                "Win32_BaseBoard": [self.BB_OBJ],
+                "Win32_VideoController": [self.GPU_OBJ],
+                "Win32_NetworkAdapterConfiguration": [self.NIC_OBJ, self.NIC_NO_IP],
+                "Win32_NetworkAdapter": [self.NIC_HW_OBJ, self.NIC_DISABLED],
+                "Win32_PhysicalMemory": [self.RAM_OBJ],
+                "Win32_DiskDrive": [self.DISK_OBJ],
+                "Win32_LogicalDisk": [self.VOL_OBJ],
+                "Win32_SoundDevice": [self.SOUND_OBJ1, self.SOUND_OBJ2],
+                "Win32_USBController": [self.USB_OBJ],
+                "Win32_SystemSlot": [self.SLOT_OBJ1, self.SLOT_OBJ2],
+            },
+        )
 
+    def test_returns_ok_with_system_data(self, client, mocker):
+        self._setup_wmi(mocker)
         r = client.get("/api/sysinfo/data")
         assert r.status_code == 200
         d = r.get_json()
@@ -2053,104 +2074,49 @@ class TestSysinfoRoute:
         assert "data" in d
 
     def test_returns_computer_info(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-
+        self._setup_wmi(mocker)
         r = client.get("/api/sysinfo/data")
         d = r.get_json()["data"]
         assert d["Computer"]["Name"] == "DESKTOP-TEST"
         assert d["Computer"]["Manufacturer"] == "Dell Inc."
 
     def test_returns_cpu_info(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-
+        self._setup_wmi(mocker)
         r = client.get("/api/sysinfo/data")
         d = r.get_json()["data"]
         assert "i9-14900K" in d["CPU"]["Name"]
         assert d["CPU"]["Cores"] == 24
 
     def test_returns_os_info(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-
+        self._setup_wmi(mocker)
         r = client.get("/api/sysinfo/data")
         d = r.get_json()["data"]
         assert "Windows 11" in d["OS"]["Name"]
         assert d["OS"]["Build"] == "22631"
 
-    def test_normalizes_single_gpu_to_list(self, client, mocker):
-        """PowerShell returns dict for single item — should be normalized to list."""
-        single_gpu = json.loads(self.SAMPLE_OUTPUT)
-        single_gpu["GPU"] = single_gpu["GPU"][0]  # dict instead of list
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = json.dumps(single_gpu)
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-
+    def test_gpu_always_list(self, client, mocker):
+        self._setup_wmi(mocker)
         r = client.get("/api/sysinfo/data")
         d = r.get_json()["data"]
         assert isinstance(d["GPU"], list)
         assert len(d["GPU"]) == 1
 
-    def test_normalizes_single_disk_to_list(self, client, mocker):
-        single_disk = json.loads(self.SAMPLE_OUTPUT)
-        single_disk["Disks"] = single_disk["Disks"][0]
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = json.dumps(single_disk)
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-
+    def test_disks_always_list(self, client, mocker):
+        self._setup_wmi(mocker)
         r = client.get("/api/sysinfo/data")
         d = r.get_json()["data"]
         assert isinstance(d["Disks"], list)
 
-    def test_handles_empty_output(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = ""
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-
-        r = client.get("/api/sysinfo/data")
-        d = r.get_json()
-        assert d["status"] == "ok"
-        assert d["stale"] is False
-
-    def test_handles_subprocess_failure(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.side_effect = Exception("PowerShell crashed")
-
+    def test_wmi_exception_returns_partial(self, client, mocker):
+        mocker.patch("windesktopmgr.wmi.WMI", side_effect=Exception("WMI crashed"))
         r = client.get("/api/sysinfo/data")
         d = r.get_json()
         assert d["status"] == "partial"
         assert d["stale"] is True
-        assert "PowerShell crashed" in d["error"]
-
-    def test_timeout_returns_partial(self, client, mocker):
-        import subprocess as sp
-
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.side_effect = sp.TimeoutExpired(cmd="powershell", timeout=30)
-
-        r = client.get("/api/sysinfo/data")
-        d = r.get_json()
-        assert d["status"] == "partial"
-        assert d["stale"] is True
-        assert "timed out" in d["error"]
-        assert "collected_at" in d
+        assert "WMI crashed" in d["error"]
 
     def test_returns_collected_at(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-
+        self._setup_wmi(mocker)
         r = client.get("/api/sysinfo/data")
         d = r.get_json()
         assert "collected_at" in d
@@ -2158,11 +2124,7 @@ class TestSysinfoRoute:
         assert d["error"] is None
 
     def test_returns_sound_devices(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-
+        self._setup_wmi(mocker)
         r = client.get("/api/sysinfo/data")
         d = r.get_json()["data"]
         assert isinstance(d["Sound"], list)
@@ -2170,22 +2132,14 @@ class TestSysinfoRoute:
         assert d["Sound"][0]["Manufacturer"] == "Realtek"
 
     def test_returns_usb_controllers(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-
+        self._setup_wmi(mocker)
         r = client.get("/api/sysinfo/data")
         d = r.get_json()["data"]
         assert isinstance(d["USBControllers"], list)
         assert len(d["USBControllers"]) == 1
 
     def test_returns_pcie_slots(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-
+        self._setup_wmi(mocker)
         r = client.get("/api/sysinfo/data")
         d = r.get_json()["data"]
         assert isinstance(d["PCIeSlots"], list)
@@ -2193,22 +2147,27 @@ class TestSysinfoRoute:
         assert d["PCIeSlots"][0]["CurrentUsage"] == "In Use"
 
     def test_returns_network_hardware(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-
+        self._setup_wmi(mocker)
         r = client.get("/api/sysinfo/data")
         d = r.get_json()["data"]
         assert isinstance(d["NetworkHardware"], list)
         assert d["NetworkHardware"][0]["Manufacturer"] == "Intel"
 
-    def test_returns_extended_memory_fields(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
+    def test_memory_type_mapped(self, client, mocker):
+        self._setup_wmi(mocker)
+        r = client.get("/api/sysinfo/data")
+        d = r.get_json()["data"]
+        assert d["Memory"][0]["MemoryType"] == "DDR5"
+        assert d["Memory"][0]["FormFactor"] == "DIMM"
 
+    def test_cpu_architecture_mapped(self, client, mocker):
+        self._setup_wmi(mocker)
+        r = client.get("/api/sysinfo/data")
+        d = r.get_json()["data"]
+        assert d["CPU"]["Architecture"] == "x64"
+
+    def test_returns_extended_memory_fields(self, client, mocker):
+        self._setup_wmi(mocker)
         r = client.get("/api/sysinfo/data")
         mem = r.get_json()["data"]["Memory"][0]
         assert mem["MemoryType"] == "DDR5"
@@ -2217,66 +2176,14 @@ class TestSysinfoRoute:
         assert mem["DeviceLocator"] == "DIMM_A1"
 
     def test_returns_extended_gpu_fields(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-
+        self._setup_wmi(mocker)
         r = client.get("/api/sysinfo/data")
         gpu = r.get_json()["data"]["GPU"][0]
         assert gpu["AdapterCompatibility"] == "NVIDIA"
         assert "PCI" in gpu["PNPDeviceID"]
 
-    def test_normalizes_single_sound_to_list(self, client, mocker):
-        single = json.loads(self.SAMPLE_OUTPUT)
-        single["Sound"] = single["Sound"][0]  # dict instead of list
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = json.dumps(single)
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-
-        r = client.get("/api/sysinfo/data")
-        assert isinstance(r.get_json()["data"]["Sound"], list)
-
-    def test_normalizes_single_usb_to_list(self, client, mocker):
-        single = json.loads(self.SAMPLE_OUTPUT)
-        single["USBControllers"] = single["USBControllers"][0]
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = json.dumps(single)
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-
-        r = client.get("/api/sysinfo/data")
-        assert isinstance(r.get_json()["data"]["USBControllers"], list)
-
-    def test_normalizes_single_pcie_to_list(self, client, mocker):
-        single = json.loads(self.SAMPLE_OUTPUT)
-        single["PCIeSlots"] = single["PCIeSlots"][0]  # dict instead of list
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = json.dumps(single)
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-
-        r = client.get("/api/sysinfo/data")
-        assert isinstance(r.get_json()["data"]["PCIeSlots"], list)
-
-    def test_normalizes_single_nichw_to_list(self, client, mocker):
-        single = json.loads(self.SAMPLE_OUTPUT)
-        single["NetworkHardware"] = single["NetworkHardware"][0]
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = json.dumps(single)
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-
-        r = client.get("/api/sysinfo/data")
-        assert isinstance(r.get_json()["data"]["NetworkHardware"], list)
-
     def test_ok_response_has_stale_false(self, client, mocker):
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = self.SAMPLE_OUTPUT
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-
+        self._setup_wmi(mocker)
         r = client.get("/api/sysinfo/data")
         d = r.get_json()
         assert d["status"] == "ok"
@@ -2284,20 +2191,31 @@ class TestSysinfoRoute:
         assert d["error"] is None
         assert "collected_at" in d
 
-    def test_missing_keys_default_to_empty_list(self, client, mocker):
-        """When PS output has no Sound/USB/PCIe keys, they default to []."""
-        minimal = json.loads(self.SAMPLE_OUTPUT)
-        for k in ("Sound", "USBControllers", "PCIeSlots", "NetworkHardware"):
-            minimal.pop(k, None)
-        mock_run = mocker.patch("windesktopmgr.subprocess.run")
-        mock_run.return_value.stdout = json.dumps(minimal)
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stderr = ""
-
+    def test_empty_wmi_classes_return_empty_lists(self, client, mocker):
+        """When WMI returns no sound/USB/PCIe/NIC, those sections are []."""
+        _mock_wmi(
+            mocker,
+            {
+                "Win32_OperatingSystem": [self.OS_OBJ],
+                "Win32_ComputerSystem": [self.CS_OBJ],
+                "Win32_Processor": [self.CPU_OBJ],
+                "Win32_BIOS": [self.BIOS_OBJ],
+                "Win32_BaseBoard": [self.BB_OBJ],
+                "Win32_VideoController": [],
+                "Win32_NetworkAdapterConfiguration": [],
+                "Win32_NetworkAdapter": [],
+                "Win32_PhysicalMemory": [],
+                "Win32_DiskDrive": [],
+                "Win32_LogicalDisk": [],
+                "Win32_SoundDevice": [],
+                "Win32_USBController": [],
+                "Win32_SystemSlot": [],
+            },
+        )
         r = client.get("/api/sysinfo/data")
         d = r.get_json()["data"]
-        for k in ("Sound", "USBControllers", "PCIeSlots", "NetworkHardware"):
-            assert d.get(k, []) == [] or isinstance(d.get(k), list)
+        for k in ("Sound", "USBControllers", "PCIeSlots", "NetworkHardware", "GPU"):
+            assert d[k] == []
 
     def test_summary_route_accepts_sysinfo(self, client, mocker):
         """Verify the summary endpoint handles sysinfo tab."""

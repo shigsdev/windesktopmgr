@@ -24,6 +24,7 @@ Each PS test group covers:
 
 import json
 import subprocess
+import types
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -47,6 +48,30 @@ def _mock_run(mocker, stdout="[]", returncode=0, stderr="", side_effect=None):
     return m
 
 
+def _wmi_obj(**kwargs):
+    """Create a simple namespace that mimics a WMI object with attribute access."""
+    return types.SimpleNamespace(**kwargs)
+
+
+def _mock_wmi(mocker, classes=None):
+    """Patch windesktopmgr.wmi.WMI() to return a fake WMI connection.
+
+    ``classes`` is a dict mapping WMI class names (e.g. 'Win32_BIOS') to
+    lists of _wmi_obj instances.  The returned mock's class-method calls
+    (``conn.Win32_BIOS()``) return the corresponding lists.
+
+    Returns the mock connection object so tests can further customise it.
+    """
+    classes = classes or {}
+    mock_conn = mocker.MagicMock()
+
+    for name, data in classes.items():
+        setattr(mock_conn, name, mocker.MagicMock(return_value=data))
+
+    mocker.patch("windesktopmgr.wmi.WMI", return_value=mock_conn)
+    return mock_conn
+
+
 def _mock_rem_run(mocker, stdout="", returncode=0, stderr="", side_effect=None):
     """Patch remediation.subprocess.run — used by TestRemediationCommands since the
     remediation action handlers moved to remediation.py (backlog #22)."""
@@ -66,79 +91,106 @@ def _mock_rem_run(mocker, stdout="", returncode=0, stderr="", side_effect=None):
 
 
 class TestGetInstalledDrivers:
-    SAMPLE = json.dumps(
-        [
-            {
-                "DeviceName": "Intel Graphics",
-                "DriverVersion": "31.0.101.5186",
-                "DriverDate": "20240101000000.000000+000",
-                "DeviceClass": "Display",
-                "Manufacturer": "Intel Corporation",
-            },
-            {
-                "DeviceName": "Realtek Audio",
-                "DriverVersion": "6.0.9600.1",
-                "DriverDate": "20231001000000.000000+000",
-                "DeviceClass": "Media",
-                "Manufacturer": "Realtek",
-            },
-        ]
-    )
+    """Tests for get_installed_drivers() — now uses wmi.WMI().Win32_PnPSignedDriver()."""
+
+    SAMPLE_DRIVERS = [
+        _wmi_obj(
+            DeviceName="Intel Graphics",
+            DriverVersion="31.0.101.5186",
+            DriverDate="20240101000000.000000+000",
+            DeviceClass="Display",
+            Manufacturer="Intel Corporation",
+        ),
+        _wmi_obj(
+            DeviceName="Realtek Audio",
+            DriverVersion="6.0.9600.1",
+            DriverDate="20231001000000.000000+000",
+            DeviceClass="Media",
+            Manufacturer="Realtek",
+        ),
+    ]
 
     def test_happy_path_returns_list(self, mocker):
-        _mock_run(mocker, stdout=self.SAMPLE)
+        _mock_wmi(mocker, {"Win32_PnPSignedDriver": self.SAMPLE_DRIVERS})
         result = wdm.get_installed_drivers()
         assert isinstance(result, list)
         assert len(result) == 2
         assert result[0]["DeviceName"] == "Intel Graphics"
 
-    def test_single_object_normalised_to_list(self, mocker):
-        single = json.dumps(
-            {
-                "DeviceName": "USB Controller",
-                "DriverVersion": "1.0",
-                "DriverDate": "",
-                "DeviceClass": "USB",
-                "Manufacturer": "MS",
-            }
-        )
-        _mock_run(mocker, stdout=single)
+    def test_single_driver_returns_list(self, mocker):
+        single = [
+            _wmi_obj(
+                DeviceName="USB Controller",
+                DriverVersion="1.0",
+                DriverDate="",
+                DeviceClass="USB",
+                Manufacturer="MS",
+            )
+        ]
+        _mock_wmi(mocker, {"Win32_PnPSignedDriver": single})
         result = wdm.get_installed_drivers()
         assert isinstance(result, list)
         assert len(result) == 1
 
-    def test_empty_output_returns_empty_list(self, mocker):
-        _mock_run(mocker, stdout="")
+    def test_empty_wmi_returns_empty_list(self, mocker):
+        _mock_wmi(mocker, {"Win32_PnPSignedDriver": []})
         result = wdm.get_installed_drivers()
         assert result == []
 
-    def test_whitespace_output_returns_empty_list(self, mocker):
-        _mock_run(mocker, stdout="   \n\t  ")
+    def test_drivers_without_name_filtered(self, mocker):
+        drivers = [
+            _wmi_obj(
+                DeviceName=None,
+                DriverVersion="1.0",
+                DriverDate="",
+                DeviceClass="",
+                Manufacturer="",
+            )
+        ]
+        _mock_wmi(mocker, {"Win32_PnPSignedDriver": drivers})
         result = wdm.get_installed_drivers()
         assert result == []
 
-    def test_malformed_json_returns_empty_list(self, mocker):
-        _mock_run(mocker, stdout="not valid json {{")
+    def test_drivers_without_version_filtered(self, mocker):
+        drivers = [
+            _wmi_obj(
+                DeviceName="Test Device",
+                DriverVersion=None,
+                DriverDate="",
+                DeviceClass="",
+                Manufacturer="",
+            )
+        ]
+        _mock_wmi(mocker, {"Win32_PnPSignedDriver": drivers})
         result = wdm.get_installed_drivers()
         assert result == []
 
-    def test_timeout_returns_empty_list(self, mocker):
-        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=90))
+    def test_wmi_exception_returns_empty_list(self, mocker):
+        mocker.patch("windesktopmgr.wmi.WMI", side_effect=Exception("COM error"))
         result = wdm.get_installed_drivers()
         assert result == []
 
-    def test_command_uses_win32_pnpsigneddriver(self, mocker):
-        m = _mock_run(mocker, stdout=self.SAMPLE)
-        wdm.get_installed_drivers()
-        cmd = m.call_args[0][0][-1]
-        assert "Win32_PnPSignedDriver" in cmd
+    def test_output_fields_match_contract(self, mocker):
+        _mock_wmi(mocker, {"Win32_PnPSignedDriver": self.SAMPLE_DRIVERS})
+        result = wdm.get_installed_drivers()
+        for field in ("DeviceName", "DriverVersion", "DriverDate", "DeviceClass", "Manufacturer"):
+            assert field in result[0]
 
-    def test_command_selects_required_fields(self, mocker):
-        m = _mock_run(mocker, stdout=self.SAMPLE)
-        wdm.get_installed_drivers()
-        cmd = m.call_args[0][0][-1]
-        for field in ("DeviceName", "DriverVersion", "DeviceClass", "Manufacturer"):
-            assert field in cmd
+    def test_none_fields_default_to_empty_string(self, mocker):
+        drivers = [
+            _wmi_obj(
+                DeviceName="Test",
+                DriverVersion="1.0",
+                DriverDate=None,
+                DeviceClass=None,
+                Manufacturer=None,
+            )
+        ]
+        _mock_wmi(mocker, {"Win32_PnPSignedDriver": drivers})
+        result = wdm.get_installed_drivers()
+        assert result[0]["DriverDate"] == ""
+        assert result[0]["DeviceClass"] == ""
+        assert result[0]["Manufacturer"] == ""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1415,71 +1467,54 @@ class TestGetMemoryAnalysis:
 
 
 class TestGetCurrentBios:
-    SAMPLE = json.dumps(
-        {
-            "BIOSVersion": "2.3.1",
-            "ReleaseDate": "20240106000000.000000+000",
-            "Manufacturer": "Dell Inc.",
-            "BoardProduct": "XPS 8960",
-            "BoardMfr": "Dell Inc.",
-        }
+    """Tests for get_current_bios() — now uses wmi.WMI().Win32_BIOS() and Win32_BaseBoard()."""
+
+    BIOS_OBJ = _wmi_obj(
+        SMBIOSBIOSVersion="2.3.1",
+        ReleaseDate="20240106000000.000000+000",
+        Manufacturer="Dell Inc.",
     )
+    BOARD_OBJ = _wmi_obj(Product="XPS 8960", Manufacturer="Dell Inc.")
 
     def test_happy_path_returns_data(self, mocker):
-        _mock_run(mocker, stdout=self.SAMPLE)
+        _mock_wmi(mocker, {"Win32_BIOS": [self.BIOS_OBJ], "Win32_BaseBoard": [self.BOARD_OBJ]})
         result = wdm.get_current_bios()
         assert result["BIOSVersion"] == "2.3.1"
         assert result["Manufacturer"] == "Dell Inc."
+        assert result["BoardProduct"] == "XPS 8960"
+        assert result["BoardMfr"] == "Dell Inc."
 
     def test_bios_date_formatted(self, mocker):
-        _mock_run(mocker, stdout=self.SAMPLE)
+        _mock_wmi(mocker, {"Win32_BIOS": [self.BIOS_OBJ], "Win32_BaseBoard": [self.BOARD_OBJ]})
         result = wdm.get_current_bios()
         assert "BIOSDateFormatted" in result
         assert "2024" in result["BIOSDateFormatted"]
 
-    def test_empty_output_returns_empty_dict(self, mocker):
-        _mock_run(mocker, stdout="")
-        result = wdm.get_current_bios()
-        # Empty PS output → json.loads("{}") → {} + BIOSDateFormatted added
-        # No real BIOS fields should be present
-        assert "BIOSVersion" not in result
-        assert "Manufacturer" not in result
-
-    def test_malformed_json_returns_empty_dict(self, mocker):
-        _mock_run(mocker, stdout="<bios/>")
+    def test_wmi_exception_returns_empty_dict(self, mocker):
+        mocker.patch("windesktopmgr.wmi.WMI", side_effect=Exception("COM error"))
         result = wdm.get_current_bios()
         assert result == {}
-
-    def test_timeout_returns_empty_dict(self, mocker):
-        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=10))
-        result = wdm.get_current_bios()
-        assert result == {}
-
-    def test_command_uses_win32_bios(self, mocker):
-        m = _mock_run(mocker, stdout=self.SAMPLE)
-        wdm.get_current_bios()
-        cmd = m.call_args[0][0][-1]
-        assert "Win32_BIOS" in cmd
-
-    def test_command_includes_baseboard(self, mocker):
-        m = _mock_run(mocker, stdout=self.SAMPLE)
-        wdm.get_current_bios()
-        cmd = m.call_args[0][0][-1]
-        assert "Win32_BaseBoard" in cmd
 
     def test_missing_release_date_handled_gracefully(self, mocker):
-        no_date = json.dumps(
-            {
-                "BIOSVersion": "2.3.1",
-                "ReleaseDate": "",
-                "Manufacturer": "Dell Inc.",
-                "BoardProduct": "XPS 8960",
-                "BoardMfr": "Dell Inc.",
-            }
+        bios_no_date = _wmi_obj(
+            SMBIOSBIOSVersion="2.3.1",
+            ReleaseDate="",
+            Manufacturer="Dell Inc.",
         )
-        _mock_run(mocker, stdout=no_date)
+        _mock_wmi(mocker, {"Win32_BIOS": [bios_no_date], "Win32_BaseBoard": [self.BOARD_OBJ]})
         result = wdm.get_current_bios()
         assert result["BIOSDateFormatted"] == ""
+
+    def test_output_has_release_date_raw(self, mocker):
+        _mock_wmi(mocker, {"Win32_BIOS": [self.BIOS_OBJ], "Win32_BaseBoard": [self.BOARD_OBJ]})
+        result = wdm.get_current_bios()
+        assert result["ReleaseDate"] == "20240106000000.000000+000"
+
+    def test_output_fields_match_contract(self, mocker):
+        _mock_wmi(mocker, {"Win32_BIOS": [self.BIOS_OBJ], "Win32_BaseBoard": [self.BOARD_OBJ]})
+        result = wdm.get_current_bios()
+        for key in ("BIOSVersion", "ReleaseDate", "Manufacturer", "BoardProduct", "BoardMfr", "BIOSDateFormatted"):
+            assert key in result
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1972,20 +2007,23 @@ class TestWorkerTaskDoneSafety:
 
 
 class TestCheckDellBiosUpdate:
-    """Tests for check_dell_bios_update with all subprocess calls mocked."""
+    """Tests for check_dell_bios_update with WMI (service tag) + subprocess calls mocked."""
 
-    def _mock_run(self, mocker, side_effects):
-        """Mock subprocess.run with a list of (stdout, returncode) tuples."""
+    BIOS_OBJ = _wmi_obj(SerialNumber="9T46D14")
+
+    def _mock_deps(self, mocker, side_effects, service_tag="9T46D14"):
+        """Mock wmi.WMI() for service tag + subprocess.run for DCU/catalog/WU."""
+        bios_obj = _wmi_obj(SerialNumber=service_tag)
+        _mock_wmi(mocker, {"Win32_BIOS": [bios_obj]})
         m = mocker.patch("windesktopmgr.subprocess.run")
         m.side_effect = [type("R", (), {"stdout": out, "returncode": rc, "stderr": ""})() for out, rc in side_effects]
         return m
 
     def test_returns_required_keys(self, mocker, tmp_path):
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
-        self._mock_run(
+        self._mock_deps(
             mocker,
             [
-                ("9T46D14", 0),  # service tag
                 ("DCU_NOT_FOUND", 0),  # method 1
                 ("", 0),  # method 2 catalog
                 ("NO_BIOS_IN_WU", 0),  # method 3 WU
@@ -2006,10 +2044,9 @@ class TestCheckDellBiosUpdate:
     def test_dcu_found_sets_version(self, mocker, tmp_path):
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
         dcu_out = json.dumps({"Version": "2.23.0", "Source": "dcu_cli", "Notes": ""})
-        self._mock_run(
+        self._mock_deps(
             mocker,
             [
-                ("9T46D14", 0),  # service tag
                 (dcu_out, 0),  # method 1 DCU
             ],
         )
@@ -2021,10 +2058,9 @@ class TestCheckDellBiosUpdate:
     def test_dcu_same_version_no_update(self, mocker, tmp_path):
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
         dcu_out = json.dumps({"Version": "2.22.0", "Source": "dcu_cli", "Notes": ""})
-        self._mock_run(
+        self._mock_deps(
             mocker,
             [
-                ("9T46D14", 0),
                 (dcu_out, 0),
             ],
         )
@@ -2041,10 +2077,9 @@ class TestCheckDellBiosUpdate:
                 "Path": "https://downloads.dell.com/bios.exe",
             }
         )
-        self._mock_run(
+        self._mock_deps(
             mocker,
             [
-                ("9T46D14", 0),  # service tag
                 ("DCU_NOT_FOUND", 0),  # method 1 no DCU
                 (catalog_out, 0),  # method 2 catalog
             ],
@@ -2056,10 +2091,9 @@ class TestCheckDellBiosUpdate:
     def test_wu_fallback(self, mocker, tmp_path):
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
         wu_out = json.dumps({"Title": "Dell BIOS Update 2.24.0", "Version": "2.24.0"})
-        self._mock_run(
+        self._mock_deps(
             mocker,
             [
-                ("9T46D14", 0),  # service tag
                 ("DCU_NOT_FOUND", 0),  # no DCU
                 ("", 0),  # no catalog
                 (wu_out, 0),  # WU found
@@ -2071,10 +2105,9 @@ class TestCheckDellBiosUpdate:
 
     def test_all_methods_fail_returns_unknown(self, mocker, tmp_path):
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
-        self._mock_run(
+        self._mock_deps(
             mocker,
             [
-                ("9T46D14", 0),
                 ("DCU_NOT_FOUND", 0),
                 ("", 0),
                 ("NO_BIOS_IN_WU", 0),
@@ -2086,14 +2119,14 @@ class TestCheckDellBiosUpdate:
 
     def test_service_tag_populated(self, mocker, tmp_path):
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
-        self._mock_run(
+        self._mock_deps(
             mocker,
             [
-                ("ABC1234", 0),
                 ("DCU_NOT_FOUND", 0),
                 ("", 0),
                 ("NO_BIOS_IN_WU", 0),
             ],
+            service_tag="ABC1234",
         )
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["service_tag"] == "ABC1234"
@@ -2101,15 +2134,14 @@ class TestCheckDellBiosUpdate:
 
     def test_service_tag_empty_fallback_url(self, mocker, tmp_path):
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
-        self._mock_run(
+        self._mock_deps(
             mocker,
             [
-                ("", 0),  # empty service tag
                 ("DCU_NOT_FOUND", 0),
                 ("", 0),
                 ("NO_BIOS_IN_WU", 0),
-                ("", 0),  # retry service tag also empty
             ],
+            service_tag="",
         )
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert "dell.com" in result["download_url"]
@@ -2137,6 +2169,7 @@ class TestCheckDellBiosUpdate:
 
     def test_subprocess_timeout_handled(self, mocker, tmp_path):
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
+        _mock_wmi(mocker, {"Win32_BIOS": [_wmi_obj(SerialNumber="9T46D14")]})
         m = mocker.patch("windesktopmgr.subprocess.run")
         m.side_effect = subprocess.TimeoutExpired("powershell", 60)
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
@@ -2254,41 +2287,42 @@ class TestGetSystemTimelineCredCommand:
 
 
 class TestCheckDellBiosCommandContent:
-    """Command-content tests for the 4 subprocess calls in check_dell_bios_update."""
+    """Command-content tests for the 3 subprocess calls in check_dell_bios_update
+    (service tag now comes from wmi.WMI(), not subprocess)."""
 
     def _mock_run(self, mocker, tmp_path):
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
+        _mock_wmi(mocker, {"Win32_BIOS": [_wmi_obj(SerialNumber="9T46D14")]})
         m = mocker.patch("windesktopmgr.subprocess.run")
         m.side_effect = [
-            type("R", (), {"stdout": "9T46D14", "returncode": 0, "stderr": ""})(),
             type("R", (), {"stdout": "DCU_NOT_FOUND", "returncode": 0, "stderr": ""})(),
             type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})(),
             type("R", (), {"stdout": "NO_BIOS_IN_WU", "returncode": 0, "stderr": ""})(),
         ]
         return m
 
-    def test_service_tag_command_uses_win32_bios(self, mocker, tmp_path):
-        m = self._mock_run(mocker, tmp_path)
-        wdm.check_dell_bios_update("XPS8960", "2.22.0")
-        cmd = m.call_args_list[0][0][0][-1]
-        assert "Win32_BIOS" in cmd or "SerialNumber" in cmd
+    def test_service_tag_from_wmi(self, mocker, tmp_path):
+        """Service tag now comes from wmi.WMI().Win32_BIOS(), not subprocess."""
+        self._mock_run(mocker, tmp_path)
+        result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
+        assert result["service_tag"] == "9T46D14"
 
     def test_dcu_command_references_command_update(self, mocker, tmp_path):
         m = self._mock_run(mocker, tmp_path)
         wdm.check_dell_bios_update("XPS8960", "2.22.0")
-        cmd = m.call_args_list[1][0][0][-1]
+        cmd = m.call_args_list[0][0][0][-1]
         assert "dcu-cli" in cmd.lower() or "CommandUpdate" in cmd
 
     def test_catalog_command_references_dell_downloads(self, mocker, tmp_path):
         m = self._mock_run(mocker, tmp_path)
         wdm.check_dell_bios_update("XPS8960", "2.22.0")
-        cmd = m.call_args_list[2][0][0][-1]
+        cmd = m.call_args_list[1][0][0][-1]
         assert "dell.com" in cmd.lower() or "CatalogPC" in cmd
 
     def test_wu_command_searches_pending_updates(self, mocker, tmp_path):
         m = self._mock_run(mocker, tmp_path)
         wdm.check_dell_bios_update("XPS8960", "2.22.0")
-        cmd = m.call_args_list[3][0][0][-1]
+        cmd = m.call_args_list[2][0][0][-1]
         assert "IsInstalled" in cmd or "BIOS" in cmd or "Firmware" in cmd
 
 
@@ -2723,60 +2757,71 @@ class TestRemediationCommands:
 
 
 class TestWarrantyDataCommands:
-    CPU_OUT = json.dumps(
-        {
-            "CPUName": "Intel(R) Core(TM) i9-14900K",
-            "ProcessorId": "BFEBFBFF000B0671",
-            "SerialNumber": "N/A",
-            "DellServiceTag": "9T46D14",
-            "BIOSVersion": "2.23.0",
-            "BIOSDate": "2024-01-06",
-            "Manufacturer": "Dell Inc.",
-            "Model": "XPS 8960",
-        }
-    )
+    """Tests for warranty_data() — CPU/BIOS/System info now from wmi.WMI(),
+    microcode and counts still from subprocess."""
+
     MCU_OUT = "0x010001B4"
     COUNTS_OUT = json.dumps({"BSODs30Days": 2, "WHEAErrors": 0, "UnexpectedShutdowns": 1})
 
+    CPU_OBJ = _wmi_obj(
+        Name="  Intel(R) Core(TM) i9-14900K  ",
+        ProcessorId="BFEBFBFF000B0671",
+        SerialNumber="N/A",
+    )
+    BIOS_OBJ = _wmi_obj(
+        SerialNumber="9T46D14",
+        SMBIOSBIOSVersion="2.23.0",
+        ReleaseDate="20240106000000.000000+000",
+    )
+    CS_OBJ = _wmi_obj(Manufacturer="Dell Inc.", Model="XPS 8960")
+
     def _make_mock(self, mocker):
+        _mock_wmi(
+            mocker,
+            {
+                "Win32_Processor": [self.CPU_OBJ],
+                "Win32_BIOS": [self.BIOS_OBJ],
+                "Win32_ComputerSystem": [self.CS_OBJ],
+            },
+        )
         m = mocker.patch("windesktopmgr.subprocess.run")
         m.side_effect = [
-            type("R", (), {"stdout": self.CPU_OUT, "returncode": 0, "stderr": ""})(),
             type("R", (), {"stdout": self.MCU_OUT, "returncode": 0, "stderr": ""})(),
             type("R", (), {"stdout": self.COUNTS_OUT, "returncode": 0, "stderr": ""})(),
         ]
         return m
 
-    def test_cpu_command_uses_win32_processor(self, mocker, client):
-        m = self._make_mock(mocker)
-        client.get("/api/warranty/data")
-        cmd = m.call_args_list[0][0][0][-1]
-        assert "Win32_Processor" in cmd
+    def test_warranty_returns_cpu_info_from_wmi(self, mocker, client):
+        self._make_mock(mocker)
+        r = client.get("/api/warranty/data")
+        d = r.get_json()
+        assert d["warranty"]["CPUModel"] == "Intel(R) Core(TM) i9-14900K"
+        assert d["warranty"]["Manufacturer"] == "Dell Inc."
 
-    def test_cpu_command_collects_bios_info(self, mocker, client):
-        m = self._make_mock(mocker)
-        client.get("/api/warranty/data")
-        cmd = m.call_args_list[0][0][0][-1]
-        assert "Win32_BIOS" in cmd
-        assert "Win32_ComputerSystem" in cmd
+    def test_warranty_returns_bios_date_from_wmi(self, mocker, client):
+        self._make_mock(mocker)
+        r = client.get("/api/warranty/data")
+        d = r.get_json()
+        assert d["warranty"]["BIOSVersion"] == "2.23.0"
+        assert d["warranty"]["BIOSDate"] == "2024-01-06"
 
     def test_microcode_command_reads_registry(self, mocker, client):
         m = self._make_mock(mocker)
         client.get("/api/warranty/data")
-        cmd = m.call_args_list[1][0][0][-1]
+        cmd = m.call_args_list[0][0][0][-1]
         assert "CentralProcessor" in cmd
         assert "Update Revision" in cmd
 
     def test_counts_command_queries_whea_logger(self, mocker, client):
         m = self._make_mock(mocker)
         client.get("/api/warranty/data")
-        cmd = m.call_args_list[2][0][0][-1]
+        cmd = m.call_args_list[1][0][0][-1]
         assert "WHEA-Logger" in cmd
 
     def test_counts_command_queries_kernel_power_41(self, mocker, client):
         m = self._make_mock(mocker)
         client.get("/api/warranty/data")
-        cmd = m.call_args_list[2][0][0][-1]
+        cmd = m.call_args_list[1][0][0][-1]
         assert "41" in cmd
 
 
@@ -2786,25 +2831,42 @@ class TestWarrantyDataCommands:
 
 
 class TestGetDriverHealth:
-    """Tests for get_driver_health() — PS checks old drivers + problematic devices,
+    """Tests for get_driver_health() — uses wmi.WMI() for old drivers + problematic devices,
     then calls get_nvidia_update_info() from Python for NVIDIA data."""
 
-    SAMPLE = json.dumps(
-        {
-            "OldDrivers": [
-                {"DeviceName": "Realtek Audio", "Provider": "Realtek", "Version": "6.0.1.1", "Date": "2022-03-15"},
-            ],
-            "Problematic": [
-                {"DeviceName": "Unknown Device", "ErrorCode": 28, "Status": "Error"},
-            ],
-        }
+    # Old driver: Realtek, date > 2 years ago
+    OLD_DRIVER = _wmi_obj(
+        DeviceName="Realtek Audio",
+        DriverProviderName="Realtek",
+        DriverVersion="6.0.1.1",
+        DriverDate="20220315000000.000000+000",
     )
+    # Recent MS driver — should be excluded
+    MS_DRIVER = _wmi_obj(
+        DeviceName="MS Net",
+        DriverProviderName="Microsoft",
+        DriverVersion="10.0.1",
+        DriverDate="20220101000000.000000+000",
+    )
+    # Problematic PnP entity
+    PROB_ENTITY = _wmi_obj(Name="Unknown Device", ConfigManagerErrorCode=28, Status="Error")
+    # Normal PnP entity (no error)
+    OK_ENTITY = _wmi_obj(Name="Good Device", ConfigManagerErrorCode=0, Status="OK")
 
-    def _mock_deps(self, mocker, ps_stdout=None, nvidia_result=None):
-        """Mock both the PS subprocess and get_nvidia_update_info."""
-        m = _mock_run(mocker, stdout=ps_stdout if ps_stdout is not None else self.SAMPLE)
+    def _mock_deps(self, mocker, signed_drivers=None, pnp_entities=None, nvidia_result=None):
+        """Mock WMI classes and get_nvidia_update_info."""
+        if signed_drivers is None:
+            signed_drivers = [self.OLD_DRIVER]
+        if pnp_entities is None:
+            pnp_entities = [self.PROB_ENTITY, self.OK_ENTITY]
+        _mock_wmi(
+            mocker,
+            {
+                "Win32_PnPSignedDriver": signed_drivers,
+                "Win32_PnPEntity": pnp_entities,
+            },
+        )
         mocker.patch("windesktopmgr.get_nvidia_update_info", return_value=nvidia_result)
-        return m
 
     def test_happy_path_returns_all_keys(self, mocker):
         self._mock_deps(mocker)
@@ -2819,11 +2881,25 @@ class TestGetDriverHealth:
         assert len(result["old_drivers"]) == 1
         assert result["old_drivers"][0]["DeviceName"] == "Realtek Audio"
 
+    def test_old_driver_fields_match_contract(self, mocker):
+        self._mock_deps(mocker)
+        result = wdm.get_driver_health()
+        drv = result["old_drivers"][0]
+        for key in ("DeviceName", "Provider", "Version", "Date"):
+            assert key in drv
+        assert drv["Date"] == "2022-03-15"
+
     def test_problematic_drivers_parsed(self, mocker):
         self._mock_deps(mocker)
         result = wdm.get_driver_health()
         assert len(result["problematic_drivers"]) == 1
         assert result["problematic_drivers"][0]["ErrorCode"] == 28
+
+    def test_ms_drivers_excluded(self, mocker):
+        self._mock_deps(mocker, signed_drivers=[self.OLD_DRIVER, self.MS_DRIVER])
+        result = wdm.get_driver_health()
+        assert len(result["old_drivers"]) == 1
+        assert result["old_drivers"][0]["DeviceName"] == "Realtek Audio"
 
     def test_nvidia_update_from_python_call(self, mocker):
         nv = {
@@ -2844,95 +2920,113 @@ class TestGetDriverHealth:
         result = wdm.get_driver_health()
         assert result["nvidia"] is None
 
-    def test_empty_output_returns_safe_defaults(self, mocker):
-        self._mock_deps(mocker, ps_stdout="")
+    def test_empty_wmi_returns_safe_defaults(self, mocker):
+        self._mock_deps(mocker, signed_drivers=[], pnp_entities=[])
         result = wdm.get_driver_health()
         assert result["old_drivers"] == []
         assert result["problematic_drivers"] == []
 
-    def test_timeout_returns_safe_defaults(self, mocker):
-        mocker.patch(
-            "windesktopmgr.subprocess.run",
-            side_effect=subprocess.TimeoutExpired("powershell", 30),
-        )
+    def test_wmi_exception_returns_safe_defaults(self, mocker):
+        mocker.patch("windesktopmgr.wmi.WMI", side_effect=Exception("COM error"))
         mocker.patch("windesktopmgr.get_nvidia_update_info", return_value=None)
         result = wdm.get_driver_health()
         assert result["old_drivers"] == []
         assert result["problematic_drivers"] == []
 
-    def test_single_old_driver_normalised_to_list(self, mocker):
-        single = json.dumps(
-            {
-                "OldDrivers": {"DeviceName": "Solo", "Provider": "X", "Version": "1.0", "Date": "2022-01-01"},
-                "Problematic": [],
-            }
+    def test_recent_driver_not_flagged_as_old(self, mocker):
+        recent = _wmi_obj(
+            DeviceName="New Driver",
+            DriverProviderName="Vendor",
+            DriverVersion="2.0",
+            DriverDate="20260101000000.000000+000",
         )
-        self._mock_deps(mocker, ps_stdout=single)
+        self._mock_deps(mocker, signed_drivers=[recent])
         result = wdm.get_driver_health()
-        assert isinstance(result["old_drivers"], list)
-        assert len(result["old_drivers"]) == 1
+        assert result["old_drivers"] == []
 
-    def test_command_queries_driver_date_cutoff(self, mocker):
-        m = self._mock_deps(mocker, ps_stdout="{}")
-        wdm.get_driver_health()
-        cmd = m.call_args[0][0][-1]
-        assert "AddYears(-2)" in cmd
-
-    def test_command_queries_configmanager_errors(self, mocker):
-        m = self._mock_deps(mocker, ps_stdout="{}")
-        wdm.get_driver_health()
-        cmd = m.call_args[0][0][-1]
-        assert "ConfigManagerErrorCode" in cmd
-
-    def test_command_does_not_contain_nvidia_code(self, mocker):
-        """PS script should NOT contain NVIDIA/Installer2/WU code — that's in Python now."""
-        m = self._mock_deps(mocker, ps_stdout="{}")
-        wdm.get_driver_health()
-        cmd = m.call_args[0][0][-1]
-        assert "nvidia-smi" not in cmd
-        assert "Installer2" not in cmd
-        assert "Microsoft.Update.Session" not in cmd
+    def test_driver_with_no_provider_excluded(self, mocker):
+        no_provider = _wmi_obj(
+            DeviceName="Orphan",
+            DriverProviderName="",
+            DriverVersion="1.0",
+            DriverDate="20200101000000.000000+000",
+        )
+        self._mock_deps(mocker, signed_drivers=[no_provider])
+        result = wdm.get_driver_health()
+        assert result["old_drivers"] == []
 
 
 class TestGetNvidiaGpuInfo:
-    """Tests for _get_nvidia_gpu_info() — nvidia-smi + WMI fallback for GPU detection."""
+    """Tests for _get_nvidia_gpu_info() — nvidia-smi subprocess + wmi.WMI() for GPU detection."""
 
-    SMI_OUTPUT = json.dumps({"Name": "NVIDIA GeForce RTX 4060 Ti", "Installed": "591.74", "WinVer": "32.0.15.9174"})
+    NV_GPU = _wmi_obj(Name="NVIDIA GeForce RTX 4060 Ti", DriverVersion="32.0.15.9174")
+    INTEL_GPU = _wmi_obj(Name="Intel UHD Graphics 770", DriverVersion="31.0.101.5186")
 
-    def test_happy_path_returns_gpu_dict(self, mocker):
-        _mock_run(mocker, stdout=self.SMI_OUTPUT)
+    def _mock_smi(self, mocker, stdout="", returncode=0, exists=True, side_effect=None):
+        """Mock nvidia-smi subprocess + os.path.exists."""
+        mocker.patch("windesktopmgr.os.path.exists", return_value=exists)
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        if side_effect:
+            m.side_effect = side_effect
+        else:
+            m.return_value.stdout = stdout
+            m.return_value.returncode = returncode
+            m.return_value.stderr = ""
+        return m
+
+    def test_happy_path_with_smi_and_wmi(self, mocker):
+        self._mock_smi(mocker, stdout="NVIDIA GeForce RTX 4060 Ti, 591.74\n")
+        _mock_wmi(mocker, {"Win32_VideoController": [self.NV_GPU]})
         result = wdm._get_nvidia_gpu_info()
         assert result is not None
         assert result["name"] == "NVIDIA GeForce RTX 4060 Ti"
         assert result["installed"] == "591.74"
         assert result["win_ver"] == "32.0.15.9174"
 
-    def test_no_gpu_returns_none(self, mocker):
-        _mock_run(mocker, stdout="")
+    def test_no_smi_falls_back_to_wmi_only(self, mocker):
+        self._mock_smi(mocker, exists=False)
+        _mock_wmi(mocker, {"Win32_VideoController": [self.NV_GPU]})
+        result = wdm._get_nvidia_gpu_info()
+        assert result is not None
+        assert result["name"] == "NVIDIA GeForce RTX 4060 Ti"
+        assert result["win_ver"] == "32.0.15.9174"
+        # Version derived from win_ver via _win_to_nvidia_version
+        assert result["installed"] == "591.74"
+
+    def test_no_nvidia_gpu_returns_none(self, mocker):
+        self._mock_smi(mocker, exists=False)
+        _mock_wmi(mocker, {"Win32_VideoController": [self.INTEL_GPU]})
         result = wdm._get_nvidia_gpu_info()
         assert result is None
 
-    def test_malformed_json_returns_none(self, mocker):
-        _mock_run(mocker, stdout="not json")
+    def test_empty_wmi_returns_none(self, mocker):
+        self._mock_smi(mocker, exists=False)
+        _mock_wmi(mocker, {"Win32_VideoController": []})
         result = wdm._get_nvidia_gpu_info()
         assert result is None
 
-    def test_timeout_returns_none(self, mocker):
-        _mock_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 15))
+    def test_wmi_exception_returns_none(self, mocker):
+        self._mock_smi(mocker, exists=False)
+        mocker.patch("windesktopmgr.wmi.WMI", side_effect=Exception("COM error"))
         result = wdm._get_nvidia_gpu_info()
         assert result is None
 
-    def test_command_uses_nvidia_smi(self, mocker):
-        m = _mock_run(mocker, stdout="")
-        wdm._get_nvidia_gpu_info()
-        cmd = m.call_args[0][0][-1]
-        assert "nvidia-smi" in cmd
+    def test_smi_timeout_still_tries_wmi(self, mocker):
+        self._mock_smi(mocker, side_effect=subprocess.TimeoutExpired("nvidia-smi", 10))
+        _mock_wmi(mocker, {"Win32_VideoController": [self.NV_GPU]})
+        # os.path.exists needs to be True for the smi path to be tried
+        mocker.patch("windesktopmgr.os.path.exists", return_value=True)
+        result = wdm._get_nvidia_gpu_info()
+        assert result is not None
+        assert result["name"] == "NVIDIA GeForce RTX 4060 Ti"
 
-    def test_command_has_wmi_fallback(self, mocker):
-        m = _mock_run(mocker, stdout="")
-        wdm._get_nvidia_gpu_info()
-        cmd = m.call_args[0][0][-1]
-        assert "Win32_VideoController" in cmd
+    def test_output_contract_fields(self, mocker):
+        self._mock_smi(mocker, exists=False)
+        _mock_wmi(mocker, {"Win32_VideoController": [self.NV_GPU]})
+        result = wdm._get_nvidia_gpu_info()
+        assert "name" in result
+        assert "installed" in result
+        assert "win_ver" in result
 
 
 class TestDetectNvidiaDriverBranch:

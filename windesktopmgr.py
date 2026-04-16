@@ -6,6 +6,7 @@ Reads from Windows Event Log and existing SystemHealthDiag HTML reports.
 
 import glob
 import json
+import locale
 import os
 import queue
 import re
@@ -19,6 +20,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import psutil
+import wmi
 from flask import Flask, jsonify, make_response, render_template, request, send_from_directory
 
 from applogging import get_logger
@@ -382,21 +384,41 @@ def categorize(name: str, device_class: str) -> str:
     return "Other"
 
 
-def get_installed_drivers() -> list:
-    ps = (
-        "Get-WmiObject Win32_PnPSignedDriver | "
-        "Where-Object { $_.DeviceName -and $_.DriverVersion } | "
-        "Select-Object DeviceName, DriverVersion, DriverDate, DeviceClass, Manufacturer | "
-        "ConvertTo-Json -Depth 2"
-    )
+# ── WMI helpers ───────────────────────────────────────────────────────────────
+_ff_map = {8: "DIMM", 12: "SODIMM", 0: "Unknown"}
+_mem_type_map = {20: "DDR", 21: "DDR2", 22: "DDR2 FB-DIMM", 24: "DDR3", 26: "DDR4", 34: "DDR5", 0: "Unknown"}
+_arch_map = {0: "x86", 5: "ARM", 9: "x64", 12: "ARM64"}
+_slot_usage_map = {1: "Other", 2: "Unknown", 3: "Available", 4: "In Use"}
+
+
+def _wmi_date_to_str(wmi_date: str, fmt: str = "%Y-%m-%d") -> str:
+    """Parse WMI datetime (20260621000000.000000+000) to formatted string."""
+    if not wmi_date or len(wmi_date) < 8:
+        return "Unknown"
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=90
-        )
-        data = json.loads(r.stdout or "[]")
-        return data if isinstance(data, list) else [data]
+        return datetime.strptime(wmi_date[:14], "%Y%m%d%H%M%S").strftime(fmt)
+    except Exception:
+        return wmi_date[:8]
+
+
+def get_installed_drivers() -> list:
+    try:
+        c = wmi.WMI()
+        result = []
+        for d in c.Win32_PnPSignedDriver():
+            if d.DeviceName and d.DriverVersion:
+                result.append(
+                    {
+                        "DeviceName": d.DeviceName,
+                        "DriverVersion": d.DriverVersion,
+                        "DriverDate": d.DriverDate or "",
+                        "DeviceClass": d.DeviceClass or "",
+                        "Manufacturer": d.Manufacturer or "",
+                    }
+                )
+        return result
     except Exception as e:
-        print(f"[PS error] {e}")
+        print(f"[WMI error] {e}")
         return []
 
 
@@ -408,43 +430,48 @@ def get_driver_health() -> dict:
         problematic_drivers: list of devices with ConfigManager errors
         nvidia: dict with GPU driver info and update state (or None)
     """
-    ps = r"""
-$cutoff = (Get-Date).AddYears(-2)
-$ms = @('Microsoft','Microsoft Windows','Microsoft Corporation')
-
-# Third-party drivers older than 2 years
-$old = @()
-foreach ($d in Get-CimInstance Win32_PnPSignedDriver -EA SilentlyContinue | Where-Object { $_.DriverVersion }) {
-    $isMS = $false; foreach ($p in $ms) { if ($d.DriverProviderName -like "*$p*") { $isMS=$true; break } }
-    if (-not $isMS -and $d.DriverProviderName -and $d.DriverDate -and $d.DriverDate -lt $cutoff) {
-        $old += @{DeviceName=$d.DeviceName;Provider=$d.DriverProviderName;Version=$d.DriverVersion;Date=$d.DriverDate.ToString('yyyy-MM-dd')}
-    }
-}
-
-# Devices with errors
-$prob = @(Get-CimInstance Win32_PnPEntity -EA SilentlyContinue | Where-Object { $_.ConfigManagerErrorCode -ne 0 } | ForEach-Object {
-    @{DeviceName=$_.Name;ErrorCode=$_.ConfigManagerErrorCode;Status=$_.Status}
-})
-
-@{OldDrivers=$old;Problematic=$prob} | ConvertTo-Json -Depth 3
-"""
+    _ms_providers = ("Microsoft", "Microsoft Windows", "Microsoft Corporation")
+    cutoff = datetime.now() - timedelta(days=730)  # ~2 years
+    old = []
+    prob = []
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        data = json.loads(r.stdout.strip() or "{}")
-        old = data.get("OldDrivers") or []
-        if isinstance(old, dict):
-            old = [old]
-        prob = data.get("Problematic") or []
-        if isinstance(prob, dict):
-            prob = [prob]
+        c = wmi.WMI()
+        for d in c.Win32_PnPSignedDriver():
+            if not d.DriverVersion:
+                continue
+            provider = d.DriverProviderName or ""
+            if any(ms in provider for ms in _ms_providers):
+                continue
+            if not provider:
+                continue
+            raw_date = d.DriverDate or ""
+            if raw_date and len(raw_date) >= 8:
+                try:
+                    drv_dt = datetime.strptime(raw_date[:8], "%Y%m%d")
+                    if drv_dt < cutoff:
+                        old.append(
+                            {
+                                "DeviceName": d.DeviceName or "",
+                                "Provider": provider,
+                                "Version": d.DriverVersion,
+                                "Date": drv_dt.strftime("%Y-%m-%d"),
+                            }
+                        )
+                except Exception:
+                    pass
+
+        for ent in c.Win32_PnPEntity():
+            err_code = ent.ConfigManagerErrorCode
+            if err_code is not None and err_code != 0:
+                prob.append(
+                    {
+                        "DeviceName": ent.Name or "",
+                        "ErrorCode": int(err_code),
+                        "Status": ent.Status or "",
+                    }
+                )
     except Exception as e:
         print(f"[DriverHealth] {e}")
-        old, prob = [], []
 
     # NVIDIA update check via Python (API + fallback) — no extra PS overhead
     nvidia = get_nvidia_update_info()
@@ -472,42 +499,48 @@ def _get_nvidia_gpu_info() -> dict | None:
 
     Returns dict with 'name', 'installed', 'win_ver' or None if no NVIDIA GPU.
     """
-    ps = r"""
-$nvsmi = "$env:SystemRoot\System32\nvidia-smi.exe"
-if (Test-Path $nvsmi) {
-    $csv = & $nvsmi --query-gpu=name,driver_version --format=csv,noheader 2>$null
-    if ($csv) {
-        $fields = $csv -split ','
-        $gpuName = $fields[0].Trim()
-        $nvShort = $fields[1].Trim()
-        $gpu = Get-CimInstance Win32_VideoController -EA SilentlyContinue | Where-Object { $_.Name -like '*NVIDIA*' } | Select-Object -First 1
-        $winVer = if ($gpu) { $gpu.DriverVersion } else { '' }
-        @{Name=$gpuName;Installed=$nvShort;WinVer=$winVer} | ConvertTo-Json
-        exit 0
-    }
-}
-$gpu = Get-CimInstance Win32_VideoController -EA SilentlyContinue | Where-Object { $_.Name -like '*NVIDIA*' } | Select-Object -First 1
-if (-not $gpu) { Write-Output ''; exit 0 }
-$winVer = $gpu.DriverVersion
-$parts = $winVer -split '\.'
-$nvShort = ''
-if ($parts.Count -ge 4) {
-    $raw = $parts[2] + $parts[3]
-    if ($raw.Length -gt 2) { $nvShort = $raw.Substring(1, $raw.Length - 3) + '.' + $raw.Substring($raw.Length - 2) }
-}
-@{Name=$gpu.Name;Installed=$nvShort;WinVer=$winVer} | ConvertTo-Json
-"""
+    gpu_name = ""
+    nv_short = ""
+    win_ver = ""
+
+    # Try nvidia-smi first for accurate name + NVIDIA short version
+    nvsmi_path = os.path.join(os.environ.get("SYSTEMROOT", r"C:\Windows"), "System32", "nvidia-smi.exe")
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=15
-        )
-        raw = r.stdout.strip()
-        if not raw:
-            return None
-        data = json.loads(raw)
-        return {"name": data["Name"], "installed": data["Installed"], "win_ver": data.get("WinVer", "")}
+        if os.path.exists(nvsmi_path):
+            r = subprocess.run(
+                [nvsmi_path, "--query-gpu=name,driver_version", "--format=csv,noheader"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                fields = r.stdout.strip().split(",")
+                if len(fields) >= 2:
+                    gpu_name = fields[0].strip()
+                    nv_short = fields[1].strip()
     except Exception:
+        pass
+
+    # Get Windows driver version from WMI
+    try:
+        c = wmi.WMI()
+        for vc in c.Win32_VideoController():
+            if vc.Name and "NVIDIA" in vc.Name.upper():
+                win_ver = vc.DriverVersion or ""
+                if not gpu_name:
+                    gpu_name = vc.Name
+                break
+    except Exception:
+        pass
+
+    if not gpu_name:
         return None
+
+    # If nvidia-smi didn't give us the short version, derive it from Windows version
+    if not nv_short and win_ver:
+        nv_short = _win_to_nvidia_version(win_ver)
+
+    return {"name": gpu_name, "installed": nv_short, "win_ver": win_ver}
 
 
 # Known GPU product family IDs for the NVIDIA driver lookup API.
@@ -5794,32 +5827,25 @@ BIOS_CACHE_FILE = os.path.join(APP_DIR, "bios_cache.json")
 
 
 def get_current_bios() -> dict:
-    ps = r"""
-$bios = Get-WmiObject Win32_BIOS
-$board = Get-WmiObject Win32_BaseBoard
-[PSCustomObject]@{
-    BIOSVersion    = $bios.SMBIOSBIOSVersion
-    ReleaseDate    = $bios.ReleaseDate
-    Manufacturer   = $bios.Manufacturer
-    BoardProduct   = $board.Product
-    BoardMfr       = $board.Manufacturer
-} | ConvertTo-Json
-"""
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=10
-        )
-        data = json.loads(r.stdout.strip() or "{}")
-        # Parse WMI date format 20260106000000.000000+000
-        raw_date = data.get("ReleaseDate", "")
+        c = wmi.WMI()
+        bios = c.Win32_BIOS()[0]
+        board = c.Win32_BaseBoard()[0]
+        raw_date = bios.ReleaseDate or ""
         bios_date = ""
         if raw_date and len(raw_date) >= 8:
             try:
                 bios_date = datetime.strptime(raw_date[:8], "%Y%m%d").strftime("%B %d, %Y")
             except Exception:
                 bios_date = raw_date[:8]
-        data["BIOSDateFormatted"] = bios_date
-        return data
+        return {
+            "BIOSVersion": bios.SMBIOSBIOSVersion,
+            "ReleaseDate": raw_date,
+            "Manufacturer": bios.Manufacturer,
+            "BoardProduct": board.Product,
+            "BoardMfr": board.Manufacturer,
+            "BIOSDateFormatted": bios_date,
+        }
     except Exception as e:
         print(f"[BIOS] get current error: {e}")
         return {}
@@ -5849,13 +5875,7 @@ def check_dell_bios_update(board_product: str, current_version: str) -> dict:
     # Get service tag dynamically from WMI
     service_tag = ""
     try:
-        r_tag = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", "(Get-WmiObject Win32_BIOS).SerialNumber"],
-            capture_output=True,
-            text=True,
-            timeout=8,
-        )
-        tag = r_tag.stdout.strip()
+        tag = wmi.WMI().Win32_BIOS()[0].SerialNumber
         if tag and len(tag) >= 5:
             service_tag = tag
     except Exception:
@@ -6039,13 +6059,7 @@ try {
     # If we didn't get it at the top (e.g. timeout), try once more
     if not result.get("service_tag"):
         try:
-            ps_tag = r"""
-(Get-WmiObject Win32_BIOS).SerialNumber
-"""
-            r4 = subprocess.run(
-                ["powershell", "-NonInteractive", "-Command", ps_tag], capture_output=True, text=True, timeout=8
-            )
-            tag = r4.stdout.strip()
+            tag = wmi.WMI().Win32_BIOS()[0].SerialNumber
             if tag and len(tag) >= 5:
                 result["service_tag"] = tag
                 result["download_url"] = (
@@ -7525,26 +7539,26 @@ def bios_cache_clear_route():
 def warranty_data():
     """Collect Intel/Dell warranty readiness data."""
     try:
-        # CPU info
-        cpu_cmd = """
-$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
-$bios = Get-CimInstance Win32_BIOS
-$cs = Get-CimInstance Win32_ComputerSystem
-@{
-    CPUName = $cpu.Name.Trim()
-    ProcessorId = $cpu.ProcessorId
-    SerialNumber = if ($cpu.SerialNumber) { $cpu.SerialNumber } else { 'N/A' }
-    DellServiceTag = $bios.SerialNumber
-    BIOSVersion = $bios.SMBIOSBIOSVersion
-    BIOSDate = if ($bios.ReleaseDate) { $bios.ReleaseDate.ToString('yyyy-MM-dd') } else { 'Unknown' }
-    Manufacturer = $cs.Manufacturer
-    Model = $cs.Model
-} | ConvertTo-Json
-"""
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", cpu_cmd], capture_output=True, text=True, timeout=15
-        )
-        sys_data = json.loads(r.stdout.strip()) if r.stdout.strip() else {}
+        # CPU / BIOS / System info via WMI
+        try:
+            c = wmi.WMI()
+            cpu_obj = c.Win32_Processor()[0]
+            bios_obj = c.Win32_BIOS()[0]
+            cs_obj = c.Win32_ComputerSystem()[0]
+            bios_date_raw = bios_obj.ReleaseDate or ""
+            bios_date = _wmi_date_to_str(bios_date_raw) if bios_date_raw else "Unknown"
+            sys_data = {
+                "CPUName": (cpu_obj.Name or "").strip(),
+                "ProcessorId": cpu_obj.ProcessorId or "",
+                "SerialNumber": cpu_obj.SerialNumber or "N/A",
+                "DellServiceTag": bios_obj.SerialNumber or "",
+                "BIOSVersion": bios_obj.SMBIOSBIOSVersion or "",
+                "BIOSDate": bios_date,
+                "Manufacturer": cs_obj.Manufacturer or "",
+                "Model": cs_obj.Model or "",
+            }
+        except Exception:
+            sys_data = {}
 
         cpu_name = sys_data.get("CPUName", "Unknown")
         is_affected = bool(re.search(r"i[579]-1[34]\d{3}", cpu_name))
@@ -7625,107 +7639,250 @@ def sysinfo_data():
     error_detail = None
     data = {}
     try:
-        cmd = r"""
-$OS   = Get-CimInstance Win32_OperatingSystem
-$CS   = Get-CimInstance Win32_ComputerSystem
-$CPU  = Get-CimInstance Win32_Processor
-$BIOS = Get-CimInstance Win32_BIOS
-$BB   = Get-CimInstance Win32_BaseBoard
-$GPU  = Get-CimInstance Win32_VideoController | Select-Object Name, DriverVersion, DriverDate, AdapterRAM, VideoProcessor, CurrentRefreshRate, VideoModeDescription, AdapterCompatibility, PNPDeviceID
-$NIC  = Get-CimInstance Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled } | Select-Object Description, MACAddress, @{N='IPAddress';E={$_.IPAddress -join ', '}}, DHCPEnabled, DHCPServer, DNSServerSearchOrder
-$NICHw = Get-CimInstance Win32_NetworkAdapter | Where-Object { $_.NetConnectionID -ne $null } | Select-Object Name, Manufacturer, ProductName, NetConnectionID, Speed, AdapterType, MACAddress
-$RAM  = Get-CimInstance Win32_PhysicalMemory | Select-Object BankLabel, Capacity, Speed, Manufacturer, PartNumber, ConfiguredClockSpeed, @{N='FormFactor';E={switch($_.FormFactor){8{'DIMM'}12{'SODIMM'}0{'Unknown'}default{$_.FormFactor}}}}, @{N='MemoryType';E={switch($_.SMBIOSMemoryType){20{'DDR'}21{'DDR2'}22{'DDR2 FB-DIMM'}24{'DDR3'}26{'DDR4'}34{'DDR5'}0{'Unknown'}default{$_.SMBIOSMemoryType}}}}, DataWidth, DeviceLocator
-$Disk = Get-CimInstance Win32_DiskDrive | Select-Object Model, Size, InterfaceType, MediaType, SerialNumber, Partitions
-$Vol  = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | Select-Object DeviceID, VolumeName, FileSystem, @{N='SizeGB';E={[math]::Round($_.Size/1GB,1)}}, @{N='FreeGB';E={[math]::Round($_.FreeSpace/1GB,1)}}
-$Sound = Get-CimInstance Win32_SoundDevice | Select-Object Name, Manufacturer, Status
-$USB  = Get-CimInstance Win32_USBController | Select-Object Name, Manufacturer, Status
-$Slots = Get-CimInstance Win32_SystemSlot | Select-Object SlotDesignation, @{N='CurrentUsage';E={switch($_.CurrentUsage){1{'Other'}2{'Unknown'}3{'Available'}4{'In Use'}default{$_.CurrentUsage}}}}, Status, Description
-$TZ   = Get-TimeZone
+        c = wmi.WMI()
+        os_obj = c.Win32_OperatingSystem()[0]
+        cs_obj = c.Win32_ComputerSystem()[0]
+        cpu_obj = c.Win32_Processor()[0]
+        bios_obj = c.Win32_BIOS()[0]
+        bb_obj = c.Win32_BaseBoard()[0]
 
-@{
-    Computer = @{
-        Name           = $CS.Name
-        Domain          = $CS.Domain
-        Manufacturer   = $CS.Manufacturer
-        Model          = $CS.Model
-        SystemType     = $CS.SystemType
-        TotalRAM_GB    = [math]::Round($CS.TotalPhysicalMemory / 1GB, 1)
-    }
-    OS = @{
-        Name           = $OS.Caption
-        Version        = $OS.Version
-        Build          = $OS.BuildNumber
-        Architecture   = $OS.OSArchitecture
-        InstallDate    = $OS.InstallDate.ToString('yyyy-MM-dd')
-        LastBoot       = $OS.LastBootUpTime.ToString('yyyy-MM-dd HH:mm:ss')
-        Uptime         = ((Get-Date) - $OS.LastBootUpTime).ToString('dd\.hh\:mm\:ss')
-        WindowsDir     = $OS.WindowsDirectory
-        SystemDrive    = $OS.SystemDrive
-        Locale         = (Get-Culture).DisplayName
-        TimeZone       = $TZ.DisplayName
-        TimeZoneId     = $TZ.Id
-    }
-    CPU = @{
-        Name           = $CPU.Name.Trim()
-        Cores          = $CPU.NumberOfCores
-        LogicalProcs   = $CPU.NumberOfLogicalProcessors
-        MaxClockMHz    = $CPU.MaxClockSpeed
-        CurrentClockMHz = $CPU.CurrentClockSpeed
-        SocketDesignation = $CPU.SocketDesignation
-        L2CacheKB      = $CPU.L2CacheSize
-        L3CacheKB      = $CPU.L3CacheSize
-        ProcessorId    = $CPU.ProcessorId
-        Architecture   = switch($CPU.Architecture) { 0 {'x86'} 5 {'ARM'} 9 {'x64'} 12 {'ARM64'} default {$CPU.Architecture} }
-    }
-    BIOS = @{
-        Version        = $BIOS.SMBIOSBIOSVersion
-        ReleaseDate    = if ($BIOS.ReleaseDate) { $BIOS.ReleaseDate.ToString('yyyy-MM-dd') } else { 'Unknown' }
-        Manufacturer   = $BIOS.Manufacturer
-        SerialNumber   = $BIOS.SerialNumber
-    }
-    Baseboard = @{
-        Manufacturer   = $BB.Manufacturer
-        Product        = $BB.Product
-        Version        = $BB.Version
-        SerialNumber   = $BB.SerialNumber
-    }
-    GPU = $GPU
-    Network = $NIC
-    NetworkHardware = $NICHw
-    Memory = $RAM
-    Disks = $Disk
-    Volumes = $Vol
-    Sound = $Sound
-    USBControllers = $USB
-    PCIeSlots = $Slots
-} | ConvertTo-Json -Depth 3
-"""
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", cmd], capture_output=True, text=True, timeout=30
-        )
-        data = json.loads(r.stdout.strip()) if r.stdout.strip() else {}
+        # Parse OS dates
+        install_date = _wmi_date_to_str(os_obj.InstallDate or "")
+        last_boot_raw = os_obj.LastBootUpTime or ""
+        last_boot = _wmi_date_to_str(last_boot_raw, "%Y-%m-%d %H:%M:%S")
 
-        # Normalize single-item lists (PowerShell returns dict for single item)
-        for key in (
-            "GPU",
-            "Network",
-            "NetworkHardware",
-            "Memory",
-            "Disks",
-            "Volumes",
-            "Sound",
-            "USBControllers",
-            "PCIeSlots",
-        ):
-            val = data.get(key)
-            if isinstance(val, dict):
-                data[key] = [val]
-            elif val is None:
-                data[key] = []
+        # Uptime calculation
+        uptime_str = ""
+        if last_boot_raw and len(last_boot_raw) >= 14:
+            try:
+                boot_dt = datetime.strptime(last_boot_raw[:14], "%Y%m%d%H%M%S")
+                delta = datetime.now() - boot_dt
+                days = delta.days
+                hours, rem = divmod(delta.seconds, 3600)
+                minutes, seconds = divmod(rem, 60)
+                uptime_str = f"{days:02d}.{hours:02d}:{minutes:02d}:{seconds:02d}"
+            except Exception:
+                pass
 
-    except subprocess.TimeoutExpired:
-        stale = True
-        error_detail = "PowerShell timed out after 30s"
+        # TimeZone — use Python stdlib
+        local_tz_name = time.tzname[time.daylight] if time.daylight else time.tzname[0]
+        utc_offset = -time.timezone if not time.daylight else -time.altzone
+        tz_hours = utc_offset // 3600
+        tz_sign = "+" if tz_hours >= 0 else ""
+        tz_display = f"(UTC{tz_sign}{tz_hours:02d}:00) {local_tz_name}"
+        tz_id = local_tz_name
+
+        # Locale — use Python stdlib
+        try:
+            locale_name = locale.getlocale()[0] or "Unknown"
+        except Exception:
+            locale_name = "Unknown"
+
+        # Computer
+        total_ram_bytes = int(cs_obj.TotalPhysicalMemory or 0)
+        data["Computer"] = {
+            "Name": cs_obj.Name or "",
+            "Domain": cs_obj.Domain or "",
+            "Manufacturer": cs_obj.Manufacturer or "",
+            "Model": cs_obj.Model or "",
+            "SystemType": cs_obj.SystemType or "",
+            "TotalRAM_GB": round(total_ram_bytes / (1024**3), 1) if total_ram_bytes else 0,
+        }
+
+        # OS
+        data["OS"] = {
+            "Name": os_obj.Caption or "",
+            "Version": os_obj.Version or "",
+            "Build": os_obj.BuildNumber or "",
+            "Architecture": os_obj.OSArchitecture or "",
+            "InstallDate": install_date,
+            "LastBoot": last_boot,
+            "Uptime": uptime_str,
+            "WindowsDir": os_obj.WindowsDirectory or "",
+            "SystemDrive": os_obj.SystemDrive or "",
+            "Locale": locale_name,
+            "TimeZone": tz_display,
+            "TimeZoneId": tz_id,
+        }
+
+        # CPU
+        arch_code = int(cpu_obj.Architecture) if cpu_obj.Architecture is not None else -1
+        data["CPU"] = {
+            "Name": (cpu_obj.Name or "").strip(),
+            "Cores": int(cpu_obj.NumberOfCores or 0),
+            "LogicalProcs": int(cpu_obj.NumberOfLogicalProcessors or 0),
+            "MaxClockMHz": int(cpu_obj.MaxClockSpeed or 0),
+            "CurrentClockMHz": int(cpu_obj.CurrentClockSpeed or 0),
+            "SocketDesignation": cpu_obj.SocketDesignation or "",
+            "L2CacheKB": int(cpu_obj.L2CacheSize or 0),
+            "L3CacheKB": int(cpu_obj.L3CacheSize or 0),
+            "ProcessorId": cpu_obj.ProcessorId or "",
+            "Architecture": _arch_map.get(arch_code, str(arch_code)),
+        }
+
+        # BIOS
+        bios_release = bios_obj.ReleaseDate or ""
+        data["BIOS"] = {
+            "Version": bios_obj.SMBIOSBIOSVersion or "",
+            "ReleaseDate": _wmi_date_to_str(bios_release) if bios_release else "Unknown",
+            "Manufacturer": bios_obj.Manufacturer or "",
+            "SerialNumber": bios_obj.SerialNumber or "",
+        }
+
+        # Baseboard
+        data["Baseboard"] = {
+            "Manufacturer": bb_obj.Manufacturer or "",
+            "Product": bb_obj.Product or "",
+            "Version": bb_obj.Version or "",
+            "SerialNumber": bb_obj.SerialNumber or "",
+        }
+
+        # GPU
+        gpus = []
+        for g in c.Win32_VideoController():
+            gpus.append(
+                {
+                    "Name": g.Name or "",
+                    "DriverVersion": g.DriverVersion or "",
+                    "DriverDate": _wmi_date_to_str(g.DriverDate or "") if g.DriverDate else "",
+                    "AdapterRAM": int(g.AdapterRAM or 0),
+                    "VideoProcessor": g.VideoProcessor or "",
+                    "CurrentRefreshRate": int(g.CurrentRefreshRate or 0),
+                    "VideoModeDescription": g.VideoModeDescription or "",
+                    "AdapterCompatibility": g.AdapterCompatibility or "",
+                    "PNPDeviceID": g.PNPDeviceID or "",
+                }
+            )
+        data["GPU"] = gpus
+
+        # Network (IP-enabled adapters)
+        nics = []
+        for n in c.Win32_NetworkAdapterConfiguration():
+            if not n.IPEnabled:
+                continue
+            ip_addrs = n.IPAddress
+            ip_str = ", ".join(ip_addrs) if ip_addrs else ""
+            dns = n.DNSServerSearchOrder
+            nics.append(
+                {
+                    "Description": n.Description or "",
+                    "MACAddress": n.MACAddress or "",
+                    "IPAddress": ip_str,
+                    "DHCPEnabled": bool(n.DHCPEnabled),
+                    "DHCPServer": n.DHCPServer or "",
+                    "DNSServerSearchOrder": list(dns) if dns else [],
+                }
+            )
+        data["Network"] = nics
+
+        # NetworkHardware
+        nic_hw = []
+        for n in c.Win32_NetworkAdapter():
+            if n.NetConnectionID is None:
+                continue
+            nic_hw.append(
+                {
+                    "Name": n.Name or "",
+                    "Manufacturer": n.Manufacturer or "",
+                    "ProductName": n.ProductName or "",
+                    "NetConnectionID": n.NetConnectionID or "",
+                    "Speed": n.Speed or "",
+                    "AdapterType": n.AdapterType or "",
+                    "MACAddress": n.MACAddress or "",
+                }
+            )
+        data["NetworkHardware"] = nic_hw
+
+        # Memory
+        ram_sticks = []
+        for m in c.Win32_PhysicalMemory():
+            ff_code = int(m.FormFactor) if m.FormFactor is not None else 0
+            mt_code = int(m.SMBIOSMemoryType) if m.SMBIOSMemoryType is not None else 0
+            ram_sticks.append(
+                {
+                    "BankLabel": m.BankLabel or "",
+                    "Capacity": int(m.Capacity or 0),
+                    "Speed": int(m.Speed or 0),
+                    "Manufacturer": m.Manufacturer or "",
+                    "PartNumber": (m.PartNumber or "").strip(),
+                    "ConfiguredClockSpeed": int(m.ConfiguredClockSpeed or 0),
+                    "FormFactor": _ff_map.get(ff_code, str(ff_code)),
+                    "MemoryType": _mem_type_map.get(mt_code, str(mt_code)),
+                    "DataWidth": int(m.DataWidth or 0),
+                    "DeviceLocator": m.DeviceLocator or "",
+                }
+            )
+        data["Memory"] = ram_sticks
+
+        # Disks
+        disks = []
+        for d in c.Win32_DiskDrive():
+            disks.append(
+                {
+                    "Model": d.Model or "",
+                    "Size": int(d.Size or 0),
+                    "InterfaceType": d.InterfaceType or "",
+                    "MediaType": d.MediaType or "",
+                    "SerialNumber": (d.SerialNumber or "").strip(),
+                    "Partitions": int(d.Partitions or 0),
+                }
+            )
+        data["Disks"] = disks
+
+        # Volumes (local fixed disks)
+        volumes = []
+        for v in c.Win32_LogicalDisk(DriveType=3):
+            size_bytes = int(v.Size or 0)
+            free_bytes = int(v.FreeSpace or 0)
+            volumes.append(
+                {
+                    "DeviceID": v.DeviceID or "",
+                    "VolumeName": v.VolumeName or "",
+                    "FileSystem": v.FileSystem or "",
+                    "SizeGB": round(size_bytes / (1024**3), 1) if size_bytes else 0,
+                    "FreeGB": round(free_bytes / (1024**3), 1) if free_bytes else 0,
+                }
+            )
+        data["Volumes"] = volumes
+
+        # Sound
+        sounds = []
+        for s in c.Win32_SoundDevice():
+            sounds.append(
+                {
+                    "Name": s.Name or "",
+                    "Manufacturer": s.Manufacturer or "",
+                    "Status": s.Status or "",
+                }
+            )
+        data["Sound"] = sounds
+
+        # USB Controllers
+        usb_ctrls = []
+        for u in c.Win32_USBController():
+            usb_ctrls.append(
+                {
+                    "Name": u.Name or "",
+                    "Manufacturer": u.Manufacturer or "",
+                    "Status": u.Status or "",
+                }
+            )
+        data["USBControllers"] = usb_ctrls
+
+        # PCIe Slots
+        slots = []
+        for sl in c.Win32_SystemSlot():
+            usage_code = int(sl.CurrentUsage) if sl.CurrentUsage is not None else 2
+            slots.append(
+                {
+                    "SlotDesignation": sl.SlotDesignation or "",
+                    "CurrentUsage": _slot_usage_map.get(usage_code, str(usage_code)),
+                    "Status": sl.Status or "",
+                    "Description": sl.Description or "",
+                }
+            )
+        data["PCIeSlots"] = slots
+
     except Exception as e:
         stale = True
         error_detail = str(e)

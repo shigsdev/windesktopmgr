@@ -194,3 +194,26 @@ class TestInsight:
     def test_returns_exactly_three_keys(self):
         i = wdm._insight("ok", "text", "action")
         assert set(i.keys()) == {"level", "text", "action"}
+
+
+class TestWmiDateToStr:
+    """Tests for _wmi_date_to_str() — WMI datetime parsing helper."""
+
+    def test_standard_wmi_date(self):
+        assert wdm._wmi_date_to_str("20260621000000.000000+000") == "2026-06-21"
+
+    def test_custom_format(self):
+        assert wdm._wmi_date_to_str("20260621153045.000000+000", "%Y-%m-%d %H:%M:%S") == "2026-06-21 15:30:45"
+
+    def test_empty_string_returns_unknown(self):
+        assert wdm._wmi_date_to_str("") == "Unknown"
+
+    def test_none_returns_unknown(self):
+        assert wdm._wmi_date_to_str(None) == "Unknown"
+
+    def test_short_string_returns_unknown(self):
+        assert wdm._wmi_date_to_str("2026") == "Unknown"
+
+    def test_garbage_falls_back_to_first_8_chars(self):
+        result = wdm._wmi_date_to_str("ABCDEFGHIJKLMNOP")
+        assert result == "ABCDEFGH"
