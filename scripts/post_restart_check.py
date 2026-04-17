@@ -118,6 +118,28 @@ def print_results(body: dict) -> None:
         print(f"  {RED}{BOLD}{failed}/{total} checks failed{RESET}")
 
 
+def check_dashboard(host: str) -> bool:
+    """Verify /api/dashboard/summary returns a valid response.
+
+    This is the endpoint the tray icon polls. If it hangs or 500s after
+    restart, the tray icon goes red/grey even though selftest passes.
+    """
+    print(f"\n{BOLD}Checking dashboard/summary (tray icon path){RESET}")
+    start = time.time()
+    body = _get_json(f"{host}/api/dashboard/summary", timeout=60)
+    elapsed = time.time() - start
+    if not body:
+        print(f"  {RED}FAILED{RESET}: no response after {elapsed:.1f}s")
+        return False
+    overall = body.get("overall", "unknown")
+    total = body.get("total", 0)
+    color = GREEN if overall == "ok" else (YELLOW if overall == "warning" else RED)
+    print(f"  {color}overall={overall}{RESET}, {total} concern(s) ({elapsed:.1f}s)")
+    if overall == "unknown" or "error" in str(body.get("concerns", [])).lower():
+        print(f"  {YELLOW}WARNING{RESET}: dashboard returned unusual state")
+    return True
+
+
 def check_logs(host: str, since: str | None = None) -> bool:
     """Fetch recent ERROR and WARNING log entries and report them.
 
@@ -186,10 +208,16 @@ def main() -> int:
         return 2
     print_results(body)
 
+    # Post-selftest dashboard summary check — verifies the tray icon path works
+    dash_ok = check_dashboard(args.host)
+
     # Post-selftest log check — only entries since restart
     logs_ok = check_logs(args.host, since=restart_ts)
     selftest_ok = body.get("ok", False)
 
+    if selftest_ok and not dash_ok:
+        print(f"\n  {YELLOW}{BOLD}Selftest passed but dashboard/summary failed{RESET}")
+        return 1
     if selftest_ok and not logs_ok:
         print(f"\n  {YELLOW}{BOLD}Selftest passed but log errors detected{RESET}")
         return 1

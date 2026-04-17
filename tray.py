@@ -190,13 +190,29 @@ def polling_loop(monitor: HealthMonitor, stop_event: threading.Event):
         except Exception:
             time.sleep(1)
 
-    while not stop_event.is_set():
+    # First poll: retry up to 3 times with short delay if it fails,
+    # so the tray icon doesn't stay grey/unknown for a full POLL_INTERVAL.
+    for retry in range(3):
+        if stop_event.is_set():
+            return
         monitor.update()
+        if monitor.current_status != "unknown":
+            print(f"[Tray] Initial health: {monitor.current_status}")
+            break
+        print(f"[Tray] Initial poll attempt {retry + 1} returned no data, retrying in 10s...")
+        for _ in range(10):
+            if stop_event.is_set():
+                return
+            time.sleep(1)
+
+    while not stop_event.is_set():
         # Sleep in small increments so we can stop quickly
         for _ in range(POLL_INTERVAL):
             if stop_event.is_set():
                 break
             time.sleep(1)
+        if not stop_event.is_set():
+            monitor.update()
 
 
 # ── Flask server thread ──────────────────────────────────────────────────────
