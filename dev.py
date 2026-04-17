@@ -3,12 +3,13 @@
 dev.py — Quick quality gate runner for WinDesktopMgr.
 
 Usage:
-    python dev.py          # Run all checks (lint, format, test)
-    python dev.py check    # Lint + format check only (fast, no tests)
-    python dev.py fix      # Auto-fix lint + format issues
-    python dev.py test     # Tests only
-    python dev.py verify   # Restart running app + run /api/selftest
-    python dev.py ship     # fix + test + verify (post-deploy smoke)
+    python dev.py                    # Run all checks (lint, format, test)
+    python dev.py check              # Lint + format check only (fast, no tests)
+    python dev.py fix                # Auto-fix lint + format issues
+    python dev.py test               # Tests only
+    python dev.py verify             # Restart running app + run /api/selftest
+    python dev.py ship               # fix + test + verify (post-deploy smoke)
+    python dev.py post-update-check  # Post-Windows-Update regression runner (#25)
 """
 
 import subprocess
@@ -95,6 +96,23 @@ def cmd_ship():
     return ok
 
 
+def cmd_post_update_check():
+    """
+    Run the post-Windows-Update regression check (backlog #25).
+
+    Delegates to ``post_update_check.main()`` so CLI flags (``--force``,
+    ``--check-only``) pass through unchanged.
+    """
+    print(f"\n{BOLD}Post-Windows-Update regression check{RESET}")
+    # Pass any extra argv after the subcommand straight through
+    extra = sys.argv[2:]
+    result = subprocess.run(
+        [sys.executable, "-m", "post_update_check", *extra],
+        cwd=str(__import__("pathlib").Path(__file__).resolve().parent),
+    )
+    return result.returncode == 0
+
+
 def main():
     commands = {
         "check": cmd_check,
@@ -102,6 +120,7 @@ def main():
         "test": cmd_test,
         "verify": cmd_verify,
         "ship": cmd_ship,
+        "post-update-check": cmd_post_update_check,
     }
 
     arg = sys.argv[1] if len(sys.argv) > 1 else "all"
@@ -112,7 +131,7 @@ def main():
         ok = cmd_all()
     else:
         print(f"Unknown command: {arg}")
-        print("Usage: python dev.py [check|fix|test|all|verify|ship]")
+        print("Usage: python dev.py [check|fix|test|all|verify|ship|post-update-check]")
         sys.exit(1)
 
     print()

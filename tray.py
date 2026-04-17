@@ -362,6 +362,26 @@ def main():
     print(f"[Tray] Dashboard: {DASHBOARD_URL}")
     print(f"[Tray] Polling every {POLL_INTERVAL}s")
 
+    # ── Post-Windows-Update regression check (backlog #25) ────────────────────
+    # Opt-in via env: set WDM_POST_UPDATE_CHECK=1 to enable the automatic
+    # "did a Windows Update land since last boot? if so, run the full regression
+    # suite + verify + email the user" flow. Runs in a daemon thread so it
+    # can't block the tray.
+    if os.environ.get("WDM_POST_UPDATE_CHECK") == "1":
+
+        def _post_update_worker():
+            # Wait for Flask to come up — the regression suite relies on
+            # /api/selftest being reachable.
+            time.sleep(15)
+            try:
+                from post_update_check import run_post_update_check
+
+                run_post_update_check()
+            except Exception as e:
+                print(f"[Tray] post-update-check failed: {e}")
+
+        threading.Thread(target=_post_update_worker, daemon=True, name="PostUpdateCheck").start()
+
     # Run the tray icon (blocks until quit)
     icon.run()
 
