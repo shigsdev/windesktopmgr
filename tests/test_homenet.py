@@ -1,6 +1,5 @@
 """Tests for Home Network Management feature."""
 
-import json
 import subprocess
 from unittest.mock import MagicMock
 
@@ -725,30 +724,43 @@ class TestOrbiApi:
 
 
 class TestArpScan:
-    """Test ARP scanning."""
+    """Test ARP scanning — Batch E: parses ``arp -a`` output directly (no PS)."""
+
+    # Realistic ``arp -a`` output from Windows
+    ARP_OUTPUT = (
+        "\n"
+        "Interface: 192.168.1.10 --- 0x5\n"
+        "  Internet Address      Physical Address      Type\n"
+        "  192.168.1.1           aa-bb-cc-dd-ee-ff     dynamic\n"
+        "  192.168.1.50          11-22-33-44-55-66     dynamic\n"
+        "\n"
+        "Interface: 10.0.0.100 --- 0x9\n"
+        "  Internet Address      Physical Address      Type\n"
+        "  10.0.0.1              77-88-99-aa-bb-cc     dynamic\n"
+    )
 
     def test_arp_scan_success(self, mocker):
-        arp_json = json.dumps(
-            [
-                {"Interface": "192.168.1.10", "IP": "192.168.1.1", "MAC": "AA:BB:CC:DD:EE:FF", "Type": "dynamic"},
-            ]
-        )
         mock_result = MagicMock()
-        mock_result.stdout = arp_json
+        mock_result.stdout = self.ARP_OUTPUT
         mocker.patch("homenet.subprocess.run", return_value=mock_result)
         from homenet import _arp_scan
 
         result = _arp_scan()
-        assert len(result) == 1
+        assert len(result) == 3
         assert result[0]["IP"] == "192.168.1.1"
+        assert result[0]["Interface"] == "192.168.1.10"
+        assert result[0]["MAC"] == "AA:BB:CC:DD:EE:FF"
+        assert result[0]["Type"] == "dynamic"
+        # Second interface
+        assert result[2]["Interface"] == "10.0.0.100"
 
-    def test_arp_scan_single_result(self, mocker):
-        """When PowerShell returns a single object (dict instead of list)."""
-        arp_json = json.dumps(
-            {"Interface": "192.168.1.10", "IP": "192.168.1.1", "MAC": "AA:BB:CC:DD:EE:FF", "Type": "dynamic"}
-        )
+    def test_arp_scan_single_entry(self, mocker):
         mock_result = MagicMock()
-        mock_result.stdout = arp_json
+        mock_result.stdout = (
+            "\nInterface: 192.168.1.10 --- 0x5\n"
+            "  Internet Address      Physical Address      Type\n"
+            "  192.168.1.1           aa-bb-cc-dd-ee-ff     dynamic\n"
+        )
         mocker.patch("homenet.subprocess.run", return_value=mock_result)
         from homenet import _arp_scan
 
@@ -764,12 +776,25 @@ class TestArpScan:
 
     def test_arp_scan_empty(self, mocker):
         mock_result = MagicMock()
-        mock_result.stdout = "[]"
+        mock_result.stdout = ""
         mocker.patch("homenet.subprocess.run", return_value=mock_result)
         from homenet import _arp_scan
 
         result = _arp_scan()
         assert result == []
+
+    def test_arp_scan_no_powershell(self, mocker):
+        """Regression: Batch E — arp runs directly, no PS wrapper."""
+        mock_result = MagicMock()
+        mock_result.stdout = ""
+        m = mocker.patch("homenet.subprocess.run", return_value=mock_result)
+        from homenet import _arp_scan
+
+        _arp_scan()
+        cmd = m.call_args[0][0]
+        assert cmd[0] == "arp"
+        assert "-a" in cmd
+        assert "powershell" not in cmd
 
 
 class TestTpLinkSwitch:
@@ -1259,28 +1284,16 @@ class TestAutoCategorizee:
 
 
 class TestNameResolution:
-    """Test name resolution and enrichment."""
+    """Test name resolution — Batch E: socket.gethostbyaddr + direct nbtstat."""
 
     def test_resolve_names_batch_with_results(self, mocker):
-        """Wired DNS returns names, wireless NetBIOS returns names."""
-        dns_result = MagicMock()
-        dns_result.stdout = json.dumps([{"IP": "192.168.1.50", "Name": "MyPC"}])
-        dns_result.stderr = ""
-
-        # NetBIOS for wired unresolved = empty (all resolved by DNS)
-        nbt_wired = MagicMock()
-        nbt_wired.stdout = ""
-        nbt_wired.stderr = ""
-
-        # Wi-Fi check returns SKIP (not connected)
-        wifi_result = MagicMock()
-        wifi_result.stdout = "SKIP:wifi_disconnected"
-        wifi_result.stderr = ""
-
+        """Wired DNS returns names via socket.gethostbyaddr."""
         mocker.patch(
-            "subprocess.run",
-            side_effect=[dns_result, nbt_wired, wifi_result],
+            "homenet.socket.gethostbyaddr",
+            return_value=("MyPC", [], ["192.168.1.50"]),
         )
+        # Wi-Fi reachability check — Orbi not reachable
+        mocker.patch("homenet.socket.create_connection", side_effect=OSError("unreachable"))
         from homenet import _resolve_names_batch
 
         devices = [
@@ -1300,60 +1313,86 @@ class TestNameResolution:
         result = _resolve_names_batch(devices)
         assert result == {}
 
-    def test_resolve_names_batch_error(self, mocker):
-        mocker.patch("homenet.subprocess.run", side_effect=Exception("dns fail"))
+    def test_resolve_names_batch_dns_error(self, mocker):
+        """socket.gethostbyaddr failure → empty results (no crash)."""
+        mocker.patch("homenet.socket.gethostbyaddr", side_effect=Exception("dns fail"))
         from homenet import _resolve_names_batch
 
         devices = [{"ip": "192.168.1.50", "hostname": ""}]
         result = _resolve_names_batch(devices)
-        assert result == {}
+        assert isinstance(result, dict)
 
-    def test_resolve_names_single_result(self, mocker):
-        """PowerShell returns single object instead of array for DNS."""
-        dns_result = MagicMock()
-        dns_result.stdout = json.dumps({"IP": "192.168.1.50", "Name": "NAS"})
-        dns_result.stderr = ""
-        # No wired unresolved (DNS got it), no wireless IPs
-        mocker.patch("homenet.subprocess.run", return_value=dns_result)
+    def test_resolve_names_nbt_fallback(self, mocker):
+        """DNS fails → falls back to direct nbtstat."""
+        import socket as _socket
+
+        mocker.patch("homenet.socket.gethostbyaddr", side_effect=_socket.herror("not found"))
+        nbt_result = MagicMock()
+        nbt_result.stdout = "   NAS-SERVER      <00>  UNIQUE\n"
+        mocker.patch("homenet.subprocess.run", return_value=nbt_result)
         from homenet import _resolve_names_batch
 
         devices = [{"ip": "192.168.1.50", "hostname": ""}]
         result = _resolve_names_batch(devices)
-        assert result["192.168.1.50"] == "NAS"
+        assert result.get("192.168.1.50") == "NAS-SERVER"
 
     def test_resolve_skips_already_named(self, mocker):
         """Devices with good hostnames should not be re-resolved."""
+        m = mocker.patch("homenet.socket.gethostbyaddr")
         from homenet import _resolve_names_batch
 
         devices = [
             {"ip": "192.168.1.50", "hostname": "GoodName"},
-            {"ip": "192.168.1.51", "hostname": "192.168.1.51"},  # IP as name = needs resolve
-            {"ip": "192.168.1.52", "hostname": "unknown"},  # "unknown" = needs resolve
         ]
-        # DNS resolves both unresolved wired IPs
-        dns_result = MagicMock()
-        dns_result.stdout = json.dumps(
-            [
-                {"IP": "192.168.1.51", "Name": "Laptop"},
-                {"IP": "192.168.1.52", "Name": "Printer"},
-            ]
-        )
-        dns_result.stderr = ""
-        mocker.patch("homenet.subprocess.run", return_value=dns_result)
         result = _resolve_names_batch(devices)
-        assert "192.168.1.50" not in result
+        m.assert_not_called()
+        assert result == {}
+
+    def test_resolve_treats_ip_as_hostname_needing_resolve(self, mocker):
+        """If hostname == IP address, it needs resolution."""
+        mocker.patch(
+            "homenet.socket.gethostbyaddr",
+            return_value=("Laptop", [], ["192.168.1.51"]),
+        )
+        from homenet import _resolve_names_batch
+
+        devices = [{"ip": "192.168.1.51", "hostname": "192.168.1.51"}]
+        result = _resolve_names_batch(devices)
         assert result["192.168.1.51"] == "Laptop"
-        assert result["192.168.1.52"] == "Printer"
+
+    def test_wireless_phase_checks_orbi_reachability(self, mocker):
+        """10.x IPs trigger Orbi reachability check via socket.create_connection."""
+        mocker.patch("homenet.socket.create_connection", side_effect=OSError("unreachable"))
+        nbt_mock = mocker.patch("homenet.subprocess.run")
+        from homenet import _resolve_names_batch
+
+        devices = [{"ip": "10.0.0.50", "hostname": ""}]
+        result = _resolve_names_batch(devices)
+        # nbtstat should NOT be called — Orbi is unreachable
+        nbt_mock.assert_not_called()
+        assert result == {}
+
+    def test_wireless_phase_runs_nbt_when_orbi_reachable(self, mocker):
+        """10.x nbtstat runs when Orbi is reachable."""
+        mocker.patch("homenet.socket.create_connection", return_value=MagicMock())
+        nbt_result = MagicMock()
+        nbt_result.stdout = "   ORBI-DEVICE     <00>  UNIQUE\n"
+        mocker.patch("homenet.subprocess.run", return_value=nbt_result)
+        from homenet import _resolve_names_batch
+
+        devices = [{"ip": "10.0.0.50", "hostname": ""}]
+        result = _resolve_names_batch(devices)
+        assert result.get("10.0.0.50") == "ORBI-DEVICE"
 
 
 class TestEnrichDeviceNames:
     """Test the full enrichment pipeline."""
 
     def test_enrich_fills_names(self, mocker):
-        mock_result = MagicMock()
-        mock_result.stdout = json.dumps([{"IP": "192.168.1.50", "Name": "MyPC"}])
-        mock_result.stderr = ""
-        mocker.patch("homenet.subprocess.run", return_value=mock_result)
+        mocker.patch(
+            "homenet.socket.gethostbyaddr",
+            return_value=("MyPC", [], ["192.168.1.50"]),
+        )
         from homenet import _enrich_device_names
 
         inventory = {
@@ -1376,7 +1415,9 @@ class TestEnrichDeviceNames:
         assert dev["category"] == "Computer"  # Intel vendor → Computer
 
     def test_enrich_preserves_user_category(self, mocker):
-        mocker.patch("homenet.subprocess.run", return_value=MagicMock(stdout="[]", stderr=""))
+        import socket as _socket
+
+        mocker.patch("homenet.socket.gethostbyaddr", side_effect=_socket.herror("not found"))
         from homenet import _enrich_device_names
 
         inventory = {
@@ -1398,10 +1439,10 @@ class TestEnrichDeviceNames:
         assert result["devices"]["AA:BB:CC:DD:EE:FF"]["category"] == "Other"
 
     def test_enrich_does_not_overwrite_good_hostname(self, mocker):
-        mock_result = MagicMock()
-        mock_result.stdout = json.dumps([{"IP": "192.168.1.50", "Name": "NewName"}])
-        mock_result.stderr = ""
-        mocker.patch("homenet.subprocess.run", return_value=mock_result)
+        mocker.patch(
+            "homenet.socket.gethostbyaddr",
+            return_value=("NewName", [], ["192.168.1.50"]),
+        )
         from homenet import _enrich_device_names
 
         inventory = {
@@ -1443,9 +1484,10 @@ class TestResolveNamesRoute:
                 "last_scan": None,
             },
         )
-        mock_result = MagicMock()
-        mock_result.stdout = json.dumps([{"IP": "192.168.1.50", "Name": "MyPC"}])
-        mocker.patch("homenet.subprocess.run", return_value=mock_result)
+        mocker.patch(
+            "homenet.socket.gethostbyaddr",
+            return_value=("MyPC", [], ["192.168.1.50"]),
+        )
         mocker.patch("homenet._save_homenet_inventory")
 
         resp = client.post("/api/homenet/resolve-names")
@@ -1462,36 +1504,43 @@ class TestResolveNamesRoute:
 
 
 class TestArpScanCommand:
-    """Command-content and fallback tests for _arp_scan."""
+    """Command-content tests for _arp_scan — Batch E: direct ``arp -a``."""
+
+    ARP_SINGLE = (
+        "\nInterface: 192.168.1.1 --- 0x5\n"
+        "  Internet Address      Physical Address      Type\n"
+        "  192.168.1.100         aa-bb-cc-dd-ee-ff     dynamic\n"
+    )
 
     def test_returns_list(self, mocker):
         m = mocker.patch("homenet.subprocess.run")
-        m.return_value = MagicMock(stdout="[]", returncode=0, stderr="")
+        m.return_value = MagicMock(stdout="", returncode=0, stderr="")
         from homenet import _arp_scan
 
         result = _arp_scan()
         assert isinstance(result, list)
 
-    def test_command_uses_arp_a(self, mocker):
+    def test_command_calls_arp_directly(self, mocker):
         m = mocker.patch("homenet.subprocess.run")
-        m.return_value = MagicMock(stdout="[]", returncode=0, stderr="")
+        m.return_value = MagicMock(stdout="", returncode=0, stderr="")
         from homenet import _arp_scan
 
         _arp_scan()
-        cmd = m.call_args[0][0][-1]
-        assert "arp" in cmd.lower()
+        cmd = m.call_args[0][0]
+        assert cmd[0] == "arp"
         assert "-a" in cmd
+        assert "powershell" not in cmd
 
-    def test_command_parses_mac_ip_interface(self, mocker):
+    def test_parses_mac_ip_interface_from_arp_output(self, mocker):
         m = mocker.patch("homenet.subprocess.run")
-        m.return_value = MagicMock(stdout="[]", returncode=0, stderr="")
+        m.return_value = MagicMock(stdout=self.ARP_SINGLE, returncode=0, stderr="")
         from homenet import _arp_scan
 
-        _arp_scan()
-        cmd = m.call_args[0][0][-1]
-        assert "Interface" in cmd
-        assert "IP" in cmd
-        assert "MAC" in cmd
+        result = _arp_scan()
+        assert len(result) == 1
+        assert result[0]["Interface"] == "192.168.1.1"
+        assert result[0]["IP"] == "192.168.1.100"
+        assert result[0]["MAC"] == "AA:BB:CC:DD:EE:FF"
 
     def test_empty_output_returns_empty_list(self, mocker):
         m = mocker.patch("homenet.subprocess.run")
@@ -1500,77 +1549,59 @@ class TestArpScanCommand:
 
         assert _arp_scan() == []
 
-    def test_single_dict_normalised_to_list(self, mocker):
-        single = json.dumps(
-            {"Interface": "192.168.1.1", "IP": "192.168.1.100", "MAC": "AA:BB:CC:DD:EE:FF", "Type": "dynamic"}
-        )
-        m = mocker.patch("homenet.subprocess.run")
-        m.return_value = MagicMock(stdout=single, returncode=0, stderr="")
-        from homenet import _arp_scan
-
-        result = _arp_scan()
-        assert isinstance(result, list)
-        assert len(result) == 1
-
     def test_timeout_returns_empty_list(self, mocker):
-        mocker.patch("homenet.subprocess.run", side_effect=subprocess.TimeoutExpired("powershell", 15))
+        mocker.patch("homenet.subprocess.run", side_effect=subprocess.TimeoutExpired("arp", 15))
         from homenet import _arp_scan
 
         assert _arp_scan() == []
 
 
 class TestResolveNamesBatchCommands:
-    """Command-content tests for _resolve_names_batch PS phases."""
+    """Command-content tests for _resolve_names_batch — Batch E: socket + direct nbtstat."""
 
-    def test_dns_phase_uses_system_net_dns(self, mocker):
-        m = mocker.patch("homenet.subprocess.run")
-        m.return_value = MagicMock(stdout="[]", returncode=0, stderr="")
+    def test_dns_phase_uses_socket_gethostbyaddr(self, mocker):
+        m = mocker.patch("homenet.socket.gethostbyaddr", return_value=("host", [], ["192.168.1.100"]))
         from homenet import _resolve_names_batch
 
         _resolve_names_batch([{"ip": "192.168.1.100", "hostname": ""}])
-        dns_cmd = m.call_args_list[0][0][0][-1]
-        assert "Dns" in dns_cmd or "GetHostEntry" in dns_cmd
+        m.assert_called()
 
-    def test_dns_phase_includes_ip(self, mocker):
+    def test_nbt_phase_calls_nbtstat_directly(self, mocker):
+        """NetBIOS fallback runs nbtstat as direct exe, not through PS."""
+        import socket as _socket
+
+        mocker.patch("homenet.socket.gethostbyaddr", side_effect=_socket.herror("not found"))
         m = mocker.patch("homenet.subprocess.run")
-        m.return_value = MagicMock(stdout="[]", returncode=0, stderr="")
-        from homenet import _resolve_names_batch
-
-        _resolve_names_batch([{"ip": "192.168.1.55", "hostname": ""}])
-        dns_cmd = m.call_args_list[0][0][0][-1]
-        assert "192.168.1.55" in dns_cmd
-
-    def test_netbios_phase_uses_nbtstat(self, mocker):
-        m = mocker.patch("homenet.subprocess.run")
-        # DNS returns empty → triggers NetBIOS
-        m.return_value = MagicMock(stdout="[]", returncode=0, stderr="")
+        m.return_value = MagicMock(stdout="", returncode=0, stderr="")
         from homenet import _resolve_names_batch
 
         _resolve_names_batch([{"ip": "192.168.1.100", "hostname": ""}])
-        all_cmds = [call[0][0][-1] for call in m.call_args_list]
-        assert any("nbtstat" in c for c in all_cmds)
+        cmd = m.call_args[0][0]
+        assert cmd[0] == "nbtstat"
+        assert "-A" in cmd
+        assert "powershell" not in cmd
 
-    def test_timeout_on_dns_phase_handled_gracefully(self, mocker):
-        mocker.patch("homenet.subprocess.run", side_effect=subprocess.TimeoutExpired("powershell", 60))
+    def test_dns_error_handled_gracefully(self, mocker):
+        mocker.patch("homenet.socket.gethostbyaddr", side_effect=Exception("dns fail"))
         from homenet import _resolve_names_batch
 
         result = _resolve_names_batch([{"ip": "192.168.1.100", "hostname": ""}])
         assert isinstance(result, dict)
 
     def test_skips_devices_with_existing_hostname(self, mocker):
-        m = mocker.patch("homenet.subprocess.run")
+        m = mocker.patch("homenet.socket.gethostbyaddr")
         from homenet import _resolve_names_batch
 
         result = _resolve_names_batch([{"ip": "192.168.1.100", "hostname": "MyPC"}])
         m.assert_not_called()
         assert result == {}
 
-    def test_wireless_ips_trigger_separate_phase(self, mocker):
-        m = mocker.patch("homenet.subprocess.run")
-        m.return_value = MagicMock(stdout="[]", returncode=0, stderr="")
+    def test_wireless_ips_check_orbi_reachability(self, mocker):
+        """10.x IPs trigger socket.create_connection to Orbi, not PowerShell Test-Connection."""
+        m = mocker.patch("homenet.socket.create_connection", side_effect=OSError("unreachable"))
         from homenet import _resolve_names_batch
 
         _resolve_names_batch([{"ip": "10.0.0.50", "hostname": ""}])
-        # Wireless IPs (10.x) skip DNS and go to wireless NetBIOS phase
-        all_cmds = [call[0][0][-1] for call in m.call_args_list]
-        assert any("10.0.0.50" in c for c in all_cmds)
+        m.assert_called_once()
+        args = m.call_args[0][0]
+        assert args == ("10.0.0.1", 443)

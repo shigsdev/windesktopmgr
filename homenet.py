@@ -12,8 +12,10 @@ import hashlib
 import json
 import os
 import re
+import socket
 import subprocess
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 import requests
@@ -607,13 +609,49 @@ _VENDOR_CATEGORY_MAP = {
 }
 
 
+def _dns_resolve_ip(ip: str) -> tuple:
+    """Resolve a single IP via reverse DNS.  Returns (ip, hostname) or (ip, "")."""
+    try:
+        hostname, _, _ = socket.gethostbyaddr(ip)
+        if hostname and hostname != ip:
+            return ip, hostname
+    except (socket.herror, socket.gaierror, OSError):
+        pass
+    return ip, ""
+
+
+def _nbt_resolve_ip(ip: str) -> tuple:
+    """Run ``nbtstat -A <ip>`` directly and extract the <00> UNIQUE name.
+
+    Returns (ip, hostname) or (ip, "").
+    """
+    try:
+        r = subprocess.run(
+            ["nbtstat", "-A", ip],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        for line in r.stdout.splitlines():
+            if "<00>" in line and "UNIQUE" in line:
+                parts = line.split()
+                if parts:
+                    return ip, parts[0].strip()
+    except Exception:
+        pass
+    return ip, ""
+
+
 def _resolve_names_batch(devices: list) -> dict:
     """
     Resolve hostnames for a batch of devices using multiple methods.
     Returns {ip: resolved_name} dict.
-    Uses async DNS with per-device timeouts to avoid hanging on unreachable hosts.
+
+    Phase 1: Parallel reverse-DNS via ``socket.gethostbyaddr`` for 192.x (wired).
+    Phase 2: ``nbtstat -A`` directly for wired IPs that DNS missed.
+    Phase 3: ``nbtstat -A`` directly for 10.x (wireless/Orbi) if Wi-Fi is connected.
     """
-    results = {}
+    results: dict[str, str] = {}
     ips_to_resolve = []
 
     for dev in devices:
@@ -631,107 +669,34 @@ def _resolve_names_batch(devices: list) -> dict:
     wired_ips = [ip for ip in ips_to_resolve if ip.startswith("192.")]
     wireless_ips = [ip for ip in ips_to_resolve if ip.startswith("10.")]
 
-    # Phase 1: Async DNS for 192.x (wired) devices — these resolve via Verizon router
+    # Phase 1: Parallel reverse-DNS for 192.x wired devices
     if wired_ips:
-        ip_list_ps = ",".join(f"'{ip}'" for ip in wired_ips[:50])
-        ps = f"""
-$ips = @({ip_list_ps})
-$results = @{{}}
-$asyncOps = @{{}}
-foreach ($ip in $ips) {{
-    try {{
-        $asyncOps[$ip] = [System.Net.Dns]::BeginGetHostEntry($ip, $null, $null)
-    }} catch {{ }}
-}}
-foreach ($ip in $ips) {{
-    if ($asyncOps.ContainsKey($ip)) {{
-        try {{
-            $ar = $asyncOps[$ip]
-            if ($ar.AsyncWaitHandle.WaitOne(2000)) {{
-                $dns = [System.Net.Dns]::EndGetHostEntry($ar)
-                if ($dns.HostName -and $dns.HostName -ne $ip) {{
-                    $results[$ip] = $dns.HostName
-                }}
-            }}
-        }} catch {{ }}
-    }}
-}}
-$output = @()
-foreach ($kv in $results.GetEnumerator()) {{
-    $output += [PSCustomObject]@{{ IP = $kv.Key; Name = $kv.Value }}
-}}
-$output | ConvertTo-Json -Depth 2
-"""
         try:
-            r = subprocess.run(
-                ["powershell", "-NonInteractive", "-Command", ps],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            raw = r.stdout.strip()
-            if raw:
-                data = json.loads(raw)
-                if isinstance(data, dict):
-                    data = [data]
-                for entry in data:
-                    ip = entry.get("IP", "")
-                    name = entry.get("Name", "")
-                    if ip and name:
-                        results[ip] = name
-        except subprocess.TimeoutExpired:
-            print("[HomeNet] DNS resolution timed out for wired devices")
+            with ThreadPoolExecutor(max_workers=min(len(wired_ips), 20)) as pool:
+                futs = {pool.submit(_dns_resolve_ip, ip): ip for ip in wired_ips[:50]}
+                try:
+                    for fut in as_completed(futs, timeout=30):
+                        ip, name = fut.result()
+                        if name:
+                            results[ip] = name
+                except TimeoutError:
+                    print("[HomeNet] DNS resolution timed out for some wired devices")
         except Exception as e:
             print(f"[HomeNet] DNS resolution error: {e}")
 
     # Phase 2: NetBIOS for wired devices that DNS missed
     wired_unresolved = [ip for ip in wired_ips if ip not in results]
     if wired_unresolved:
-        ip_list_ps = ",".join(f"'{ip}'" for ip in wired_unresolved[:20])
-        ps_nbt = f"""
-$ips = @({ip_list_ps})
-$results = @{{}}
-foreach ($ip in $ips) {{
-    try {{
-        $proc = Start-Process -FilePath 'nbtstat' -ArgumentList '-A',$ip -NoNewWindow -PassThru -RedirectStandardOutput "$env:TEMP\\nbt_$($ip.Replace('.','_')).txt" 2>$null
-        if ($proc.WaitForExit(3000)) {{
-            $nbt = Get-Content "$env:TEMP\\nbt_$($ip.Replace('.','_')).txt" -ErrorAction SilentlyContinue
-            Remove-Item "$env:TEMP\\nbt_$($ip.Replace('.','_')).txt" -ErrorAction SilentlyContinue
-            $match = $nbt | Select-String '<00>\\s+UNIQUE' | Select-Object -First 1
-            if ($match) {{
-                $name = ($match.Line -split '\\s+')[0].Trim()
-                if ($name) {{ $results[$ip] = $name }}
-            }}
-        }} else {{
-            $proc | Stop-Process -Force -ErrorAction SilentlyContinue
-        }}
-    }} catch {{ }}
-}}
-$output = @()
-foreach ($kv in $results.GetEnumerator()) {{
-    $output += [PSCustomObject]@{{ IP = $kv.Key; Name = $kv.Value }}
-}}
-$output | ConvertTo-Json -Depth 2
-"""
         try:
-            r = subprocess.run(
-                ["powershell", "-NonInteractive", "-Command", ps_nbt],
-                capture_output=True,
-                text=True,
-                timeout=90,
-            )
-            raw = r.stdout.strip()
-            if raw:
-                data = json.loads(raw)
-                if isinstance(data, dict):
-                    data = [data]
-                for entry in data:
-                    ip = entry.get("IP", "")
-                    name = entry.get("Name", "")
-                    if ip and name:
-                        results[ip] = name
-        except subprocess.TimeoutExpired:
-            print("[HomeNet] NetBIOS resolution timed out for wired devices")
+            with ThreadPoolExecutor(max_workers=min(len(wired_unresolved), 10)) as pool:
+                futs = {pool.submit(_nbt_resolve_ip, ip): ip for ip in wired_unresolved[:20]}
+                try:
+                    for fut in as_completed(futs, timeout=60):
+                        ip, name = fut.result()
+                        if name:
+                            results[ip] = name
+                except TimeoutError:
+                    print("[HomeNet] NetBIOS resolution timed out for some wired devices")
         except Exception as e:
             print(f"[HomeNet] NetBIOS resolution error: {e}")
 
@@ -739,70 +704,33 @@ $output | ConvertTo-Json -Depth 2
     # (populated during scan via _merge_device_data). DNS won't work for 10.x because
     # they're behind Orbi NAT. Only try NetBIOS if Wi-Fi is connected to Orbi network.
     if wireless_ips:
-        # Quick check: can we reach the Orbi subnet? If Wi-Fi is on 10.x, NetBIOS works.
-        ip_list_ps = ",".join(f"'{ip}'" for ip in wireless_ips[:30])
-        ps_wifi = f"""
-$ips = @({ip_list_ps})
-$results = @{{}}
-# Test if we can reach 10.x subnet (Wi-Fi connected to Orbi)
-$canReach = Test-Connection -ComputerName '10.0.0.1' -Count 1 -Quiet -TimeoutSeconds 1 2>$null
-if (-not $canReach) {{
-    # Wi-Fi not connected to Orbi — can't resolve 10.x names
-    Write-Host 'SKIP:wifi_disconnected'
-}} else {{
-    # Wi-Fi connected — try mDNS/NetBIOS for each device
-    foreach ($ip in $ips) {{
-        try {{
-            $proc = Start-Process -FilePath 'nbtstat' -ArgumentList '-A',$ip -NoNewWindow -PassThru -RedirectStandardOutput "$env:TEMP\\nbt_$($ip.Replace('.','_')).txt" 2>$null
-            if ($proc.WaitForExit(2000)) {{
-                $nbt = Get-Content "$env:TEMP\\nbt_$($ip.Replace('.','_')).txt" -ErrorAction SilentlyContinue
-                Remove-Item "$env:TEMP\\nbt_$($ip.Replace('.','_')).txt" -ErrorAction SilentlyContinue
-                $match = $nbt | Select-String '<00>\\s+UNIQUE' | Select-Object -First 1
-                if ($match) {{
-                    $name = ($match.Line -split '\\s+')[0].Trim()
-                    if ($name) {{ $results[$ip] = $name }}
-                }}
-            }} else {{
-                $proc | Stop-Process -Force -ErrorAction SilentlyContinue
-            }}
-        }} catch {{ }}
-    }}
-}}
-$output = @()
-foreach ($kv in $results.GetEnumerator()) {{
-    $output += [PSCustomObject]@{{ IP = $kv.Key; Name = $kv.Value }}
-}}
-if ($output.Count -gt 0) {{
-    $output | ConvertTo-Json -Depth 2
-}}
-"""
+        # Quick check: can we reach the Orbi router? (TCP 443 — its SOAP/web UI)
+        can_reach = False
         try:
-            r = subprocess.run(
-                ["powershell", "-NonInteractive", "-Command", ps_wifi],
-                capture_output=True,
-                text=True,
-                timeout=90,
+            with socket.create_connection(("10.0.0.1", 443), timeout=1.5):
+                can_reach = True
+        except (OSError, TimeoutError):
+            pass
+
+        if not can_reach:
+            print(
+                "[HomeNet] Wi-Fi not connected to Orbi — "
+                "skipping 10.x name resolution. "
+                "Connect Wi-Fi to resolve wireless device names."
             )
-            raw = r.stdout.strip()
-            if raw.startswith("SKIP:"):
-                print(
-                    "[HomeNet] Wi-Fi not connected to Orbi — "
-                    "skipping 10.x name resolution. "
-                    "Connect Wi-Fi to resolve wireless device names."
-                )
-            elif raw:
-                data = json.loads(raw)
-                if isinstance(data, dict):
-                    data = [data]
-                for entry in data:
-                    ip = entry.get("IP", "")
-                    name = entry.get("Name", "")
-                    if ip and name:
-                        results[ip] = name
-        except subprocess.TimeoutExpired:
-            print("[HomeNet] Name resolution timed out for wireless devices")
-        except Exception as e:
-            print(f"[HomeNet] Wireless name resolution error: {e}")
+        else:
+            try:
+                with ThreadPoolExecutor(max_workers=min(len(wireless_ips), 10)) as pool:
+                    futs = {pool.submit(_nbt_resolve_ip, ip): ip for ip in wireless_ips[:30]}
+                    try:
+                        for fut in as_completed(futs, timeout=60):
+                            ip, name = fut.result()
+                            if name:
+                                results[ip] = name
+                    except TimeoutError:
+                        print("[HomeNet] Name resolution timed out for some wireless devices")
+            except Exception as e:
+                print(f"[HomeNet] Wireless name resolution error: {e}")
 
     return results
 
@@ -897,37 +825,35 @@ def _enrich_device_names(inventory: dict) -> dict:
 
 
 def _arp_scan() -> list:
-    """Run ARP scan on all connected network interfaces."""
-    ps = r"""
-$results = @()
-$arps = arp -a 2>$null
-$current_iface = ""
-foreach ($line in ($arps -split "`n")) {
-    if ($line -match "Interface:\s*([\d\.]+)") {
-        $current_iface = $Matches[1]
-    }
-    elseif ($line -match "^\s*([\d\.]+)\s+([\w-]{17})\s+(\w+)") {
-        $results += [PSCustomObject]@{
-            Interface = $current_iface
-            IP = $Matches[1]
-            MAC = $Matches[2].ToUpper().Replace("-",":")
-            Type = $Matches[3]
-        }
-    }
-}
-$results | ConvertTo-Json -Depth 2
-"""
+    """Run ``arp -a`` directly and parse the output in Python.
+
+    Returns a list of dicts with keys: Interface, IP, MAC, Type.
+    """
     try:
         r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps],
+            ["arp", "-a"],
             capture_output=True,
             text=True,
             timeout=15,
         )
-        data = json.loads(r.stdout.strip() or "[]")
-        if isinstance(data, dict):
-            data = [data]
-        return data
+        results = []
+        current_iface = ""
+        for line in r.stdout.splitlines():
+            m_iface = re.match(r"Interface:\s*([\d.]+)", line)
+            if m_iface:
+                current_iface = m_iface.group(1)
+                continue
+            m_entry = re.match(r"\s*([\d.]+)\s+([\w-]{17})\s+(\w+)", line)
+            if m_entry:
+                results.append(
+                    {
+                        "Interface": current_iface,
+                        "IP": m_entry.group(1),
+                        "MAC": m_entry.group(2).upper().replace("-", ":"),
+                        "Type": m_entry.group(3),
+                    }
+                )
+        return results
     except Exception as e:
         print(f"[HomeNet] ARP scan error: {e}")
         return []

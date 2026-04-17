@@ -272,15 +272,18 @@ No Python libs at all — just call the tool directly instead of wrapping it in 
 
 **Effort actual:** ~1.5 hours (under estimate). **Risk:** realized zero — output contracts identical, all 1341 tests green at 85% coverage.
 
-### Batch E — HomeNet polling loop (4 sites)
+### Batch E — HomeNet polling loop (4 sites) ✅ SHIPPED 2026-04-17
+
 Called every 60 s so the migration pays back quickly in aggregate CPU.
 
-| Sites | Functions |
-|---|---|
-| #H1, #H2, #H3 | `_resolve_names_batch` (DNS + NBT + Wi-Fi adapter check) |
-| #H4 | `_arp_scan` |
+| Sites | Migration | Status |
+|---|---|---|
+| #H1 | `_resolve_names_batch` DNS → `socket.gethostbyaddr` in `ThreadPoolExecutor` | ✅ |
+| #H2 | `_resolve_names_batch` NBT → direct `subprocess.run(["nbtstat", "-A", ip])` | ✅ |
+| #H3 | `_resolve_names_batch` Wi-Fi check → `socket.create_connection(("10.0.0.1", 443))` + direct nbtstat | ✅ |
+| #H4 | `_arp_scan` → direct `subprocess.run(["arp", "-a"])` + Python regex parsing | ✅ |
 
-**Effort:** ~1 day (most of it is updating `tests/test_homenet.py` mock targets). **Risk:** medium — the DNS path has edge cases around stub resolvers on the Orbi network.
+**Effort actual:** ~1.5 hours (well under the 1-day estimate — test migration was simpler than expected). **Risk:** realized low — `socket.gethostbyaddr` uses the same OS resolver as `[System.Net.Dns]::GetHostEntry`. Added `_dns_resolve_ip` and `_nbt_resolve_ip` helper functions for clean testability. 1343 tests green at 85% coverage.
 
 ### Batch F — `Get-WinEvent` cluster (7 sites)
 One-time `pywin32 win32evtlog` helper that wraps XPath queries, then 7 cold-path migrations that all share it. Deferred until batches A–E are done — high setup cost, warm (not hot) payoff.
@@ -309,7 +312,7 @@ Each `powershell.exe` invocation incurs a ~300 ms cold-start overhead (process c
 | **B** (wmi) | 9 | 1 | 8 | 0 | **~300 ms** | 2.7 s | ✅ Shipped |
 | **C** (winreg + pywin32) | 6 | 0 | 1 | 5 | 0 ms | 1.8 s | ✅ Shipped |
 | **D** (direct exe) | 6 | 0 | 0 | 6 | 0 ms | 1.8 s | ✅ Shipped |
-| **E** (HomeNet) | 4 | 4 | 0 | 0 | **~1.2 s / 60 s** | 1.2 s | Pending |
+| **E** (HomeNet) | 4 | 4 | 0 | 0 | **~1.2 s / 60 s** | 1.2 s | ✅ Shipped |
 | **F** (Get-WinEvent) | 7 | 0 | 7 | 0 | 0 ms | 2.1 s | Deferred |
 | **G** (COM WU) | 3 | 0 | 2 | 1 | 0 ms | 0.9 s | Deferred |
 | **H** (Keep) | — | — | — | — | — | — | Permanent |
@@ -322,16 +325,19 @@ Each `powershell.exe` invocation incurs a ~300 ms cold-start overhead (process c
 
 | Metric | Value |
 |--------|-------|
-| PS subprocess calls eliminated | **28** |
-| Hot-path calls eliminated | 3 (2 from A, 1 from B) |
+| PS subprocess calls eliminated | **32** |
+| Hot-path calls eliminated | 7 (2 from A, 1 from B, 4 from E) |
 | Dashboard refresh speedup | **~900 ms** (cumulative) |
-| Remaining PS calls (prod code) | ~41 |
+| Polling loop speedup (60s cycle) | **~1.2 s** (Batch E — 4 HOT homenet calls) |
+| Remaining PS calls (prod code) | ~37 |
 | Original PS calls (baseline) | 74 |
-| Migration progress | **38%** of sites, **45%** of REPLACE-class |
+| Migration progress | **43%** of sites, **51%** of REPLACE-class |
 
 ### Biggest remaining win
 
-**Batch E** (HomeNet polling loop, 4 HOT sites) runs every 60 seconds. Each cycle spawns 4 PowerShell processes (~1.2 s of pure startup overhead). Over 24 hours that's **1,728 unnecessary `powershell.exe` invocations** and **~8.6 minutes of wasted CPU time** per day.
+~~**Batch E** (HomeNet polling loop, 4 HOT sites) was the biggest remaining win~~ — **now shipped**. Previously spawned 4 PowerShell processes per 60-second cycle (~1,728/day, ~8.6 min wasted CPU). Now uses `socket.gethostbyaddr` + direct `nbtstat`/`arp` calls.
+
+**Next biggest win:** Batch F (7 `Get-WinEvent` WARM-path sites) — each timeline/event log load saves ~2.1s of PS startup.
 
 ---
 
