@@ -245,17 +245,17 @@ Adds `wmi>=1.5.1` to `requirements.txt`. One persistent connection covers multip
 
 **Effort actual:** ~1 day (matches estimate). **Risk:** realized medium — COM threading required `pythoncom.CoInitialize()` wrapper for Flask worker threads, and `dashboard_summary` needed `TimeoutError` handling for `as_completed()`. Full suite 1333/1333 green at 85% coverage. Added `_wmi_conn()` helper, `_wmi_date_to_str()`, plus mapping dicts for FormFactor/MemoryType/Architecture/SlotUsage codes. `sysinfo_data()` was the largest migration (14 WMI queries replacing one massive PS block).
 
-### Batch C — `winreg` + `win32serviceutil` (6 sites)
-Stdlib + `pywin32` (already installed for the tray). No new deps.
+### Batch C — `winreg` + `win32serviceutil` (6 sites) — ✅ SHIPPED 2026-04-16
+Stdlib + `pywin32` (already installed from wmi in Batch B). No new deps.
 
-| Sites | Functions |
-|---|---|
-| #4 | `get_nvidia_update_info` registry |
-| #27, #28 | `_lookup_process_via_fileinfo` file version info |
-| #35 | `toggle_service` |
-| #56, #57 | `_rem_clear_wu_cache`, `_rem_restart_spooler` |
+| Sites | Functions | Status |
+|---|---|---|
+| #4 | `get_nvidia_update_info` registry → `winreg` | ✅ |
+| #27, #28 | `_lookup_process_via_fileinfo` → `shutil.which` + `win32api.GetFileVersionInfo` | ✅ |
+| #35 | `toggle_service` → `win32serviceutil` + `win32service.ChangeServiceConfig` | ✅ |
+| #56, #57 | `_rem_clear_wu_cache` / `_rem_restart_spooler` → `win32serviceutil` + `shutil.rmtree` | ✅ |
 
-**Effort:** ~half day. **Risk:** low. **Bonus:** removes PS string-building for registry paths, which is the main injection-risk cluster.
+**Effort actual:** ~½ day (matches estimate). **Risk:** realized low. Also added dashboard/summary verification to `post_restart_check.py` and tray startup retry (3 attempts with 10s delay) to prevent grey-icon-on-restart issue. Full suite 1334/1334 green at 85% coverage.
 
 ### Batch D — drop-the-PS-wrapper remediation actions (6 sites)
 No Python libs at all — just call the tool directly instead of wrapping it in PS.
