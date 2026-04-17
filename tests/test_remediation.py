@@ -239,22 +239,26 @@ class TestRemActionFunctions:
         assert "warnings" in r["message"].lower()
 
     def test_clear_wu_cache_ok(self, mocker):
-        _mock_ps(mocker, stdout="OK", returncode=0)
+        mocker.patch("remediation.win32serviceutil.StopService")
+        mocker.patch("remediation.win32serviceutil.StartService")
+        mocker.patch("remediation.os.path.isdir", return_value=False)
         r = remediation._rem_clear_wu_cache()
         assert r["ok"] is True
 
     def test_clear_wu_cache_error(self, mocker):
-        _mock_ps(mocker, stdout="ERROR: Access denied", returncode=1)
+        mocker.patch("remediation.win32serviceutil.StopService")
+        mocker.patch("remediation.os.path.isdir", return_value=True)
+        mocker.patch("remediation.os.listdir", side_effect=PermissionError("Access denied"))
         r = remediation._rem_clear_wu_cache()
         assert r["ok"] is False
 
     def test_restart_spooler_ok(self, mocker):
-        _mock_ps(mocker, stdout="OK", returncode=0)
+        mocker.patch("remediation.win32serviceutil.RestartService")
         r = remediation._rem_restart_spooler()
         assert r["ok"] is True
 
     def test_restart_spooler_fail(self, mocker):
-        _mock_ps(mocker, stdout="ERROR: cannot stop", returncode=1)
+        mocker.patch("remediation.win32serviceutil.RestartService", side_effect=Exception("cannot stop"))
         r = remediation._rem_restart_spooler()
         assert r["ok"] is False
 
@@ -292,7 +296,30 @@ class TestRemActionFunctions:
         assert r["ok"] is False
 
     def test_all_actions_handle_exception(self, mocker):
+        """Every remediation action returns ok=False when its external call fails."""
         mocker.patch("remediation.subprocess.run", side_effect=TimeoutError("timed out"))
+        # pywin32-based actions need their own error mocks
+        mocker.patch(
+            "remediation.win32serviceutil.StopService",
+            side_effect=TimeoutError("timed out"),
+        )
+        mocker.patch(
+            "remediation.win32serviceutil.StartService",
+            side_effect=TimeoutError("timed out"),
+        )
+        mocker.patch(
+            "remediation.win32serviceutil.RestartService",
+            side_effect=TimeoutError("timed out"),
+        )
+        # clear_wu_cache: StopService fails (pass), then listdir must also fail
+        mocker.patch(
+            "remediation.os.path.isdir",
+            return_value=True,
+        )
+        mocker.patch(
+            "remediation.os.listdir",
+            side_effect=TimeoutError("timed out"),
+        )
         for name, fn in remediation._REMEDIATION_DISPATCH.items():
             r = fn()
             assert r["ok"] is False, f"{name} did not return ok=False on exception"
@@ -302,6 +329,23 @@ class TestRemActionFunctions:
         mocker.patch(
             "remediation.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=30),
+        )
+        mocker.patch(
+            "remediation.win32serviceutil.StopService",
+            side_effect=subprocess.TimeoutExpired(cmd="sc", timeout=30),
+        )
+        mocker.patch(
+            "remediation.win32serviceutil.StartService",
+            side_effect=subprocess.TimeoutExpired(cmd="sc", timeout=30),
+        )
+        mocker.patch(
+            "remediation.win32serviceutil.RestartService",
+            side_effect=subprocess.TimeoutExpired(cmd="sc", timeout=30),
+        )
+        mocker.patch("remediation.os.path.isdir", return_value=True)
+        mocker.patch(
+            "remediation.os.listdir",
+            side_effect=subprocess.TimeoutExpired(cmd="sc", timeout=30),
         )
         for name, fn in remediation._REMEDIATION_DISPATCH.items():
             r = fn()

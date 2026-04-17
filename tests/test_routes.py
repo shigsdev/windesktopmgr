@@ -800,8 +800,10 @@ class TestServicesListRoute:
 
 
 class TestServicesToggleRoute:
-    def test_invalid_action_returns_error_no_subprocess(self, client, mocker):
-        mock_run = _mock_ps(mocker)
+    """Route-level tests for POST /api/services/toggle.
+    toggle_service() now uses pywin32 (win32serviceutil / win32service)."""
+
+    def test_invalid_action_returns_error(self, client, mocker):
         resp = client.post(
             "/api/services/toggle",
             json={"name": "spooler", "action": "explode"},
@@ -809,55 +811,65 @@ class TestServicesToggleRoute:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["ok"] is False
-        mock_run.assert_not_called()
 
-    def test_stop_action_calls_subprocess(self, client, mocker):
-        mock_run = _mock_ps(mocker)
+    def test_stop_action_calls_stop_service(self, client, mocker):
+        m = mocker.patch("windesktopmgr.win32serviceutil.StopService")
         resp = client.post(
             "/api/services/toggle",
             json={"name": "spooler", "action": "stop"},
         )
         assert resp.status_code == 200
-        assert mock_run.called
-        cmd = mock_run.call_args[0][0][-1]
-        assert "Stop-Service" in cmd
+        assert resp.get_json()["ok"] is True
+        m.assert_called_once_with("spooler")
 
-    def test_start_action_calls_subprocess(self, client, mocker):
-        mock_run = _mock_ps(mocker)
+    def test_start_action_calls_start_service(self, client, mocker):
+        m = mocker.patch("windesktopmgr.win32serviceutil.StartService")
         resp = client.post(
             "/api/services/toggle",
             json={"name": "spooler", "action": "start"},
         )
         assert resp.status_code == 200
-        cmd = mock_run.call_args[0][0][-1]
-        assert "Start-Service" in cmd
+        assert resp.get_json()["ok"] is True
+        m.assert_called_once_with("spooler")
 
-    def test_disable_action_calls_subprocess(self, client, mocker):
-        mock_run = _mock_ps(mocker)
+    def test_disable_action_uses_change_service_config(self, client, mocker):
+        mocker.patch("windesktopmgr.win32service.OpenSCManager", return_value=mocker.MagicMock())
+        mocker.patch("windesktopmgr.win32service.OpenService", return_value=mocker.MagicMock())
+        mocker.patch("windesktopmgr.win32service.ChangeServiceConfig")
+        mocker.patch("windesktopmgr.win32service.CloseServiceHandle")
+        mocker.patch("windesktopmgr.win32service.SC_MANAGER_ALL_ACCESS", 0xF003F)
+        mocker.patch("windesktopmgr.win32service.SERVICE_CHANGE_CONFIG", 0x0002)
+        mocker.patch("windesktopmgr.win32service.SERVICE_NO_CHANGE", 0xFFFFFFFF)
+        mocker.patch("windesktopmgr.win32service.SERVICE_DISABLED", 0x00000004)
         resp = client.post(
             "/api/services/toggle",
             json={"name": "spooler", "action": "disable"},
         )
         assert resp.status_code == 200
-        assert mock_run.called
+        assert resp.get_json()["ok"] is True
 
-    def test_enable_action_calls_subprocess(self, client, mocker):
-        mock_run = _mock_ps(mocker)
+    def test_enable_action_uses_demand_start(self, client, mocker):
+        mocker.patch("windesktopmgr.win32service.OpenSCManager", return_value=mocker.MagicMock())
+        mocker.patch("windesktopmgr.win32service.OpenService", return_value=mocker.MagicMock())
+        mocker.patch("windesktopmgr.win32service.ChangeServiceConfig")
+        mocker.patch("windesktopmgr.win32service.CloseServiceHandle")
+        mocker.patch("windesktopmgr.win32service.SC_MANAGER_ALL_ACCESS", 0xF003F)
+        mocker.patch("windesktopmgr.win32service.SERVICE_CHANGE_CONFIG", 0x0002)
+        mocker.patch("windesktopmgr.win32service.SERVICE_NO_CHANGE", 0xFFFFFFFF)
+        mocker.patch("windesktopmgr.win32service.SERVICE_DEMAND_START", 0x00000003)
         resp = client.post(
             "/api/services/toggle",
             json={"name": "spooler", "action": "enable"},
         )
         assert resp.status_code == 200
-        cmd = mock_run.call_args[0][0][-1]
-        assert "Manual" in cmd
+        assert resp.get_json()["ok"] is True
 
     def test_missing_name_handled_gracefully(self, client, mocker):
-        _mock_ps(mocker)
+        mocker.patch("windesktopmgr.win32serviceutil.StopService")
         resp = client.post("/api/services/toggle", json={"action": "stop"})
         assert resp.status_code == 200
 
     def test_empty_body_handled(self, client, mocker):
-        _mock_ps(mocker)
         resp = client.post("/api/services/toggle", json={})
         assert resp.status_code == 200
         data = resp.get_json()

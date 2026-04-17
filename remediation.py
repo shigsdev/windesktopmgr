@@ -20,10 +20,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import threading
 from datetime import datetime, timezone
 
+import win32serviceutil
 from flask import Blueprint, jsonify, request
 
 remediation_bp = Blueprint("remediation", __name__)
@@ -256,45 +258,44 @@ Write-Output "DISM_DONE SFC_DONE OK:$ok"
 
 
 def _rem_clear_wu_cache() -> dict:
-    ps = r"""
-try {
-    Stop-Service wuauserv -Force -ErrorAction Stop
-    $path = "$env:SystemRoot\SoftwareDistribution\Download"
-    Remove-Item "$path\*" -Recurse -Force -ErrorAction SilentlyContinue
-    Start-Service wuauserv -ErrorAction Stop
-    Write-Output "OK"
-} catch { Write-Output "ERROR: $_" }
-"""
+    """Stop wuauserv, clear the SoftwareDistribution/Download folder, restart."""
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        ok = "OK" in r.stdout and "ERROR" not in r.stdout
-        return {"ok": ok, "message": "Windows Update cache cleared." if ok else r.stdout.strip()}
+        win32serviceutil.StopService("wuauserv")
+    except Exception:
+        pass  # May already be stopped
+
+    download_path = os.path.join(
+        os.environ.get("SYSTEMROOT", r"C:\Windows"),
+        "SoftwareDistribution",
+        "Download",
+    )
+    try:
+        if os.path.isdir(download_path):
+            for item in os.listdir(download_path):
+                item_path = os.path.join(download_path, item)
+                try:
+                    if os.path.isdir(item_path):
+                        shutil.rmtree(item_path, ignore_errors=True)
+                    else:
+                        os.remove(item_path)
+                except Exception:
+                    pass
     except Exception as e:
-        return {"ok": False, "message": str(e)}
+        return {"ok": False, "message": f"Failed to clear cache: {e}"}
+
+    try:
+        win32serviceutil.StartService("wuauserv")
+    except Exception:
+        pass  # Best-effort restart
+
+    return {"ok": True, "message": "Windows Update cache cleared."}
 
 
 def _rem_restart_spooler() -> dict:
-    ps = r"""
-try {
-    Stop-Service Spooler -Force -ErrorAction Stop
-    Start-Service Spooler -ErrorAction Stop
-    Write-Output "OK"
-} catch { Write-Output "ERROR: $_" }
-"""
+    """Restart the Print Spooler service via pywin32 (no PowerShell)."""
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-        ok = "OK" in r.stdout
-        return {"ok": ok, "message": "Print Spooler restarted." if ok else r.stdout.strip()}
+        win32serviceutil.RestartService("Spooler")
+        return {"ok": True, "message": "Print Spooler restarted."}
     except Exception as e:
         return {"ok": False, "message": str(e)}
 

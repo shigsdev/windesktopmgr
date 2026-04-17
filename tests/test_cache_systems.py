@@ -701,53 +701,60 @@ class TestSaveProcessCache:
 
 
 class TestLookupProcessViaFileinfo:
+    """Tests for _lookup_process_via_fileinfo() — now uses win32api.GetFileVersionInfo."""
+
+    CHROME_LC = [(0x0409, 0x04B0)]
+
+    def _mock_fileinfo(
+        self, mocker, desc="Google Chrome", company="Google LLC", product="Google Chrome", lc_pairs=None
+    ):
+        if lc_pairs is None:
+            lc_pairs = self.CHROME_LC
+
+        def _gfvi(path, sub_block):
+            if "Translation" in sub_block:
+                return lc_pairs
+            if "FileDescription" in sub_block:
+                return desc
+            if "CompanyName" in sub_block:
+                return company
+            if "ProductName" in sub_block:
+                return product
+            return ""
+
+        return mocker.patch("windesktopmgr.win32api.GetFileVersionInfo", side_effect=_gfvi)
+
     def test_returns_parsed_result(self, mocker):
-        ps_output = json.dumps(
-            {
-                "FileDescription": "Google Chrome",
-                "CompanyName": "Google LLC",
-                "ProductName": "Google Chrome",
-                "FileVersion": "120.0",
-            }
-        )
-        _mock_run(mocker, stdout=ps_output)
+        self._mock_fileinfo(mocker)
         result = wdm._lookup_process_via_fileinfo("chrome", "C:\\Program Files\\Google\\Chrome\\chrome.exe")
         assert result is not None
         assert result["source"] == "file_version_info"
         assert "Google" in result["publisher"]
 
     def test_empty_output_returns_none(self, mocker):
-        _mock_run(mocker, stdout="")
+        """No translation pairs → returns None."""
+        mocker.patch("windesktopmgr.win32api.GetFileVersionInfo", return_value=None)
         result = wdm._lookup_process_via_fileinfo("chrome", "C:\\chrome.exe")
         assert result is None
 
     def test_no_desc_no_company_returns_none(self, mocker):
-        ps_output = json.dumps({"FileDescription": "", "CompanyName": "", "ProductName": "", "FileVersion": ""})
-        _mock_run(mocker, stdout=ps_output)
+        self._mock_fileinfo(mocker, desc="", company="", product="")
         result = wdm._lookup_process_via_fileinfo("test", "C:\\test.exe")
         assert result is None
 
     def test_system_path_not_safe_to_kill(self, mocker):
-        ps_output = json.dumps(
-            {
-                "FileDescription": "Host Process",
-                "CompanyName": "Microsoft",
-                "ProductName": "Windows",
-                "FileVersion": "10.0",
-            }
-        )
-        _mock_run(mocker, stdout=ps_output)
+        self._mock_fileinfo(mocker, desc="Host Process", company="Microsoft", product="Windows")
         result = wdm._lookup_process_via_fileinfo("svchost", "C:\\Windows\\System32\\svchost.exe")
         assert result is not None
         assert result["safe_kill"] is False
 
-    def test_no_path_tries_get_command(self, mocker):
-        m = _mock_run(mocker, stdout="")
+    def test_no_path_tries_shutil_which(self, mocker):
+        m = mocker.patch("windesktopmgr.shutil.which", return_value=None)
         wdm._lookup_process_via_fileinfo("chrome", "")
         assert m.called
 
-    def test_timeout_returns_none(self, mocker):
-        _mock_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 8))
+    def test_exception_returns_none(self, mocker):
+        mocker.patch("windesktopmgr.win32api.GetFileVersionInfo", side_effect=Exception("file not found"))
         result = wdm._lookup_process_via_fileinfo("test", "C:\\test.exe")
         assert result is None
 

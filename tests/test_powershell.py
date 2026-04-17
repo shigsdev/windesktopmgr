@@ -1231,83 +1231,103 @@ class TestGetServicesList:
 
 
 class TestToggleService:
+    """Tests for toggle_service() — now uses win32serviceutil / win32service
+    instead of PowerShell subprocess calls."""
+
     def test_stop_action_calls_stop_service(self, mocker):
-        m = _mock_run(mocker, returncode=0)
+        m = mocker.patch("windesktopmgr.win32serviceutil.StopService")
         result = wdm.toggle_service("wuauserv", "stop")
         assert result["ok"] is True
-        cmd = m.call_args[0][0][-1]
-        assert "Stop-Service" in cmd
+        m.assert_called_once_with("wuauserv")
 
     def test_start_action_calls_start_service(self, mocker):
-        m = _mock_run(mocker, returncode=0)
-        wdm.toggle_service("wuauserv", "start")
-        cmd = m.call_args[0][0][-1]
-        assert "Start-Service" in cmd
+        m = mocker.patch("windesktopmgr.win32serviceutil.StartService")
+        result = wdm.toggle_service("wuauserv", "start")
+        assert result["ok"] is True
+        m.assert_called_once_with("wuauserv")
 
-    def test_disable_action_calls_set_service_disabled(self, mocker):
-        m = _mock_run(mocker, returncode=0)
-        wdm.toggle_service("wuauserv", "disable")
-        cmd = m.call_args[0][0][-1]
-        assert "Set-Service" in cmd
-        assert "Disabled" in cmd
+    def test_disable_action_uses_change_service_config(self, mocker):
+        mock_scm = mocker.MagicMock()
+        mock_svc = mocker.MagicMock()
+        mocker.patch("windesktopmgr.win32service.OpenSCManager", return_value=mock_scm)
+        mocker.patch("windesktopmgr.win32service.OpenService", return_value=mock_svc)
+        change_mock = mocker.patch("windesktopmgr.win32service.ChangeServiceConfig")
+        mocker.patch("windesktopmgr.win32service.CloseServiceHandle")
+        mocker.patch("windesktopmgr.win32service.SC_MANAGER_ALL_ACCESS", 0xF003F)
+        mocker.patch("windesktopmgr.win32service.SERVICE_CHANGE_CONFIG", 0x0002)
+        mocker.patch("windesktopmgr.win32service.SERVICE_NO_CHANGE", 0xFFFFFFFF)
+        mocker.patch("windesktopmgr.win32service.SERVICE_DISABLED", 0x00000004)
+        result = wdm.toggle_service("wuauserv", "disable")
+        assert result["ok"] is True
+        # Verify ChangeServiceConfig was called with DISABLED start type
+        change_mock.assert_called_once()
+        call_args = change_mock.call_args[0]
+        assert call_args[2] == 0x00000004  # SERVICE_DISABLED
 
-    def test_enable_action_calls_set_service_manual(self, mocker):
-        m = _mock_run(mocker, returncode=0)
-        wdm.toggle_service("wuauserv", "enable")
-        cmd = m.call_args[0][0][-1]
-        assert "Set-Service" in cmd
-        assert "Manual" in cmd
+    def test_enable_action_uses_demand_start(self, mocker):
+        mock_scm = mocker.MagicMock()
+        mock_svc = mocker.MagicMock()
+        mocker.patch("windesktopmgr.win32service.OpenSCManager", return_value=mock_scm)
+        mocker.patch("windesktopmgr.win32service.OpenService", return_value=mock_svc)
+        change_mock = mocker.patch("windesktopmgr.win32service.ChangeServiceConfig")
+        mocker.patch("windesktopmgr.win32service.CloseServiceHandle")
+        mocker.patch("windesktopmgr.win32service.SC_MANAGER_ALL_ACCESS", 0xF003F)
+        mocker.patch("windesktopmgr.win32service.SERVICE_CHANGE_CONFIG", 0x0002)
+        mocker.patch("windesktopmgr.win32service.SERVICE_NO_CHANGE", 0xFFFFFFFF)
+        mocker.patch("windesktopmgr.win32service.SERVICE_DEMAND_START", 0x00000003)
+        result = wdm.toggle_service("wuauserv", "enable")
+        assert result["ok"] is True
+        change_mock.assert_called_once()
+        call_args = change_mock.call_args[0]
+        assert call_args[2] == 0x00000003  # SERVICE_DEMAND_START
 
-    def test_invalid_action_returns_error_no_subprocess(self, mocker):
-        m = _mock_run(mocker, returncode=0)
+    def test_invalid_action_returns_error(self, mocker):
         result = wdm.toggle_service("wuauserv", "explode")
         assert result["ok"] is False
         assert "Invalid" in result["error"]
-        m.assert_not_called()
 
-    def test_service_name_sanitised(self, mocker):
-        m = _mock_run(mocker, returncode=0)
-        # Attempt to inject via semicolons, spaces, and backslashes — those are stripped.
-        # re.sub(r"[^\w\-]", "", name) keeps only word chars and hyphens.
+    def test_service_name_sanitised_for_stop(self, mocker):
+        """Injection chars stripped — sanitised name passed to StopService."""
+        m = mocker.patch("windesktopmgr.win32serviceutil.StopService")
         wdm.toggle_service("wuauserv; bad\\path", "stop")
-        cmd = m.call_args[0][0][-1]
-        # Semicolons, spaces, and backslashes must be stripped from the injected name
-        injected_name = cmd.split('"')[1]  # value between the first pair of quotes
-        assert ";" not in injected_name
-        assert " " not in injected_name
-        assert "\\" not in injected_name
+        # Semicolons, spaces, and backslashes must be stripped
+        called_name = m.call_args[0][0]
+        assert ";" not in called_name
+        assert " " not in called_name
+        assert "\\" not in called_name
 
-    def test_ps_failure_returns_ok_false(self, mocker):
-        _mock_run(mocker, returncode=1, stderr="Service not found")
+    def test_exception_returns_ok_false(self, mocker):
+        mocker.patch("windesktopmgr.win32serviceutil.StopService", side_effect=Exception("Service not found"))
         result = wdm.toggle_service("nosuchsvc", "stop")
         assert result["ok"] is False
         assert "Service not found" in result["error"]
 
-    def test_timeout_returns_ok_false(self, mocker):
-        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=15))
-        result = wdm.toggle_service("wuauserv", "stop")
+    def test_empty_name_returns_error(self, mocker):
+        """Empty service name after sanitisation returns error."""
+        result = wdm.toggle_service(";;; \\\\", "stop")
         assert result["ok"] is False
+        assert "Invalid service name" in result["error"]
 
     def test_backtick_stripped_from_service_name(self, mocker):
-        """Backtick is PowerShell's escape char — must be stripped."""
-        m = _mock_run(mocker, returncode=0)
-        wdm.toggle_service("wuauserv`Stop-Service -Name windefend", "stop")
-        cmd = m.call_args[0][0][-1]
-        assert "`" not in cmd.split('"')[1]
+        """Backtick must be stripped from service name."""
+        m = mocker.patch("windesktopmgr.win32serviceutil.StopService")
+        wdm.toggle_service("wuauserv`Stop-Service", "stop")
+        called_name = m.call_args[0][0]
+        assert "`" not in called_name
 
     def test_newline_stripped_from_service_name(self, mocker):
-        """Newlines are PS statement separators — must be stripped."""
-        m = _mock_run(mocker, returncode=0)
-        wdm.toggle_service("wuauserv\nStop-Service -Name windefend", "stop")
-        cmd = m.call_args[0][0][-1]
-        assert "\n" not in cmd.split('"')[1]
+        """Newlines must be stripped from service name."""
+        m = mocker.patch("windesktopmgr.win32serviceutil.StopService")
+        wdm.toggle_service("wuauserv\nStop-Service", "stop")
+        called_name = m.call_args[0][0]
+        assert "\n" not in called_name
 
     def test_dollar_stripped_from_service_name(self, mocker):
-        """Dollar sign is PS variable prefix — must be stripped."""
-        m = _mock_run(mocker, returncode=0)
+        """Dollar sign must be stripped from service name."""
+        m = mocker.patch("windesktopmgr.win32serviceutil.StopService")
         wdm.toggle_service("wuauserv$env:USERNAME", "stop")
-        cmd = m.call_args[0][0][-1]
-        assert "$" not in cmd.split('"')[1]
+        called_name = m.call_args[0][0]
+        assert "$" not in called_name
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2498,76 +2518,86 @@ class TestLookupStartupViaFileinfo:
 
 
 class TestLookupProcessViaFileinfo:
-    FILE_INFO = json.dumps(
-        {
-            "FileDescription": "Google Chrome",
-            "CompanyName": "Google LLC",
-            "ProductName": "Google Chrome",
-            "FileVersion": "120.0.6099.130",
-        }
-    )
+    """Tests for _lookup_process_via_fileinfo() — now uses shutil.which() and
+    win32api.GetFileVersionInfo() instead of PowerShell subprocess calls."""
+
+    CHROME_LC = [(0x0409, 0x04B0)]  # English / Unicode codepage
+
+    def _mock_fileinfo(
+        self, mocker, desc="Google Chrome", company="Google LLC", product="Google Chrome", lc_pairs=None
+    ):
+        """Mock win32api.GetFileVersionInfo to return version resource data."""
+        if lc_pairs is None:
+            lc_pairs = self.CHROME_LC
+
+        def _gfvi(path, sub_block):
+            if "Translation" in sub_block:
+                return lc_pairs
+            if "FileDescription" in sub_block:
+                return desc
+            if "CompanyName" in sub_block:
+                return company
+            if "ProductName" in sub_block:
+                return product
+            return ""
+
+        return mocker.patch("windesktopmgr.win32api.GetFileVersionInfo", side_effect=_gfvi)
 
     def test_happy_path_returns_enrichment(self, mocker):
-        _mock_run(mocker, stdout=self.FILE_INFO)
+        self._mock_fileinfo(mocker)
         result = wdm._lookup_process_via_fileinfo("chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe")
         assert result is not None
         assert result["publisher"] == "Google LLC"
+        assert result["source"] == "file_version_info"
+        assert result["plain"] == "Google Chrome"
 
-    def test_no_path_triggers_get_command(self, mocker):
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = [
-            type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})(),
-        ]
+    def test_no_path_triggers_shutil_which(self, mocker):
+        """When no path is given, shutil.which() is used to find the exe."""
+        m = mocker.patch("windesktopmgr.shutil.which", return_value=None)
         result = wdm._lookup_process_via_fileinfo("unknownapp", "")
         assert result is None
-        cmd = m.call_args_list[0][0][0][-1]
-        assert "Get-Command" in cmd
-        # Must use PS 5.1-compatible syntax -- no ?. null-conditional operator
-        assert "?." not in cmd
-        # Must explicitly exit 0 to prevent rc=1 warnings when exe is missing
-        assert "exit 0" in cmd
+        # Should have tried both with and without .exe suffix
+        assert m.call_count >= 1
+        first_call = m.call_args_list[0][0][0]
+        assert "unknownapp" in first_call
 
-    def test_empty_proc_name_skips_get_command(self, mocker):
-        """Guard against the '.exe' query that produced warnings in prod."""
-        m = mocker.patch("windesktopmgr.subprocess.run")
+    def test_empty_proc_name_returns_none(self, mocker):
+        """Guard against empty proc_name."""
+        m = mocker.patch("windesktopmgr.shutil.which")
         result = wdm._lookup_process_via_fileinfo("", "")
         assert result is None
-        assert m.call_count == 0  # should never hit PS with an empty base name
+        assert m.call_count == 0  # should never call which with empty name
 
-    def test_get_item_command_contains_path(self, mocker):
-        m = _mock_run(mocker, stdout=self.FILE_INFO)
-        wdm._lookup_process_via_fileinfo("chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe")
-        cmd = m.call_args[0][0][-1]
-        assert "Get-Item" in cmd
-        assert "chrome.exe" in cmd
+    def test_shutil_which_finds_exe_then_reads_version(self, mocker):
+        """shutil.which resolves path, then win32api reads version info."""
+        mocker.patch(
+            "windesktopmgr.shutil.which", return_value=r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+        )
+        self._mock_fileinfo(mocker)
+        result = wdm._lookup_process_via_fileinfo("chrome", "")
+        assert result is not None
+        assert result["publisher"] == "Google LLC"
 
     def test_system_path_marks_safe_kill_false(self, mocker):
-        sys_info = json.dumps(
-            {
-                "FileDescription": "Windows Explorer",
-                "CompanyName": "Microsoft Corporation",
-                "ProductName": "Microsoft Windows",
-                "FileVersion": "10.0.26100.1",
-            }
+        self._mock_fileinfo(
+            mocker, desc="Windows Explorer", company="Microsoft Corporation", product="Microsoft Windows"
         )
-        _mock_run(mocker, stdout=sys_info)
         result = wdm._lookup_process_via_fileinfo("explorer", r"C:\Windows\explorer.exe")
         assert result is not None
         assert result["safe_kill"] is False
 
     def test_non_system_path_marks_safe_kill_true(self, mocker):
-        _mock_run(mocker, stdout=self.FILE_INFO)
+        self._mock_fileinfo(mocker)
         result = wdm._lookup_process_via_fileinfo("chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe")
         assert result["safe_kill"] is True
 
     def test_empty_desc_and_company_returns_none(self, mocker):
-        empty = json.dumps({"FileDescription": "", "CompanyName": "", "ProductName": "", "FileVersion": "1.0"})
-        _mock_run(mocker, stdout=empty)
+        self._mock_fileinfo(mocker, desc="", company="", product="")
         result = wdm._lookup_process_via_fileinfo("mystery", r"C:\mystery.exe")
         assert result is None
 
-    def test_timeout_returns_none(self, mocker):
-        _mock_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 8))
+    def test_exception_returns_none(self, mocker):
+        mocker.patch("windesktopmgr.win32api.GetFileVersionInfo", side_effect=Exception("file not found"))
         result = wdm._lookup_process_via_fileinfo("chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe")
         assert result is None
 
@@ -2663,42 +2693,60 @@ class TestRemediationCommands:
         _mock_rem_run(mocker, stdout="DISM_DONE SFC_DONE OK:False", returncode=0)
         assert remediation._rem_repair_image()["ok"] is False
 
-    # ── clear_wu_cache ────────────────────────────────────────────────────────
+    # ── clear_wu_cache (pywin32 — win32serviceutil + shutil) ─────────────────
 
-    def test_clear_wu_cache_command_stops_wuauserv(self, mocker):
-        m = _mock_rem_run(mocker, stdout="OK", returncode=0)
+    def test_clear_wu_cache_stops_wuauserv(self, mocker):
+        stop_mock = mocker.patch("remediation.win32serviceutil.StopService")
+        mocker.patch("remediation.win32serviceutil.StartService")
+        mocker.patch("remediation.os.path.isdir", return_value=False)
         remediation._rem_clear_wu_cache()
-        cmd = m.call_args[0][0][-1]
-        assert "Stop-Service" in cmd
-        assert "wuauserv" in cmd
+        stop_mock.assert_called_once_with("wuauserv")
 
-    def test_clear_wu_cache_command_clears_softwaredistribution(self, mocker):
-        m = _mock_rem_run(mocker, stdout="OK", returncode=0)
-        remediation._rem_clear_wu_cache()
-        cmd = m.call_args[0][0][-1]
-        assert "SoftwareDistribution" in cmd
+    def test_clear_wu_cache_clears_download_dir(self, mocker):
+        mocker.patch("remediation.win32serviceutil.StopService")
+        mocker.patch("remediation.win32serviceutil.StartService")
+        mocker.patch("remediation.os.path.isdir", return_value=True)
+        mocker.patch("remediation.os.listdir", return_value=["pkg1", "file1.cab"])
+        mocker.patch("remediation.os.path.join", side_effect=lambda *a: "\\".join(a))
+        mocker.patch("remediation.shutil.rmtree")
+        # First item is a dir, second is a file
+        mocker.patch("remediation.os.remove")
+        is_dir_calls = [True, False]
+        mocker.patch("remediation.os.path.isdir", side_effect=[True] + is_dir_calls)
+        result = remediation._rem_clear_wu_cache()
+        assert result["ok"] is True
+        assert "cleared" in result["message"].lower()
 
     def test_clear_wu_cache_ok_on_success(self, mocker):
-        _mock_rem_run(mocker, stdout="OK", returncode=0)
+        mocker.patch("remediation.win32serviceutil.StopService")
+        mocker.patch("remediation.win32serviceutil.StartService")
+        mocker.patch("remediation.os.path.isdir", return_value=False)
         assert remediation._rem_clear_wu_cache()["ok"] is True
 
-    def test_clear_wu_cache_error_string_returns_ok_false(self, mocker):
-        _mock_rem_run(mocker, stdout="ERROR: service not found", returncode=0)
-        assert remediation._rem_clear_wu_cache()["ok"] is False
+    def test_clear_wu_cache_listdir_exception_returns_ok_false(self, mocker):
+        mocker.patch("remediation.win32serviceutil.StopService")
+        mocker.patch("remediation.os.path.isdir", return_value=True)
+        mocker.patch("remediation.os.listdir", side_effect=PermissionError("access denied"))
+        result = remediation._rem_clear_wu_cache()
+        assert result["ok"] is False
+        assert "Failed" in result["message"]
 
-    # ── restart_spooler ───────────────────────────────────────────────────────
+    # ── restart_spooler (pywin32 — win32serviceutil.RestartService) ────────
 
-    def test_restart_spooler_command_stops_and_starts(self, mocker):
-        m = _mock_rem_run(mocker, stdout="OK", returncode=0)
+    def test_restart_spooler_calls_restart_service(self, mocker):
+        m = mocker.patch("remediation.win32serviceutil.RestartService")
         remediation._rem_restart_spooler()
-        cmd = m.call_args[0][0][-1]
-        assert "Stop-Service" in cmd
-        assert "Start-Service" in cmd
-        assert "Spooler" in cmd
+        m.assert_called_once_with("Spooler")
 
     def test_restart_spooler_ok_on_success(self, mocker):
-        _mock_rem_run(mocker, stdout="OK", returncode=0)
+        mocker.patch("remediation.win32serviceutil.RestartService")
         assert remediation._rem_restart_spooler()["ok"] is True
+
+    def test_restart_spooler_exception_returns_ok_false(self, mocker):
+        mocker.patch("remediation.win32serviceutil.RestartService", side_effect=Exception("access denied"))
+        result = remediation._rem_restart_spooler()
+        assert result["ok"] is False
+        assert "access denied" in result["message"]
 
     # ── reset_network_adapter ─────────────────────────────────────────────────
 
@@ -3172,15 +3220,42 @@ class TestGetNvidiaUpdateInfo:
         assert result["UpdateAvailable"] is False
         assert result["UpdateSource"] == "nvidia_api"
 
+    def _mock_winreg_cache(self, mocker, entries=None):
+        """Mock winreg to simulate Installer2 Cache registry keys.
+
+        ``entries`` is a list of (name, value, type) tuples returned by
+        EnumValue.  Pass ``None`` for FileNotFoundError (key missing).
+        """
+        if entries is None:
+            mocker.patch(
+                "windesktopmgr.winreg.OpenKey",
+                side_effect=FileNotFoundError,
+            )
+            return
+        mock_key = mocker.MagicMock()
+        mocker.patch("windesktopmgr.winreg.OpenKey", return_value=mock_key)
+
+        # EnumValue returns entries one at a time, then raises OSError
+        def _enum(key, idx):
+            if idx < len(entries):
+                return entries[idx]
+            raise OSError("no more items")
+
+        mocker.patch("windesktopmgr.winreg.EnumValue", side_effect=_enum)
+        mocker.patch("windesktopmgr.winreg.CloseKey")
+
     def test_api_failure_falls_back_to_installer2_cache(self, mocker):
-        """When API fails, check Installer2 Cache via PS."""
+        """When API fails, check Installer2 Cache via winreg."""
         self._mock_gpu(mocker)
         self._mock_api(mocker, result=None)
-        # Mock the Installer2 Cache PS call
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.return_value.stdout = "595.79\n"
-        m.return_value.returncode = 0
-        m.return_value.stderr = ""
+        # Mock Installer2 Cache with a version newer than installed (591.74)
+        self._mock_winreg_cache(
+            mocker,
+            entries=[
+                ("Display.Driver/595.79", "", 1),
+                ("SomeOtherKey", "", 1),
+            ],
+        )
         result = wdm.get_nvidia_update_info()
         assert result is not None
         assert result["UpdateAvailable"] is True
@@ -3191,10 +3266,8 @@ class TestGetNvidiaUpdateInfo:
         """When API fails and no Installer2 Cache → no update available."""
         self._mock_gpu(mocker)
         self._mock_api(mocker, result=None)
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.return_value.stdout = ""
-        m.return_value.returncode = 0
-        m.return_value.stderr = ""
+        # Registry key exists but has no Display.Driver entries
+        self._mock_winreg_cache(mocker, entries=[])
         result = wdm.get_nvidia_update_info()
         assert result is not None
         assert result["UpdateAvailable"] is False
@@ -3205,10 +3278,7 @@ class TestGetNvidiaUpdateInfo:
         gpu = {"name": "NVIDIA GeForce GTX 1660", "installed": "560.00", "win_ver": "31.0.15.6000"}
         self._mock_gpu(mocker, gpu=gpu)
         api_mock = self._mock_api(mocker)
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.return_value.stdout = ""
-        m.return_value.returncode = 0
-        m.return_value.stderr = ""
+        self._mock_winreg_cache(mocker, entries=[])
         result = wdm.get_nvidia_update_info()
         assert result is not None
         assert result["UpdateAvailable"] is False
@@ -3220,10 +3290,7 @@ class TestGetNvidiaUpdateInfo:
         Game Ready 595.97 is NOT a valid update for Studio 595.79 user."""
         self._mock_gpu(mocker)
         api_mock = mocker.patch("windesktopmgr._query_nvidia_api", return_value=None)
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.return_value.stdout = ""
-        m.return_value.returncode = 0
-        m.return_value.stderr = ""
+        self._mock_winreg_cache(mocker, entries=[])
         result = wdm.get_nvidia_update_info()
         # API should be called exactly ONCE (Studio only), not twice
         api_mock.assert_called_once()
@@ -3231,14 +3298,12 @@ class TestGetNvidiaUpdateInfo:
         assert result["UpdateSource"] == "none"
         assert result["UpdateAvailable"] is False
 
-    def test_installer2_cache_timeout_still_returns_result(self, mocker):
-        """Installer2 PS timeout → graceful fallback, still returns GPU info."""
+    def test_installer2_cache_key_missing_still_returns_result(self, mocker):
+        """Installer2 registry key missing → graceful fallback, still returns GPU info."""
         self._mock_gpu(mocker)
         self._mock_api(mocker, result=None)
-        mocker.patch(
-            "windesktopmgr.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=10),
-        )
+        # Simulate key not found
+        self._mock_winreg_cache(mocker, entries=None)
         result = wdm.get_nvidia_update_info()
         assert result is not None
         assert result["UpdateAvailable"] is False

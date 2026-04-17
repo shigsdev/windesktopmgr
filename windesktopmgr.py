@@ -10,17 +10,22 @@ import locale
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
 import time
 import urllib.parse
 import urllib.request
+import winreg
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import psutil
 import pythoncom
+import win32api
+import win32service
+import win32serviceutil
 import wmi
 from flask import Flask, jsonify, make_response, render_template, request, send_from_directory
 
@@ -686,37 +691,38 @@ def get_nvidia_update_info() -> dict | None:
             latest = api_result["version"]
             source = "nvidia_api"
 
-    # Method 2: Installer2 Cache (offline fallback)
+    # Method 2: Installer2 Cache (offline fallback) — pure Python via winreg
     if not latest:
-        ps_cache = r"""
-$cacheKey = 'HKLM:\SOFTWARE\NVIDIA Corporation\Installer2\Cache'
-if (Test-Path $cacheKey) {
-    $props = Get-ItemProperty $cacheKey -EA SilentlyContinue
-    $maxVer = 0
-    foreach ($p in $props.PSObject.Properties) {
-        if ($p.Name -match '^Display\.Driver/(.+)$') {
-            $ver = $Matches[1] -replace '\.', ''
-            $verNum = [int]$ver
-            if ($verNum -gt $maxVer) { $maxVer = $verNum }
-        }
-    }
-    if ($maxVer -gt 0) {
-        $maxStr = [string]$maxVer
-        Write-Output ($maxStr.Substring(0, $maxStr.Length - 2) + '.' + $maxStr.Substring($maxStr.Length - 2))
-    }
-}
-"""
         try:
-            r = subprocess.run(
-                ["powershell", "-NonInteractive", "-Command", ps_cache],
-                capture_output=True,
-                text=True,
-                timeout=10,
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\NVIDIA Corporation\Installer2\Cache",
             )
-            cached_ver = r.stdout.strip()
-            if cached_ver and cached_ver != installed:
-                latest = cached_ver
-                source = "installer2_cache"
+            max_ver = 0
+            i = 0
+            while True:
+                try:
+                    name_val, _val, _typ = winreg.EnumValue(key, i)
+                    if name_val.startswith("Display.Driver/"):
+                        ver_str = name_val.split("/")[1].replace(".", "")
+                        try:
+                            ver_num = int(ver_str)
+                            if ver_num > max_ver:
+                                max_ver = ver_num
+                        except ValueError:
+                            pass
+                    i += 1
+                except OSError:
+                    break
+            winreg.CloseKey(key)
+            if max_ver > 0:
+                s = str(max_ver)
+                cached_ver = s[:-2] + "." + s[-2:]
+                if cached_ver != installed:
+                    latest = cached_ver
+                    source = "installer2_cache"
+        except FileNotFoundError:
+            pass
         except Exception:
             pass
 
@@ -3948,52 +3954,39 @@ def _save_process_cache():
 
 
 def _lookup_process_via_fileinfo(proc_name: str, path: str) -> dict | None:
-    """Read embedded file version info from the exe — offline, always current."""
+    """Read embedded file version info from the exe — offline, always current.
+
+    Uses shutil.which() to locate the exe and win32api.GetFileVersionInfo()
+    to read the embedded version resource.  No PowerShell subprocess needed.
+    """
     if not path and proc_name:
-        # Try to find exe via Get-Command (PS 5.1-compatible — no ?. operator)
-        safe_name = re.sub(r"[^a-zA-Z0-9\-_. ]", "", proc_name) + ".exe"
-        if safe_name != ".exe":
-            try:
-                r0 = subprocess.run(
-                    [
-                        "powershell",
-                        "-NonInteractive",
-                        "-Command",
-                        # exit 0 prevents rc=1 warnings when the exe isn't on PATH
-                        f'$ErrorActionPreference="SilentlyContinue"; '
-                        f'$c = Get-Command "{safe_name}" -EA SilentlyContinue; '
-                        f"if ($c) {{ $c.Source }}; exit 0",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                path = r0.stdout.strip()
-            except Exception:  # noqa: BLE001
-                pass
+        safe_name = re.sub(r"[^a-zA-Z0-9\-_. ]", "", proc_name)
+        if safe_name:
+            path = shutil.which(safe_name + ".exe") or shutil.which(safe_name) or ""
     if not path:
         return None
-    ps = f"""
-try {{
-    $f = Get-Item "{path}" -EA Stop
-    $v = $f.VersionInfo
-    [PSCustomObject]@{{
-        FileDescription = $v.FileDescription
-        CompanyName     = $v.CompanyName
-        ProductName     = $v.ProductName
-        FileVersion     = $v.FileVersion
-    }} | ConvertTo-Json
-}} catch {{ }}
-"""
     try:
-        r = subprocess.run(["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=8)
-        raw = r.stdout.strip()
-        if not raw:
+        # Get language/codepage pair from the version resource
+        lc_pairs = win32api.GetFileVersionInfo(path, "\\VarFileInfo\\Translation")
+        if not lc_pairs:
             return None
-        data = json.loads(raw)
-        desc = (data.get("FileDescription") or "").strip()
-        company = (data.get("CompanyName") or "").strip()
-        product = (data.get("ProductName") or "").strip()
+        lang = "%04x%04x" % (lc_pairs[0][0], lc_pairs[0][1])
+
+        def _str(key: str) -> str:
+            try:
+                return (
+                    win32api.GetFileVersionInfo(
+                        path,
+                        f"\\StringFileInfo\\{lang}\\{key}",
+                    )
+                    or ""
+                ).strip()
+            except Exception:
+                return ""
+
+        desc = _str("FileDescription")
+        company = _str("CompanyName")
+        product = _str("ProductName")
         if not desc and not company:
             return None
         is_system = any(p in path.lower() for p in ("\\windows\\", "\\system32\\", "\\syswow64\\"))
@@ -4874,22 +4867,62 @@ def get_services_list() -> list:
 
 
 def toggle_service(name: str, action: str) -> dict:
+    """Start/stop/enable/disable a Windows service via pywin32 (no PowerShell)."""
     safe_name = re.sub(r"[^a-zA-Z0-9\-_]", "", name).strip()
-    if action == "stop":
-        cmd = f'Stop-Service -Name "{safe_name}" -Force -ErrorAction Stop'
-    elif action == "start":
-        cmd = f'Start-Service -Name "{safe_name}" -ErrorAction Stop'
-    elif action == "disable":
-        cmd = f'Set-Service -Name "{safe_name}" -StartupType Disabled -ErrorAction Stop'
-    elif action == "enable":
-        cmd = f'Set-Service -Name "{safe_name}" -StartupType Manual -ErrorAction Stop'
-    else:
+    if not safe_name:
+        return {"ok": False, "error": "Invalid service name"}
+    if action not in ("stop", "start", "disable", "enable"):
         return {"ok": False, "error": "Invalid action"}
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", cmd], capture_output=True, text=True, timeout=15
-        )
-        return {"ok": r.returncode == 0, "error": r.stderr.strip()}
+        if action == "stop":
+            win32serviceutil.StopService(safe_name)
+        elif action == "start":
+            win32serviceutil.StartService(safe_name)
+        elif action == "disable":
+            hs = win32service.OpenSCManager(None, None, win32service.SC_MANAGER_ALL_ACCESS)
+            try:
+                hsc = win32service.OpenService(hs, safe_name, win32service.SERVICE_CHANGE_CONFIG)
+                try:
+                    win32service.ChangeServiceConfig(
+                        hsc,
+                        win32service.SERVICE_NO_CHANGE,  # serviceType
+                        win32service.SERVICE_DISABLED,  # startType
+                        win32service.SERVICE_NO_CHANGE,  # errorControl
+                        None,
+                        None,
+                        0,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                finally:
+                    win32service.CloseServiceHandle(hsc)
+            finally:
+                win32service.CloseServiceHandle(hs)
+        elif action == "enable":
+            hs = win32service.OpenSCManager(None, None, win32service.SC_MANAGER_ALL_ACCESS)
+            try:
+                hsc = win32service.OpenService(hs, safe_name, win32service.SERVICE_CHANGE_CONFIG)
+                try:
+                    win32service.ChangeServiceConfig(
+                        hsc,
+                        win32service.SERVICE_NO_CHANGE,
+                        win32service.SERVICE_DEMAND_START,  # Manual
+                        win32service.SERVICE_NO_CHANGE,
+                        None,
+                        None,
+                        0,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                finally:
+                    win32service.CloseServiceHandle(hsc)
+            finally:
+                win32service.CloseServiceHandle(hs)
+        return {"ok": True, "error": ""}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
