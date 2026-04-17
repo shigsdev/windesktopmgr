@@ -676,11 +676,15 @@
           </div>
           <div class="fs-chip">
             <div class="fs-title">dev.py</div>
-            <div class="fs-sub">Quality gate runner · ~127 lines · check/fix/test/verify/ship</div>
+            <div class="fs-sub">Quality gate runner · ~145 lines · check/fix/test/verify/ship/post-update-check</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">scripts/post_restart_check.py</div>
             <div class="fs-sub">Restart + /api/selftest + log scan · ~200 lines · dev.py verify target</div>
+          </div>
+          <div class="fs-chip" style="border-color:#00e5a033">
+            <div class="fs-title" style="color:#00e5a0">post_update_check.py</div>
+            <div class="fs-sub">Post-Windows-Update regression runner · ~563 lines · WMI QuickFixEngineering → pytest + verify → SMTP + backlog prepend</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">architecture.html</div>
@@ -722,7 +726,7 @@
 
   <!-- ── LAYER 7: TEST SUITE ──────────────────────────────────── -->
   <div class="row row-tests" id="layer-tests">
-    <div class="row-label">🧪 Test Suite — 1,286 tests · pytest · 85% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + E2E</div>
+    <div class="row-label">🧪 Test Suite — 1,408 tests · pytest · 85% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E</div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
       <div class="test-chip">
         <div class="test-title">test_routes.py</div>
@@ -787,6 +791,10 @@
       <div class="test-chip">
         <div class="test-title">test_integration.py</div>
         <div class="test-sub">38 tests · real PowerShell + psutil · @pytest.mark.integration · pre-push hook</div>
+      </div>
+      <div class="test-chip">
+        <div class="test-title">test_post_update_check.py</div>
+        <div class="test-sub">47 tests · WMI mocks · state roundtrip · subprocess timeouts · SMTP + keyring · backlog prepend · orchestrator</div>
       </div>
     </div>
     <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">
