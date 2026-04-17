@@ -285,10 +285,24 @@ Called every 60 s so the migration pays back quickly in aggregate CPU.
 
 **Effort actual:** ~1.5 hours (well under the 1-day estimate — test migration was simpler than expected). **Risk:** realized low — `socket.gethostbyaddr` uses the same OS resolver as `[System.Net.Dns]::GetHostEntry`. Added `_dns_resolve_ip` and `_nbt_resolve_ip` helper functions for clean testability. 1343 tests green at 85% coverage.
 
-### Batch F — `Get-WinEvent` cluster (7 sites)
-One-time `pywin32 win32evtlog` helper that wraps XPath queries, then 7 cold-path migrations that all share it. Deferred until batches A–E are done — high setup cost, warm (not hot) payoff.
+### Batch F — `Get-WinEvent` cluster (6 sites) ✅ SHIPPED 2026-04-17
 
-**Effort:** ~2 days (helper + 7 callers + tests). **Risk:** medium-high (XPath edge cases, admin-only Security log).
+One shared helper (`_query_event_log_xpath` built on `win32evtlog.EvtQuery` + XPath), then 6 cold-path migrations that route through it. (Audit originally counted 7; on migration we found the true count was 6 — the Setup-log row in the audit table had already been removed from `get_system_timeline` before the batch started.)
+
+| Sites | Migration | Status |
+|---|---|---|
+| #7 | `get_bsod_events` → helper with `ids=[1001,41,6008]` on System log | ✅ |
+| #8 | `query_event_log` (dynamic XPath for log + level filter, search applied in Python) | ✅ |
+| #9 | `get_system_timeline` BSOD events (`ids=[41,1001,6008]` on System) | ✅ |
+| #11 | `get_system_timeline` service events (`ids=[7036]` on System) | ✅ |
+| #12 | `get_system_timeline` boot events (`ids=[6013]` on System) | ✅ |
+| #13 | `get_system_timeline` credential events (`ids=[4625,4648]` on Security) | ✅ |
+
+Helper renders human-readable message bodies via `EvtOpenPublisherMetadata` so the output contract is identical to the old PowerShell `$_.Message` value. Query runs in a `ThreadPoolExecutor` so callers keep the timeout guarantee they had with `subprocess.run(timeout=...)`.
+
+**Skipped (bonus candidates, deferred):** the 2 `Get-WinEvent` calls inside `get_credentials_network_health` (Office/OneDrive error feed and Security log 4625/4648/4776). These are embedded inside larger PS blocks that also use `Get-SmbConnection`, `Get-NfsMappedDrive`, `Get-SmbClientConfiguration`, and `Get-NetFirewallRule` — migrating just the `Get-WinEvent` portion would leave a half-PS / half-Python block. Best addressed as part of a future "credentials/network block unbundle" rather than Batch F.
+
+**Effort actual:** ~2 hours (well under the 2-day estimate — the one-helper-fits-all design meant the 6 call-site migrations each became a ~6-line rewrite). **Risk:** realized low — `win32evtlog.EvtQuery` exposes the exact same Windows Event Log Service that `Get-WinEvent` does, so the output shape, access-denied semantics (Security log without admin), and empty-result behaviour all matched the PS calls on the first run.
 
 ### Batch G — `Microsoft.Update.Session` COM (3 sites)
 Requires a real prototype first. `pywin32 win32com.client.Dispatch` can talk to the same COM object PS uses, but the async operations (`IUpdateSearcher.BeginSearch`) are harder to drive from Python. **Suggest keeping in PS** unless batches A–F expose a reason to tackle it.
@@ -313,7 +327,7 @@ Each `powershell.exe` invocation incurs a ~300 ms cold-start overhead (process c
 | **C** (winreg + pywin32) | 6 | 0 | 1 | 5 | 0 ms | 1.8 s | ✅ Shipped |
 | **D** (direct exe) | 6 | 0 | 0 | 6 | 0 ms | 1.8 s | ✅ Shipped |
 | **E** (HomeNet) | 4 | 4 | 0 | 0 | **~1.2 s / 60 s** | 1.2 s | ✅ Shipped |
-| **F** (Get-WinEvent) | 7 | 0 | 7 | 0 | 0 ms | 2.1 s | Deferred |
+| **F** (Get-WinEvent) | 6 | 0 | 6 | 0 | **~1.8 s / tab load** | 1.8 s | ✅ Shipped |
 | **G** (COM WU) | 3 | 0 | 2 | 1 | 0 ms | 0.9 s | Deferred |
 | **H** (Keep) | — | — | — | — | — | — | Permanent |
 
@@ -321,23 +335,26 @@ Each `powershell.exe` invocation incurs a ~300 ms cold-start overhead (process c
 **Per-refresh saving** = time shaved off every `/api/dashboard/summary` or selftest cycle.
 **Per-call aggregate** = total cold-start saved if all functions in the batch fire once.
 
-### Cumulative shipped savings (Batches A–D)
+### Cumulative shipped savings (Batches A–F)
 
 | Metric | Value |
 |--------|-------|
-| PS subprocess calls eliminated | **32** |
+| PS subprocess calls eliminated | **38** |
 | Hot-path calls eliminated | 7 (2 from A, 1 from B, 4 from E) |
+| Warm-path calls eliminated | 24 (3 A, 8 B, 1 C, 6 timeline/events from F, etc.) |
 | Dashboard refresh speedup | **~900 ms** (cumulative) |
 | Polling loop speedup (60s cycle) | **~1.2 s** (Batch E — 4 HOT homenet calls) |
-| Remaining PS calls (prod code) | ~37 |
+| Event-log tab / timeline load speedup | **~1.8 s** (Batch F — 6 WARM event-log calls) |
+| Remaining PS calls (prod code) | ~31 |
 | Original PS calls (baseline) | 74 |
-| Migration progress | **43%** of sites, **51%** of REPLACE-class |
+| Migration progress | **51%** of sites, **61%** of REPLACE-class |
 
 ### Biggest remaining win
 
-~~**Batch E** (HomeNet polling loop, 4 HOT sites) was the biggest remaining win~~ — **now shipped**. Previously spawned 4 PowerShell processes per 60-second cycle (~1,728/day, ~8.6 min wasted CPU). Now uses `socket.gethostbyaddr` + direct `nbtstat`/`arp` calls.
+~~**Batch E** (HomeNet polling loop, 4 HOT sites)~~ — **shipped**.
+~~**Batch F** (6 `Get-WinEvent` WARM-path sites)~~ — **shipped**.
 
-**Next biggest win:** Batch F (7 `Get-WinEvent` WARM-path sites) — each timeline/event log load saves ~2.1s of PS startup.
+**Next biggest win:** Batch G (`Microsoft.Update.Session` COM — 3 sites, ~900 ms). This is higher-risk than Batches A–F because COM async events (`IUpdateSearcher.BeginSearch` callbacks) are harder to drive from Python than from PS. Recommended: prototype in a branch, benchmark against current PS call, then decide.
 
 ---
 

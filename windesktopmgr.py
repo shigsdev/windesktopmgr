@@ -18,12 +18,14 @@ import time
 import urllib.parse
 import urllib.request
 import winreg
+import xml.etree.ElementTree as ET
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 import psutil
 import pythoncom
 import win32api
+import win32evtlog
 import win32service
 import win32serviceutil
 import wmi
@@ -932,36 +934,164 @@ def run_scan():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# EVENT LOG QUERY HELPER (win32evtlog — replaces Get-WinEvent PS calls)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_EVT_NAMESPACE = {"e": "http://schemas.microsoft.com/win/2004/08/events/event"}
+
+
+def _build_evt_xpath(
+    ids: list[int] | None = None,
+    providers: list[str] | None = None,
+    levels: list[int] | None = None,
+) -> str:
+    """
+    Build an XPath filter for EvtQuery that selects by EventID / Provider / Level.
+    Equivalent to the PowerShell ``-FilterHashtable`` fields ``Id=``, ``ProviderName=``,
+    ``Level=``.
+    """
+    parts: list[str] = []
+    if ids:
+        id_part = " or ".join(f"EventID={int(i)}" for i in ids)
+        parts.append(f"({id_part})")
+    if providers:
+        # XPath @Name attribute match on the Provider element
+        prov_part = " or ".join(f"@Name='{p}'" for p in providers)
+        parts.append(f"Provider[{prov_part}]")
+    if levels:
+        lvl_part = " or ".join(f"Level={int(lv)}" for lv in levels)
+        parts.append(f"({lvl_part})")
+    if not parts:
+        return "*"
+    return f"*[System[{' and '.join(parts)}]]"
+
+
+def _query_event_log_xpath(
+    log_name: str,
+    xpath: str,
+    max_events: int = 100,
+    timeout_s: float = 20.0,
+) -> list[dict]:
+    """
+    Query a Windows Event Log via pywin32 ``win32evtlog.EvtQuery`` + XPath filter.
+
+    Drop-in replacement for ``Get-WinEvent -FilterHashtable`` PowerShell calls.
+    Returns a list of dicts with keys matching the PS-era output shape:
+    ``{"Id": int, "TimeCreated": str (ISO8601), "ProviderName": str,
+        "Level": int, "Message": str}``
+
+    Runs the query in a worker thread so it can be bounded by ``timeout_s``.
+    Any failure (bad XPath, access denied, timeout) returns ``[]`` so callers
+    can treat event-log errors as "no events" rather than crashing.
+    """
+    import concurrent.futures
+
+    def _do_query() -> list[dict]:
+        out: list[dict] = []
+        try:
+            h = win32evtlog.EvtQuery(
+                log_name,
+                win32evtlog.EvtQueryReverseDirection | win32evtlog.EvtQueryChannelPath,
+                xpath,
+            )
+        except Exception as e:
+            print(f"[_query_event_log_xpath] EvtQuery({log_name}) failed: {e}")
+            return out
+
+        remaining = max(1, int(max_events))
+        while remaining > 0:
+            batch_size = min(remaining, 100)
+            try:
+                batch = win32evtlog.EvtNext(h, batch_size)
+            except Exception as e:
+                print(f"[_query_event_log_xpath] EvtNext failed: {e}")
+                break
+            if not batch:
+                break
+            for evt in batch:
+                try:
+                    xml_str = win32evtlog.EvtFormatMessage(None, evt, win32evtlog.EvtFormatMessageXml)
+                    # S314 suppression: the XML source is Windows Event Log
+                    # Service serialisation (win32evtlog.EvtFormatMessage), not
+                    # user-controlled input — no DTDs or external entities are
+                    # possible. defusedxml is not required here.
+                    root = ET.fromstring(xml_str)  # noqa: S314
+                    eid_el = root.find(".//e:EventID", _EVT_NAMESPACE)
+                    ts_el = root.find(".//e:TimeCreated", _EVT_NAMESPACE)
+                    prov_el = root.find(".//e:Provider", _EVT_NAMESPACE)
+                    level_el = root.find(".//e:Level", _EVT_NAMESPACE)
+                    try:
+                        eid = int((eid_el.text if eid_el is not None else "0") or "0")
+                    except (TypeError, ValueError):
+                        eid = 0
+                    ts = ts_el.get("SystemTime", "") if ts_el is not None else ""
+                    provider = prov_el.get("Name", "") if prov_el is not None else ""
+                    try:
+                        level = int(level_el.text) if level_el is not None and level_el.text else 0
+                    except (TypeError, ValueError):
+                        level = 0
+
+                    # Render human-readable message via publisher metadata.
+                    # Some providers are missing their message DLL — fall back to empty.
+                    msg = ""
+                    if provider:
+                        try:
+                            pub_meta = win32evtlog.EvtOpenPublisherMetadata(provider, None)
+                            msg = win32evtlog.EvtFormatMessage(pub_meta, evt, win32evtlog.EvtFormatMessageEvent) or ""
+                        except Exception:
+                            msg = ""
+
+                    out.append(
+                        {
+                            "Id": eid,
+                            "TimeCreated": ts,
+                            "ProviderName": provider,
+                            "Level": level,
+                            "Message": msg,
+                        }
+                    )
+                except Exception:
+                    # Skip malformed events rather than aborting the whole query
+                    continue
+            remaining -= len(batch)
+        return out
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        future = ex.submit(_do_query)
+        try:
+            return future.result(timeout=timeout_s)
+        except concurrent.futures.TimeoutError:
+            print(f"[_query_event_log_xpath] timeout after {timeout_s}s on {log_name}")
+            return []
+        except Exception as e:
+            print(f"[_query_event_log_xpath] worker error on {log_name}: {e}")
+            return []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # BSOD ANALYSIS HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
 
 def get_bsod_events() -> list:
     """Query Windows Event Log for crash-related events (IDs 1001, 41, 6008)."""
-    ps = r"""
-$results = @()
-foreach ($id in @(1001, 41, 6008)) {
-    try {
-        $evts = Get-WinEvent -FilterHashtable @{LogName='System'; Id=$id} `
-            -MaxEvents 60 -ErrorAction Stop
-        foreach ($e in $evts) {
-            $results += [PSCustomObject]@{
-                EventId      = $e.Id
-                TimeCreated  = $e.TimeCreated.ToString('o')
-                ProviderName = $e.ProviderName
-                Message      = $e.Message
-            }
-        }
-    } catch {}
-}
-$results | ConvertTo-Json -Depth 2
-"""
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=30
+        rows = _query_event_log_xpath(
+            "System",
+            _build_evt_xpath(ids=[1001, 41, 6008]),
+            max_events=180,  # 60 per ID × 3 IDs, matching the legacy PS loop cap
+            timeout_s=30.0,
         )
-        data = json.loads(r.stdout or "[]")
-        return data if isinstance(data, list) else [data]
+        # Map helper output → legacy PS key names expected by parse_event() consumers
+        return [
+            {
+                "EventId": e["Id"],
+                "TimeCreated": e["TimeCreated"],
+                "ProviderName": e["ProviderName"],
+                "Message": e["Message"],
+            }
+            for e in rows
+        ]
     except Exception as e:
         print(f"[BSOD event log error] {e}")
         return []
@@ -2242,6 +2372,16 @@ try {
 LEVEL_MAP = {"Error": 2, "Warning": 3, "Information": 4, "Critical": 1}
 
 
+_LEVEL_DISPLAY = {
+    0: "LogAlways",
+    1: "Critical",
+    2: "Error",
+    3: "Warning",
+    4: "Information",
+    5: "Verbose",
+}
+
+
 def query_event_log(params: dict) -> list:
     log = params.get("log", "System")
     level = params.get("level", "")
@@ -2250,35 +2390,22 @@ def query_event_log(params: dict) -> list:
 
     safe_log = re.sub(r"[^\w\s\-/]", "", log)
 
-    filter_ht = f"LogName='{safe_log}'"
-    if level and level in LEVEL_MAP:
-        filter_ht += f"; Level={LEVEL_MAP[level]}"
+    levels = [LEVEL_MAP[level]] if level and level in LEVEL_MAP else None
+    xpath = _build_evt_xpath(levels=levels)
 
-    ps = f"""
-try {{
-    $filter = @{{LogName=\'{safe_log}\'"""
-    if level and level in LEVEL_MAP:
-        ps += f"; Level={LEVEL_MAP[level]}"
-    ps += f"""}}
-    $evts = Get-WinEvent -FilterHashtable $filter -MaxEvents {max_ev} -EA Stop
-    $evts | ForEach-Object {{
-        $msg = if ($_.Message) {{ $_.Message.Substring(0, [Math]::Min(300, $_.Message.Length)) }} else {{ "" }}
-        [PSCustomObject]@{{
-            Time     = $_.TimeCreated.ToString("o")
-            Id       = $_.Id
-            Level    = $_.LevelDisplayName
-            Source   = $_.ProviderName
-            Message  = $msg
-        }}
-    }} | ConvertTo-Json -Depth 2
-}} catch {{ "[]" }}
-"""
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=30
-        )
-        data = json.loads(r.stdout.strip() or "[]")
-        events = data if isinstance(data, list) else [data]
+        rows = _query_event_log_xpath(safe_log, xpath, max_events=max_ev, timeout_s=30.0)
+        events = [
+            {
+                "Time": e["TimeCreated"],
+                "Id": e["Id"],
+                "Level": _LEVEL_DISPLAY.get(e["Level"], ""),
+                "Source": e["ProviderName"],
+                # Preserve the legacy 300-char truncation for UI display parity
+                "Message": (e["Message"] or "")[:300],
+            }
+            for e in rows
+        ]
         if search:
             sl = search.lower()
             events = [
@@ -5205,30 +5332,21 @@ def get_system_timeline(days: int = 30) -> list:
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
     # ── 1. BSODs from Event Log ───────────────────────────────────────────────
-    ps_bsod = r"""
-$results = @()
-foreach ($id in @(41, 1001, 6008)) {
-    try {
-        $evts = Get-WinEvent -FilterHashtable @{LogName='System'; Id=$id} `
-            -MaxEvents 100 -ErrorAction Stop
-        foreach ($e in $evts) {
-            $results += [PSCustomObject]@{
-                EventId     = $e.Id
-                TimeCreated = $e.TimeCreated.ToString('o')
-                Message     = if ($e.Message) { $e.Message.Substring(0,[Math]::Min(200,$e.Message.Length)) } else { "" }
-            }
-        }
-    } catch {}
-}
-$results | ConvertTo-Json -Depth 2
-"""
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps_bsod], capture_output=True, text=True, timeout=20
+        raw_bsod = _query_event_log_xpath(
+            "System",
+            _build_evt_xpath(ids=[41, 1001, 6008]),
+            max_events=300,  # 100 per ID × 3 IDs, matching the legacy PS loop cap
+            timeout_s=20.0,
         )
-        bsod_evts = json.loads(r.stdout.strip() or "[]")
-        if isinstance(bsod_evts, dict):
-            bsod_evts = [bsod_evts]
+        bsod_evts = [
+            {
+                "EventId": e["Id"],
+                "TimeCreated": e["TimeCreated"],
+                "Message": (e["Message"] or "")[:200],
+            }
+            for e in raw_bsod
+        ]
         for e in bsod_evts:
             ts = _parse_ts(e.get("TimeCreated", ""))
             if ts < cutoff:
@@ -5306,25 +5424,14 @@ try {
         print(f"[Timeline] Update query error: {e}")
 
     # ── 3. Service start/stop events (Event ID 7036) ─────────────────────────
-    ps_svc = r"""
-try {
-    $evts = Get-WinEvent -FilterHashtable @{LogName='System'; Id=7036} `
-        -MaxEvents 200 -ErrorAction Stop
-    $evts | ForEach-Object {
-        [PSCustomObject]@{
-            Time    = $_.TimeCreated.ToString('o')
-            Message = $_.Message
-        }
-    } | ConvertTo-Json -Depth 2
-} catch { "[]" }
-"""
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps_svc], capture_output=True, text=True, timeout=15
+        raw_svc = _query_event_log_xpath(
+            "System",
+            _build_evt_xpath(ids=[7036]),
+            max_events=200,
+            timeout_s=15.0,
         )
-        svc_list = json.loads(r.stdout.strip() or "[]")
-        if isinstance(svc_list, dict):
-            svc_list = [svc_list]
+        svc_list = [{"Time": e["TimeCreated"], "Message": e["Message"]} for e in raw_svc]
         for s in svc_list:
             ts = _parse_ts(s.get("Time", ""))
             if ts < cutoff:
@@ -5351,25 +5458,14 @@ try {
         print(f"[Timeline] Service query error: {e}")
 
     # ── 4. System reboots (Event ID 6013 = uptime logged at boot) ────────────
-    ps_boot = r"""
-try {
-    $evts = Get-WinEvent -FilterHashtable @{LogName='System'; Id=6013} `
-        -MaxEvents 30 -ErrorAction Stop
-    $evts | ForEach-Object {
-        [PSCustomObject]@{
-            Time    = $_.TimeCreated.ToString('o')
-            Message = $_.Message
-        }
-    } | ConvertTo-Json -Depth 2
-} catch { "[]" }
-"""
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps_boot], capture_output=True, text=True, timeout=10
+        raw_boot = _query_event_log_xpath(
+            "System",
+            _build_evt_xpath(ids=[6013]),
+            max_events=30,
+            timeout_s=10.0,
         )
-        boot_list = json.loads(r.stdout.strip() or "[]")
-        if isinstance(boot_list, dict):
-            boot_list = [boot_list]
+        boot_list = [{"Time": e["TimeCreated"], "Message": e["Message"]} for e in raw_boot]
         for b in boot_list:
             ts = _parse_ts(b.get("Time", ""))
             if ts < cutoff:
@@ -5389,29 +5485,28 @@ try {
         print(f"[Timeline] Boot query error: {e}")
 
     # ── 5. Credential loss events (Security log 4625 failed logon, 4648 explicit cred) ──
-    ps_cred_evts = r"""
-try {
-    $evts = Get-WinEvent -FilterHashtable @{LogName='Security'; Id=@(4625,4648)} `
-        -MaxEvents 100 -ErrorAction Stop
-    $evts | Where-Object {
-        $_.Message -match "SMB|network|NAS|OUTLOOK|IMAP|SMTP|MicrosoftOffice|MicrosoftEdge" -or
-        $_.Id -eq 4625
-    } | ForEach-Object {
-        [PSCustomObject]@{
-            Id      = $_.Id
-            Time    = $_.TimeCreated.ToString('o')
-            Message = if ($_.Message) { $_.Message.Substring(0,[Math]::Min(120,$_.Message.Length)) } else { "" }
-        }
-    } | ConvertTo-Json -Depth 2
-} catch { "[]" }
-"""
     try:
-        r5 = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps_cred_evts], capture_output=True, text=True, timeout=15
+        raw_cred = _query_event_log_xpath(
+            "Security",
+            _build_evt_xpath(ids=[4625, 4648]),
+            max_events=100,
+            timeout_s=15.0,
         )
-        cred_evts = json.loads(r5.stdout.strip() or "[]")
-        if isinstance(cred_evts, dict):
-            cred_evts = [cred_evts]
+        # Replicate legacy filter: always keep 4625, keep 4648 only if the
+        # message references one of the known credential-loss signatures.
+        _cred_msg_re = re.compile(
+            r"SMB|network|NAS|OUTLOOK|IMAP|SMTP|MicrosoftOffice|MicrosoftEdge",
+            re.IGNORECASE,
+        )
+        cred_evts = [
+            {
+                "Id": e["Id"],
+                "Time": e["TimeCreated"],
+                "Message": (e["Message"] or "")[:120],
+            }
+            for e in raw_cred
+            if e["Id"] == 4625 or _cred_msg_re.search(e["Message"] or "")
+        ]
         for ce in cred_evts:
             ts = _parse_ts(ce.get("Time", ""))
             if ts < cutoff:

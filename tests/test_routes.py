@@ -520,20 +520,25 @@ class TestUpdatesHistoryRoute:
 
 
 class TestEventsQueryRoute:
+    """
+    /api/events/query is now backed by the win32evtlog helper
+    (``_query_event_log_xpath``) instead of a PowerShell subprocess call.
+    """
+
     def test_returns_list(self, client, mocker):
-        _mock_ps(mocker, stdout="[]")
+        mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
         resp = client.post("/api/events/query", json={"log": "System", "level": "Error"})
         assert resp.status_code == 200
         assert isinstance(resp.get_json(), list)
 
     def test_max_events_capped(self, client, mocker):
-        mock_run = _mock_ps(mocker, stdout="[]")
+        mock_helper = mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
         client.post("/api/events/query", json={"log": "System", "max": 9999})
-        cmd = mock_run.call_args[0][0][-1]
-        assert "9999" not in cmd
+        # max is capped at 500 before being passed to the helper
+        assert mock_helper.call_args.kwargs.get("max_events") == 500
 
     def test_returns_json(self, client, mocker):
-        _mock_ps(mocker, stdout="[]")
+        mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
         resp = client.post("/api/events/query", json={"log": "Application"})
         assert resp.content_type.startswith("application/json")
 

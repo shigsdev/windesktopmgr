@@ -1539,48 +1539,207 @@ class TestGetCurrentBios:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# _query_event_log_xpath / _build_evt_xpath — win32evtlog helper (Batch F)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestBuildEvtXpath:
+    def test_no_filters_returns_wildcard(self):
+        assert wdm._build_evt_xpath() == "*"
+
+    def test_single_id(self):
+        x = wdm._build_evt_xpath(ids=[41])
+        assert x == "*[System[(EventID=41)]]"
+
+    def test_multiple_ids_joined_by_or(self):
+        x = wdm._build_evt_xpath(ids=[41, 1001, 6008])
+        assert "EventID=41 or EventID=1001 or EventID=6008" in x
+
+    def test_level_filter(self):
+        x = wdm._build_evt_xpath(levels=[2])
+        assert "Level=2" in x
+
+    def test_provider_filter(self):
+        x = wdm._build_evt_xpath(providers=["Microsoft-Windows-Kernel-Power"])
+        assert "Provider[@Name='Microsoft-Windows-Kernel-Power']" in x
+
+    def test_combined_filters_and_together(self):
+        x = wdm._build_evt_xpath(ids=[41], levels=[2])
+        # Filters are joined with ' and '
+        assert " and " in x
+        assert "EventID=41" in x
+        assert "Level=2" in x
+
+    def test_non_int_id_coerced(self):
+        x = wdm._build_evt_xpath(ids=["41"])
+        assert "EventID=41" in x
+
+
+class TestQueryEventLogXpathHelper:
+    """
+    Tests for the win32evtlog-backed helper itself. Mocks ``win32evtlog.EvtQuery``,
+    ``EvtNext``, and ``EvtFormatMessage`` — no real Windows event log access.
+    """
+
+    # Minimal EventXML that the helper parses
+    _EVT_XML = """<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+  <System>
+    <Provider Name="Microsoft-Windows-Kernel-Power" />
+    <EventID>41</EventID>
+    <Level>1</Level>
+    <TimeCreated SystemTime="2026-04-15T12:00:00.0000000Z" />
+  </System>
+</Event>"""
+
+    def test_returns_parsed_events_list(self, mocker):
+        fake_evt = object()  # opaque handle — the helper treats it as pass-through
+        mocker.patch("windesktopmgr.win32evtlog.EvtQuery", return_value="QHANDLE")
+        next_mock = mocker.patch(
+            "windesktopmgr.win32evtlog.EvtNext",
+            side_effect=[[fake_evt], []],  # 1 event, then empty batch
+        )
+        fmt_mock = mocker.patch(
+            "windesktopmgr.win32evtlog.EvtFormatMessage",
+            side_effect=[self._EVT_XML, "rendered-body-text"],
+        )
+        mocker.patch("windesktopmgr.win32evtlog.EvtOpenPublisherMetadata", return_value="PMETA")
+
+        out = wdm._query_event_log_xpath("System", "*", max_events=10, timeout_s=5)
+        assert len(out) == 1
+        row = out[0]
+        assert row["Id"] == 41
+        assert row["ProviderName"] == "Microsoft-Windows-Kernel-Power"
+        assert row["Level"] == 1
+        assert row["TimeCreated"] == "2026-04-15T12:00:00.0000000Z"
+        assert row["Message"] == "rendered-body-text"
+        # First EvtFormatMessage call is for XML render; second is for message body
+        assert fmt_mock.call_count == 2
+        assert next_mock.call_count == 2
+
+    def test_evtquery_failure_returns_empty_list(self, mocker):
+        mocker.patch("windesktopmgr.win32evtlog.EvtQuery", side_effect=Exception("access denied"))
+        out = wdm._query_event_log_xpath("Security", "*", max_events=10, timeout_s=5)
+        assert out == []
+
+    def test_evtnext_failure_returns_partial(self, mocker):
+        mocker.patch("windesktopmgr.win32evtlog.EvtQuery", return_value="QHANDLE")
+        mocker.patch("windesktopmgr.win32evtlog.EvtNext", side_effect=Exception("handle closed"))
+        out = wdm._query_event_log_xpath("System", "*", max_events=10, timeout_s=5)
+        assert out == []
+
+    def test_empty_event_stream_returns_empty_list(self, mocker):
+        mocker.patch("windesktopmgr.win32evtlog.EvtQuery", return_value="QHANDLE")
+        mocker.patch("windesktopmgr.win32evtlog.EvtNext", return_value=[])
+        out = wdm._query_event_log_xpath("System", "*", max_events=10, timeout_s=5)
+        assert out == []
+
+    def test_malformed_xml_is_skipped(self, mocker):
+        mocker.patch("windesktopmgr.win32evtlog.EvtQuery", return_value="QHANDLE")
+        mocker.patch(
+            "windesktopmgr.win32evtlog.EvtNext",
+            side_effect=[[object(), object()], []],
+        )
+        # First event returns garbage XML, second returns valid — first should be skipped
+        mocker.patch(
+            "windesktopmgr.win32evtlog.EvtFormatMessage",
+            side_effect=["not xml!!!", self._EVT_XML, "body"],
+        )
+        mocker.patch("windesktopmgr.win32evtlog.EvtOpenPublisherMetadata", return_value="PMETA")
+        out = wdm._query_event_log_xpath("System", "*", max_events=10, timeout_s=5)
+        assert len(out) == 1
+
+    def test_publisher_metadata_failure_returns_empty_message(self, mocker):
+        """If the provider has no message DLL, Message should be '' not crash."""
+        mocker.patch("windesktopmgr.win32evtlog.EvtQuery", return_value="QHANDLE")
+        mocker.patch("windesktopmgr.win32evtlog.EvtNext", side_effect=[[object()], []])
+        mocker.patch("windesktopmgr.win32evtlog.EvtFormatMessage", return_value=self._EVT_XML)
+        mocker.patch(
+            "windesktopmgr.win32evtlog.EvtOpenPublisherMetadata",
+            side_effect=Exception("no metadata"),
+        )
+        out = wdm._query_event_log_xpath("System", "*", max_events=10, timeout_s=5)
+        assert len(out) == 1
+        assert out[0]["Message"] == ""
+
+    def test_max_events_honoured(self, mocker):
+        """Stop fetching once max_events events have been consumed."""
+        mocker.patch("windesktopmgr.win32evtlog.EvtQuery", return_value="QHANDLE")
+        # Each EvtNext returns 3 events; helper should stop after max_events=5
+        batch = [object(), object(), object()]
+        next_mock = mocker.patch(
+            "windesktopmgr.win32evtlog.EvtNext",
+            side_effect=[batch, batch, []],
+        )
+        # Each event needs 2 EvtFormatMessage calls (XML + body)
+        mocker.patch(
+            "windesktopmgr.win32evtlog.EvtFormatMessage",
+            side_effect=[self._EVT_XML, "b"] * 10,
+        )
+        mocker.patch("windesktopmgr.win32evtlog.EvtOpenPublisherMetadata", return_value="PMETA")
+        out = wdm._query_event_log_xpath("System", "*", max_events=5, timeout_s=5)
+        # Helper pulled 2 batches of 3 = 6 events (slightly over-fetches, fine)
+        # but must not exceed a reasonable bound
+        assert len(out) <= 6
+        assert next_mock.call_count >= 2
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # get_system_timeline
 # ══════════════════════════════════════════════════════════════════════════════
 
 
 class TestGetSystemTimeline:
-    # All timestamps within 30-day window — use relative dates so tests don't rot
+    """
+    Timeline pulls from 5 sources — BSOD, Windows Update history, services, boot, creds.
+
+    After Batch F (win32evtlog migration), 4 of the 5 are routed through
+    ``_query_event_log_xpath``. Only the Windows Update source still shells out
+    to PowerShell (``Microsoft.Update.Session`` — Batch G candidate).
+
+    Tests mock the helper directly and the lone remaining PS call via
+    ``subprocess.run``.
+    """
+
     _NOW = datetime.now(timezone.utc)
     _BSOD1 = (_NOW - timedelta(days=20)).isoformat()
     _BSOD2 = (_NOW - timedelta(days=15)).isoformat()
     _UPDATE = (_NOW - timedelta(days=18)).isoformat()
 
-    BSOD_EVTS = json.dumps(
-        [
-            {
-                "EventId": 41,
-                "TimeCreated": _BSOD1,
-                "Message": "The system has rebooted without cleanly shutting down first.",
-            },
-            {
-                "EventId": 1001,
-                "TimeCreated": _BSOD2,
-                "Message": "Problem signature: stop code 0x0000009F",
-            },
-        ]
-    )
+    # Helper-output shape: {Id, TimeCreated, ProviderName, Level, Message}
+    BSOD_ROWS = [
+        {
+            "Id": 41,
+            "TimeCreated": _BSOD1,
+            "ProviderName": "Microsoft-Windows-Kernel-Power",
+            "Level": 1,
+            "Message": "The system has rebooted without cleanly shutting down first.",
+        },
+        {
+            "Id": 1001,
+            "TimeCreated": _BSOD2,
+            "ProviderName": "Microsoft-Windows-WER-SystemErrorReporting",
+            "Level": 2,
+            "Message": "Problem signature: stop code 0x0000009F",
+        },
+    ]
     UPDATE_EVTS = json.dumps(
         [
             {"Title": "2026-03 Cumulative Update (KB5055523)", "Date": _UPDATE, "KB": "KB5055523"},
         ]
     )
-    EMPTY = json.dumps([])
 
     def _make_mock(self, mocker, bsod=None, upd=None, svc=None, boot=None, cred=None):
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = [
-            type("R", (), {"stdout": bsod or self.BSOD_EVTS, "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": upd or self.UPDATE_EVTS, "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": svc or self.EMPTY, "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": boot or self.EMPTY, "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": cred or self.EMPTY, "returncode": 0, "stderr": ""})(),
+        """Mock the 4 event-log calls + 1 remaining Windows Update PS call."""
+        helper = mocker.patch("windesktopmgr._query_event_log_xpath")
+        helper.side_effect = [
+            bsod if bsod is not None else list(self.BSOD_ROWS),  # 1. BSOD
+            svc if svc is not None else [],  # 3. services
+            boot if boot is not None else [],  # 4. boot
+            cred if cred is not None else [],  # 5. creds
         ]
-        return m
+        ps = mocker.patch("windesktopmgr.subprocess.run")
+        ps.return_value = type("R", (), {"stdout": upd or self.UPDATE_EVTS, "returncode": 0, "stderr": ""})()
+        return helper, ps
 
     def test_returns_list(self, mocker):
         self._make_mock(mocker)
@@ -1620,67 +1779,84 @@ class TestGetSystemTimeline:
         assert timestamps == sorted(timestamps, reverse=True)
 
     def test_events_outside_window_excluded(self, mocker):
-        old_event = json.dumps(
-            [
-                {"EventId": 41, "TimeCreated": "2025-01-01T00:00:00+00:00", "Message": "Old crash"},
-            ]
-        )
+        old_event = [
+            {
+                "Id": 41,
+                "TimeCreated": "2025-01-01T00:00:00+00:00",
+                "ProviderName": "Microsoft-Windows-Kernel-Power",
+                "Level": 1,
+                "Message": "Old crash",
+            },
+        ]
         self._make_mock(mocker, bsod=old_event)
         result = wdm.get_system_timeline()
         bsods = [e for e in result if e["type"] == "bsod"]
         assert len(bsods) == 0
 
     def test_all_sources_empty_returns_empty_list(self, mocker):
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = [
-            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
-        ]
+        helper = mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
+        ps = mocker.patch("windesktopmgr.subprocess.run")
+        ps.return_value = type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})()
         result = wdm.get_system_timeline()
         assert result == []
+        # Helper called 4 times: BSOD, services, boot, cred
+        assert helper.call_count == 4
 
-    def test_ps_error_on_one_source_does_not_crash(self, mocker):
-        """If the BSOD query fails, we still get update events."""
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = [
-            type("R", (), {"stdout": "GARBAGE", "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": self.UPDATE_EVTS, "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
+    def test_helper_error_on_one_source_does_not_crash(self, mocker):
+        """If the BSOD helper call raises, we still get update events."""
+        helper = mocker.patch("windesktopmgr._query_event_log_xpath")
+        helper.side_effect = [
+            RuntimeError("boom"),  # BSOD query fails
+            [],  # services
+            [],  # boot
+            [],  # creds
         ]
+        ps = mocker.patch("windesktopmgr.subprocess.run")
+        ps.return_value = type("R", (), {"stdout": self.UPDATE_EVTS, "returncode": 0, "stderr": ""})()
         result = wdm.get_system_timeline()
         updates = [e for e in result if e["type"] == "update"]
         assert len(updates) == 1
 
-    def test_bsod_command_queries_event_ids_41_1001_6008(self, mocker):
-        m = self._make_mock(mocker)
+    # ── command-content / helper-call regression guards ──────────────────────
+
+    def test_bsod_helper_queries_event_ids_41_1001_6008(self, mocker):
+        helper, _ = self._make_mock(mocker)
         wdm.get_system_timeline()
-        cmd = m.call_args_list[0][0][0][-1]
-        assert "41" in cmd
-        assert "1001" in cmd
-        assert "6008" in cmd
+        # 1st helper call is the BSOD query on System log with ids [41, 1001, 6008]
+        args, kwargs = helper.call_args_list[0]
+        assert args[0] == "System"
+        xpath = args[1]
+        for eid in ("41", "1001", "6008"):
+            assert f"EventID={eid}" in xpath, f"missing EventID={eid} in xpath: {xpath}"
 
     def test_update_command_uses_update_session(self, mocker):
-        m = self._make_mock(mocker)
+        _, ps = self._make_mock(mocker)
         wdm.get_system_timeline()
-        cmd = m.call_args_list[1][0][0][-1]
+        cmd = ps.call_args[0][0][-1]
         assert "Microsoft.Update.Session" in cmd
 
-    def test_service_command_queries_event_id_7036(self, mocker):
-        m = self._make_mock(mocker)
+    def test_service_helper_queries_event_id_7036(self, mocker):
+        helper, _ = self._make_mock(mocker)
         wdm.get_system_timeline()
-        cmd = m.call_args_list[2][0][0][-1]
-        assert "7036" in cmd
+        args, _ = helper.call_args_list[1]
+        assert args[0] == "System"
+        assert "EventID=7036" in args[1]
 
-    def test_boot_command_queries_event_id_6013(self, mocker):
-        m = self._make_mock(mocker)
+    def test_boot_helper_queries_event_id_6013(self, mocker):
+        helper, _ = self._make_mock(mocker)
         wdm.get_system_timeline()
-        cmd = m.call_args_list[3][0][0][-1]
-        assert "6013" in cmd
+        args, _ = helper.call_args_list[2]
+        assert args[0] == "System"
+        assert "EventID=6013" in args[1]
+
+    def test_no_powershell_for_event_log_sources(self, mocker):
+        """Regression guard — event-log sources must NOT invoke PowerShell."""
+        _, ps = self._make_mock(mocker)
+        wdm.get_system_timeline()
+        # The ONLY legitimate PS call is the Microsoft.Update.Session one
+        assert ps.call_count == 1
+        cmd = ps.call_args[0][0][-1]
+        assert "Get-WinEvent" not in cmd
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1689,68 +1865,70 @@ class TestGetSystemTimeline:
 
 
 class TestGetBsodEvents:
-    SAMPLE = json.dumps(
-        [
-            {
-                "Id": 1001,
-                "TimeCreated": "2026-03-10T08:00:00",
-                "Message": "Problem signature: stop code HYPERVISOR_ERROR intelppm.sys",
-            },
-            {
-                "Id": 41,
-                "TimeCreated": "2026-03-10T07:59:00",
-                "Message": "The system has rebooted without cleanly shutting down first.",
-            },
-        ]
-    )
+    """After Batch F, get_bsod_events() goes through ``_query_event_log_xpath``."""
+
+    HELPER_ROWS = [
+        {
+            "Id": 1001,
+            "TimeCreated": "2026-03-10T08:00:00",
+            "ProviderName": "Microsoft-Windows-WER-SystemErrorReporting",
+            "Level": 2,
+            "Message": "Problem signature: stop code HYPERVISOR_ERROR intelppm.sys",
+        },
+        {
+            "Id": 41,
+            "TimeCreated": "2026-03-10T07:59:00",
+            "ProviderName": "Microsoft-Windows-Kernel-Power",
+            "Level": 1,
+            "Message": "The system has rebooted without cleanly shutting down first.",
+        },
+    ]
 
     def test_happy_path_returns_list(self, mocker):
-        _mock_run(mocker, stdout=self.SAMPLE)
+        mocker.patch("windesktopmgr._query_event_log_xpath", return_value=list(self.HELPER_ROWS))
         result = wdm.get_bsod_events()
         assert isinstance(result, list)
 
     def test_happy_path_returns_correct_count(self, mocker):
-        _mock_run(mocker, stdout=self.SAMPLE)
+        mocker.patch("windesktopmgr._query_event_log_xpath", return_value=list(self.HELPER_ROWS))
         result = wdm.get_bsod_events()
         assert len(result) == 2
 
     def test_happy_path_has_expected_fields(self, mocker):
-        _mock_run(mocker, stdout=self.SAMPLE)
+        mocker.patch("windesktopmgr._query_event_log_xpath", return_value=list(self.HELPER_ROWS))
         result = wdm.get_bsod_events()
         for item in result:
-            assert "Id" in item or "EventId" in item
+            # Legacy PS shape: EventId / TimeCreated / ProviderName / Message
+            assert "EventId" in item
             assert "TimeCreated" in item
+            assert "ProviderName" in item
             assert "Message" in item
 
-    def test_command_queries_correct_event_ids(self, mocker):
-        m = _mock_run(mocker, stdout="[]")
+    def test_helper_queries_correct_event_ids_and_log(self, mocker):
+        m = mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
         wdm.get_bsod_events()
-        ps_cmd = m.call_args[0][0][-1]
-        assert "1001" in ps_cmd
-        assert "41" in ps_cmd
-        assert "6008" in ps_cmd
-
-    def test_single_object_normalized_to_list(self, mocker):
-        single = json.dumps({"Id": 1001, "TimeCreated": "2026-03-10T08:00:00", "Message": "crash"})
-        _mock_run(mocker, stdout=single)
-        result = wdm.get_bsod_events()
-        assert isinstance(result, list)
-        assert len(result) == 1
+        args, _ = m.call_args
+        assert args[0] == "System"
+        xpath = args[1]
+        for eid in ("1001", "41", "6008"):
+            assert f"EventID={eid}" in xpath, f"missing EventID={eid} in xpath: {xpath}"
 
     def test_empty_returns_empty_list(self, mocker):
-        _mock_run(mocker, stdout="")
+        mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
         result = wdm.get_bsod_events()
         assert result == []
 
-    def test_malformed_json_returns_empty_list(self, mocker):
-        _mock_run(mocker, stdout="<bad/>")
+    def test_helper_exception_returns_empty_list(self, mocker):
+        mocker.patch("windesktopmgr._query_event_log_xpath", side_effect=RuntimeError("boom"))
         result = wdm.get_bsod_events()
         assert result == []
 
-    def test_timeout_returns_empty_list(self, mocker):
-        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=30))
-        result = wdm.get_bsod_events()
-        assert result == []
+    def test_no_powershell_invoked(self, mocker):
+        """Regression guard — get_bsod_events must not shell out to PS."""
+        mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
+        ps = mocker.patch("windesktopmgr.subprocess.run")
+        wdm.get_bsod_events()
+        assert ps.call_count == 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1851,74 +2029,112 @@ class TestGetStartupItems:
 
 
 class TestQueryEventLog:
-    SAMPLE = json.dumps(
-        [
-            {
-                "Time": "2026-03-10T08:00:00",
-                "Id": 7036,
-                "Level": "Information",
-                "Source": "Service Control Manager",
-                "Message": "The Windows Update service entered the stopped state.",
-            },
-            {
-                "Time": "2026-03-10T07:55:00",
-                "Id": 1001,
-                "Level": "Error",
-                "Source": "Microsoft-Windows-WER-SystemErrorReporting",
-                "Message": "The computer has rebooted from a bugcheck.",
-            },
-        ]
-    )
+    """After Batch F, query_event_log() goes through ``_query_event_log_xpath``."""
+
+    HELPER_ROWS = [
+        {
+            "Id": 7036,
+            "TimeCreated": "2026-03-10T08:00:00",
+            "ProviderName": "Service Control Manager",
+            "Level": 4,
+            "Message": "The Windows Update service entered the stopped state.",
+        },
+        {
+            "Id": 1001,
+            "TimeCreated": "2026-03-10T07:55:00",
+            "ProviderName": "Microsoft-Windows-WER-SystemErrorReporting",
+            "Level": 2,
+            "Message": "The computer has rebooted from a bugcheck.",
+        },
+    ]
 
     def test_happy_path_returns_list(self, mocker):
-        _mock_run(mocker, stdout=self.SAMPLE)
+        mocker.patch("windesktopmgr._query_event_log_xpath", return_value=list(self.HELPER_ROWS))
         result = wdm.query_event_log({"log": "System"})
         assert isinstance(result, list)
         assert len(result) == 2
         assert result[0]["Id"] == 7036
+        # Legacy output keys preserved: Time / Id / Level / Source / Message
+        assert "Time" in result[0]
+        assert "Source" in result[0]
+        assert result[0]["Level"] == "Information"
+        assert result[1]["Level"] == "Error"
 
-    def test_empty_output_returns_empty_list(self, mocker):
-        _mock_run(mocker, stdout="")
+    def test_empty_returns_empty_list(self, mocker):
+        mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
         result = wdm.query_event_log({"log": "System"})
         assert result == []
 
-    def test_malformed_json_returns_empty_list(self, mocker):
-        _mock_run(mocker, stdout="not json at all!!!")
+    def test_helper_exception_returns_empty_list(self, mocker):
+        mocker.patch("windesktopmgr._query_event_log_xpath", side_effect=RuntimeError("boom"))
         result = wdm.query_event_log({"log": "System"})
         assert result == []
 
-    def test_timeout_returns_empty_list(self, mocker):
-        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=30))
-        result = wdm.query_event_log({"log": "System"})
-        assert result == []
+    def test_helper_called_with_log_name(self, mocker):
+        m = mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
+        wdm.query_event_log({"log": "Application"})
+        assert m.call_args[0][0] == "Application"
 
-    def test_nonzero_returncode_handled(self, mocker):
-        _mock_run(mocker, stdout="[]", returncode=1, stderr="access denied")
-        result = wdm.query_event_log({"log": "System"})
-        assert isinstance(result, list)
+    def test_level_filter_passed_as_xpath(self, mocker):
+        """When caller passes level='Error', helper must receive xpath with Level=2."""
+        m = mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
+        wdm.query_event_log({"log": "System", "level": "Error"})
+        xpath = m.call_args[0][1]
+        assert "Level=2" in xpath
 
-    def test_command_uses_get_winevent(self, mocker):
-        m = _mock_run(mocker, stdout="[]")
+    def test_no_level_filter_uses_wildcard_xpath(self, mocker):
+        m = mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
         wdm.query_event_log({"log": "System"})
-        ps_cmd = m.call_args[0][0][-1]
-        assert "Get-WinEvent" in ps_cmd
+        xpath = m.call_args[0][1]
+        assert xpath == "*"
+
+    def test_max_events_honoured(self, mocker):
+        m = mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
+        wdm.query_event_log({"log": "System", "max": 25})
+        assert m.call_args.kwargs.get("max_events") == 25
+
+    def test_max_events_capped_at_500(self, mocker):
+        m = mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
+        wdm.query_event_log({"log": "System", "max": 9999})
+        assert m.call_args.kwargs.get("max_events") == 500
 
     def test_input_sanitization(self, mocker):
-        m = _mock_run(mocker, stdout="[]")
+        """Log name is still sanitised with re.sub(r'[^\\w\\s\\-/]', '', log)."""
+        m = mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
         wdm.query_event_log({"log": '"; rm -rf /'})
-        ps_cmd = m.call_args[0][0][-1]
-        # Semicolons and quotes should be stripped by re.sub(r"[^\w\s\-/]", "", log)
-        assert '";' not in ps_cmd
-        assert "rm -rf" in ps_cmd  # letters/spaces survive, but dangerous chars don't
+        safe = m.call_args[0][0]
+        assert '";' not in safe
+        assert "rm -rf" in safe  # letters/spaces survive, but dangerous chars don't
 
-    def test_single_object_normalized(self, mocker):
-        single = json.dumps(
-            {"Time": "2026-03-10T08:00:00", "Id": 7036, "Level": "Information", "Source": "SCM", "Message": "test"}
-        )
-        _mock_run(mocker, stdout=single)
-        result = wdm.query_event_log({"log": "System"})
-        assert isinstance(result, list)
+    def test_search_filter_applied_to_result(self, mocker):
+        mocker.patch("windesktopmgr._query_event_log_xpath", return_value=list(self.HELPER_ROWS))
+        result = wdm.query_event_log({"log": "System", "search": "bugcheck"})
         assert len(result) == 1
+        assert result[0]["Id"] == 1001
+
+    def test_message_truncated_to_300_chars(self, mocker):
+        long_msg = "x" * 500
+        mocker.patch(
+            "windesktopmgr._query_event_log_xpath",
+            return_value=[
+                {
+                    "Id": 1,
+                    "TimeCreated": "t",
+                    "ProviderName": "p",
+                    "Level": 4,
+                    "Message": long_msg,
+                }
+            ],
+        )
+        result = wdm.query_event_log({"log": "System"})
+        assert len(result[0]["Message"]) == 300
+
+    def test_no_powershell_invoked(self, mocker):
+        """Regression guard — query_event_log must not shell out to PS."""
+        mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
+        ps = mocker.patch("windesktopmgr.subprocess.run")
+        wdm.query_event_log({"log": "System"})
+        assert ps.call_count == 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2259,33 +2475,33 @@ class TestGetThermsFansCommand:
         assert "Win32_Fan" in cmd
 
 
-class TestGetSystemTimelineCredCommand:
-    """Command-content tests for credential events query (5th subprocess call)."""
-
-    EMPTY = json.dumps([])
+class TestGetSystemTimelineCredHelperCall:
+    """
+    Helper-call tests for credential events query (4th ``_query_event_log_xpath``
+    call in the timeline). After Batch F this goes through the win32evtlog helper,
+    not PowerShell.
+    """
 
     def _make_mock(self, mocker):
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = [
-            type("R", (), {"stdout": self.EMPTY, "returncode": 0, "stderr": ""})(),  # bsod
-            type("R", (), {"stdout": self.EMPTY, "returncode": 0, "stderr": ""})(),  # updates
-            type("R", (), {"stdout": self.EMPTY, "returncode": 0, "stderr": ""})(),  # services
-            type("R", (), {"stdout": self.EMPTY, "returncode": 0, "stderr": ""})(),  # boot
-            type("R", (), {"stdout": self.EMPTY, "returncode": 0, "stderr": ""})(),  # cred events
-        ]
-        return m
+        helper = mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
+        ps = mocker.patch("windesktopmgr.subprocess.run")
+        ps.return_value = type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})()
+        return helper
 
-    def test_cred_command_queries_event_id_4625(self, mocker):
-        m = self._make_mock(mocker)
+    def test_cred_helper_queries_event_ids_4625_and_4648(self, mocker):
+        helper = self._make_mock(mocker)
         wdm.get_system_timeline()
-        cmd = m.call_args_list[4][0][0][-1]
-        assert "4625" in cmd
+        # helper calls: [0] BSOD [1] services [2] boot [3] creds
+        args, _ = helper.call_args_list[3]
+        xpath = args[1]
+        assert "EventID=4625" in xpath
+        assert "EventID=4648" in xpath
 
-    def test_cred_command_queries_security_log(self, mocker):
-        m = self._make_mock(mocker)
+    def test_cred_helper_queries_security_log(self, mocker):
+        helper = self._make_mock(mocker)
         wdm.get_system_timeline()
-        cmd = m.call_args_list[4][0][0][-1]
-        assert "Security" in cmd
+        args, _ = helper.call_args_list[3]
+        assert args[0] == "Security"
 
 
 class TestCheckDellBiosCommandContent:
