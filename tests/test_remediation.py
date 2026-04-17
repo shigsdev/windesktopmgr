@@ -200,7 +200,11 @@ class TestRemActionFunctions:
         assert "reboot" in r["message"].lower()
 
     def test_reset_winsock_fail(self, mocker):
-        _mock_ps(mocker, stdout="", returncode=1, stderr="Error")
+        m = _mock_ps(mocker)
+        m.side_effect = [
+            type("R", (), {"stdout": "", "returncode": 1, "stderr": "Error"})(),
+            type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})(),
+        ]
         r = remediation._rem_reset_winsock()
         assert r["ok"] is False
 
@@ -228,12 +232,16 @@ class TestRemActionFunctions:
         assert r["ok"] is False
 
     def test_repair_image_ok(self, mocker):
-        _mock_ps(mocker, stdout="DISM_DONE SFC_DONE OK:True", returncode=0)
+        _mock_ps(mocker, stdout="", returncode=0)
         r = remediation._rem_repair_image()
         assert r["ok"] is True
 
     def test_repair_image_warnings(self, mocker):
-        _mock_ps(mocker, stdout="DISM_DONE SFC_DONE OK:False", returncode=1)
+        m = _mock_ps(mocker)
+        m.side_effect = [
+            type("R", (), {"stdout": "", "returncode": 1, "stderr": "DISM issue"})(),
+            type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})(),
+        ]
         r = remediation._rem_repair_image()
         assert r["ok"] is False
         assert "warnings" in r["message"].lower()
@@ -351,17 +359,19 @@ class TestRemActionFunctions:
             r = fn()
             assert r["ok"] is False, f"{name} did not return ok=False on TimeoutExpired"
 
-    def test_flush_dns_command_content(self, mocker):
+    def test_flush_dns_calls_ipconfig_directly(self, mocker):
         m = _mock_ps(mocker, stdout="", returncode=0)
         remediation._rem_flush_dns()
-        cmd = m.call_args[0][0][-1]
-        assert "flushdns" in cmd
+        cmd = m.call_args[0][0]
+        assert cmd[0] == "ipconfig"
+        assert "/flushdns" in cmd
 
-    def test_reboot_command_has_delay(self, mocker):
+    def test_reboot_calls_shutdown_directly(self, mocker):
         m = _mock_ps(mocker, stdout="", returncode=0)
         remediation._rem_reboot_system()
-        cmd = m.call_args[0][0][-1]
-        assert "/t 10" in cmd
+        cmd = m.call_args[0][0]
+        assert cmd[0] == "shutdown"
+        assert "/t" in cmd and "10" in cmd
 
 
 # ── NLQ integration ──────────────────────────────────────────────────────────

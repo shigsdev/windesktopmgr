@@ -257,17 +257,20 @@ Stdlib + `pywin32` (already installed from wmi in Batch B). No new deps.
 
 **Effort actual:** ~½ day (matches estimate). **Risk:** realized low. Also added dashboard/summary verification to `post_restart_check.py` and tray startup retry (3 attempts with 10s delay) to prevent grey-icon-on-restart issue. Full suite 1334/1334 green at 85% coverage.
 
-### Batch D — drop-the-PS-wrapper remediation actions (6 sites)
+### Batch D — drop-the-PS-wrapper remediation actions (6 sites) ✅ SHIPPED 2026-04-17
+
 No Python libs at all — just call the tool directly instead of wrapping it in PS.
 
-| Sites | Tools |
-|---|---|
-| #51, #52, #53 | `ipconfig`, `netsh` (winsock, tcpip) |
-| #55 | `dism.exe` + `sfc.exe` |
-| #60 | `shutdown.exe` |
-| #40 | `dcu-cli.exe` |
+| Sites | Migration | Status |
+|---|---|---|
+| #51 | `_rem_flush_dns` → `subprocess.run(["ipconfig", "/flushdns"])` direct | ✅ |
+| #52 | `_rem_reset_winsock` → 2× `subprocess.run(["netsh", ...])` direct | ✅ |
+| #53 | `_rem_reset_tcpip` → 3× `subprocess.run(["netsh", ...])` direct | ✅ |
+| #55 | `_rem_repair_image` → `subprocess.run(["dism.exe", ...])` + `["sfc", "/scannow"]` | ✅ |
+| #60 | `_rem_reboot_system` → `subprocess.run(["shutdown", ...])` direct | ✅ |
+| #40 | `check_dell_bios_update` DCU method → `os.path.exists` + direct `[dcu-cli.exe, /scan]` + Python file I/O + regex | ✅ |
 
-**Effort:** ~2 hours. **Risk:** near-zero (behaviour unchanged, just one fewer process in the pipe).
+**Effort actual:** ~1.5 hours (under estimate). **Risk:** realized zero — output contracts identical, all 1341 tests green at 85% coverage.
 
 ### Batch E — HomeNet polling loop (4 sites)
 Called every 60 s so the migration pays back quickly in aggregate CPU.
@@ -291,6 +294,44 @@ Requires a real prototype first. `pywin32 win32com.client.Dispatch` can talk to 
 - #18 `Get-PhysicalDisk \| Get-StorageReliabilityCounter` — Storage Management API has no Python binding. SMART is vendor-specific.
 - #31, #33 thermal providers — require LibreHardwareMonitor or vendor WMI namespaces (Dell `root\DCIM`).
 - #16 `Get-ScheduledTask` — possible via `win32com.Schedule.Service` but brittle; see Batch G reasoning.
+
+---
+
+## Time savings analysis
+
+Each `powershell.exe` invocation incurs a ~300 ms cold-start overhead (process creation + CLR init) before any actual work runs. Calling `.exe` tools directly or using Python APIs eliminates this overhead entirely.
+
+### Per-batch savings
+
+| Batch | Sites eliminated | HOT | WARM | COLD | Per-refresh saving | Per-call aggregate | Status |
+|-------|:---:|:---:|:---:|:---:|---:|---:|---|
+| **A** (psutil) | 7 | 2 | 3 | 2 | **~600 ms** | 2.1 s | ✅ Shipped |
+| **B** (wmi) | 9 | 1 | 8 | 0 | **~300 ms** | 2.7 s | ✅ Shipped |
+| **C** (winreg + pywin32) | 6 | 0 | 1 | 5 | 0 ms | 1.8 s | ✅ Shipped |
+| **D** (direct exe) | 6 | 0 | 0 | 6 | 0 ms | 1.8 s | ✅ Shipped |
+| **E** (HomeNet) | 4 | 4 | 0 | 0 | **~1.2 s / 60 s** | 1.2 s | Pending |
+| **F** (Get-WinEvent) | 7 | 0 | 7 | 0 | 0 ms | 2.1 s | Deferred |
+| **G** (COM WU) | 3 | 0 | 2 | 1 | 0 ms | 0.9 s | Deferred |
+| **H** (Keep) | — | — | — | — | — | — | Permanent |
+
+**Hot path** = called on every dashboard refresh / selftest / polling loop.
+**Per-refresh saving** = time shaved off every `/api/dashboard/summary` or selftest cycle.
+**Per-call aggregate** = total cold-start saved if all functions in the batch fire once.
+
+### Cumulative shipped savings (Batches A–D)
+
+| Metric | Value |
+|--------|-------|
+| PS subprocess calls eliminated | **28** |
+| Hot-path calls eliminated | 3 (2 from A, 1 from B) |
+| Dashboard refresh speedup | **~900 ms** (cumulative) |
+| Remaining PS calls (prod code) | ~41 |
+| Original PS calls (baseline) | 74 |
+| Migration progress | **38%** of sites, **45%** of REPLACE-class |
+
+### Biggest remaining win
+
+**Batch E** (HomeNet polling loop, 4 HOT sites) runs every 60 seconds. Each cycle spawns 4 PowerShell processes (~1.2 s of pure startup overhead). Over 24 hours that's **1,728 unnecessary `powershell.exe` invocations** and **~8.6 minutes of wasted CPU time** per day.
 
 ---
 

@@ -23,6 +23,7 @@ Each PS test group covers:
 """
 
 import json
+import os
 import subprocess
 import types
 from datetime import datetime, timedelta, timezone
@@ -2027,28 +2028,49 @@ class TestWorkerTaskDoneSafety:
 
 
 class TestCheckDellBiosUpdate:
-    """Tests for check_dell_bios_update with WMI (service tag) + subprocess calls mocked."""
+    """Tests for check_dell_bios_update — DCU method calls exe directly (Batch D),
+    catalog and WU methods still use PowerShell."""
 
-    BIOS_OBJ = _wmi_obj(SerialNumber="9T46D14")
+    # Sample XML that matches the BIOS version regex in the DCU parser
+    DCU_XML_TEMPLATE = '<update type="BIOS" name="BIOS Update" version="{ver}"/>'
 
-    def _mock_deps(self, mocker, side_effects, service_tag="9T46D14"):
-        """Mock wmi.WMI() for service tag + subprocess.run for DCU/catalog/WU."""
-        bios_obj = _wmi_obj(SerialNumber=service_tag)
-        _mock_wmi(mocker, {"Win32_BIOS": [bios_obj]})
+    def _mock_deps(self, mocker, tmp_path, *, dcu_xml=None, ps_side_effects=None, service_tag="9T46D14"):
+        """Mock WMI, filesystem, and subprocess for check_dell_bios_update.
+
+        Args:
+            dcu_xml: XML content for DCU scan output file. None = DCU not installed.
+            ps_side_effects: list of (stdout, rc) for catalog/WU PowerShell calls.
+        """
+        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
+        _mock_wmi(mocker, {"Win32_BIOS": [_wmi_obj(SerialNumber=service_tag)]})
+
+        _real_exists = os.path.exists
+        run_responses = []
+
+        if dcu_xml is not None:
+            # Pre-create the scan output file with known content
+            scan_file = tmp_path / "dcu_scan_00000000.xml"
+            scan_file.write_text(dcu_xml, encoding="utf-8")
+            mocker.patch("tempfile.gettempdir", return_value=str(tmp_path))
+            mocker.patch("uuid.uuid4", return_value=type("U", (), {"hex": "00000000"})())
+
+            mocker.patch("os.path.exists", side_effect=lambda p: True if "CommandUpdate" in p else _real_exists(p))
+
+            # DCU exe subprocess call (direct, not PS)
+            run_responses.append(type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})())
+        else:
+            mocker.patch("os.path.exists", side_effect=lambda p: False if "CommandUpdate" in p else _real_exists(p))
+
+        for out, rc in ps_side_effects or []:
+            run_responses.append(type("R", (), {"stdout": out, "returncode": rc, "stderr": ""})())
+
         m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = [type("R", (), {"stdout": out, "returncode": rc, "stderr": ""})() for out, rc in side_effects]
+        if run_responses:
+            m.side_effect = run_responses
         return m
 
     def test_returns_required_keys(self, mocker, tmp_path):
-        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
-        self._mock_deps(
-            mocker,
-            [
-                ("DCU_NOT_FOUND", 0),  # method 1
-                ("", 0),  # method 2 catalog
-                ("NO_BIOS_IN_WU", 0),  # method 3 WU
-            ],
-        )
+        self._mock_deps(mocker, tmp_path, ps_side_effects=[("", 0), ("NO_BIOS_IN_WU", 0)])
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         for key in (
             "checked_at",
@@ -2062,33 +2084,30 @@ class TestCheckDellBiosUpdate:
             assert key in result
 
     def test_dcu_found_sets_version(self, mocker, tmp_path):
-        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
-        dcu_out = json.dumps({"Version": "2.23.0", "Source": "dcu_cli", "Notes": ""})
-        self._mock_deps(
-            mocker,
-            [
-                (dcu_out, 0),  # method 1 DCU
-            ],
-        )
+        xml = self.DCU_XML_TEMPLATE.format(ver="2.23.0")
+        self._mock_deps(mocker, tmp_path, dcu_xml=xml)
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["latest_version"] == "2.23.0"
         assert result["source"] == "dell_command_update"
         assert result["update_available"] is True
 
     def test_dcu_same_version_no_update(self, mocker, tmp_path):
-        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
-        dcu_out = json.dumps({"Version": "2.22.0", "Source": "dcu_cli", "Notes": ""})
-        self._mock_deps(
-            mocker,
-            [
-                (dcu_out, 0),
-            ],
-        )
+        xml = self.DCU_XML_TEMPLATE.format(ver="2.22.0")
+        self._mock_deps(mocker, tmp_path, dcu_xml=xml)
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["update_available"] is False
 
+    def test_dcu_no_powershell(self, mocker, tmp_path):
+        """Regression: Batch D — DCU method calls exe directly, not via PS."""
+        xml = self.DCU_XML_TEMPLATE.format(ver="2.23.0")
+        m = self._mock_deps(mocker, tmp_path, dcu_xml=xml)
+        wdm.check_dell_bios_update("XPS8960", "2.22.0")
+        # First call should be the direct DCU exe, not powershell
+        cmd = m.call_args_list[0][0][0]
+        assert cmd[0].endswith("dcu-cli.exe")
+        assert "powershell" not in cmd
+
     def test_catalog_fallback(self, mocker, tmp_path):
-        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
         catalog_out = json.dumps(
             {
                 "Version": "2.23.0",
@@ -2097,72 +2116,32 @@ class TestCheckDellBiosUpdate:
                 "Path": "https://downloads.dell.com/bios.exe",
             }
         )
-        self._mock_deps(
-            mocker,
-            [
-                ("DCU_NOT_FOUND", 0),  # method 1 no DCU
-                (catalog_out, 0),  # method 2 catalog
-            ],
-        )
+        self._mock_deps(mocker, tmp_path, ps_side_effects=[(catalog_out, 0)])
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["source"] == "dell_catalog"
         assert result["latest_version"] == "2.23.0"
 
     def test_wu_fallback(self, mocker, tmp_path):
-        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
         wu_out = json.dumps({"Title": "Dell BIOS Update 2.24.0", "Version": "2.24.0"})
-        self._mock_deps(
-            mocker,
-            [
-                ("DCU_NOT_FOUND", 0),  # no DCU
-                ("", 0),  # no catalog
-                (wu_out, 0),  # WU found
-            ],
-        )
+        self._mock_deps(mocker, tmp_path, ps_side_effects=[("", 0), (wu_out, 0)])
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["source"] == "windows_update"
         assert result["update_available"] is True
 
     def test_all_methods_fail_returns_unknown(self, mocker, tmp_path):
-        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
-        self._mock_deps(
-            mocker,
-            [
-                ("DCU_NOT_FOUND", 0),
-                ("", 0),
-                ("NO_BIOS_IN_WU", 0),
-            ],
-        )
+        self._mock_deps(mocker, tmp_path, ps_side_effects=[("", 0), ("NO_BIOS_IN_WU", 0)])
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["source"] == "unknown"
         assert result["latest_version"] is None
 
     def test_service_tag_populated(self, mocker, tmp_path):
-        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
-        self._mock_deps(
-            mocker,
-            [
-                ("DCU_NOT_FOUND", 0),
-                ("", 0),
-                ("NO_BIOS_IN_WU", 0),
-            ],
-            service_tag="ABC1234",
-        )
+        self._mock_deps(mocker, tmp_path, ps_side_effects=[("", 0), ("NO_BIOS_IN_WU", 0)], service_tag="ABC1234")
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["service_tag"] == "ABC1234"
         assert "ABC1234" in result["download_url"]
 
     def test_service_tag_empty_fallback_url(self, mocker, tmp_path):
-        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
-        self._mock_deps(
-            mocker,
-            [
-                ("DCU_NOT_FOUND", 0),
-                ("", 0),
-                ("NO_BIOS_IN_WU", 0),
-            ],
-            service_tag="",
-        )
+        self._mock_deps(mocker, tmp_path, ps_side_effects=[("", 0), ("NO_BIOS_IN_WU", 0)], service_tag="")
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert "dell.com" in result["download_url"]
 
@@ -2188,8 +2167,11 @@ class TestCheckDellBiosUpdate:
         assert result["source"] == "dell_catalog"
 
     def test_subprocess_timeout_handled(self, mocker, tmp_path):
+        """All subprocess calls (DCU + catalog + WU) time out — returns unknown."""
+        _real_exists = os.path.exists
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
         _mock_wmi(mocker, {"Win32_BIOS": [_wmi_obj(SerialNumber="9T46D14")]})
+        mocker.patch("os.path.exists", side_effect=lambda p: False if "CommandUpdate" in p else _real_exists(p))
         m = mocker.patch("windesktopmgr.subprocess.run")
         m.side_effect = subprocess.TimeoutExpired("powershell", 60)
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
@@ -2307,43 +2289,58 @@ class TestGetSystemTimelineCredCommand:
 
 
 class TestCheckDellBiosCommandContent:
-    """Command-content tests for the 3 subprocess calls in check_dell_bios_update
-    (service tag now comes from wmi.WMI(), not subprocess)."""
+    """Command-content tests for check_dell_bios_update.
+    DCU method now calls exe directly (Batch D); catalog/WU still use PS."""
 
-    def _mock_run(self, mocker, tmp_path):
+    def _mock_no_dcu(self, mocker, tmp_path):
+        """Mock deps with DCU not installed — only catalog + WU PS calls."""
+        _real_exists = os.path.exists
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
         _mock_wmi(mocker, {"Win32_BIOS": [_wmi_obj(SerialNumber="9T46D14")]})
+        mocker.patch("os.path.exists", side_effect=lambda p: False if "CommandUpdate" in p else _real_exists(p))
         m = mocker.patch("windesktopmgr.subprocess.run")
         m.side_effect = [
-            type("R", (), {"stdout": "DCU_NOT_FOUND", "returncode": 0, "stderr": ""})(),
             type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})(),
             type("R", (), {"stdout": "NO_BIOS_IN_WU", "returncode": 0, "stderr": ""})(),
         ]
         return m
 
     def test_service_tag_from_wmi(self, mocker, tmp_path):
-        """Service tag now comes from wmi.WMI().Win32_BIOS(), not subprocess."""
-        self._mock_run(mocker, tmp_path)
+        """Service tag comes from wmi.WMI().Win32_BIOS(), not subprocess."""
+        self._mock_no_dcu(mocker, tmp_path)
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["service_tag"] == "9T46D14"
 
-    def test_dcu_command_references_command_update(self, mocker, tmp_path):
-        m = self._mock_run(mocker, tmp_path)
+    def test_catalog_command_references_dell_downloads(self, mocker, tmp_path):
+        m = self._mock_no_dcu(mocker, tmp_path)
         wdm.check_dell_bios_update("XPS8960", "2.22.0")
         cmd = m.call_args_list[0][0][0][-1]
-        assert "dcu-cli" in cmd.lower() or "CommandUpdate" in cmd
-
-    def test_catalog_command_references_dell_downloads(self, mocker, tmp_path):
-        m = self._mock_run(mocker, tmp_path)
-        wdm.check_dell_bios_update("XPS8960", "2.22.0")
-        cmd = m.call_args_list[1][0][0][-1]
         assert "dell.com" in cmd.lower() or "CatalogPC" in cmd
 
     def test_wu_command_searches_pending_updates(self, mocker, tmp_path):
-        m = self._mock_run(mocker, tmp_path)
+        m = self._mock_no_dcu(mocker, tmp_path)
         wdm.check_dell_bios_update("XPS8960", "2.22.0")
-        cmd = m.call_args_list[2][0][0][-1]
+        cmd = m.call_args_list[1][0][0][-1]
         assert "IsInstalled" in cmd or "BIOS" in cmd or "Firmware" in cmd
+
+    def test_dcu_calls_exe_not_powershell(self, mocker, tmp_path):
+        """Regression: Batch D — DCU uses direct exe, no PS wrapper."""
+        _real_exists = os.path.exists
+        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
+        _mock_wmi(mocker, {"Win32_BIOS": [_wmi_obj(SerialNumber="9T46D14")]})
+        # DCU exe "exists"
+        mocker.patch("os.path.exists", side_effect=lambda p: True if "CommandUpdate" in p else _real_exists(p))
+        scan_file = tmp_path / "dcu_scan_00000000.xml"
+        scan_file.write_text('<update type="BIOS" version="2.23.0"/>', encoding="utf-8")
+        mocker.patch("tempfile.gettempdir", return_value=str(tmp_path))
+        mocker.patch("uuid.uuid4", return_value=type("U", (), {"hex": "00000000"})())
+        m = mocker.patch("windesktopmgr.subprocess.run")
+        m.return_value = type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})()
+        wdm.check_dell_bios_update("XPS8960", "2.22.0")
+        cmd = m.call_args_list[0][0][0]
+        assert cmd[0].endswith("dcu-cli.exe")
+        assert "/scan" in cmd
+        assert "powershell" not in cmd
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2610,14 +2607,14 @@ class TestLookupProcessViaFileinfo:
 class TestRemediationCommands:
     """Command-content and fallback tests for all 10 _rem_* functions."""
 
-    # ── flush_dns ─────────────────────────────────────────────────────────────
+    # ── flush_dns (direct exe — no PS wrapper) ─────────────────────────────────
 
-    def test_flush_dns_command_uses_ipconfig(self, mocker):
+    def test_flush_dns_calls_ipconfig_directly(self, mocker):
         m = _mock_rem_run(mocker, stdout="", returncode=0)
         remediation._rem_flush_dns()
-        cmd = m.call_args[0][0][-1]
-        assert "ipconfig" in cmd
-        assert "flushdns" in cmd
+        cmd = m.call_args[0][0]
+        assert cmd[0] == "ipconfig"
+        assert "/flushdns" in cmd
 
     def test_flush_dns_ok_on_success(self, mocker):
         _mock_rem_run(mocker, stdout="", returncode=0)
@@ -2628,35 +2625,57 @@ class TestRemediationCommands:
         assert remediation._rem_flush_dns()["ok"] is False
 
     def test_flush_dns_timeout(self, mocker):
-        _mock_rem_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 15))
+        _mock_rem_run(mocker, side_effect=subprocess.TimeoutExpired("ipconfig", 15))
         assert remediation._rem_flush_dns()["ok"] is False
 
-    # ── reset_winsock ─────────────────────────────────────────────────────────
+    def test_flush_dns_no_powershell(self, mocker):
+        """Regression: Batch D removed the PS wrapper — ipconfig runs directly."""
+        m = _mock_rem_run(mocker, stdout="", returncode=0)
+        remediation._rem_flush_dns()
+        cmd = m.call_args[0][0]
+        assert "powershell" not in cmd
 
-    def test_reset_winsock_command_uses_netsh(self, mocker):
+    # ── reset_winsock (direct exe — two netsh calls) ─────────────────────────
+
+    def test_reset_winsock_calls_netsh_directly(self, mocker):
         m = _mock_rem_run(mocker, stdout="", returncode=0)
         remediation._rem_reset_winsock()
-        cmd = m.call_args[0][0][-1]
-        assert "netsh" in cmd
-        assert "winsock" in cmd
-        assert "reset" in cmd
+        assert m.call_count == 2
+        cmd1 = m.call_args_list[0][0][0]
+        cmd2 = m.call_args_list[1][0][0]
+        assert cmd1[0] == "netsh" and "winsock" in cmd1
+        assert cmd2[0] == "netsh" and "ip" in cmd2
 
     def test_reset_winsock_timeout(self, mocker):
-        _mock_rem_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 30))
+        _mock_rem_run(mocker, side_effect=subprocess.TimeoutExpired("netsh", 30))
         assert remediation._rem_reset_winsock()["ok"] is False
 
-    # ── reset_tcpip ───────────────────────────────────────────────────────────
+    def test_reset_winsock_no_powershell(self, mocker):
+        """Regression: Batch D removed the PS wrapper — netsh runs directly."""
+        m = _mock_rem_run(mocker, stdout="", returncode=0)
+        remediation._rem_reset_winsock()
+        for call in m.call_args_list:
+            assert "powershell" not in call[0][0]
 
-    def test_reset_tcpip_command_uses_netsh_tcp(self, mocker):
+    # ── reset_tcpip (direct exe — three netsh calls) ─────────────────────────
+
+    def test_reset_tcpip_calls_netsh_directly(self, mocker):
         m = _mock_rem_run(mocker, stdout="", returncode=0)
         remediation._rem_reset_tcpip()
-        cmd = m.call_args[0][0][-1]
-        assert "netsh" in cmd
-        assert "tcp" in cmd
+        assert m.call_count == 3
+        for call in m.call_args_list:
+            assert call[0][0][0] == "netsh"
 
     def test_reset_tcpip_ok_on_success(self, mocker):
         _mock_rem_run(mocker, stdout="", returncode=0)
         assert remediation._rem_reset_tcpip()["ok"] is True
+
+    def test_reset_tcpip_no_powershell(self, mocker):
+        """Regression: Batch D removed the PS wrapper."""
+        m = _mock_rem_run(mocker, stdout="", returncode=0)
+        remediation._rem_reset_tcpip()
+        for call in m.call_args_list:
+            assert "powershell" not in call[0][0]
 
     # ── clear_temp ────────────────────────────────────────────────────────────
 
@@ -2676,22 +2695,45 @@ class TestRemediationCommands:
         _mock_rem_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 120))
         assert remediation._rem_clear_temp()["ok"] is False
 
-    # ── repair_image ──────────────────────────────────────────────────────────
+    # ── repair_image (direct exe — dism.exe + sfc) ─────────────────────────────
 
-    def test_repair_image_command_uses_dism_and_sfc(self, mocker):
-        m = _mock_rem_run(mocker, stdout="DISM_DONE SFC_DONE OK:True", returncode=0)
+    def test_repair_image_calls_dism_and_sfc_directly(self, mocker):
+        m = _mock_rem_run(mocker, stdout="", returncode=0)
         remediation._rem_repair_image()
-        cmd = m.call_args[0][0][-1]
-        assert "dism" in cmd.lower()
-        assert "sfc" in cmd.lower()
+        assert m.call_count == 2
+        cmd1 = m.call_args_list[0][0][0]
+        cmd2 = m.call_args_list[1][0][0]
+        assert cmd1[0] == "dism.exe"
+        assert "/RestoreHealth" in cmd1
+        assert cmd2[0] == "sfc"
+        assert "/scannow" in cmd2
 
     def test_repair_image_ok_true_on_success(self, mocker):
-        _mock_rem_run(mocker, stdout="DISM_DONE SFC_DONE OK:True", returncode=0)
+        _mock_rem_run(mocker, stdout="", returncode=0)
         assert remediation._rem_repair_image()["ok"] is True
 
-    def test_repair_image_ok_false_on_failure(self, mocker):
-        _mock_rem_run(mocker, stdout="DISM_DONE SFC_DONE OK:False", returncode=0)
+    def test_repair_image_ok_false_on_dism_failure(self, mocker):
+        m = _mock_rem_run(mocker)
+        m.side_effect = [
+            type("R", (), {"stdout": "", "returncode": 1, "stderr": "DISM failed"})(),
+            type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})(),
+        ]
         assert remediation._rem_repair_image()["ok"] is False
+
+    def test_repair_image_ok_false_on_sfc_failure(self, mocker):
+        m = _mock_rem_run(mocker)
+        m.side_effect = [
+            type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})(),
+            type("R", (), {"stdout": "", "returncode": 1, "stderr": "SFC failed"})(),
+        ]
+        assert remediation._rem_repair_image()["ok"] is False
+
+    def test_repair_image_no_powershell(self, mocker):
+        """Regression: Batch D removed the PS wrapper."""
+        m = _mock_rem_run(mocker, stdout="", returncode=0)
+        remediation._rem_repair_image()
+        for call in m.call_args_list:
+            assert "powershell" not in call[0][0]
 
     # ── clear_wu_cache (pywin32 — win32serviceutil + shutil) ─────────────────
 
@@ -2781,14 +2823,15 @@ class TestRemediationCommands:
         _mock_rem_run(mocker, stdout="OK", returncode=0)
         assert remediation._rem_clear_icon_cache()["ok"] is True
 
-    # ── reboot_system ─────────────────────────────────────────────────────────
+    # ── reboot_system (direct exe — shutdown.exe) ──────────────────────────────
 
-    def test_reboot_command_uses_shutdown(self, mocker):
+    def test_reboot_calls_shutdown_directly(self, mocker):
         m = _mock_rem_run(mocker, stdout="", returncode=0)
         remediation._rem_reboot_system()
-        cmd = m.call_args[0][0][-1]
-        assert "shutdown" in cmd
+        cmd = m.call_args[0][0]
+        assert cmd[0] == "shutdown"
         assert "/r" in cmd
+        assert "/t" in cmd
 
     def test_reboot_ok_on_success(self, mocker):
         _mock_rem_run(mocker, stdout="", returncode=0)
@@ -2797,6 +2840,12 @@ class TestRemediationCommands:
     def test_reboot_fail_on_nonzero(self, mocker):
         _mock_rem_run(mocker, stdout="", returncode=1, stderr="permission denied")
         assert remediation._rem_reboot_system()["ok"] is False
+
+    def test_reboot_no_powershell(self, mocker):
+        """Regression: Batch D removed the PS wrapper."""
+        m = _mock_rem_run(mocker, stdout="", returncode=0)
+        remediation._rem_reboot_system()
+        assert "powershell" not in m.call_args[0][0]
 
 
 # ══════════════════════════════════════════════════════════════════════════════

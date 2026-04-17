@@ -5954,51 +5954,47 @@ def check_dell_bios_update(board_product: str, current_version: str) -> dict:
 
     # ── Method 1: Dell Command Update CLI ─────────────────────────────────────
     # DCU is pre-installed on Dell XPS systems at a predictable path
-    ps_dcu = r"""
-$dcuPaths = @(
-    "C:\Program Files\Dell\CommandUpdate\dcu-cli.exe",
-    "C:\Program Files (x86)\Dell\CommandUpdate\dcu-cli.exe",
-    "C:\Program Files\Dell\Dell Command Update\dcu-cli.exe"
-)
-$dcu = $null
-foreach ($p in $dcuPaths) {
-    if (Test-Path $p) { $dcu = $p; break }
-}
-if ($dcu) {
-    # Scan for available updates (BIOS type)
-    $tmp = [System.IO.Path]::GetTempPath() + "dcu_scan_" + [System.Guid]::NewGuid().ToString("N") + ".xml"
-    & $dcu /scan -outputLog="$tmp" -silent 2>$null
-    if (Test-Path $tmp) {
-        $xml = Get-Content $tmp -Raw -ErrorAction SilentlyContinue
-        # Find BIOS updates in the output
-        $biosMatch = [regex]::Match($xml, 'type="BIOS"[^/]*/.*?version="([0-9.]+)"', 'Singleline,IgnoreCase')
-        if (-not $biosMatch.Success) {
-            $biosMatch = [regex]::Match($xml, 'BIOS.*?version="([0-9.]+)"', 'Singleline,IgnoreCase')
-        }
-        if ($biosMatch.Success) {
-            [PSCustomObject]@{ Version=$biosMatch.Groups[1].Value; Source="dcu_cli"; Notes="" } | ConvertTo-Json
-        }
-        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
-    }
-} else {
-    Write-Output "DCU_NOT_FOUND"
-}
-"""
-    try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps_dcu], capture_output=True, text=True, timeout=60
-        )
-        out = r.stdout.strip()
-        if out and out != "DCU_NOT_FOUND" and out.startswith("{"):
-            data = json.loads(out)
-            ver = data.get("Version", "")
-            if ver:
-                result["latest_version"] = ver
-                result["source"] = "dell_command_update"
-                result["update_available"] = _ver_gt(ver, current_version)
-                print(f"[BIOS] DCU found version: {ver}")
-    except Exception as e:
-        result["error"] = f"DCU: {e}"
+    dcu_paths = [
+        r"C:\Program Files\Dell\CommandUpdate\dcu-cli.exe",
+        r"C:\Program Files (x86)\Dell\CommandUpdate\dcu-cli.exe",
+        r"C:\Program Files\Dell\Dell Command Update\dcu-cli.exe",
+    ]
+    dcu_exe = next((p for p in dcu_paths if os.path.exists(p)), None)
+    if dcu_exe:
+        try:
+            import tempfile
+            import uuid
+
+            tmp = os.path.join(tempfile.gettempdir(), f"dcu_scan_{uuid.uuid4().hex}.xml")
+            subprocess.run(
+                [dcu_exe, "/scan", f"-outputLog={tmp}", "-silent"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if os.path.exists(tmp):
+                try:
+                    with open(tmp, encoding="utf-8", errors="replace") as f:
+                        xml_content = f.read()
+                    # Find BIOS updates in the output
+                    m = re.search(r'type="BIOS"[^/]*/.*?version="([0-9.]+)"', xml_content, re.DOTALL | re.IGNORECASE)
+                    if not m:
+                        m = re.search(r'BIOS.*?version="([0-9.]+)"', xml_content, re.DOTALL | re.IGNORECASE)
+                    if m:
+                        ver = m.group(1)
+                        result["latest_version"] = ver
+                        result["source"] = "dell_command_update"
+                        result["update_available"] = _ver_gt(ver, current_version)
+                        print(f"[BIOS] DCU found version: {ver}")
+                finally:
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+        except Exception as e:
+            result["error"] = f"DCU: {e}"
+    else:
+        print("[BIOS] DCU not found")
 
     # ── Method 2: Dell public catalog XML ──────────────────────────────────────
     # Dell publishes a complete catalog at a stable URL — parse it with PowerShell

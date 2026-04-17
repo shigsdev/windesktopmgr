@@ -157,10 +157,9 @@ def _log_remediation(action_id: str, ok: bool, message: str, details: str = "") 
 
 
 def _rem_flush_dns() -> dict:
-    ps = "ipconfig /flushdns"
     try:
         r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps],
+            ["ipconfig", "/flushdns"],
             capture_output=True,
             text=True,
             timeout=15,
@@ -172,34 +171,42 @@ def _rem_flush_dns() -> dict:
 
 
 def _rem_reset_winsock() -> dict:
-    ps = "netsh winsock reset; netsh int ip reset"
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps],
+        r1 = subprocess.run(
+            ["netsh", "winsock", "reset"],
             capture_output=True,
             text=True,
             timeout=30,
         )
-        ok = r.returncode == 0
-        return {"ok": ok, "message": "Winsock and IP stack reset. Reboot required." if ok else r.stderr.strip()}
+        r2 = subprocess.run(
+            ["netsh", "int", "ip", "reset"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        ok = r1.returncode == 0 and r2.returncode == 0
+        if ok:
+            return {"ok": True, "message": "Winsock and IP stack reset. Reboot required."}
+        errs = (r1.stderr.strip() + " " + r2.stderr.strip()).strip()
+        return {"ok": False, "message": errs or "One or more netsh commands failed."}
     except Exception as e:
         return {"ok": False, "message": str(e)}
 
 
 def _rem_reset_tcpip() -> dict:
-    ps = "netsh int tcp reset; netsh int ipv4 reset; netsh int ipv6 reset"
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        ok = r.returncode == 0
-        return {
-            "ok": ok,
-            "message": "TCP/IP stack reset. Reboot required." if ok else r.stderr.strip(),
-        }
+        failed = []
+        for args in (
+            ["netsh", "int", "tcp", "reset"],
+            ["netsh", "int", "ipv4", "reset"],
+            ["netsh", "int", "ipv6", "reset"],
+        ):
+            r = subprocess.run(args, capture_output=True, text=True, timeout=30)
+            if r.returncode != 0:
+                failed.append(r.stderr.strip())
+        if not failed:
+            return {"ok": True, "message": "TCP/IP stack reset. Reboot required."}
+        return {"ok": False, "message": " ".join(failed) or "One or more netsh commands failed."}
     except Exception as e:
         return {"ok": False, "message": str(e)}
 
@@ -235,20 +242,20 @@ Write-Output "Removed:$removed Errors:$errors"
 
 
 def _rem_repair_image() -> dict:
-    ps = r"""
-$dismOut = & dism /Online /Cleanup-Image /RestoreHealth 2>&1
-$sfcOut  = & sfc /scannow 2>&1
-$ok = ($LASTEXITCODE -eq 0)
-Write-Output "DISM_DONE SFC_DONE OK:$ok"
-"""
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps],
+        r_dism = subprocess.run(
+            ["dism.exe", "/Online", "/Cleanup-Image", "/RestoreHealth"],
             capture_output=True,
             text=True,
             timeout=1800,
         )
-        ok = "OK:True" in r.stdout
+        r_sfc = subprocess.run(
+            ["sfc", "/scannow"],
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+        ok = r_dism.returncode == 0 and r_sfc.returncode == 0
         return {
             "ok": ok,
             "message": "Windows image repair completed." if ok else "Repair finished with warnings — check Event Log.",
@@ -355,10 +362,9 @@ try {
 
 
 def _rem_reboot_system() -> dict:
-    ps = 'shutdown /r /t 10 /c "WinDesktopMgr: Scheduled reboot"'
     try:
         r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps],
+            ["shutdown", "/r", "/t", "10", "/c", "WinDesktopMgr: Scheduled reboot"],
             capture_output=True,
             text=True,
             timeout=10,
