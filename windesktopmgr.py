@@ -92,6 +92,12 @@ def _headless_subprocess_run(*args, **kwargs):
     if HEADLESS_MODE and os.name == "nt" and "creationflags" not in kwargs:
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
+    # Opt-in: callers that legitimately expect timeouts (e.g. nbtstat on a
+    # wireless device that's asleep) can pass quiet_timeout=True to downgrade
+    # the TIMEOUT log from ERROR to DEBUG — keeps the selftest log-error
+    # gate meaningful instead of noisy.
+    quiet_timeout = kwargs.pop("quiet_timeout", False)
+
     cmd = args[0] if args else kwargs.get("args", "")
     cmd_summary = _summarize_cmd(cmd)
     timeout = kwargs.get("timeout", "-")
@@ -101,7 +107,8 @@ def _headless_subprocess_run(*args, **kwargs):
         result = _original_subprocess_run(*args, **kwargs)
     except subprocess.TimeoutExpired:
         elapsed_ms = int((time.time() - start) * 1000)
-        _ps_log.error(
+        log_fn = _ps_log.debug if quiet_timeout else _ps_log.error
+        log_fn(
             "TIMEOUT after=%dms limit=%ss caller=%s cmd=%s",
             elapsed_ms,
             timeout,
