@@ -176,8 +176,14 @@ def detect_new_update(state: dict | None = None) -> dict | None:
 
 def run_pytest() -> dict:
     """
-    Run the full pytest suite with ``--tb=short -q``. Returns a dict with
+    Run the full pytest suite with ``--tb=short``. Returns a dict with
     ``ok``, ``passed``, ``failed``, ``elapsed_s``, and ``excerpt``.
+
+    DO NOT pass ``-q`` here: ``pyproject.toml``'s ``addopts`` already
+    includes ``-q``, and pytest's quiet flag stacks — passing it twice
+    promotes to "extra-quiet" which **suppresses the pass/fail summary
+    line entirely**, leaving the parser nothing to match. Caught by the
+    first live run on 2026-04-17.
 
     Excerpt = the failure-relevant tail (pass/fail summary line +
     surrounding context). Encoded UTF-8 with ``errors='replace'`` so that
@@ -187,7 +193,7 @@ def run_pytest() -> dict:
     start = time.time()
     try:
         r = subprocess.run(
-            [sys.executable, "-m", "pytest", "tests/", "-q", "--tb=short"],
+            [sys.executable, "-m", "pytest", "tests/", "--tb=short"],
             cwd=str(REPO_ROOT),
             capture_output=True,
             text=True,

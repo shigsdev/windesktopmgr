@@ -268,6 +268,20 @@ class TestRunPytest:
         result = puc.run_pytest()
         assert result["ok"] is False
 
+    def test_command_does_not_pass_quiet_flag(self, mocker):
+        """
+        Regression guard for the 2026-04-17 live-run bug: ``pyproject.toml``
+        addopts already includes ``-q``. Passing it again promotes pytest
+        to extra-quiet and suppresses the pass/fail summary line that
+        ``_parse_pytest_counts`` needs to read. Never pass ``-q`` here.
+        """
+        m = mocker.patch("post_update_check.subprocess.run")
+        m.return_value = type("R", (), {"stdout": "1 passed in 1s", "stderr": "", "returncode": 0})()
+        puc.run_pytest()
+        cmd = m.call_args[0][0]
+        assert "-q" not in cmd, f"run_pytest must not pass -q (already in addopts): {cmd}"
+        assert "--quiet" not in cmd
+
 
 class TestRunVerify:
     def test_happy_path(self, mocker):
