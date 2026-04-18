@@ -7683,6 +7683,31 @@ def bios_cache_clear_route():
     return jsonify({"ok": True})
 
 
+@app.route("/api/bios/audit/history")
+def bios_audit_history_route():
+    """Return the BIOS audit trail (baselines + change events)."""
+    import bios_audit
+
+    limit_arg = request.args.get("limit", type=int)
+    history = bios_audit.load_history()
+    if limit_arg is not None and limit_arg > 0:
+        history = history[-limit_arg:]
+    return jsonify({"ok": True, "history": history})
+
+
+@app.route("/api/bios/audit/snapshot")
+def bios_audit_snapshot_route():
+    """Return the latest captured snapshot, or take one on demand if empty."""
+    import bios_audit
+
+    snap = bios_audit.latest_snapshot()
+    if snap is None:
+        # No history yet — take a fresh snapshot so the UI has something
+        # to show on first load. Does not persist unless caller forces it.
+        snap = bios_audit.take_snapshot()
+    return jsonify({"ok": True, "snapshot": snap})
+
+
 @app.route("/api/warranty/data")
 def warranty_data():
     """Collect Intel/Dell warranty readiness data."""
@@ -8375,6 +8400,32 @@ def dashboard_summary():
         )
     elif bios.get("update", {}).get("confirmed_current"):
         pass  # BIOS confirmed current — no concern needed
+
+    # BIOS audit-trail concern: any logged change in the last 24h
+    try:
+        import bios_audit
+
+        bios_changes = bios_audit.recent_changes()
+        if bios_changes:
+            latest = bios_changes[-1]
+            fields = [c["field"] for c in latest.get("changes", [])[:3]]
+            fields_label = ", ".join(fields) if fields else "(details)"
+            extra = len(latest.get("changes", [])) - 3
+            if extra > 0:
+                fields_label += f" (+{extra} more)"
+            concerns.append(
+                {
+                    "level": "info",
+                    "tab": "bios",
+                    "icon": "📋",
+                    "title": f"BIOS/firmware setting change detected ({len(bios_changes)} in 24h)",
+                    "detail": f"Fields: {fields_label}",
+                    "action": "View BIOS audit trail",
+                    "action_fn": "switchTab('bios')",
+                }
+            )
+    except Exception:  # noqa: BLE001
+        pass  # audit trail is best-effort — never break dashboard
 
     # Disk usage
     disk = results.get("disk", {})

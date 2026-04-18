@@ -2986,8 +2986,42 @@ async function loadBios() {
     const d = await r.json();
     renderBios(d);
     fetchSummary("bios", d, "summary-bios");
+    loadBiosAudit();  // refresh the audit trail alongside the status panel
   } catch(e) {
     console.error("Failed to load bios:", e);
+  }
+}
+
+async function loadBiosAudit() {
+  const content = document.getElementById("bios-audit-content");
+  if (!content) return;
+  try {
+    const r = await fetch("/api/bios/audit/history?limit=20");
+    const d = await r.json();
+    const esc = s => String(s == null ? "—" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+    const history = (d.history || []).slice().reverse(); // newest first
+    if (!history.length) {
+      content.innerHTML = '<div style="color:var(--muted)">No snapshots yet — the baseline will be captured on the next polling cycle (up to 60 s).</div>';
+      return;
+    }
+    let html = '<div style="display:flex;flex-direction:column;gap:10px">';
+    for (const entry of history) {
+      const ts = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : "(no timestamp)";
+      if (entry.kind === "change") {
+        const rows = (entry.changes || []).map(c =>
+          `<div style="font-family:'JetBrains Mono',monospace;font-size:12px;padding:3px 0"><span style="color:var(--cyan)">${esc(c.field)}</span>: <span style="color:var(--muted);text-decoration:line-through">${esc(c.old)}</span> → <strong style="color:var(--orange)">${esc(c.new)}</strong></div>`
+        ).join("");
+        html += `<div style="background:var(--surface);border-left:3px solid var(--orange);padding:10px 14px;border-radius:6px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-weight:600;color:var(--orange)">⚠ CHANGE</span><span style="font-size:11px;color:var(--muted)">${esc(ts)}</span></div>${rows}</div>`;
+      } else if (entry.kind === "baseline") {
+        const note = entry.note || "initial snapshot captured";
+        html += `<div style="background:var(--surface);border-left:3px solid var(--cyan);padding:10px 14px;border-radius:6px"><div style="display:flex;justify-content:space-between;align-items:center"><span style="font-weight:600;color:var(--cyan)">◆ BASELINE</span><span style="font-size:11px;color:var(--muted)">${esc(ts)}</span></div><div style="font-size:12px;color:var(--muted);margin-top:4px">${esc(note)}</div></div>`;
+      }
+    }
+    html += '</div>';
+    content.innerHTML = html;
+  } catch (e) {
+    console.error("Failed to load BIOS audit trail:", e);
+    content.innerHTML = '<div style="color:var(--red)">Failed to load audit trail.</div>';
   }
 }
 
@@ -5098,6 +5132,21 @@ function renderSystemInfo(d) {
              style="display:inline-block;background:#ff704322;border:1px solid var(--orange);color:var(--orange);padding:6px 14px;border-radius:6px;text-decoration:none;font-size:12px">
             🔄 Windows Update
           </a>
+        </div>
+      </div>
+
+      <!-- BIOS AUDIT TRAIL PANEL -->
+      <div id="bios-audit-panel" style="margin-top:20px">
+        <div style="padding:20px;background:var(--card);border:1px solid var(--border);border-radius:10px;border-left:4px solid var(--cyan)">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+            <div style="font-weight:700;font-size:15px;color:var(--cyan)">📋 BIOS Audit Trail</div>
+            <button class="btn-action" onclick="loadBiosAudit()" style="padding:5px 12px;font-size:11px">↺ Refresh</button>
+          </div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:12px">
+            Tracks changes to BIOS version, Secure Boot, TPM, boot mode, and VBS state.
+            Snapshots every 15 minutes via the tray polling loop.
+          </div>
+          <div id="bios-audit-content" style="font-size:13px">Loading…</div>
         </div>
       </div>
 

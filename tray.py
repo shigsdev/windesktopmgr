@@ -231,6 +231,14 @@ def polling_loop(monitor: HealthMonitor, stop_event: threading.Event):
             time.sleep(1)
         if not stop_event.is_set():
             monitor.update()
+            # BIOS audit snapshot — throttled internally to one run per
+            # SNAPSHOT_INTERVAL (15 min), so this is cheap on most polls.
+            try:
+                import bios_audit
+
+                bios_audit.check_and_log_bios_changes()
+            except Exception as e:  # noqa: BLE001
+                print(f"[Tray] BIOS audit check failed: {e}")
 
 
 # ── Flask server thread ──────────────────────────────────────────────────────
