@@ -325,6 +325,8 @@
         <div class="route-chip" id="rt-memory"><span class="method">GET</span>/api/memory/data</div>
         <div class="route-chip" id="rt-bios"><span class="method">GET</span>/api/bios/status</div>
         <div class="route-chip"><span class="method">POST</span>/api/bios/cache/clear</div>
+        <div class="route-chip" id="rt-bios-audit"><span class="method">GET</span>/api/bios/audit/history</div>
+        <div class="route-chip"><span class="method">GET</span>/api/bios/audit/snapshot</div>
         <div class="route-chip" id="rt-creds"><span class="method">GET</span>/api/credentials/health</div>
         <div class="route-chip"><span class="method">POST</span>/api/credentials/resume-onedrive</div>
         <div class="route-chip"><span class="method">POST</span>/api/credentials/resume-brokers</div>
@@ -453,6 +455,7 @@
         <div class="cache-chip" id="ch-services">services_item_cache.json</div>
         <div class="cache-chip" id="ch-process">process_cache.json</div>
         <div class="cache-chip" id="ch-bios">bios_cache.json</div>
+        <div class="cache-chip" id="ch-bios-audit">bios_audit_history.json</div>
         <div class="cache-chip" id="ch-homenet" style="border-color:#448aff44;color:var(--blue)">homenet_inventory.json</div>
       </div>
     </div>
@@ -653,6 +656,10 @@
           <div class="fs-chip" style="border-color:#a855f733">
             <div class="fs-title" style="color:var(--purple)">nlq.py</div>
             <div class="fs-sub">Natural Language Query Blueprint · ~416 lines · Flask Blueprint · 19 Claude tools</div>
+          </div>
+          <div class="fs-chip">
+            <div class="fs-title">bios_audit.py</div>
+            <div class="fs-sub">BIOS &amp; firmware change tracking · ~310 lines · 15-min snapshot throttle · append-only JSON history</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">applogging.py</div>
