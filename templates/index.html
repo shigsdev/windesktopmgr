@@ -1145,6 +1145,7 @@ async function startScan() {
     document.getElementById("progress-wrap").classList.add("visible");
     setProgress(0, "Initializing…");
     await fetch("/api/scan/start", { method:"POST" });
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     pollTimer = setInterval(pollStatus, 800);
   } catch(e) {
     console.error("Scan failed:", e);

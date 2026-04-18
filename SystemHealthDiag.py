@@ -19,6 +19,14 @@ import subprocess
 import sys
 import time
 import winreg
+
+# Force UTF-8 on stdout/stderr so the ✓/✗ glyphs don't crash a cp1252 pipe
+# (e.g. when launched by the scheduled task or redirected to a file).
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, OSError):
+    pass
 from datetime import datetime, timedelta
 from email import encoders
 from email.mime.base import MIMEBase

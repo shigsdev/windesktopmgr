@@ -24,3 +24,11 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [pre-push]
+
+      - id: lint-setinterval
+        name: lint-setinterval (no unguarded timer leaks in index.html)
+        entry: python scripts/lint_setinterval.py
+        language: system
+        pass_filenames: false
+        files: 'templates/index\.html$'
+        stages: [pre-commit]

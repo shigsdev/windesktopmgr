@@ -18,6 +18,10 @@ New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 $Timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
 $LogFile   = Join-Path $LogDir "SystemHealthDiag_$Timestamp.log"
 
+# Force UTF-8 stdout so the script's ✓/✗ glyphs don't crash cp1252 pipes
+$env:PYTHONIOENCODING = "utf-8"
+$env:PYTHONUTF8 = "1"
+
 # Run the diagnostic, capturing stdout + stderr to the log file
 & $PyExe $Script 2>&1 | Tee-Object -FilePath $LogFile
 

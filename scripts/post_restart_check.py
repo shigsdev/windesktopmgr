@@ -140,6 +140,108 @@ def check_dashboard(host: str) -> bool:
     return True
 
 
+IDLE_RATE_THRESHOLD = 2.0  # req/s to /api/scan/status while scan is idle
+IDLE_SAMPLE_WINDOW_S = 3.0  # how long to sample
+CPU_THRESHOLD_PCT = 25.0  # sustained CPU% on the tray pythonw
+THREAD_THRESHOLD = 60  # thread count on the tray pythonw
+
+
+def check_idle_poll_rate(host: str) -> bool:
+    """Catch runaway /api/scan/status pollers (the 2026-04-18 CPU incident).
+
+    Samples the log endpoint over a short window and flags if poll rate
+    exceeds the threshold while no scan is active. A healthy idle tray
+    should see 0 req/s on this path.
+    """
+    print(f"\n{BOLD}Checking idle poll rate (/api/scan/status){RESET}")
+    from datetime import datetime, timedelta
+
+    scan = _get_json(f"{host}/api/scan/status", timeout=5)
+    if scan and scan.get("status") not in ("idle", "complete", None):
+        print(f"  {DIM}skipped — scan in progress ({scan.get('status')}){RESET}")
+        return True
+
+    t0 = datetime.now()
+    time.sleep(IDLE_SAMPLE_WINDOW_S)
+    body = _get_json(f"{host}/api/logs?level=INFO&lines=1000", timeout=10)
+    if body is None:
+        print(f"  {YELLOW}skipped — could not fetch logs{RESET}")
+        return True
+    cutoff = t0 - timedelta(seconds=0.2)
+    entries = body.get("entries", [])
+    hits = 0
+    for e in entries:
+        msg = e.get("message", "") or ""
+        if "GET /api/scan/status" not in msg:
+            continue
+        try:
+            ts = datetime.fromisoformat(e.get("timestamp", "2000-01-01"))
+        except ValueError:
+            continue
+        if ts >= cutoff:
+            hits += 1
+    rate = hits / IDLE_SAMPLE_WINDOW_S
+    if rate > IDLE_RATE_THRESHOLD:
+        print(
+            f"  {RED}FAILED{RESET}: {rate:.1f} req/s (threshold {IDLE_RATE_THRESHOLD} r/s, {hits} hits in {IDLE_SAMPLE_WINDOW_S}s)"
+        )
+        print(f"    {DIM}possible poll-accumulator leak — check setInterval call sites in templates/index.html{RESET}")
+        return False
+    print(f"  {GREEN}{rate:.1f} req/s{RESET} ({hits} hits in {IDLE_SAMPLE_WINDOW_S}s)")
+    return True
+
+
+def check_tray_resource_budget(host: str) -> bool:
+    """Catch CPU / thread leaks in the running tray (pythonw on port 5000)."""
+    print(f"\n{BOLD}Checking tray CPU + thread budget{RESET}")
+    try:
+        import psutil
+    except ImportError:
+        print(f"  {DIM}skipped — psutil not installed{RESET}")
+        return True
+
+    port = 5000
+    try:
+        from urllib.parse import urlparse
+
+        port = urlparse(host).port or 5000
+    except Exception:
+        pass
+
+    tray = None
+    for conn in psutil.net_connections(kind="tcp"):
+        if conn.laddr and conn.laddr.port == port and conn.status == "LISTEN" and conn.pid:
+            try:
+                tray = psutil.Process(conn.pid)
+                break
+            except psutil.NoSuchProcess:
+                continue
+    if tray is None:
+        print(f"  {YELLOW}skipped — no listener found on port {port}{RESET}")
+        return True
+
+    try:
+        cpu = tray.cpu_percent(interval=2.0)
+        threads = tray.num_threads()
+    except psutil.NoSuchProcess:
+        print(f"  {YELLOW}skipped — tray process exited during sample{RESET}")
+        return True
+
+    ok = True
+    cpu_color = GREEN if cpu <= CPU_THRESHOLD_PCT else RED
+    thr_color = GREEN if threads <= THREAD_THRESHOLD else RED
+    print(
+        f"  CPU: {cpu_color}{cpu:.1f}%{RESET} (budget {CPU_THRESHOLD_PCT}%)  threads: {thr_color}{threads}{RESET} (budget {THREAD_THRESHOLD})"
+    )
+    if cpu > CPU_THRESHOLD_PCT:
+        print(f"    {DIM}sustained CPU on idle tray — likely a poll/refresh leak{RESET}")
+        ok = False
+    if threads > THREAD_THRESHOLD:
+        print(f"    {DIM}excessive Flask worker threads — check for request floods{RESET}")
+        ok = False
+    return ok
+
+
 def check_logs(host: str, since: str | None = None) -> bool:
     """Fetch recent ERROR and WARNING log entries and report them.
 
@@ -211,12 +313,24 @@ def main() -> int:
     # Post-selftest dashboard summary check — verifies the tray icon path works
     dash_ok = check_dashboard(args.host)
 
+    # Idle poll-rate check — catches runaway pollers (2026-04-18 incident)
+    rate_ok = check_idle_poll_rate(args.host)
+
+    # Tray CPU + thread budget — catches resource leaks in the running process
+    budget_ok = check_tray_resource_budget(args.host)
+
     # Post-selftest log check — only entries since restart
     logs_ok = check_logs(args.host, since=restart_ts)
     selftest_ok = body.get("ok", False)
 
     if selftest_ok and not dash_ok:
         print(f"\n  {YELLOW}{BOLD}Selftest passed but dashboard/summary failed{RESET}")
+        return 1
+    if selftest_ok and not rate_ok:
+        print(f"\n  {YELLOW}{BOLD}Selftest passed but idle poll rate exceeded threshold{RESET}")
+        return 1
+    if selftest_ok and not budget_ok:
+        print(f"\n  {YELLOW}{BOLD}Selftest passed but tray exceeded CPU/thread budget{RESET}")
         return 1
     if selftest_ok and not logs_ok:
         print(f"\n  {YELLOW}{BOLD}Selftest passed but log errors detected{RESET}")
