@@ -177,8 +177,12 @@ def detect_new_update(state: dict | None = None) -> dict | None:
 def run_pytest() -> dict:
     """
     Run the full pytest suite with ``--tb=short -q``. Returns a dict with
-    ``ok``, ``passed``, ``failed``, ``elapsed_s``, and ``excerpt`` (last ~40
-    lines of output — enough for a failure email but safe on context).
+    ``ok``, ``passed``, ``failed``, ``elapsed_s``, and ``excerpt``.
+
+    Excerpt = the failure-relevant tail (pass/fail summary line +
+    surrounding context). Encoded UTF-8 with ``errors='replace'`` so that
+    a single non-cp1252 glyph (e.g. a ``—`` in a test name) can never
+    truncate the capture and hide the pass/fail counts.
     """
     start = time.time()
     try:
@@ -187,10 +191,12 @@ def run_pytest() -> dict:
             cwd=str(REPO_ROOT),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=PYTEST_TIMEOUT_S,
         )
         out = (r.stdout or "") + (r.stderr or "")
-        excerpt = "\n".join(out.splitlines()[-40:])
+        excerpt = _extract_pytest_excerpt(out)
         passed, failed = _parse_pytest_counts(out)
         return {
             "ok": r.returncode == 0,
@@ -234,6 +240,28 @@ def _parse_pytest_counts(output: str) -> tuple[int, int]:
     return passed, failed
 
 
+def _extract_pytest_excerpt(output: str, max_lines: int = 40) -> str:
+    """
+    Return the failure-relevant tail of pytest output.
+
+    Pytest's pass/fail summary ("1415 passed, 38 deselected in 147.94s") is the
+    single most diagnostic line. When the coverage plugin is enabled (our repo
+    config), that summary ends up *after* a ~180-line coverage report — so
+    naively taking the last 40 lines pushes it off the top. Grab the summary
+    line explicitly and pair it with the last ``max_lines`` so the email still
+    shows whatever tracebacks / FAILED markers pytest emitted at the end.
+    """
+    import re
+
+    lines = output.splitlines()
+    tail = lines[-max_lines:]
+    m = re.search(r"^=+ \d+ (?:passed|failed|error).*$", output, flags=re.MULTILINE)
+    summary_line = m.group(0) if m else ""
+    if summary_line and summary_line not in tail:
+        return summary_line + "\n" + "\n".join(tail)
+    return "\n".join(tail)
+
+
 def run_verify() -> dict:
     """
     Run ``python dev.py verify`` — restart the running tray instance and
@@ -247,6 +275,8 @@ def run_verify() -> dict:
             cwd=str(REPO_ROOT),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=VERIFY_TIMEOUT_S,
         )
         out = (r.stdout or "") + (r.stderr or "")
@@ -454,7 +484,7 @@ def format_report(
         f"Hotfix detected: {hfid} (installed {installed})",
         f"Verdict:         {verdict}",
         "",
-        "── pytest ──────────────────────────────────────────",
+        "--- pytest -----------------------------------------",
     ]
     if pytest_result:
         lines.append(
@@ -470,7 +500,7 @@ def format_report(
     else:
         lines.append("  (not run)")
     lines.append("")
-    lines.append("── dev.py verify ───────────────────────────────────")
+    lines.append("--- dev.py verify ----------------------------------")
     if verify_result:
         lines.append(f"  {'OK' if verify_ok else 'FAILED'} ({verify_result.get('elapsed_s', '?')}s)")
         if not verify_ok:
@@ -495,15 +525,41 @@ def format_report(
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+def _safe_print(text: str) -> None:
+    """
+    Print ``text`` to stdout, tolerating the Windows console's default cp1252
+    codec. If any character is outside cp1252, retry the print after encoding
+    to ASCII with ``errors='replace'`` so we get a readable-ish fallback
+    instead of an exception.
+
+    Preserves the orchestrator invariant: report printing is best-effort, but
+    state persistence and email send must never be gated on it succeeding.
+    """
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        try:
+            print(text.encode("ascii", errors="replace").decode("ascii"))
+        except Exception:
+            # If even the fallback fails, just give up on stdout — the report
+            # already went to email + state file.
+            pass
+
+
 def run_post_update_check(*, force: bool = False) -> dict:
     """
     End-to-end flow:
 
     1. Detect a new Windows Update via ``Win32_QuickFixEngineering``.
     2. Run the full pytest suite + ``dev.py verify``.
-    3. Email the user a pass/fail report.
-    4. Prepend a backlog entry if there are regressions.
-    5. Persist state so the next check starts from the newly-tested hotfix.
+    3. Persist state (so a mid-run crash doesn't cause the same hotfix to
+       loop on every subsequent boot).
+    4. Email the user a pass/fail report.
+    5. Prepend a backlog entry if there are regressions.
+    6. Print the report to stdout (best-effort — cp1252 console tolerated).
+
+    The order matters: state + email must complete before the fragile
+    stdout print so a Windows console encoding hiccup can't lose either.
 
     When ``force=True`` we skip step 1's "is this new?" guard (useful for
     manual reruns — e.g. ``dev.py post-update-check --force``).
@@ -515,29 +571,28 @@ def run_post_update_check(*, force: bool = False) -> dict:
 
     if not hotfix:
         subject, body = format_report(None, None, None)
-        print(body)
+        _safe_print(body)
         return {"ran": False, "reason": "no new update", "subject": subject}
 
     print(f"[post_update_check] new hotfix detected: {hotfix['HotFixID']}")
     print("[post_update_check] running pytest ...")
     pytest_result = run_pytest()
-    print(f"[post_update_check] pytest: {pytest_result}")
+    print(
+        f"[post_update_check] pytest: ok={pytest_result['ok']} "
+        f"passed={pytest_result['passed']} failed={pytest_result['failed']} "
+        f"elapsed={pytest_result['elapsed_s']}s"
+    )
 
     print("[post_update_check] running dev.py verify ...")
     verify_result = run_verify()
-    print(f"[post_update_check] verify: {verify_result}")
+    print(f"[post_update_check] verify: ok={verify_result['ok']} elapsed={verify_result['elapsed_s']}s")
 
     overall_ok = pytest_result.get("ok") and verify_result.get("ok")
     subject, body = format_report(hotfix, pytest_result, verify_result)
-    print(body)
 
-    email_sent = send_email(subject, body)
-    backlog_entry_added = False
-    if not overall_ok:
-        backlog_entry_added = prepend_backlog_entry(hotfix, pytest_result, verify_result)
-
-    # Record that we've now processed this hotfix — future runs won't re-run
-    # the suite for the same KB.
+    # Persist state FIRST — if anything downstream crashes (e.g. SMTP timeout
+    # or cp1252 print error), the next run still skips this hotfix instead
+    # of looping forever.
     state.update(
         {
             "last_hotfix_id": hotfix["HotFixID"],
@@ -547,6 +602,16 @@ def run_post_update_check(*, force: bool = False) -> dict:
         }
     )
     save_state(state)
+
+    # Email next. This is the "outbound" signal the user cares about, so it
+    # must run before the fragile stdout print.
+    email_sent = send_email(subject, body)
+    backlog_entry_added = False
+    if not overall_ok:
+        backlog_entry_added = prepend_backlog_entry(hotfix, pytest_result, verify_result)
+
+    # Stdout print last — best-effort only, never blocks the outbound signal.
+    _safe_print(body)
 
     return {
         "ran": True,

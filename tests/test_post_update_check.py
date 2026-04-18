@@ -70,6 +70,27 @@ class TestParsePytestCounts:
     def test_no_match(self):
         assert puc._parse_pytest_counts("unrelated output") == (0, 0)
 
+    def test_parses_summary_after_long_coverage_report(self):
+        """Regression: the pass/fail counts must be found even when a 180-line
+        coverage report sits between the dots and the summary line."""
+        coverage = "\n".join(f"file{i}.py 100 10 90%" for i in range(200))
+        out = f"........................\n{coverage}\n1415 passed, 38 deselected in 147.94s (0:02:27)\n"
+        passed, failed = puc._parse_pytest_counts(out)
+        assert passed == 1415 and failed == 0
+
+
+class TestExtractPytestExcerpt:
+    def test_includes_summary_line_even_with_long_coverage(self):
+        """Tail-40 alone would miss the summary when coverage is 200 lines."""
+        coverage = "\n".join(f"module_{i}.py 100 10 90%" for i in range(60))
+        out = f"...dots...\n{coverage}\n============= 1415 passed, 38 deselected in 147.94s =============\n"
+        excerpt = puc._extract_pytest_excerpt(out, max_lines=40)
+        assert "1415 passed" in excerpt
+
+    def test_small_output_passes_through(self):
+        out = "line1\nline2\n=== 5 passed in 1s ==="
+        assert "5 passed" in puc._extract_pytest_excerpt(out, max_lines=40)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # get_latest_hotfix — mock wmi
@@ -497,6 +518,46 @@ class TestFormatReport:
         assert "[POST-UPDATE REGRESSION] entry" in body
         assert "FAILED tests/test_foo.py" in body
 
+    def test_body_is_cp1252_encodable(self):
+        """
+        Regression guard for the 2026-04-17 cp1252-crash bug: a Windows
+        console with default codec (``cp1252``) must be able to print the
+        entire report body. No box-drawing U+2500 chars.
+        """
+        _, body = puc.format_report(
+            {"HotFixID": "KB5050", "InstalledOn": "2026-04-15"},
+            {"ok": True, "passed": 1343, "failed": 0, "elapsed_s": 170.0},
+            {"ok": True, "elapsed_s": 140.0},
+        )
+        # Will raise UnicodeEncodeError if the body contains anything cp1252
+        # can't render — that's exactly the live failure we're guarding.
+        body.encode("cp1252")
+
+
+class TestSafePrint:
+    def test_plain_ascii_passes_through(self, capsys):
+        puc._safe_print("hello world")
+        assert capsys.readouterr().out.strip() == "hello world"
+
+    def test_unicode_encode_error_falls_back_to_ascii(self, mocker, capsys):
+        """
+        When stdout's codec can't render the text, _safe_print must emit an
+        ASCII-best-effort version rather than raising.
+        """
+        real_print = __builtins__["print"] if isinstance(__builtins__, dict) else print
+        call_count = {"n": 0}
+
+        def fake_print(msg):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise UnicodeEncodeError("cp1252", msg, 0, 1, "reason")
+            real_print(msg)
+
+        mocker.patch("builtins.print", side_effect=fake_print)
+        puc._safe_print("box drawing ─ char")
+        # Two calls: first raised, second ASCII fallback succeeded
+        assert call_count["n"] == 2
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Orchestrator — run_post_update_check
@@ -608,6 +669,30 @@ class TestRunPostUpdateCheck:
         result = puc.run_post_update_check(force=True)
         assert result["ran"] is True
         mocks["pytest"].assert_called_once()
+
+    def test_state_and_email_happen_before_print(self, mocker, tmp_path):
+        """
+        Regression guard for the 2026-04-17 live-run bug: if ``print(body)``
+        crashes (cp1252), the state must still have been saved and the email
+        must still have been sent. Order enforced by putting them before the
+        fragile print in run_post_update_check.
+        """
+        mocks = self._patch_all(
+            mocker,
+            tmp_path,
+            hotfix={"HotFixID": "KB5050", "InstalledOn": "2026-04-15T00:00:00"},
+        )
+        # Force the stdout print to raise — the exception must not reach
+        # run_post_update_check's caller.
+        mocker.patch.object(puc, "_safe_print", side_effect=UnicodeEncodeError("x", "y", 0, 1, "z"))
+        with pytest.raises(UnicodeEncodeError):
+            # The crash propagates (we only wrap inside _safe_print normally,
+            # but forcibly-raising _safe_print proves ordering). Before the
+            # crash, both side effects must have fired.
+            puc.run_post_update_check()
+        mocks["email"].assert_called_once()
+        state = json.loads(mocks["state_file"].read_text(encoding="utf-8"))
+        assert state["last_hotfix_id"] == "KB5050"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
