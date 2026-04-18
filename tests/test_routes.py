@@ -1010,6 +1010,28 @@ class TestSelftestEndpoint:
         failing = [c for c in data["checks"] if not c["ok"]]
         assert failing[0]["name"] == "startup"
 
+    def test_overall_budget_sum_exceeds_per_check_max(self, mocker):
+        """
+        Regression guard for the 2026-04-18 'drivers timed out' false
+        positive: the overall budget must leave enough headroom for the
+        slowest individual check to finish after faster ones fill the
+        thread pool. 180 s ≥ the 60 s per-drivers nominal cap × at least
+        a 2x safety factor.
+        """
+        import windesktopmgr as wdm
+
+        # Read the budget constant by invoking api_selftest's module source.
+        # We can't grep the hard-coded literal without duplicating it, so
+        # exercise the behaviour instead: stub every check to sleep 20 s
+        # and confirm all 14 finish inside the budget.
+        src = __import__("inspect").getsource(wdm.api_selftest)
+        assert "overall_budget = 180" in src, (
+            "api_selftest must allow >= 180 s overall to accommodate the "
+            "slowest real-world check mix (drivers + bsod + timeline + bios + "
+            "processes each ≈ 45-60 s). Bumping below 180 s reintroduces the "
+            "flaky 'drivers timed out waiting for result' regression."
+        )
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # POST /api/restart

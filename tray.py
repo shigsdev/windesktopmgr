@@ -113,7 +113,12 @@ class HealthMonitor:
         """Fetch dashboard summary from the Flask API."""
         try:
             req = urllib.request.Request(API_URL, headers={"Accept": "application/json"})
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            # 60 s (was 30) — /api/dashboard/summary fans out to 14 slow data
+            # collectors in parallel; 30 s was too tight on a loaded machine,
+            # leaving the tray stuck in "Starting..." forever when the first
+            # poll timed out. Raised on 2026-04-18 after observing 36 s
+            # response times in the wild.
+            with urllib.request.urlopen(req, timeout=60) as resp:
                 return json.loads(resp.read())
         except Exception as e:
             print(f"[Tray] Poll failed: {e}")
@@ -122,12 +127,17 @@ class HealthMonitor:
     def update(self):
         """Poll the API, update icon color, and fire notifications for new concerns."""
         data = self.poll()
+        # Record the poll attempt regardless of outcome so the tooltip exits
+        # the "Starting..." state on the first failed cycle instead of
+        # pretending we've never tried. The tooltip helper can still
+        # distinguish "never polled" (last_check is None) from "poll failed"
+        # (last_check set but current_status == 'unknown').
+        self.last_check = time.strftime("%H:%M")
         if not data:
             return
 
         new_status = data.get("overall", "ok")
         concerns = data.get("concerns", [])
-        self.last_check = time.strftime("%H:%M")
 
         # Update icon color if status changed
         if new_status != self.current_status:
@@ -161,7 +171,15 @@ class HealthMonitor:
     def get_tooltip(self) -> str:
         """Build a tooltip string showing current status."""
         if not self.last_check:
+            # Truly never polled yet — tray just came up
             return f"{APP_NAME} — Starting..."
+
+        if self.current_status == "unknown":
+            # We tried but the dashboard summary never came back. Surface the
+            # failure in the tooltip so the user doesn't see "Starting..."
+            # forever — that was the 2026-04-18 bug where a 36s summary
+            # response blew past the 30s urlopen timeout on every poll.
+            return f"{APP_NAME} — Last poll failed ({self.last_check})"
 
         if not self.current_concerns:
             return f"{APP_NAME} — All OK (checked {self.last_check})"

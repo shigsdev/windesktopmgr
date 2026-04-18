@@ -186,6 +186,20 @@ class TestHealthMonitor(unittest.TestCase):
         self.monitor.update()
         assert self.monitor.current_status == "ok"
 
+    @patch("tray.urllib.request.urlopen")
+    def test_poll_failure_still_records_last_check(self, mock_urlopen):
+        """
+        Regression guard for the 2026-04-18 'stuck in Starting...' bug: if the
+        first poll fails (e.g. /api/dashboard/summary slower than the
+        ``urlopen`` timeout), ``last_check`` must still advance so the tooltip
+        exits the ``Starting...`` state instead of pretending we never tried.
+        """
+        assert self.monitor.last_check is None
+        mock_urlopen.side_effect = Exception("timeout")
+
+        self.monitor.update()
+        assert self.monitor.last_check is not None
+
 
 class TestTooltip(unittest.TestCase):
     """Test tooltip string generation."""
@@ -198,6 +212,7 @@ class TestTooltip(unittest.TestCase):
     def test_ok_tooltip(self):
         monitor = tray.HealthMonitor()
         monitor.last_check = "14:30"
+        monitor.current_status = "ok"
         monitor.current_concerns = []
         tooltip = monitor.get_tooltip()
         assert "All OK" in tooltip
@@ -206,6 +221,7 @@ class TestTooltip(unittest.TestCase):
     def test_concerns_tooltip(self):
         monitor = tray.HealthMonitor()
         monitor.last_check = "14:30"
+        monitor.current_status = "warning"
         monitor.current_concerns = [
             {"icon": "T", "title": "High temperature"},
             {"icon": "D", "title": "Disk space low"},
@@ -218,9 +234,24 @@ class TestTooltip(unittest.TestCase):
     def test_tooltip_truncation(self):
         monitor = tray.HealthMonitor()
         monitor.last_check = "14:30"
+        monitor.current_status = "warning"
         monitor.current_concerns = [{"icon": str(i), "title": f"Issue {i}"} for i in range(5)]
         tooltip = monitor.get_tooltip()
         assert "... and 2 more" in tooltip
+
+    def test_failed_poll_tooltip(self):
+        """
+        When poll() has fired at least once but never succeeded
+        (``current_status == 'unknown'``), the tooltip should surface the
+        failure rather than staying in ``Starting...``.
+        """
+        monitor = tray.HealthMonitor()
+        monitor.last_check = "14:30"
+        # Default current_status is "unknown" — simulates a failed first poll
+        assert monitor.current_status == "unknown"
+        tooltip = monitor.get_tooltip()
+        assert "Last poll failed" in tooltip
+        assert "14:30" in tooltip
 
 
 class TestMenuActions(unittest.TestCase):

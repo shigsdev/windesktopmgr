@@ -7134,7 +7134,12 @@ def api_selftest():
     import concurrent.futures
 
     results: list[dict] = []
-    overall_budget = 90  # seconds
+    # Overall wall-time budget for all 14 checks running in parallel. Had to
+    # bump 90 → 180 on 2026-04-18 because slow checks (bsod/timeline/processes/
+    # bios ≈ 45-58 s each) can eat the budget before drivers finishes its WMI
+    # + NVIDIA lookups. The per-check timeouts in SELFTEST_CHECKS are only
+    # nominal — only this budget actually fires.
+    overall_budget = 180  # seconds
 
     def _run_check(name: str, fn_name: str, _timeout: int) -> dict:
         fn = globals().get(fn_name)
