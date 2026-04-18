@@ -626,11 +626,14 @@ def _nbt_resolve_ip(ip: str) -> tuple:
     Returns (ip, hostname) or (ip, "").
     """
     try:
+        # quiet_timeout=True: timeouts on dormant/wireless hosts are expected
+        # and handled by the "" fallback below — don't spam the error log
         r = subprocess.run(
             ["nbtstat", "-A", ip],
             capture_output=True,
             text=True,
             timeout=5,
+            quiet_timeout=True,
         )
         for line in r.stdout.splitlines():
             if "<00>" in line and "UNIQUE" in line:
