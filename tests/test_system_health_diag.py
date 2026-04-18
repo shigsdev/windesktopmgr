@@ -1185,6 +1185,41 @@ class TestEdgeCases:
         captured = capsys.readouterr()
         assert "test" in captured.out
 
+    def test_stdout_is_utf8_after_import(self):
+        """Regression: 2026-04-18 incident — scheduled task crashloop on
+        UnicodeEncodeError when cp1252 stdout met the ✓/✗ glyphs.
+
+        The module's import-time ``sys.stdout.reconfigure`` must force UTF-8
+        so a cp1252 console pipe does not blow up mid-run.
+        """
+        import subprocess as sp
+        import sys as _sys
+
+        # Launch a fresh interpreter with cp1252 as the default encoding and
+        # assert that importing SystemHealthDiag then printing the glyphs
+        # succeeds without a UnicodeEncodeError.
+        code = (
+            "import sys, os;"
+            "os.environ.pop('PYTHONIOENCODING', None);"
+            "os.environ.pop('PYTHONUTF8', None);"
+            "sys.path.insert(0, r'" + str(__import__("pathlib").Path(shd.__file__).parent) + "');"
+            "import SystemHealthDiag as m;"
+            "m.cprint('\u2713 ok', 'green');"
+            "m.cprint('\u2717 fail', 'red');"
+            "print('ENCODING:', sys.stdout.encoding)"
+        )
+        env = {**__import__("os").environ, "PYTHONIOENCODING": "cp1252"}
+        r = sp.run(
+            [_sys.executable, "-X", "utf8=0", "-c", code],
+            capture_output=True,
+            text=False,
+            env=env,
+            timeout=15,
+        )
+        stderr = r.stderr.decode("utf-8", errors="replace")
+        assert r.returncode == 0, f"SystemHealthDiag crashed on cp1252 stdout: {stderr}"
+        assert "UnicodeEncodeError" not in stderr, f"UnicodeEncodeError raised: {stderr}"
+
     def test_constants_exist(self):
         assert hasattr(shd, "REPORT_FOLDER")
         assert hasattr(shd, "SCRIPT_DIR")
