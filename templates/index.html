@@ -1106,7 +1106,7 @@ document.querySelectorAll(".page-tab").forEach(btn => {
     } else if (page === "memory") {
       if (!_tabLoaded["memory"])         { _tabLoaded["memory"]         = true; loadMemory(); }
     } else if (page === "bios") {
-      if (!_tabLoaded["bios"])           { _tabLoaded["bios"]           = true; loadBios(); }
+      if (!_tabLoaded["bios"])           { _tabLoaded["bios"]           = true; loadBios(); loadBiosAudit(); }
     } else if (page === "credentials") {
       if (!_tabLoaded["credentials"])    { _tabLoaded["credentials"]    = true; loadCredentials(); }
     } else if (page === "sysinfo") {
@@ -5098,6 +5098,21 @@ function renderSystemInfo(d) {
       <div class="stat-card s-red">   <div class="label">Update Available</div><div class="value" id="bios-update-badge">—</div></div>
       <div class="stat-card s-cyan">  <div class="label">Latest Version</div>  <div class="value" id="bios-latest" style="font-size:14px">—</div></div>
     </div>
+    <!-- BIOS AUDIT TRAIL PANEL -- always visible, does NOT depend on /api/bios/status -->
+    <div id="bios-audit-panel" style="margin:16px 0">
+      <div style="padding:20px;background:var(--card);border:1px solid var(--border);border-radius:10px;border-left:4px solid var(--cyan)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <div style="font-weight:700;font-size:15px;color:var(--cyan)">📋 BIOS Audit Trail</div>
+          <button class="btn-action" onclick="loadBiosAudit()" style="padding:5px 12px;font-size:11px">↺ Refresh</button>
+        </div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:12px">
+          Tracks changes to BIOS version, Secure Boot, TPM, boot mode, and VBS state.
+          Snapshots every 15 minutes via the tray polling loop.
+        </div>
+        <div id="bios-audit-content" style="font-size:13px">Loading…</div>
+      </div>
+    </div>
+
     <div style="display:flex;align-items:center;gap:10px;margin:20px 0 16px">
       <h2 style="margin:0">BIOS &amp; Firmware</h2>
       <button class="btn-action" onclick="loadBios()" style="padding:6px 16px;font-size:12px">↺ Refresh</button>
@@ -5132,21 +5147,6 @@ function renderSystemInfo(d) {
              style="display:inline-block;background:#ff704322;border:1px solid var(--orange);color:var(--orange);padding:6px 14px;border-radius:6px;text-decoration:none;font-size:12px">
             🔄 Windows Update
           </a>
-        </div>
-      </div>
-
-      <!-- BIOS AUDIT TRAIL PANEL -->
-      <div id="bios-audit-panel" style="margin-top:20px">
-        <div style="padding:20px;background:var(--card);border:1px solid var(--border);border-radius:10px;border-left:4px solid var(--cyan)">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-            <div style="font-weight:700;font-size:15px;color:var(--cyan)">📋 BIOS Audit Trail</div>
-            <button class="btn-action" onclick="loadBiosAudit()" style="padding:5px 12px;font-size:11px">↺ Refresh</button>
-          </div>
-          <div style="font-size:12px;color:var(--muted);margin-bottom:12px">
-            Tracks changes to BIOS version, Secure Boot, TPM, boot mode, and VBS state.
-            Snapshots every 15 minutes via the tray polling loop.
-          </div>
-          <div id="bios-audit-content" style="font-size:13px">Loading…</div>
         </div>
       </div>
 
