@@ -1730,6 +1730,25 @@ def main():
     cprint(f"Report will be saved to: {report_path}", "gray")
     print()
 
+    # ── BIOS audit trail (elevated snapshot) ────────────────────────────
+    # Captures admin-gated fields (TPM detail, Secure Boot, Boot Mode)
+    # that the tray cannot see. Backlog #3 follow-up.
+    try:
+        import bios_audit
+
+        result = bios_audit.check_and_log_bios_changes(force=True, context="elevated")
+        if result.get("first_run"):
+            cprint("  BIOS audit: baseline captured (elevated context)", "gray")
+        elif result.get("changes"):
+            cprint(f"  BIOS audit: {len(result['changes'])} change(s) detected", "yellow")
+            for ch in result["changes"][:5]:
+                print(f"    - {ch['field']}: {ch['old']!r} -> {ch['new']!r}")
+        else:
+            cprint("  BIOS audit: no changes since last elevated snapshot", "gray")
+    except Exception as e:  # noqa: BLE001
+        cprint(f"  BIOS audit: failed ({e})", "red")
+    print()
+
     # Section 1: System Info
     sys_info = collect_system_info()
 

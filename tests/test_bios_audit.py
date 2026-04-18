@@ -68,7 +68,19 @@ def _sample_bios_reader():
 
 
 class TestTakeSnapshot:
-    def test_structure_has_all_expected_keys(self, mock_ps):
+    def test_user_context_omits_elevated_fields(self, mock_ps):
+        """User-context snapshots must NOT contain admin-gated fields,
+        so filling them in later (via elevated context) does not look
+        like a change-from-null."""
+        mock_ps({})
+        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader, context="user")
+        assert snap["context"] == "user"
+        for key in ("bios_version", "bios_serial", "vbs"):
+            assert key in snap, f"user-context missing expected key: {key}"
+        for key in ("secure_boot", "tpm", "boot_mode"):
+            assert key not in snap, f"user-context leaked elevated-only key: {key}"
+
+    def test_elevated_context_includes_all_fields(self, mock_ps):
         mock_ps(
             {
                 "Confirm-SecureBootUEFI": "True",
@@ -78,9 +90,11 @@ class TestTakeSnapshot:
                 "Win32_BIOS).SerialNumber": "ABC123",
             }
         )
-        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader)
+        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader, context="elevated")
+        assert snap["context"] == "elevated"
         for key in (
             "timestamp",
+            "context",
             "bios_version",
             "bios_release_date",
             "bios_manufacturer",
@@ -92,11 +106,16 @@ class TestTakeSnapshot:
             "boot_mode",
             "vbs",
         ):
-            assert key in snap, f"missing key: {key}"
+            assert key in snap, f"elevated-context missing key: {key}"
+
+    def test_invalid_context_raises(self, mock_ps):
+        mock_ps({})
+        with pytest.raises(ValueError):
+            bios_audit.take_snapshot(bios_reader=_sample_bios_reader, context="root")
 
     def test_bios_fields_copied_from_reader(self, mock_ps):
         mock_ps({})
-        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader)
+        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader, context="elevated")
         assert snap["bios_version"] == "1.2.3"
         assert snap["bios_manufacturer"] == "Dell Inc."
         assert snap["board_product"] == "XPS 8960"
@@ -104,19 +123,19 @@ class TestTakeSnapshot:
 
     def test_secure_boot_enabled(self, mock_ps):
         mock_ps({"Confirm-SecureBootUEFI": "True"})
-        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader)
+        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader, context="elevated")
         assert snap["secure_boot"] == "enabled"
 
     def test_secure_boot_disabled(self, mock_ps):
         mock_ps({"Confirm-SecureBootUEFI": "False"})
-        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader)
+        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader, context="elevated")
         assert snap["secure_boot"] == "disabled"
 
     def test_tpm_json_parsed(self, mock_ps):
         mock_ps(
             {"Get-Tpm": '{"TpmPresent": true, "TpmEnabled": true, "TpmReady": false, "ManufacturerVersion": "7.2.0"}'}
         )
-        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader)
+        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader, context="elevated")
         assert snap["tpm"]["present"] is True
         assert snap["tpm"]["enabled"] is True
         assert snap["tpm"]["ready"] is False
@@ -124,27 +143,28 @@ class TestTakeSnapshot:
 
     def test_tpm_malformed_json_falls_back_to_none(self, mock_ps):
         mock_ps({"Get-Tpm": "not-json-at-all"})
-        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader)
+        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader, context="elevated")
         assert snap["tpm"] == {"present": None, "enabled": None, "ready": None, "version": None}
 
     def test_boot_mode_uefi(self, mock_ps):
         mock_ps({"PEFirmwareType": "2"})
-        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader)
+        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader, context="elevated")
         assert snap["boot_mode"] == "UEFI"
 
     def test_boot_mode_legacy(self, mock_ps):
         mock_ps({"PEFirmwareType": "1"})
-        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader)
+        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader, context="elevated")
         assert snap["boot_mode"] == "Legacy"
 
     def test_boot_mode_unknown(self, mock_ps):
         mock_ps({"PEFirmwareType": ""})
-        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader)
+        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader, context="elevated")
         assert snap["boot_mode"] is None
 
-    def test_vbs_running_with_hvci(self, mock_ps):
+    def test_vbs_running_with_hvci_user_context(self, mock_ps):
+        # VBS works without admin — user context should still capture it
         mock_ps({"Win32_DeviceGuard": '{"VirtualizationBasedSecurityStatus": 2, "SecurityServicesRunning": [2, 1]}'})
-        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader)
+        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader, context="user")
         assert snap["vbs"]["vbs_status"] == "running"
         assert snap["vbs"]["hvci_running"] is True
         assert snap["vbs"]["cred_guard_running"] is True
@@ -156,7 +176,7 @@ class TestTakeSnapshot:
             "bios_audit.subprocess.run",
             side_effect=sp.TimeoutExpired(cmd="powershell", timeout=10),
         )
-        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader)
+        snap = bios_audit.take_snapshot(bios_reader=_sample_bios_reader, context="elevated")
         # BIOS fields still populated from reader; PS-dependent fields None
         assert snap["bios_version"] == "1.2.3"
         assert snap["secure_boot"] is None
@@ -168,7 +188,7 @@ class TestTakeSnapshot:
         def bad_reader():
             raise RuntimeError("boom")
 
-        snap = bios_audit.take_snapshot(bios_reader=bad_reader)
+        snap = bios_audit.take_snapshot(bios_reader=bad_reader, context="user")
         assert snap["bios_version"] is None
         assert snap["bios_manufacturer"] is None
 
@@ -290,11 +310,12 @@ class TestCheckAndLog:
         assert len(bios_audit.load_history()) == 1  # still just the baseline
 
     def test_change_is_logged(self, bios_audit_tmp, mock_ps):
+        # Secure Boot is an elevated-only field, so this test runs in that context
         self._patch_all_ps_calls(mock_ps, secure="True")
-        bios_audit.check_and_log_bios_changes(bios_reader=_sample_bios_reader, force=True)
+        bios_audit.check_and_log_bios_changes(bios_reader=_sample_bios_reader, force=True, context="elevated")
         # Second run: Secure Boot now disabled
         self._patch_all_ps_calls(mock_ps, secure="False")
-        result = bios_audit.check_and_log_bios_changes(bios_reader=_sample_bios_reader, force=True)
+        result = bios_audit.check_and_log_bios_changes(bios_reader=_sample_bios_reader, force=True, context="elevated")
         assert result["first_run"] is False
         assert any(c["field"] == "secure_boot" for c in result["changes"])
         history = bios_audit.load_history()
@@ -359,6 +380,93 @@ class TestRecentChanges:
             }
         )
         assert bios_audit.recent_changes() == []
+
+
+# ── Two-context separation ────────────────────────────────────────
+
+
+class TestTwoContexts:
+    """The key invariant: user-context and elevated-context snapshots must
+    diff only against others of the same context, so null-from-user doesn't
+    look like a change when elevated fills it in."""
+
+    def _patch_all(self, mock_ps, *, secure="True", pe="2"):
+        mock_ps(
+            {
+                "Confirm-SecureBootUEFI": secure,
+                "Get-Tpm": '{"TpmPresent": true, "TpmEnabled": true, "TpmReady": true, "ManufacturerVersion": "7"}',
+                "PEFirmwareType": pe,
+                "Win32_DeviceGuard": '{"VirtualizationBasedSecurityStatus": 2, "SecurityServicesRunning": [2]}',
+                "Win32_BIOS).SerialNumber": "ABC",
+            }
+        )
+
+    def test_user_then_elevated_both_logged_as_baseline(self, bios_audit_tmp, mock_ps):
+        self._patch_all(mock_ps)
+        bios_audit.check_and_log_bios_changes(bios_reader=_sample_bios_reader, force=True, context="user")
+        bios_audit.check_and_log_bios_changes(bios_reader=_sample_bios_reader, force=True, context="elevated")
+        history = bios_audit.load_history()
+        assert [e["kind"] for e in history] == ["baseline", "baseline"]
+        assert [e["context"] for e in history] == ["user", "elevated"]
+
+    def test_elevated_baseline_does_not_trigger_user_change(self, bios_audit_tmp, mock_ps):
+        """Even though the elevated snapshot has secure_boot/tpm/boot_mode
+        and the user baseline didn't, running the user collector again
+        must see NO changes (because it diffs against the last USER baseline)."""
+        self._patch_all(mock_ps)
+        bios_audit.check_and_log_bios_changes(bios_reader=_sample_bios_reader, force=True, context="user")
+        bios_audit.check_and_log_bios_changes(bios_reader=_sample_bios_reader, force=True, context="elevated")
+        # Now the user collector runs again — should be a no-op
+        result = bios_audit.check_and_log_bios_changes(bios_reader=_sample_bios_reader, force=True, context="user")
+        assert result["changes"] == []
+        assert result["first_run"] is False
+
+    def test_elevated_context_detects_secure_boot_flip(self, bios_audit_tmp, mock_ps):
+        self._patch_all(mock_ps, secure="True")
+        bios_audit.check_and_log_bios_changes(bios_reader=_sample_bios_reader, force=True, context="elevated")
+        self._patch_all(mock_ps, secure="False")
+        result = bios_audit.check_and_log_bios_changes(bios_reader=_sample_bios_reader, force=True, context="elevated")
+        assert any(c["field"] == "secure_boot" for c in result["changes"])
+
+    def test_throttle_is_per_context(self, bios_audit_tmp, mock_ps):
+        """A recent user snapshot should NOT throttle a subsequent elevated
+        snapshot -- they are independent streams."""
+        self._patch_all(mock_ps)
+        bios_audit.check_and_log_bios_changes(bios_reader=_sample_bios_reader, force=True, context="user")
+        # Immediately run elevated without force -- should NOT be throttled
+        result = bios_audit.check_and_log_bios_changes(bios_reader=_sample_bios_reader, force=False, context="elevated")
+        assert result["skipped"] is False
+        assert result["first_run"] is True
+
+    def test_latest_snapshot_context_filter(self, bios_audit_tmp):
+        bios_audit._append_history(
+            {
+                "kind": "baseline",
+                "context": "user",
+                "timestamp": "2026-01-01T00:00:00",
+                "snapshot": {"bios_version": "1.0", "context": "user"},
+            }
+        )
+        bios_audit._append_history(
+            {
+                "kind": "baseline",
+                "context": "elevated",
+                "timestamp": "2026-01-01T01:00:00",
+                "snapshot": {"bios_version": "1.0", "secure_boot": "enabled", "context": "elevated"},
+            }
+        )
+        user_snap = bios_audit.latest_snapshot(context="user")
+        elev_snap = bios_audit.latest_snapshot(context="elevated")
+        assert user_snap and "secure_boot" not in user_snap
+        assert elev_snap and elev_snap["secure_boot"] == "enabled"
+        # Without a context filter, the most-recent entry wins (elevated here)
+        assert bios_audit.latest_snapshot() == elev_snap
+
+    def test_context_field_ignored_by_diff(self):
+        """The `context` marker itself must never show up as a diff field."""
+        a = {"context": "user", "bios_version": "1.0"}
+        b = {"context": "elevated", "bios_version": "1.0"}
+        assert bios_audit.diff_snapshots(a, b) == []
 
 
 # ── Flask route tests ─────────────────────────────────────────────
