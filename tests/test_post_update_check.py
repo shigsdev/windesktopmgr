@@ -5,7 +5,9 @@ Covers the five layers of the post-Windows-Update regression runner:
   1. Update detection via WMI (``get_latest_hotfix``, ``detect_new_update``)
   2. State file read/write (``load_state`` / ``save_state``)
   3. Subprocess runners (``run_pytest``, ``run_verify``)
-  4. SMTP email (``send_email``) with keyring-backed credentials
+  4. Gmail SMTP email (``send_email``) using the same
+     ``diag_email_config.xml`` DPAPI-encrypted credentials as the daily
+     SystemHealthDiag.py report.
   5. Backlog auto-entry prepender + full orchestrator (``run_post_update_check``)
 
 All external side effects are mocked — no real WMI calls, subprocess spawns,
@@ -278,17 +280,96 @@ class TestRunVerify:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+class TestLoadEmailConfig:
+    """Covers the diag_email_config.xml decrypt path (shared with SystemHealthDiag)."""
+
+    _VALID_CFG = {
+        "FromEmail": "daily-report@gmail.com",
+        "ToEmail": "higs78@yahoo.com",
+        "Password": "app-pw-1234",
+    }
+
+    def test_missing_file_returns_none(self, mocker, tmp_path):
+        mocker.patch.object(puc, "CRED_FILE", tmp_path / "nope.xml")
+        assert puc._load_email_config() is None
+
+    def test_happy_path_parses_json(self, mocker, tmp_path):
+        cred = tmp_path / "diag_email_config.xml"
+        cred.write_text("<Objs/>", encoding="utf-8")
+        mocker.patch.object(puc, "CRED_FILE", cred)
+        m = mocker.patch("post_update_check.subprocess.run")
+        m.return_value = type(
+            "R",
+            (),
+            {"stdout": json.dumps(self._VALID_CFG), "stderr": "", "returncode": 0},
+        )()
+        cfg = puc._load_email_config()
+        assert cfg == self._VALID_CFG
+        # Command must actually be a PowerShell Import-Clixml read
+        ps_cmd = m.call_args[0][0][-1]
+        assert "Import-Clixml" in ps_cmd
+        assert "GetNetworkCredential" in ps_cmd
+
+    def test_nonzero_returncode_returns_none(self, mocker, tmp_path):
+        cred = tmp_path / "diag_email_config.xml"
+        cred.write_text("<Objs/>", encoding="utf-8")
+        mocker.patch.object(puc, "CRED_FILE", cred)
+        m = mocker.patch("post_update_check.subprocess.run")
+        m.return_value = type("R", (), {"stdout": "", "stderr": "access denied", "returncode": 1})()
+        assert puc._load_email_config() is None
+
+    def test_malformed_json_returns_none(self, mocker, tmp_path):
+        cred = tmp_path / "diag_email_config.xml"
+        cred.write_text("<Objs/>", encoding="utf-8")
+        mocker.patch.object(puc, "CRED_FILE", cred)
+        m = mocker.patch("post_update_check.subprocess.run")
+        m.return_value = type("R", (), {"stdout": "not json!", "stderr": "", "returncode": 0})()
+        assert puc._load_email_config() is None
+
+    def test_missing_password_field_returns_none(self, mocker, tmp_path):
+        cred = tmp_path / "diag_email_config.xml"
+        cred.write_text("<Objs/>", encoding="utf-8")
+        mocker.patch.object(puc, "CRED_FILE", cred)
+        m = mocker.patch("post_update_check.subprocess.run")
+        m.return_value = type(
+            "R",
+            (),
+            {
+                "stdout": json.dumps({"FromEmail": "x@y", "ToEmail": "a@b"}),
+                "stderr": "",
+                "returncode": 0,
+            },
+        )()
+        assert puc._load_email_config() is None
+
+    def test_ps_timeout_returns_none(self, mocker, tmp_path):
+        cred = tmp_path / "diag_email_config.xml"
+        cred.write_text("<Objs/>", encoding="utf-8")
+        mocker.patch.object(puc, "CRED_FILE", cred)
+        mocker.patch(
+            "post_update_check.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=15),
+        )
+        assert puc._load_email_config() is None
+
+
 class TestSendEmail:
-    def test_skipped_when_no_password(self, mocker):
-        """No keyring password → email silently skipped and returns False."""
-        mocker.patch("post_update_check._load_smtp_password", return_value=None)
+    _CFG = {
+        "FromEmail": "daily-report@gmail.com",
+        "ToEmail": "higs78@yahoo.com",
+        "Password": "app-pw-1234",
+    }
+
+    def test_skipped_when_no_config(self, mocker):
+        """No config file → email silently skipped, SMTP never touched."""
+        mocker.patch("post_update_check._load_email_config", return_value=None)
         smtp_mock = mocker.patch("post_update_check.smtplib.SMTP")
         ok = puc.send_email("subject", "body")
         assert ok is False
         smtp_mock.assert_not_called()
 
-    def test_happy_path_sends_via_smtp(self, mocker):
-        mocker.patch("post_update_check._load_smtp_password", return_value="app-pass")
+    def test_happy_path_sends_via_gmail_smtp(self, mocker):
+        mocker.patch("post_update_check._load_email_config", return_value=self._CFG)
         smtp = mocker.Mock()
         smtp_ctx = mocker.patch("post_update_check.smtplib.SMTP")
         smtp_ctx.return_value.__enter__ = lambda self: smtp
@@ -296,13 +377,27 @@ class TestSendEmail:
         ok = puc.send_email("subject", "body")
         assert ok is True
         smtp.starttls.assert_called_once()
-        smtp.login.assert_called_once()
+        smtp.login.assert_called_once_with("daily-report@gmail.com", "app-pw-1234")
         smtp.send_message.assert_called_once()
+        # Must use Gmail SMTP (same as SystemHealthDiag.py)
+        assert smtp_ctx.call_args[0][0] == "smtp.gmail.com"
+        assert smtp_ctx.call_args[0][1] == 587
+
+    def test_to_email_falls_back_to_from(self, mocker):
+        cfg = {"FromEmail": "me@gmail.com", "Password": "pw"}
+        mocker.patch("post_update_check._load_email_config", return_value=cfg)
+        smtp = mocker.Mock()
+        smtp_ctx = mocker.patch("post_update_check.smtplib.SMTP")
+        smtp_ctx.return_value.__enter__ = lambda self: smtp
+        smtp_ctx.return_value.__exit__ = lambda self, *a: None
+        assert puc.send_email("subject", "body") is True
+        sent = smtp.send_message.call_args[0][0]
+        assert sent["To"] == "me@gmail.com"
 
     def test_smtp_exception_returns_false(self, mocker):
         import smtplib as _smtplib
 
-        mocker.patch("post_update_check._load_smtp_password", return_value="app-pass")
+        mocker.patch("post_update_check._load_email_config", return_value=self._CFG)
         mocker.patch(
             "post_update_check.smtplib.SMTP",
             side_effect=_smtplib.SMTPException("server down"),

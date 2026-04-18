@@ -56,14 +56,17 @@ STATE_FILE = STATE_DIR / "post_update_state.json"
 # where the planning workflow already reads them.
 BACKLOG_FILE = Path.home() / ".claude" / "projects" / "C--shigsapps-windesktopmgr" / "memory" / "project_backlog.md"
 
-# SMTP config — Yahoo default for the recorded user email. The password is
-# loaded from the OS keyring (service name below) — if absent, email is
-# silently skipped and the report is logged to disk instead.
-SMTP_HOST = os.environ.get("WDM_SMTP_HOST", "smtp.mail.yahoo.com")
-SMTP_PORT = int(os.environ.get("WDM_SMTP_PORT", "587"))
-SMTP_USERNAME = os.environ.get("WDM_SMTP_USER", "higs78@yahoo.com")
-SMTP_KEYRING_SERVICE = "windesktopmgr_smtp"
-EMAIL_TO = os.environ.get("WDM_EMAIL_TO", "higs78@yahoo.com")
+# SMTP — reuse the exact same credentials the daily SystemHealthDiag.py report
+# uses. The config lives in ``diag_email_config.xml`` next to this file and is
+# DPAPI-encrypted via PowerShell ``Export-Clixml`` / ``Get-Credential``.
+# Run ``Setup-DiagSchedule.ps1`` once to populate it. If the file is missing,
+# email is silently skipped (report still prints to stdout + lands on disk).
+#
+# Gmail SMTP matches what SystemHealthDiag sends through, so a Gmail app
+# password in the CliXml works unchanged for this new channel.
+CRED_FILE = REPO_ROOT / "diag_email_config.xml"
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 587
 
 # How long to let pytest / dev.py verify run before force-killing.
 PYTEST_TIMEOUT_S = 600  # 10 min — real test suite is ~3 min, leaves headroom
@@ -275,44 +278,82 @@ def run_verify() -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def _load_smtp_password() -> str | None:
-    """Retrieve the SMTP app password from the OS keyring (stdlib ``keyring``)."""
-    try:
-        import keyring
+def _load_email_config() -> dict | None:
+    """
+    Load the shared ``diag_email_config.xml`` credentials used by the daily
+    SystemHealthDiag.py report.
 
-        return keyring.get_password(SMTP_KEYRING_SERVICE, SMTP_USERNAME)
-    except Exception as e:
-        print(f"[post_update_check] keyring lookup failed: {e}", file=sys.stderr)
+    The XML is a PowerShell ``Export-Clixml`` blob — the password field is
+    DPAPI-encrypted and tied to the current Windows user, so we decrypt it by
+    shelling out to PowerShell (the only practical way without reimplementing
+    DPAPI + CliXml parsing in Python).
+
+    Returns ``{"FromEmail": str, "ToEmail": str, "Password": str}`` on success,
+    or ``None`` if the file is missing / decryption fails / PS returns junk.
+    """
+    if not CRED_FILE.is_file():
+        return None
+    ps_cmd = (
+        f"$cfg = Import-Clixml -Path '{CRED_FILE}'; "
+        "@{"
+        "FromEmail = $cfg.FromEmail; "
+        "ToEmail = $cfg.ToEmail; "
+        "Password = $cfg.Credential.GetNetworkCredential().Password"
+        "} | ConvertTo-Json -Compress"
+    )
+    try:
+        r = subprocess.run(
+            ["powershell", "-NonInteractive", "-Command", ps_cmd],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if r.returncode != 0 or not r.stdout.strip():
+            print(
+                f"[post_update_check] email config PS read failed: rc={r.returncode} stderr={r.stderr.strip()[:200]}",
+                file=sys.stderr,
+            )
+            return None
+        cfg = json.loads(r.stdout)
+        if not cfg.get("FromEmail") or not cfg.get("Password"):
+            return None
+        return cfg
+    except (json.JSONDecodeError, subprocess.TimeoutExpired, OSError) as e:
+        print(f"[post_update_check] email config load failed: {e}", file=sys.stderr)
         return None
 
 
 def send_email(subject: str, body: str) -> bool:
     """
-    Send the post-update report via SMTP. Silently returns ``False`` if no
-    keyring password is configured — the report has already been printed to
-    stdout by this point, so the user doesn't lose information.
+    Send the post-update report via Gmail SMTP using the same credentials as
+    the daily SystemHealthDiag report. Returns ``False`` and logs a reason if
+    the config file is missing / decryption fails / SMTP send fails — the
+    report has already been printed to stdout by this point, so no info is lost.
     """
-    password = _load_smtp_password()
-    if not password:
+    cfg = _load_email_config()
+    if not cfg:
         print(
-            "[post_update_check] SMTP password not in keyring "
-            f"(service={SMTP_KEYRING_SERVICE}, user={SMTP_USERNAME}) — "
-            "skipping email. Set via keyring.set_password(...) to enable.",
+            f"[post_update_check] no email config ({CRED_FILE}) — skipping email. "
+            "Run Setup-DiagSchedule.ps1 to configure.",
             file=sys.stderr,
         )
         return False
 
+    from_email = cfg["FromEmail"]
+    to_email = cfg.get("ToEmail") or from_email
+    password = cfg["Password"]
+
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = SMTP_USERNAME
-    msg["To"] = EMAIL_TO
+    msg["From"] = from_email
+    msg["To"] = to_email
     msg.set_content(body)
 
     try:
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as smtp:
             smtp.ehlo()
             smtp.starttls()
-            smtp.login(SMTP_USERNAME, password)
+            smtp.login(from_email, password)
             smtp.send_message(msg)
         return True
     except (smtplib.SMTPException, socket.gaierror, TimeoutError, OSError) as e:
