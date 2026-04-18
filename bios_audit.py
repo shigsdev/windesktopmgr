@@ -1,27 +1,34 @@
 """bios_audit.py -- BIOS & firmware settings change audit trail.
 
 Captures a periodic snapshot of BIOS-adjacent system settings and logs
-any detected changes to an append-only history store. Triggered from the
-tray polling loop (throttled to one snapshot every 15 minutes).
+any detected changes to an append-only history store.
 
-Snapshot fields:
-- BIOS version, release date, manufacturer, serial number (via Win32_BIOS)
-- Baseboard product + manufacturer
-- Secure Boot state (Confirm-SecureBootUEFI)
-- TPM presence + enabled + ready + manufacturer version (Get-Tpm)
-- Boot mode -- UEFI vs Legacy (PEFirmwareType registry value)
-- VBS / HVCI / Credential Guard state (Win32_DeviceGuard)
+Two collection contexts, each with its own snapshot cadence:
+
+- ``context="user"`` -- tray polling loop, every 15 min. Captures fields
+  readable from a standard-user process: BIOS/Baseboard metadata,
+  serial number, VBS/HVCI/Credential Guard state.
+- ``context="elevated"`` -- SystemHealthDiag scheduled task, daily.
+  Runs as admin so it can additionally capture TPM detail
+  (Get-Tpm), Secure Boot state (Confirm-SecureBootUEFI), and Boot Mode
+  (PEFirmwareType registry).
+
+Each history entry carries its own ``context`` tag. Diffs compare against
+the previous snapshot of the **same** context -- so a field that returns
+None in the user context (because the cmdlet needs admin) does not
+produce a spurious "null -> value" change when the elevated context
+fills it in later.
 
 Persistence: ``bios_audit_history.json`` in repo root. Append-only,
 capped at 500 entries. Lock-guarded for concurrent-reader safety.
 
 Public API:
-    take_snapshot()           -- capture one snapshot dict
-    diff_snapshots(old, new)  -- flat change list
-    load_history()            -- full list from disk
-    latest_snapshot()         -- most recent snapshot dict or None
-    check_and_log_bios_changes()  -- main tray-loop entry point
-    recent_changes(window)    -- change entries in last N hours
+    take_snapshot(context=...)    -- capture one snapshot dict
+    diff_snapshots(old, new)      -- flat change list
+    load_history()                -- full list from disk
+    latest_snapshot(context=...)  -- most recent snapshot dict or None
+    check_and_log_bios_changes(context=...)  -- main entry point
+    recent_changes(window)        -- change entries in last N hours
 """
 
 from __future__ import annotations
@@ -139,15 +146,34 @@ def _get_bios_serial() -> str | None:
 
 # ── Snapshot ───────────────────────────────────────────────────────
 
+USER_CONTEXT = "user"
+ELEVATED_CONTEXT = "elevated"
+_VALID_CONTEXTS = frozenset({USER_CONTEXT, ELEVATED_CONTEXT})
 
-def take_snapshot(bios_reader: Callable[[], dict] | None = None) -> dict:
-    """Capture a full BIOS + security snapshot.
+# Fields that require admin context -- collected only when context=elevated.
+# In the user-context snapshot these keys are absent (not None) so the diff
+# logic does not flag them when they appear in the elevated snapshot.
+_ELEVATED_ONLY_FIELDS = frozenset({"secure_boot", "tpm", "boot_mode"})
 
+
+def take_snapshot(
+    bios_reader: Callable[[], dict] | None = None,
+    context: str = USER_CONTEXT,
+) -> dict:
+    """Capture a BIOS + security snapshot.
+
+    context: ``"user"`` (default) or ``"elevated"``. In ``"user"`` context
+        the admin-gated fields (Secure Boot, TPM detail, Boot Mode) are
+        omitted from the returned dict so they do not appear to "appear"
+        later when the elevated collector runs.
     bios_reader: callable returning a dict shaped like
         windesktopmgr.get_current_bios() (BIOSVersion, ReleaseDate,
         Manufacturer, BoardProduct, BoardMfr, BIOSDateFormatted). Optional
         for testability; the default imports windesktopmgr lazily.
     """
+    if context not in _VALID_CONTEXTS:
+        raise ValueError(f"context must be one of {sorted(_VALID_CONTEXTS)}")
+
     if bios_reader is None:
         # Lazy import: avoids circular dep and keeps tests simple
         from windesktopmgr import get_current_bios
@@ -159,24 +185,27 @@ def take_snapshot(bios_reader: Callable[[], dict] | None = None) -> dict:
     except Exception:  # noqa: BLE001
         bios = {}
 
-    return {
+    snap = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "context": context,
         "bios_version": bios.get("BIOSVersion"),
         "bios_release_date": bios.get("BIOSDateFormatted") or bios.get("ReleaseDate"),
         "bios_manufacturer": bios.get("Manufacturer"),
         "bios_serial": _get_bios_serial(),
         "board_product": bios.get("BoardProduct"),
         "board_manufacturer": bios.get("BoardMfr"),
-        "secure_boot": _get_secure_boot_state(),
-        "tpm": _get_tpm_state(),
-        "boot_mode": _get_boot_mode(),
         "vbs": _get_vbs_state(),
     }
+    if context == ELEVATED_CONTEXT:
+        snap["secure_boot"] = _get_secure_boot_state()
+        snap["tpm"] = _get_tpm_state()
+        snap["boot_mode"] = _get_boot_mode()
+    return snap
 
 
 # ── Diff ───────────────────────────────────────────────────────────
 
-_IGNORE_KEYS = frozenset({"timestamp"})
+_IGNORE_KEYS = frozenset({"timestamp", "context"})
 
 
 def _flatten(d: dict, prefix: str = "") -> dict:
@@ -249,26 +278,38 @@ def _append_history(entry: dict) -> bool:
             return False
 
 
-def latest_snapshot() -> dict | None:
-    """Return the most recent snapshot dict embedded in history, or None."""
+def latest_snapshot(context: str | None = None) -> dict | None:
+    """Return the most recent snapshot dict embedded in history, or None.
+
+    If ``context`` is given, only returns snapshots tagged with that context.
+    If omitted, returns the most recent snapshot regardless of context
+    (used by the /api/bios/audit/snapshot route to show "what we know").
+    """
     for entry in reversed(load_history()):
-        snap = entry.get("snapshot") if isinstance(entry, dict) else None
-        if snap:
+        if not isinstance(entry, dict):
+            continue
+        snap = entry.get("snapshot")
+        if not snap:
+            continue
+        if context is None or entry.get("context") == context:
             return snap
     return None
 
 
-def _last_entry_age() -> timedelta | None:
-    """Wall-clock age of the last history entry, or None if empty/invalid."""
+def _last_entry_age(context: str | None = None) -> timedelta | None:
+    """Wall-clock age of the last entry, optionally filtered by context."""
     history = load_history()
-    if not history:
-        return None
-    last = history[-1]
-    try:
-        ts = datetime.fromisoformat(last.get("timestamp", ""))
-    except (ValueError, TypeError):
-        return None
-    return datetime.now() - ts
+    for entry in reversed(history):
+        if not isinstance(entry, dict):
+            continue
+        if context is not None and entry.get("context") != context:
+            continue
+        try:
+            ts = datetime.fromisoformat(entry.get("timestamp", ""))
+        except (ValueError, TypeError):
+            continue
+        return datetime.now() - ts
+    return None
 
 
 # ── Main entry point ───────────────────────────────────────────────
@@ -277,39 +318,54 @@ def _last_entry_age() -> timedelta | None:
 def check_and_log_bios_changes(
     bios_reader: Callable[[], dict] | None = None,
     force: bool = False,
+    context: str = USER_CONTEXT,
 ) -> dict:
-    """Take a snapshot and log any change vs the previous snapshot.
+    """Take a snapshot and log any change vs the previous snapshot of
+    the same ``context``.
 
-    Throttled: returns early (without running the PS calls) if the last
-    snapshot is newer than SNAPSHOT_INTERVAL, unless ``force=True``.
+    Throttled per-context: returns early (without running the PS calls)
+    if the last snapshot of this context is newer than SNAPSHOT_INTERVAL,
+    unless ``force=True``.
 
     Return shape:
         {
             "ok": bool,
             "skipped": bool,            # true when throttled
-            "first_run": bool,          # true on the very first run
+            "first_run": bool,          # true on the very first run for this context
+            "context": str,
             "snapshot": dict | None,
             "changes": list[dict],
         }
     """
+    if context not in _VALID_CONTEXTS:
+        raise ValueError(f"context must be one of {sorted(_VALID_CONTEXTS)}")
+
     if not force:
-        age = _last_entry_age()
+        age = _last_entry_age(context=context)
         if age is not None and age < SNAPSHOT_INTERVAL:
-            return {"ok": True, "skipped": True, "first_run": False, "snapshot": None, "changes": []}
+            return {
+                "ok": True,
+                "skipped": True,
+                "first_run": False,
+                "context": context,
+                "snapshot": None,
+                "changes": [],
+            }
 
     try:
-        snapshot = take_snapshot(bios_reader=bios_reader)
+        snapshot = take_snapshot(bios_reader=bios_reader, context=context)
     except Exception as e:  # noqa: BLE001
         return {
             "ok": False,
             "skipped": False,
             "first_run": False,
+            "context": context,
             "snapshot": None,
             "changes": [],
             "error": str(e),
         }
 
-    previous = latest_snapshot()
+    previous = latest_snapshot(context=context)
     first_run = previous is None
     changes = diff_snapshots(previous or {}, snapshot)
 
@@ -317,15 +373,17 @@ def check_and_log_bios_changes(
         _append_history(
             {
                 "kind": "baseline",
+                "context": context,
                 "timestamp": snapshot["timestamp"],
                 "snapshot": snapshot,
-                "note": "initial snapshot -- no baseline to diff against",
+                "note": f"initial {context}-context snapshot -- no baseline to diff against",
             }
         )
     elif changes:
         _append_history(
             {
                 "kind": "change",
+                "context": context,
                 "timestamp": snapshot["timestamp"],
                 "changes": changes,
                 "snapshot": snapshot,
@@ -338,6 +396,7 @@ def check_and_log_bios_changes(
         "ok": True,
         "skipped": False,
         "first_run": first_run,
+        "context": context,
         "snapshot": snapshot,
         "changes": changes,
     }

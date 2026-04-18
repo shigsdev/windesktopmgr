@@ -3004,17 +3004,28 @@ async function loadBiosAudit() {
       content.innerHTML = '<div style="color:var(--muted)">No snapshots yet — the baseline will be captured on the next polling cycle (up to 60 s).</div>';
       return;
     }
+    // Context chip renderer: "user" (gray) or "elevated" (purple)
+    const ctxChip = ctx => {
+      if (ctx === "elevated") {
+        return '<span style="display:inline-block;padding:1px 7px;border-radius:10px;background:#a855f722;border:1px solid #a855f766;color:var(--purple);font-size:10px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;margin-right:6px">ELEVATED</span>';
+      }
+      if (ctx === "user") {
+        return '<span style="display:inline-block;padding:1px 7px;border-radius:10px;background:#6b728033;border:1px solid #6b728066;color:var(--muted);font-size:10px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;margin-right:6px">USER</span>';
+      }
+      return '';
+    };
     let html = '<div style="display:flex;flex-direction:column;gap:10px">';
     for (const entry of history) {
       const ts = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : "(no timestamp)";
+      const chip = ctxChip(entry.context);
       if (entry.kind === "change") {
         const rows = (entry.changes || []).map(c =>
           `<div style="font-family:'JetBrains Mono',monospace;font-size:12px;padding:3px 0"><span style="color:var(--cyan)">${esc(c.field)}</span>: <span style="color:var(--muted);text-decoration:line-through">${esc(c.old)}</span> → <strong style="color:var(--orange)">${esc(c.new)}</strong></div>`
         ).join("");
-        html += `<div style="background:var(--surface);border-left:3px solid var(--orange);padding:10px 14px;border-radius:6px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-weight:600;color:var(--orange)">⚠ CHANGE</span><span style="font-size:11px;color:var(--muted)">${esc(ts)}</span></div>${rows}</div>`;
+        html += `<div style="background:var(--surface);border-left:3px solid var(--orange);padding:10px 14px;border-radius:6px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span>${chip}<span style="font-weight:600;color:var(--orange)">⚠ CHANGE</span></span><span style="font-size:11px;color:var(--muted)">${esc(ts)}</span></div>${rows}</div>`;
       } else if (entry.kind === "baseline") {
         const note = entry.note || "initial snapshot captured";
-        html += `<div style="background:var(--surface);border-left:3px solid var(--cyan);padding:10px 14px;border-radius:6px"><div style="display:flex;justify-content:space-between;align-items:center"><span style="font-weight:600;color:var(--cyan)">◆ BASELINE</span><span style="font-size:11px;color:var(--muted)">${esc(ts)}</span></div><div style="font-size:12px;color:var(--muted);margin-top:4px">${esc(note)}</div></div>`;
+        html += `<div style="background:var(--surface);border-left:3px solid var(--cyan);padding:10px 14px;border-radius:6px"><div style="display:flex;justify-content:space-between;align-items:center"><span>${chip}<span style="font-weight:600;color:var(--cyan)">◆ BASELINE</span></span><span style="font-size:11px;color:var(--muted)">${esc(ts)}</span></div><div style="font-size:12px;color:var(--muted);margin-top:4px">${esc(note)}</div></div>`;
       }
     }
     html += '</div>';
