@@ -5788,13 +5788,13 @@ def get_memory_analysis() -> dict:
     """
     try:
         procs: list[dict] = []
-        for proc in psutil.process_iter(["name", "memory_info"]):
+        for proc in psutil.process_iter(["pid", "name", "memory_info"]):
             try:
                 info = proc.info
                 name = info.get("name") or ""
                 mem = info.get("memory_info")
                 mem_mb = round(mem.rss / (1024 * 1024), 1) if mem else 0
-                procs.append({"ProcessName": name, "MemMB": mem_mb})
+                procs.append({"ProcessName": name, "MemMB": mem_mb, "PID": info.get("pid")})
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
 
@@ -5837,7 +5837,7 @@ def get_memory_analysis() -> dict:
             if any(dp in name for dp in DEFENDER_PROCS):
                 defender_mb += mem
                 defender_breakdown.append({"name": p.get("ProcessName", ""), "mem": mem})
-            top_procs.append({"name": p.get("ProcessName", ""), "mem": mem, "category": cat})
+            top_procs.append({"name": p.get("ProcessName", ""), "mem": mem, "category": cat, "pid": p.get("PID")})
 
         top_procs.sort(key=lambda x: x["mem"], reverse=True)
         mcafee_breakdown.sort(key=lambda x: x["mem"], reverse=True)
@@ -5896,6 +5896,108 @@ def summarize_memory(data: dict) -> dict:
     status = "critical" if pct > 90 else "warning" if pct > 75 else "ok"
     headline = f"{pct}% RAM used — {used:,.0f}/{total:,.0f} MB"
     return {"status": status, "headline": headline, "insights": insights, "actions": actions}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MEMORY CONCERN SNOOZE (backlog #19)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Per-process memory concerns can be dismissed for 24 hours at a time via the
+# "⏳ Snooze" action button. A snooze is keyed by the process NAME (not PID,
+# because PIDs are ephemeral -- the user snoozing "chrome.exe at 2.5 GB" wants
+# that suppressed regardless of which chrome.exe instance).
+MEMORY_SNOOZE_FILE = os.path.join(APP_DIR, "memory_snoozes.json")
+_memory_snooze_lock = threading.RLock()
+
+
+def _load_memory_snoozes() -> dict:
+    """Return {process_name_lower: expiry_iso}. Expired entries are filtered."""
+    with _memory_snooze_lock:
+        try:
+            if not os.path.exists(MEMORY_SNOOZE_FILE):
+                return {}
+            with open(MEMORY_SNOOZE_FILE, encoding="utf-8") as f:
+                raw = json.load(f)
+            if not isinstance(raw, dict):
+                return {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+        now = datetime.now()
+        out = {}
+        dirty = False
+        for key, iso in raw.items():
+            try:
+                expiry = datetime.fromisoformat(iso)
+            except (ValueError, TypeError):
+                dirty = True
+                continue
+            if expiry > now:
+                out[key] = iso
+            else:
+                dirty = True
+        if dirty:
+            _save_memory_snoozes(out, _already_locked=True)
+        return out
+
+
+def _save_memory_snoozes(snoozes: dict, *, _already_locked: bool = False) -> None:
+    """Write the snooze map atomically."""
+    body = json.dumps(snoozes, indent=2)
+    tmp = MEMORY_SNOOZE_FILE + ".tmp"
+    if _already_locked:
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(body)
+            os.replace(tmp, MEMORY_SNOOZE_FILE)
+        except OSError:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+        return
+    with _memory_snooze_lock:
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(body)
+            os.replace(tmp, MEMORY_SNOOZE_FILE)
+        except OSError:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+
+
+def add_memory_snooze(process_name: str, hours: int = 24) -> dict:
+    """Snooze warnings for ``process_name`` for ``hours`` (default 24)."""
+    key = (process_name or "").strip().lower()
+    if not key:
+        return {"ok": False, "error": "process_name required"}
+    if not isinstance(hours, int) or hours <= 0 or hours > 168:
+        return {"ok": False, "error": "hours must be 1..168"}
+    with _memory_snooze_lock:
+        snoozes = _load_memory_snoozes()
+        expiry = datetime.now() + timedelta(hours=hours)
+        snoozes[key] = expiry.isoformat(timespec="seconds")
+        _save_memory_snoozes(snoozes, _already_locked=True)
+        return {"ok": True, "key": key, "expires": snoozes[key]}
+
+
+def remove_memory_snooze(process_name: str) -> dict:
+    key = (process_name or "").strip().lower()
+    with _memory_snooze_lock:
+        snoozes = _load_memory_snoozes()
+        existed = snoozes.pop(key, None) is not None
+        _save_memory_snoozes(snoozes, _already_locked=True)
+        return {"ok": True, "removed": existed}
+
+
+def is_memory_snoozed(process_name: str) -> bool:
+    key = (process_name or "").strip().lower()
+    if not key:
+        return False
+    return key in _load_memory_snoozes()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -7647,6 +7749,51 @@ def tasks_health_route():
         return jsonify({"ok": False, "error": str(e), "tasks": []})
 
 
+@app.route("/api/tasks/open-logs-folder", methods=["POST"])
+def tasks_open_logs_folder_route():
+    """Open the app's Logs/ directory in Windows Explorer."""
+    log_dir = os.path.join(APP_DIR, "Logs")
+    if not os.path.isdir(log_dir):
+        return jsonify({"ok": False, "error": f"Log directory not found: {log_dir}"}), 404
+    try:
+        # Fire-and-forget — Popen returns immediately, explorer pops a window
+        subprocess.Popen(["explorer.exe", log_dir])
+        return jsonify({"ok": True, "path": log_dir})
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/memory/snooze", methods=["POST"])
+def memory_snooze_route():
+    """Snooze memory warnings for a given process name (default 24h)."""
+    data = request.get_json() or {}
+    name = data.get("process_name") or data.get("name")
+    hours = data.get("hours", 24)
+    if not name:
+        return jsonify({"ok": False, "error": "Missing required field: process_name"}), 400
+    try:
+        hours = int(hours)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "hours must be an integer"}), 400
+    result = add_memory_snooze(name, hours=hours)
+    return jsonify(result), (200 if result["ok"] else 400)
+
+
+@app.route("/api/memory/snooze", methods=["DELETE"])
+def memory_snooze_delete_route():
+    data = request.get_json() or {}
+    name = data.get("process_name") or data.get("name") or request.args.get("process_name")
+    if not name:
+        return jsonify({"ok": False, "error": "Missing required field: process_name"}), 400
+    return jsonify(remove_memory_snooze(name))
+
+
+@app.route("/api/memory/snoozes", methods=["GET"])
+def memory_snoozes_route():
+    """List currently-active memory snoozes."""
+    return jsonify({"ok": True, "snoozes": _load_memory_snoozes()})
+
+
 @app.route("/api/warranty/data")
 def warranty_data():
     """Collect Intel/Dell warranty readiness data."""
@@ -8306,7 +8453,7 @@ def dashboard_summary():
             }
         )
 
-    # Memory
+    # Memory — system-level pressure concern
     mem = results.get("memory", {})
     mem_pct = round(mem.get("used_mb", 0) / max(mem.get("total_mb", 1), 1) * 100, 1)
     if mem_pct > 90:
@@ -8319,6 +8466,44 @@ def dashboard_summary():
                 "detail": "Very little memory available — system may be unstable.",
                 "action": "View Memory Analysis",
                 "action_fn": "switchTab('memory')",
+            }
+        )
+
+    # Memory — per-process hogs (backlog #19). Each concern carries
+    # pid/process_name/mem_mb so the frontend can render inline action
+    # buttons (Kill / Investigate / Snooze 24h). Snoozed processes are
+    # filtered here so the user's dismissal actually suppresses the
+    # warning for the snooze window.
+    try:
+        snoozes = _load_memory_snoozes()
+    except Exception:  # noqa: BLE001
+        snoozes = {}
+    for p in mem.get("top_procs", [])[:8]:
+        name = p.get("name") or ""
+        mb = p.get("mem") or 0
+        pid = p.get("pid")
+        if not name or mb < MEM_CRIT_MB:
+            continue
+        if name.lower() in snoozes:
+            continue
+        # Skip well-known system-critical processes that have no business
+        # being killed from the dashboard (kernel-adjacent, AV, etc.)
+        if (name + ".exe").lower() in SAFE_PROCESSES:
+            continue
+        concerns.append(
+            {
+                "level": "critical" if mb >= 2 * MEM_CRIT_MB else "warning",
+                "tab": "processes",
+                "icon": "🧠",
+                "title": f"{name} using {mb:,.0f} MB RAM",
+                "detail": "High memory use. Use the actions below to investigate or kill.",
+                "action": "View in Process Monitor",
+                "action_fn": f"investigateProcess({int(pid) if pid else 0}, {json.dumps(name)})",
+                # Extra metadata consumed by the frontend concern renderer to
+                # draw Kill / Investigate / Snooze buttons:
+                "process_name": name,
+                "pid": int(pid) if pid else None,
+                "mem_mb": mb,
             }
         )
 

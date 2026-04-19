@@ -3489,6 +3489,81 @@ async function resumeBrokers() {
 
 async function fixFastStartup() { await toggleFastStartup(false); }
 
+// Used by task_watcher concerns (backlog #27) — pops the Windows Logs/
+// folder in Explorer so the user can inspect the raw log files.
+async function openLogsFolder() {
+  try {
+    const r = await fetch("/api/tasks/open-logs-folder", {method: "POST"});
+    const d = await r.json();
+    if (!d.ok) {
+      alert(`Could not open Logs folder: ${d.error || "unknown error"}`);
+    }
+  } catch (e) {
+    alert(`Could not open Logs folder: ${e.message}`);
+  }
+}
+
+// ── Memory concern action handlers (backlog #19) ─────────────────────────
+// Wired up by the dashboard concern renderer when a concern carries
+// process_name metadata. Each handler reloads the dashboard so the concern
+// state (killed / snoozed) is reflected immediately.
+
+function investigateProcess(pid, name) {
+  switchTab("processes");
+  setTimeout(() => {
+    const search = document.getElementById("pr-search");
+    if (search) {
+      // Filter by PID when we have one, otherwise fall back to the name
+      search.value = pid ? String(pid) : (name || "");
+      if (typeof renderProcesses === "function") renderProcesses();
+    }
+  }, 150);
+}
+
+async function killProcessFromConcern(pid, name) {
+  if (!pid) {
+    alert(`Cannot kill "${name}" — no PID attached to this concern. Use the Process Monitor to kill manually.`);
+    return;
+  }
+  if (!confirm(`Kill ${name} (PID ${pid})?\n\nAny unsaved work in that process will be lost.`)) return;
+  try {
+    const r = await fetch("/api/processes/kill", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({pid: pid}),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      setTimeout(loadDashboard, 500);  // refresh — the concern should disappear
+    } else {
+      alert(`Failed to kill ${name}: ${d.error || "unknown error"}`);
+    }
+  } catch (e) {
+    alert(`Failed to kill ${name}: ${e.message}`);
+  }
+}
+
+async function snoozeMemoryConcern(name, hours) {
+  if (!name) return;
+  const h = parseInt(hours, 10) || 24;
+  try {
+    const r = await fetch("/api/memory/snooze", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({process_name: name, hours: h}),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      // Expiry in d.expires — reload to hide the concern
+      setTimeout(loadDashboard, 200);
+    } else {
+      alert(`Failed to snooze ${name}: ${d.error || "unknown error"}`);
+    }
+  } catch (e) {
+    alert(`Failed to snooze ${name}: ${e.message}`);
+  }
+}
+
 async function toggleFastStartup(enable) {
   const btn = document.getElementById("cr-fast-toggle-btn");
   const msg = document.getElementById("cr-fast-toggle-msg");
@@ -3614,6 +3689,21 @@ function renderDashboard(d) {
     allClearEl.style.display = "";
   } else {
     allClearEl.style.display = "none";
+    // Per-concern action bar. Memory concerns (carrying process_name)
+    // get a 3-button group: Kill / Investigate / Snooze. All other
+    // concerns get the existing single-button behavior.
+    function actionHTML(c, i) {
+      const lvl = levelColor(c.level), bg = levelBg(c.level), bd = levelBorder(c.level);
+      const btnBase = `padding:6px 10px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;white-space:nowrap;background:${bg};border:1px solid ${bd};color:${lvl}`;
+      if (c.process_name) {
+        const pid = c.pid || 0;
+        const pname = esc(c.process_name);
+        return `<button data-mem-act="investigate" data-pid="${pid}" data-pname="${pname}" title="Filter Process Monitor to this PID" style="${btnBase}">🔍 Investigate</button>
+                <button data-mem-act="kill" data-pid="${pid}" data-pname="${pname}" title="Kill this process (with confirmation)" style="${btnBase}">🔪 Kill</button>
+                <button data-mem-act="snooze" data-pname="${pname}" title="Suppress this warning for 24 h" style="${btnBase}">⏳ Snooze 24h</button>`;
+      }
+      return `<button data-fn="${i}" style="${btnBase}">${esc(c.action||"View")} →</button>`;
+    }
     concernsEl.innerHTML = concerns.map((c, i) => `
       <div style="display:flex;align-items:center;gap:14px;padding:14px 18px;
         background:${levelBg(c.level)};border:1px solid ${levelBorder(c.level)};
@@ -3623,16 +3713,11 @@ function renderDashboard(d) {
           <div style="font-weight:700;font-size:13px;color:${levelColor(c.level)}">${esc(c.title)}</div>
           <div style="font-size:12px;color:var(--muted);margin-top:3px;line-height:1.4">${esc(c.detail||"")}</div>
         </div>
-        <div style="flex-shrink:0;display:flex;gap:8px;align-items:center">
+        <div style="flex-shrink:0;display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
           <span style="font-size:10px;font-weight:700;text-transform:uppercase;
             color:${levelColor(c.level)};border:1px solid ${levelBorder(c.level)};
             padding:2px 8px;border-radius:10px;letter-spacing:.06em">${esc(c.level)}</span>
-          <button data-fn="${i}"
-            style="background:${levelBg(c.level)};border:1px solid ${levelBorder(c.level)};
-            color:${levelColor(c.level)};padding:6px 14px;border-radius:6px;
-            cursor:pointer;font-size:11px;font-weight:700;white-space:nowrap">
-            ${esc(c.action||"View")} →
-          </button>
+          ${actionHTML(c, i)}
         </div>
       </div>`).join("");
 
@@ -3656,6 +3741,17 @@ function renderDashboard(d) {
           console.warn("Dashboard: function not found:", name);
         }
       }
+    });
+  });
+  // Memory concern action buttons (backlog #19)
+  concernsEl.querySelectorAll("button[data-mem-act]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const act   = btn.dataset.memAct;
+      const pid   = parseInt(btn.dataset.pid, 10) || 0;
+      const pname = btn.dataset.pname || "";
+      if (act === "investigate")  investigateProcess(pid, pname);
+      else if (act === "kill")    killProcessFromConcern(pid, pname);
+      else if (act === "snooze")  snoozeMemoryConcern(pname);
     });
   });
   }
