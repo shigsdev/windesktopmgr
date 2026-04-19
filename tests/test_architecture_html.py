@@ -52,6 +52,9 @@ TEST_FILES = [
     "test_snapshots.py",
     "test_e2e_smoke.py",
     "test_integration.py",
+    "test_bios_audit.py",
+    "test_task_watcher.py",
+    "test_architecture_html.py",
 ]
 
 

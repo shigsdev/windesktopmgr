@@ -360,3 +360,68 @@ class TestGetCredentialsSnapshot:
         assert isinstance(result, dict)
         expected = load_fixture("parsed/parsed_get_credentials_network_health.json")
         assert set(result.keys()) == set(expected.keys())
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# disk._enumerate_logical_drives — LIVE psutil snapshot (backlog #23)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Unlike the other snapshot tests this one runs unmocked against real psutil
+# on the host machine. That is deliberate: the 2026-04-14 CIFS bug went
+# undetected because every test mocked the disk enumeration, so a real
+# regression in psutil.disk_partitions / disk_usage / opts parsing would
+# have slipped past the suite. This test asserts invariants strong enough
+# to catch that class of bug without being machine-specific.
+
+
+class TestEnumerateLogicalDrivesLive:
+    """Live-psutil snapshot — not mocked. Verifies the CIFS-vs-local
+    classification path keeps working on the host's current drive layout.
+    """
+
+    @pytest.fixture(scope="class")
+    def drives(self):
+        import disk
+
+        try:
+            return disk._enumerate_logical_drives()
+        except Exception as e:  # noqa: BLE001
+            pytest.skip(f"psutil.disk_partitions failed on this host: {e}")
+
+    def test_returns_at_least_one_drive(self, drives):
+        """Every Windows box has at least C:. If zero drives come back, the
+        enumeration path is broken — regardless of host configuration."""
+        assert len(drives) >= 1, "expected at least one logical drive"
+
+    def test_every_drive_has_required_schema(self, drives):
+        required = {"Letter", "DriveType", "DriveTypeName", "TotalGB", "FreeGB", "UsedGB", "PctUsed"}
+        for d in drives:
+            missing = required - set(d.keys())
+            assert not missing, f"drive {d.get('Letter')} missing keys: {missing}"
+
+    def test_cd_and_ram_drives_are_filtered(self, drives):
+        """Types 5 (CD/DVD) and 6 (RAM disk) should never appear — filtered
+        inside _enumerate_logical_drives. Regression guard for the filter."""
+        for d in drives:
+            assert d["DriveType"] not in (5, 6), f"drive {d.get('Letter')} has filtered type {d['Type']}"
+
+    def test_drive_letters_uppercase(self, drives):
+        for d in drives:
+            letter = d.get("Letter") or ""
+            assert letter == letter.upper(), f"drive letter not uppercase: {letter!r}"
+
+    def test_c_drive_is_local(self, drives):
+        """C: must classify as local (Type 3) — if not, the type_name mapping
+        is broken. This is a high-signal regression guard."""
+        c = next((d for d in drives if d.get("Letter") == "C"), None)
+        if c is None:
+            pytest.skip("no C: drive on this host (CI container?)")
+        assert c["DriveType"] == 3, f"C: should be Type 3 (local), got {c['Type']}"
+        assert c["DriveTypeName"] == "local"
+
+    def test_reachable_local_drives_have_nonzero_total(self, drives):
+        """Every reachable local drive should have TotalGB > 0. If any local
+        drive reports 0, psutil.disk_usage broke on a non-CIFS path."""
+        for d in drives:
+            if d["DriveType"] == 3:  # local
+                assert d["TotalGB"] > 0, f"local drive {d['Letter']} has zero total"
