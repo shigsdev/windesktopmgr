@@ -10,6 +10,8 @@ import json
 import os
 import types
 
+import pytest
+
 import windesktopmgr as wdm
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -2504,3 +2506,153 @@ class TestDiskRunToolRoute:
         )
         client.post("/api/disk/run-tool", json={"tool": "sysdm_advanced"})
         m.assert_called_once_with("sysdm_advanced")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Memory snooze routes + concern filtering (backlog #19)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture
+def mem_snooze_tmp(tmp_path, monkeypatch):
+    """Redirect the snooze file to a per-test tmp path so nothing touches the real store."""
+    target = tmp_path / "memory_snoozes.json"
+    monkeypatch.setattr(wdm, "MEMORY_SNOOZE_FILE", str(target))
+    return target
+
+
+class TestMemorySnoozeRoutes:
+    def test_post_snooze_ok(self, client, mem_snooze_tmp):
+        resp = client.post("/api/memory/snooze", json={"process_name": "chrome.exe", "hours": 1})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["key"] == "chrome.exe"
+        assert body["expires"]
+
+    def test_post_snooze_requires_name(self, client, mem_snooze_tmp):
+        resp = client.post("/api/memory/snooze", json={})
+        assert resp.status_code == 400
+        assert resp.get_json()["ok"] is False
+
+    def test_post_snooze_rejects_bad_hours(self, client, mem_snooze_tmp):
+        resp = client.post("/api/memory/snooze", json={"process_name": "x", "hours": 999})
+        assert resp.status_code == 400
+        assert "hours must be" in resp.get_json()["error"]
+
+    def test_post_snooze_rejects_non_integer_hours(self, client, mem_snooze_tmp):
+        resp = client.post("/api/memory/snooze", json={"process_name": "x", "hours": "many"})
+        assert resp.status_code == 400
+
+    def test_list_snoozes(self, client, mem_snooze_tmp):
+        client.post("/api/memory/snooze", json={"process_name": "chrome.exe", "hours": 1})
+        client.post("/api/memory/snooze", json={"process_name": "teams.exe", "hours": 1})
+        resp = client.get("/api/memory/snoozes")
+        assert resp.status_code == 200
+        snoozes = resp.get_json()["snoozes"]
+        assert set(snoozes.keys()) == {"chrome.exe", "teams.exe"}
+
+    def test_delete_snooze(self, client, mem_snooze_tmp):
+        client.post("/api/memory/snooze", json={"process_name": "chrome.exe", "hours": 1})
+        resp = client.delete("/api/memory/snooze", json={"process_name": "chrome.exe"})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["removed"] is True
+        # Second delete: already gone
+        resp2 = client.delete("/api/memory/snooze", json={"process_name": "chrome.exe"})
+        assert resp2.get_json()["removed"] is False
+
+    def test_expired_snooze_auto_cleaned_on_load(self, client, mem_snooze_tmp):
+        from datetime import datetime, timedelta
+
+        # Write a snooze file with an already-expired entry
+        expired = {"oldproc.exe": (datetime.now() - timedelta(hours=1)).isoformat(timespec="seconds")}
+        mem_snooze_tmp.write_text(json.dumps(expired), encoding="utf-8")
+        resp = client.get("/api/memory/snoozes")
+        assert resp.get_json()["snoozes"] == {}
+
+
+class TestDashboardMemoryConcernActions:
+    """Verify per-process memory concerns land with pid/process_name/mem_mb
+    and respect the snooze list."""
+
+    def _mock_deps(self, mocker, top_procs):
+        """Mock dashboard dependencies but let memory carry a custom top_procs list."""
+        mocker.patch(
+            "windesktopmgr.get_thermals",
+            return_value={"temps": [], "perf": {"CPUPct": 10}, "fans": [], "has_rich": True},
+        )
+        mocker.patch(
+            "windesktopmgr.get_memory_analysis",
+            return_value={"total_mb": 32000, "used_mb": 10000, "free_mb": 22000, "top_procs": top_procs},
+        )
+        mocker.patch("windesktopmgr.get_bios_status", return_value={"current": {}, "update": {}})
+        mocker.patch(
+            "windesktopmgr.get_credentials_network_health",
+            return_value={"onedrive_suspended": False, "fast_startup_enabled": False, "drives_down": []},
+        )
+        mocker.patch("windesktopmgr.get_disk_health", return_value={"ok": True})
+        mocker.patch(
+            "windesktopmgr.get_driver_health",
+            return_value={"old_drivers": [], "problematic_drivers": [], "nvidia": None},
+        )
+        import task_watcher as _tw
+
+        mocker.patch.object(_tw, "get_all_task_health", return_value=[])
+
+    def test_high_memory_process_becomes_concern_with_metadata(self, client, mocker, mem_snooze_tmp):
+        # MEM_CRIT_MB is 1500 — a process at 2500 MB should trigger a critical concern
+        self._mock_deps(
+            mocker,
+            top_procs=[
+                {"name": "chrome.exe", "mem": 2500.0, "category": "browser", "pid": 4321},
+            ],
+        )
+        resp = client.get("/api/dashboard/summary")
+        concerns = resp.get_json()["concerns"]
+        mem_concern = next((c for c in concerns if c.get("process_name") == "chrome.exe"), None)
+        assert mem_concern is not None, f"expected per-process concern; got titles {[c['title'] for c in concerns]}"
+        assert mem_concern["pid"] == 4321
+        assert mem_concern["mem_mb"] == 2500.0
+        assert mem_concern["tab"] == "processes"
+        # action_fn must carry the PID so the fallback dispatch still works
+        assert "4321" in mem_concern["action_fn"]
+
+    def test_snoozed_process_is_not_concerned(self, client, mocker, mem_snooze_tmp):
+        # Snooze chrome.exe first
+        client.post("/api/memory/snooze", json={"process_name": "chrome.exe", "hours": 1})
+        self._mock_deps(
+            mocker,
+            top_procs=[
+                {"name": "chrome.exe", "mem": 2500.0, "category": "browser", "pid": 4321},
+            ],
+        )
+        resp = client.get("/api/dashboard/summary")
+        concerns = resp.get_json()["concerns"]
+        assert not any(c.get("process_name") == "chrome.exe" for c in concerns), (
+            f"snoozed process should be suppressed; got {[c['title'] for c in concerns]}"
+        )
+
+    def test_low_memory_process_is_not_concerned(self, client, mocker, mem_snooze_tmp):
+        self._mock_deps(
+            mocker,
+            top_procs=[
+                {"name": "notepad.exe", "mem": 50.0, "category": "microsoft", "pid": 111},
+            ],
+        )
+        resp = client.get("/api/dashboard/summary")
+        concerns = resp.get_json()["concerns"]
+        assert not any(c.get("process_name") == "notepad.exe" for c in concerns)
+
+    def test_safe_system_process_is_not_concerned(self, client, mocker, mem_snooze_tmp):
+        """Even if a SAFE_PROCESSES entry crosses the threshold, don't suggest killing it."""
+        self._mock_deps(
+            mocker,
+            top_procs=[
+                {"name": "msmpeng", "mem": 3000.0, "category": "security", "pid": 555},
+            ],
+        )
+        resp = client.get("/api/dashboard/summary")
+        concerns = resp.get_json()["concerns"]
+        assert not any(c.get("process_name") == "msmpeng" for c in concerns)

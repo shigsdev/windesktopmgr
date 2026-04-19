@@ -28,6 +28,20 @@ Traceback (most recent call last):
 UnicodeEncodeError: 'charmap' codec can't encode character '\\u2717' in position 2: character maps to <undefined>
 """
 
+# Real-world pattern (2026-04-14 to 18 logs): the diagnostic finished its
+# work, saved the report and emailed it, then hit UnicodeEncodeError in
+# the final ✓/✗ tally. This should be treated as a SUCCESS -- the actual
+# work completed.
+MIXED_SUCCESS_THEN_CLEANUP_ERROR = """[13/13] Running unit tests...
+  passed
+Email sent successfully to user@example.com
+Report saved to: C:\\Reports\\Report_2026-04-18.html
+Traceback (most recent call last):
+  File "SystemHealthDiag.py", line 1865, in main
+    cprint(f"  \u2717 tally", "red")
+UnicodeEncodeError: 'charmap' codec can't encode character '\\u2717'
+"""
+
 
 def _write_log(dir_path, name: str, body: str, *, utf16: bool = False) -> str:
     """Create a log file with the given body; return its path.
@@ -76,6 +90,17 @@ class TestParseLog:
         s = task_watcher.parse_log(path)
         assert s.timestamp is None
         assert s.ok is True
+
+    def test_work_completed_before_cleanup_error_is_success(self, tmp_path):
+        """The 2026-04-18 bug: user saw 'no successful run in 48h' even
+        though the diagnostic had been running fine — it just hit a
+        unicode error in the final ✓/✗ tally after the real work
+        (report + email) had already completed. Success markers win."""
+        path = _write_log(tmp_path, "SystemHealthDiag_2026-04-18_07-00-00.log", MIXED_SUCCESS_THEN_CLEANUP_ERROR)
+        s = task_watcher.parse_log(path)
+        assert s.ok is True, "work completed before cleanup error — should be ok"
+        # But we still capture the exception signature for observability
+        assert s.exception_signature == "UnicodeEncodeError"
 
     def test_missing_file_returns_empty(self, tmp_path):
         s = task_watcher.parse_log(str(tmp_path / "doesnotexist.log"))

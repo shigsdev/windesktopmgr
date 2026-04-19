@@ -68,14 +68,22 @@ class LogSummary:
 
 # ── Log parsing ────────────────────────────────────────────────────
 
-# Cheap heuristic: a Python traceback or "Error:" in the last 10 KB of the
-# file = failure. Absence = assume success (the happy path prints a "Report
-# saved" line but we don't require it -- if the file exists and didn't
-# error, that's good enough for crashloop detection).
+# A Python traceback or ``[Class]Error:`` line marks a failure -- UNLESS the
+# log also carries a success marker BEFORE the error (e.g. the 2026-04-14 -
+# 18 SystemHealthDiag crashloop: it finished its real work, emailed the
+# report, then hit a UnicodeEncodeError printing the final ✓/✗ tally. The
+# run had actually succeeded; only the cleanup crashed). The success
+# markers below are taken from the real SystemHealthDiag output.
 _ERROR_PATTERNS = [
     re.compile(r"^Traceback \(most recent call last\)", re.MULTILINE),
     re.compile(r"^([A-Z][A-Za-z]+Error):", re.MULTILINE),
     re.compile(r"FATAL:", re.MULTILINE),
+]
+_SUCCESS_MARKERS = [
+    re.compile(r"Report saved to:", re.IGNORECASE),
+    re.compile(r"Email sent successfully", re.IGNORECASE),
+    re.compile(r"Diagnostic complete", re.IGNORECASE),
+    re.compile(r"All checks passed", re.IGNORECASE),
 ]
 _EXCEPTION_TYPE_RE = re.compile(r"^([A-Z][A-Za-z]+Error)\b", re.MULTILINE)
 
@@ -133,7 +141,14 @@ def _timestamp_from_name(path: str) -> datetime | None:
 
 
 def parse_log(path: str) -> LogSummary:
-    """Return a LogSummary describing one log file."""
+    """Return a LogSummary describing one log file.
+
+    A log is a FAILURE if a traceback / Error: pattern is present AND no
+    success marker is found. If a success marker is present (e.g. 'Report
+    saved to:' or 'Email sent successfully') the run is considered OK even
+    if a trailing exception occurred during cleanup. The exception
+    signature is still captured for observability.
+    """
     size = 0
     try:
         size = os.path.getsize(path)
@@ -141,14 +156,18 @@ def parse_log(path: str) -> LogSummary:
         pass
 
     tail = _read_tail(path)
-    is_error = any(p.search(tail) for p in _ERROR_PATTERNS)
+    has_error = any(p.search(tail) for p in _ERROR_PATTERNS)
+    has_success_marker = any(p.search(tail) for p in _SUCCESS_MARKERS)
     exc_match = _EXCEPTION_TYPE_RE.search(tail)
     exc_sig = exc_match.group(1) if exc_match else None
+
+    # Success: either no error, OR the work completed before the error
+    ok = (not has_error) or has_success_marker
 
     return LogSummary(
         path=path,
         timestamp=_timestamp_from_name(path),
-        ok=not is_error,
+        ok=ok,
         exception_signature=exc_sig,
         size_bytes=size,
     )
