@@ -310,6 +310,9 @@ tests/
 
 ```bash
 pip install -r requirements-dev.txt
+
+# One-time: install the Chromium binary for Playwright frontend smoke tests
+python -m playwright install chromium
 ```
 
 `requirements-dev.txt`:
@@ -317,6 +320,22 @@ pip install -r requirements-dev.txt
 pytest>=8.0
 pytest-flask>=1.3
 pytest-mock>=3.14
+playwright>=1.47
+pytest-playwright>=0.5
+```
+
+**Playwright frontend smoke tests (backlog #26)**
+Opt-in suite that drives headless Chromium against a live server. Catches
+JS regressions invisible to Python tests (missing handlers, console
+errors, poll-accumulator leaks). Excluded from the default pytest run via
+pyproject.toml's `-m "not integration and not playwright"`. To run:
+
+```bash
+# Make sure the tray (or dev server) is up on localhost:5000, then:
+pytest -m playwright --no-cov
+
+# Or wire into the verify gate:
+PLAYWRIGHT_SMOKE=1 python dev.py verify
 ```
 
 ---

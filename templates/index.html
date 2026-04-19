@@ -2202,6 +2202,55 @@ async function clearBsodCache() {
 }
 
 
+// ── Event ID cache management (paired with /api/events/cache*) ─────────────
+// Populates the "Event ID Knowledge Cache" section on the Events tab. These
+// were missing and caused ``loadCacheStatus is not defined`` pageerrors --
+// caught by the 2026-04-19 Playwright smoke suite (backlog #26).
+async function loadCacheStatus() {
+  try {
+    const r = await fetch("/api/events/cache");
+    const d = await r.json();
+    const stats = document.getElementById("cache-stats");
+    if (stats) {
+      const total = (d.total_cached != null) ? d.total_cached : (d.entries ? d.entries.length : 0);
+      const queue = (d.queue_pending != null) ? d.queue_pending : 0;
+      const flight = (d.in_flight != null) ? d.in_flight : 0;
+      stats.textContent = `${total} event IDs cached | ${queue} pending | ${flight} in-flight`;
+    }
+    const esc = s => String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+    const wrap = document.getElementById("cache-table-wrap");
+    const tbody = document.getElementById("cache-tbody");
+    const entries = d.entries || [];
+    if (wrap) wrap.style.display = entries.length ? "" : "none";
+    if (tbody) {
+      tbody.innerHTML = entries.map(e => {
+        const date = e.fetched ? new Date(e.fetched).toLocaleDateString() : "";
+        const id = esc(e.id != null ? e.id : e.code);
+        return `<tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:5px 10px;font-family:monospace;font-weight:700;color:var(--cyan)">${id}</td>
+          <td style="padding:5px 10px">${esc(e.title)}</td>
+          <td style="padding:5px 10px;color:var(--muted)">${esc(e.source)}</td>
+          <td style="padding:5px 10px;color:var(--muted)">${esc(date)}</td>
+          <td style="padding:5px 10px"><button onclick="deleteEventCache('${id}')"
+            style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:2px 8px;border-radius:3px;cursor:pointer;font-size:10px">Re-fetch</button></td>
+        </tr>`;
+      }).join("") || `<tr><td colspan="5" style="padding:12px;color:var(--muted)">No learned event IDs yet -- events will populate this automatically.</td></tr>`;
+    }
+  } catch(ex) { console.warn("loadCacheStatus error:", ex); }
+}
+
+async function deleteEventCache(eventId) {
+  await fetch(`/api/events/cache/delete/${encodeURIComponent(eventId)}`, {method: "DELETE"});
+  loadCacheStatus();
+}
+
+async function clearCache() {
+  if (!confirm("Clear all learned event ID lookups? The static knowledge base is kept.")) return;
+  await fetch("/api/events/cache/clear", {method: "POST"});
+  loadCacheStatus();
+}
+
+
 // ── Bulk startup lookup ──────────────────────────────────────────────────────
 async function lookupAllUnknowns() {
   if (!_startupData) return;
