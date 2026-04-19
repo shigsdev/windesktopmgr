@@ -5804,10 +5804,26 @@ def get_memory_analysis() -> dict:
         free_mb = round(vm.available / (1024 * 1024), 0)
         used_mb = total_mb - free_mb
 
-        # Categorise
+        # Categorise. Also keep a per-vendor breakdown list so the UI can
+        # reconcile the vendor-rollup number against the per-process table
+        # (2026-04-11 bug: user saw McAfee=1730 MB total but mc-fw-host=
+        # 1015 MB in the table — the rest of the vendor total came from
+        # sibling processes the table happened not to show, e.g. mcshield,
+        # mfevtps. This breakdown makes the math auditable).
+        #
+        # Note on Windows memory accounting: psutil's rss == WorkingSet64,
+        # which counts every resident page the process can reference --
+        # including DLLs shared across processes. Summing rss across
+        # multi-process vendors like McAfee therefore slightly overstates
+        # the unique resident footprint (shared pages get counted once per
+        # process). This is the same accounting that Task Manager's
+        # "Memory (active private working set)" column shows, and is the
+        # best we can get without calling QueryWorkingSetEx per-page.
         categories: dict = {c: 0.0 for c in MEM_CATEGORIES}
         mcafee_mb = 0.0
         defender_mb = 0.0
+        mcafee_breakdown: list[dict] = []
+        defender_breakdown: list[dict] = []
         top_procs = []
 
         for p in procs:
@@ -5817,11 +5833,15 @@ def get_memory_analysis() -> dict:
             categories[cat] = categories.get(cat, 0) + mem
             if any(mp in name for mp in MCAFEE_PROCS):
                 mcafee_mb += mem
+                mcafee_breakdown.append({"name": p.get("ProcessName", ""), "mem": mem})
             if any(dp in name for dp in DEFENDER_PROCS):
                 defender_mb += mem
+                defender_breakdown.append({"name": p.get("ProcessName", ""), "mem": mem})
             top_procs.append({"name": p.get("ProcessName", ""), "mem": mem, "category": cat})
 
         top_procs.sort(key=lambda x: x["mem"], reverse=True)
+        mcafee_breakdown.sort(key=lambda x: x["mem"], reverse=True)
+        defender_breakdown.sort(key=lambda x: x["mem"], reverse=True)
 
         # Defender baseline estimate (from Microsoft specs: ~100–200 MB typical)
         defender_baseline_mb = max(defender_mb, 150)
@@ -5835,9 +5855,16 @@ def get_memory_analysis() -> dict:
             "top_procs": top_procs[:20],
             "mcafee_mb": round(mcafee_mb, 0),
             "defender_mb": round(defender_mb, 0),
+            "mcafee_processes": mcafee_breakdown,
+            "defender_processes": defender_breakdown,
             "defender_baseline": defender_baseline_mb,
             "mcafee_saving_mb": max(mcafee_saving_mb, 0),
             "has_mcafee": mcafee_mb > 50,
+            "accounting_note": (
+                "Vendor totals sum per-process RSS (Windows WorkingSet64). "
+                "Shared DLL pages are counted once per process, so totals "
+                "slightly overstate unique resident memory."
+            ),
         }
     except Exception as e:
         print(f"[MemAnalysis] error: {e}")

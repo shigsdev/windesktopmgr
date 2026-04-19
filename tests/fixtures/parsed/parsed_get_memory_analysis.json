@@ -124,6 +124,27 @@
     "defender_mb": 22.0,
     "defender_baseline": 150,
     "mcafee_saving_mb": 2534.0,
-    "has_mcafee": true
+    "has_mcafee": true,
+    "mcafee_processes": [
+      {
+        "name": "mc-fw-host",
+        "mem": 2490.3
+      },
+      {
+        "name": "mfevtps",
+        "mem": 124.5
+      },
+      {
+        "name": "mfemms",
+        "mem": 98.1
+      }
+    ],
+    "defender_processes": [
+      {
+        "name": "MsMpEng",
+        "mem": 180.4
+      }
+    ],
+    "accounting_note": "Vendor totals sum per-process RSS (Windows WorkingSet64). Shared DLL pages are counted once per process, so totals slightly overstate unique resident memory."
   }
 }

@@ -1440,6 +1440,54 @@ class TestGetMemoryAnalysis:
         assert result["has_mcafee"] is True
         assert result["mcafee_mb"] > 0
 
+    def test_mcafee_breakdown_reconciles_with_total(self, mocker):
+        """Regression for 2026-04-11: user saw McAfee total 1730 MB but
+        mc-fw-host in the process table was only 1015 MB. The math was
+        right — the rollup summed multiple McAfee processes. This test
+        locks the invariant: sum(mcafee_processes) == mcafee_mb."""
+        procs = [
+            _fake_mem_proc(name="mc-fw-host", mem_mb=1015.3),
+            _fake_mem_proc(name="mfemms", mem_mb=400.0),
+            _fake_mem_proc(name="mfevtps", mem_mb=314.7),
+            _fake_mem_proc(name="chrome", mem_mb=500.0),
+        ]
+        self._patch(mocker, procs=procs)
+        result = wdm.get_memory_analysis()
+        breakdown = result.get("mcafee_processes", [])
+        assert len(breakdown) == 3, f"expected 3 McAfee siblings, got {breakdown}"
+        # Reconciliation: the total must equal the sum of the breakdown
+        breakdown_sum = round(sum(p["mem"] for p in breakdown), 0)
+        assert result["mcafee_mb"] == breakdown_sum, (
+            f"rollup {result['mcafee_mb']} != sum of breakdown {breakdown_sum} from {breakdown}"
+        )
+        # Breakdown must be sorted descending so the UI can show the top
+        # contributor first
+        mems = [p["mem"] for p in breakdown]
+        assert mems == sorted(mems, reverse=True)
+        # Non-McAfee processes must NOT appear in the breakdown
+        names = {p["name"].lower() for p in breakdown}
+        assert "chrome" not in names
+
+    def test_defender_breakdown_reconciles_with_total(self, mocker):
+        procs = [
+            _fake_mem_proc(name="MsMpEng", mem_mb=180.0),
+            _fake_mem_proc(name="NisSrv", mem_mb=30.0),
+            _fake_mem_proc(name="chrome", mem_mb=1024.0),
+        ]
+        self._patch(mocker, procs=procs)
+        result = wdm.get_memory_analysis()
+        breakdown = result.get("defender_processes", [])
+        assert len(breakdown) == 2
+        assert round(sum(p["mem"] for p in breakdown), 0) == result["defender_mb"]
+
+    def test_accounting_note_present(self, mocker):
+        self._patch(mocker)
+        result = wdm.get_memory_analysis()
+        note = result.get("accounting_note", "")
+        assert "RSS" in note or "WorkingSet" in note, (
+            "memory response must include an accounting note explaining that vendor totals sum per-process RSS"
+        )
+
     def test_top_procs_sorted_by_mem_descending(self, mocker):
         self._patch(mocker)
         result = wdm.get_memory_analysis()
