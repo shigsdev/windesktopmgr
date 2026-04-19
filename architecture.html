@@ -327,6 +327,7 @@
         <div class="route-chip"><span class="method">POST</span>/api/bios/cache/clear</div>
         <div class="route-chip" id="rt-bios-audit"><span class="method">GET</span>/api/bios/audit/history</div>
         <div class="route-chip"><span class="method">GET</span>/api/bios/audit/snapshot</div>
+        <div class="route-chip" id="rt-tasks-health"><span class="method">GET</span>/api/tasks/health</div>
         <div class="route-chip" id="rt-creds"><span class="method">GET</span>/api/credentials/health</div>
         <div class="route-chip"><span class="method">POST</span>/api/credentials/resume-onedrive</div>
         <div class="route-chip"><span class="method">POST</span>/api/credentials/resume-brokers</div>
@@ -660,6 +661,10 @@
           <div class="fs-chip">
             <div class="fs-title">bios_audit.py</div>
             <div class="fs-sub">BIOS &amp; firmware change tracking · ~310 lines · 15-min snapshot throttle · append-only JSON history</div>
+          </div>
+          <div class="fs-chip">
+            <div class="fs-title">task_watcher.py</div>
+            <div class="fs-sub">Scheduled-task health observer · ~250 lines · log parsing + schtasks query · dashboard concerns</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">applogging.py</div>

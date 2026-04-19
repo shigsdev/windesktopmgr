@@ -7608,6 +7608,18 @@ def bios_audit_snapshot_route():
     return jsonify({"ok": True, "snapshot": snap})
 
 
+@app.route("/api/tasks/health")
+def tasks_health_route():
+    """Return health status for every managed scheduled task."""
+    import task_watcher
+
+    try:
+        tasks = task_watcher.get_all_task_health()
+        return jsonify({"ok": True, "tasks": tasks})
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(e), "tasks": []})
+
+
 @app.route("/api/warranty/data")
 def warranty_data():
     """Collect Intel/Dell warranty readiness data."""
@@ -8300,6 +8312,15 @@ def dashboard_summary():
         )
     elif bios.get("update", {}).get("confirmed_current"):
         pass  # BIOS confirmed current — no concern needed
+
+    # Scheduled-task health concerns (crashloops, stale successes, missing tasks)
+    try:
+        import task_watcher
+
+        task_results = task_watcher.get_all_task_health()
+        concerns.extend(task_watcher.concerns_from_health(task_results))
+    except Exception:  # noqa: BLE001
+        pass  # best-effort — never break dashboard
 
     # BIOS audit-trail concern: any logged change in the last 24h
     try:
