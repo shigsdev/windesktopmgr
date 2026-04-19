@@ -145,6 +145,14 @@
         "mem": 180.4
       }
     ],
-    "accounting_note": "Vendor totals sum per-process RSS (Windows WorkingSet64). Shared DLL pages are counted once per process, so totals slightly overstate unique resident memory."
+    "accounting_note": "Vendor totals sum per-process RSS (Windows WorkingSet64). Shared DLL pages are counted once per process, so totals slightly overstate unique resident memory.",
+    "other_pct": 35.0,
+    "other_top_unclassified": [
+      {
+        "name": "example.exe",
+        "mem": 600.0
+      }
+    ],
+    "other_needs_audit": true
   }
 }

@@ -1488,6 +1488,64 @@ class TestGetMemoryAnalysis:
             "memory response must include an accounting note explaining that vendor totals sum per-process RSS"
         )
 
+    # ── Vendor classifier (backlog #21) ─────────────────────────────────
+
+    @pytest.mark.parametrize(
+        "process_name, expected_category",
+        [
+            ("claude.exe", "dev_tools"),  # Claude Code CLI
+            ("code.exe", "dev_tools"),  # VS Code
+            ("cursor.exe", "dev_tools"),
+            ("windsurf.exe", "dev_tools"),
+            ("warp.exe", "dev_tools"),
+            ("idea64.exe", "dev_tools"),  # IntelliJ IDEA
+            ("pycharm64.exe", "dev_tools"),
+            ("rider64.exe", "dev_tools"),
+            ("node.exe", "dev_tools"),  # Node (Claude Code cli.js)
+            ("git.exe", "dev_tools"),
+            # Sanity: existing categories still classify correctly
+            ("chrome.exe", "browser"),
+            ("msmpeng.exe", "security"),
+            ("MsMpEng.exe", "security"),  # case-insensitive
+            ("explorer.exe", "microsoft"),
+            # Unknown software still bucketed as "other"
+            ("totally-made-up-app.exe", "other"),
+        ],
+    )
+    def test_categorise_process(self, process_name, expected_category):
+        assert wdm._categorise_process(process_name) == expected_category
+
+    def test_other_bucket_audit_surfaces_top_unclassified(self, mocker):
+        """When 'other' crosses 5% of total RAM, the response should include
+        the top 3 unclassified processes so we know what to add next."""
+        procs = [
+            _fake_mem_proc(name="mystery-app.exe", mem_mb=2500.0),
+            _fake_mem_proc(name="unknown-tool.exe", mem_mb=1800.0),
+            _fake_mem_proc(name="weirdthing.exe", mem_mb=700.0),
+            _fake_mem_proc(name="tiny-other.exe", mem_mb=10.0),  # < 50 MB filter
+            _fake_mem_proc(name="chrome.exe", mem_mb=1500.0),  # different cat
+        ]
+        self._patch(mocker, procs=procs, vmem=_fake_vmem(total_mb=32000, available_mb=20000))
+        result = wdm.get_memory_analysis()
+        assert result["other_needs_audit"] is True
+        top = result["other_top_unclassified"]
+        assert len(top) == 3, f"expected 3 unclassified, got {top}"
+        assert [p["name"] for p in top] == ["mystery-app.exe", "unknown-tool.exe", "weirdthing.exe"]
+        # chrome was classified as browser -- must NOT appear
+        assert not any(p["name"] == "chrome.exe" for p in top)
+        # tiny-other is too small -- must NOT appear even though unclassified
+        assert not any(p["name"] == "tiny-other.exe" for p in top)
+
+    def test_other_bucket_audit_quiet_when_under_threshold(self, mocker):
+        """When 'other' is below 5%, no audit alert should fire."""
+        procs = [
+            _fake_mem_proc(name="chrome.exe", mem_mb=5000.0),  # classified
+            _fake_mem_proc(name="mystery.exe", mem_mb=300.0),  # small "other"
+        ]
+        self._patch(mocker, procs=procs, vmem=_fake_vmem(total_mb=32000, available_mb=10000))
+        result = wdm.get_memory_analysis()
+        assert result["other_needs_audit"] is False
+
     def test_top_procs_sorted_by_mem_descending(self, mocker):
         self._patch(mocker)
         result = wdm.get_memory_analysis()
