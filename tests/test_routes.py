@@ -1456,6 +1456,11 @@ class TestDashboardSummaryRoute:
                 {"old_drivers": [], "problematic_drivers": [], "nvidia": None},
             ),
         )
+        # Task-watcher concerns — default to empty so the clean-state test
+        # doesn't pick up real SystemHealthDiag logs on the dev machine.
+        import task_watcher as _tw
+
+        mocker.patch.object(_tw, "get_all_task_health", return_value=[])
 
     def test_returns_200_with_structure(self, client, mocker):
         self._mock_dashboard_deps(mocker)

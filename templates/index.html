@@ -2924,15 +2924,39 @@ function renderMemory(d) {
     const saving = d.mcafee_saving_mb || 0;
     const mcMB   = d.mcafee_mb || 0;
     const defMB  = d.defender_baseline || 150;
+    // Per-vendor breakdown so the total reconciles against the process
+    // table — 2026-04-11 bug: user saw McAfee total != mc-fw-host row
+    // and couldn't tell where the delta came from. This makes the math
+    // auditable by showing every contributing process on hover.
+    const mcProcs = d.mcafee_processes || [];
+    const mcTooltip = mcProcs.length
+      ? `Reconciliation (${mcProcs.length} McAfee processes):\n` +
+        mcProcs.map(p => `  ${p.name}: ${p.mem.toLocaleString()} MB`).join("\n") +
+        `\n  ─────\n  Total: ${mcMB.toLocaleString()} MB\n\n${d.accounting_note || ""}`
+      : "";
+    const mcBreakdownHTML = mcProcs.length
+      ? `<div style="margin-top:6px;font-size:11px;color:var(--muted);font-family:var(--font-mono)">
+          <details><summary style="cursor:pointer;color:var(--muted)">▸ Reconciliation (${mcProcs.length} processes)</summary>
+            <div style="margin-top:6px;padding:8px 10px;background:#ffffff06;border-radius:4px">
+              ${mcProcs.map(p => `<div style="display:flex;justify-content:space-between"><span>${esc(p.name)}</span><span>${p.mem.toLocaleString()} MB</span></div>`).join("")}
+              <div style="margin-top:4px;padding-top:4px;border-top:1px dashed var(--border);display:flex;justify-content:space-between;font-weight:700">
+                <span>Total</span><span>${mcMB.toLocaleString()} MB</span>
+              </div>
+              <div style="margin-top:6px;font-size:10px;color:var(--text-dim);line-height:1.4">${esc(d.accounting_note || "")}</div>
+            </div>
+          </details>
+        </div>`
+      : "";
     document.getElementById("mem-comparison").innerHTML = `
       <div style="margin-bottom:16px">
         <div style="display:flex;justify-content:space-between;margin-bottom:6px">
           <span style="font-size:13px;font-weight:600">McAfee (current)</span>
-          <span style="color:var(--red);font-weight:700">${mcMB.toLocaleString()} MB</span>
+          <span style="color:var(--red);font-weight:700" title="${esc(mcTooltip)}">${mcMB.toLocaleString()} MB</span>
         </div>
         <div style="background:#ffffff11;border-radius:4px;height:12px">
           <div style="background:var(--red);height:100%;border-radius:4px;width:${Math.min(100,mcMB/total*100*5).toFixed(0)}%"></div>
         </div>
+        ${mcBreakdownHTML}
       </div>
       <div style="margin-bottom:20px">
         <div style="display:flex;justify-content:space-between;margin-bottom:6px">
@@ -3638,8 +3662,11 @@ function renderDashboard(d) {
 
   // ── Quick Fixes cards ────────────────────────────────────────────────────
   fetch("/api/remediation/actions").then(r=>r.json()).then(actions=>{
+    // Risk → foreground colour (used for border hover + badge text + badge border)
     const rc = r=>r==="high"?"var(--red)":r==="medium"?"var(--orange)":"var(--green)";
-    const rb = r=>r==="high"?"#ff456012":r==="medium"?"#ff704312":"#00e67612";
+    // Risk → badge background. Alpha bumped from 0.07 -> 0.22 so LOW/MEDIUM/HIGH
+    // labels are legible at a glance instead of washing into the card (#8).
+    const rb = r=>r==="high"?"rgba(255,71,87,.22)":r==="medium"?"rgba(255,112,67,.22)":"rgba(0,229,160,.22)";
     document.getElementById("db-qf-cards").innerHTML = actions.map(a=>`
       <button onclick="runRemediationFromDashboard('${esc(a.id)}')"
         style="background:var(--card);border:1px solid var(--border);border-radius:8px;
@@ -3647,10 +3674,10 @@ function renderDashboard(d) {
         onmouseover="this.style.borderColor='${rc(a.risk)}'"
         onmouseout="this.style.borderColor='var(--border)'" title="${esc(a.description)}">
         <div style="font-size:16px;margin-bottom:4px">${esc(a.icon)}</div>
-        <div style="font-size:10px;color:var(--fg);font-family:var(--font-mono);line-height:1.3;margin-bottom:6px">${esc(a.label)}</div>
-        <span style="font-size:9px;font-weight:700;text-transform:uppercase;
+        <div style="font-size:11px;color:var(--text-bright);font-family:var(--font-mono);font-weight:500;line-height:1.3;margin-bottom:6px">${esc(a.label)}</div>
+        <span style="font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;
           color:${rc(a.risk)};background:${rb(a.risk)};
-          border:1px solid ${rc(a.risk)};padding:1px 6px;border-radius:8px">${a.risk}</span>
+          border:1px solid ${rc(a.risk)};padding:2px 7px;border-radius:8px">${a.risk}</span>
       </button>`).join("");
   }).catch(()=>{});
 
