@@ -5842,7 +5842,56 @@ MEM_CATEGORIES = {
         "amdrsserv",
         "radeon",
     ],
-    "this_app": ["python", "pythonw", "py", "windesktopmgr", "flask"],
+    # Developer tools (backlog #21). Added 2026-04-19 after the user's
+    # claude.exe was bucketed as "other". Ordered BEFORE "this_app" because
+    # the _categorise_process substring match is bidirectional — e.g.
+    # "py" (this_app) would otherwise catch "pycharm64.exe" before we
+    # reach dev_tools. Also dropped the bare "py" entry from this_app
+    # since it would swallow almost every Python-named developer tool.
+    "dev_tools": [
+        # Claude Code CLI
+        "claude",
+        # Popular editors
+        "code",  # VS Code / VS Code Insiders renderer+host
+        "code-insiders",
+        "cursor",  # Cursor.com
+        "windsurf",  # Codeium Windsurf
+        "warp",  # Warp terminal
+        "zed",  # Zed editor
+        "sublime_text",
+        "atom",
+        "notepad++",
+        # JetBrains family — IDE names vary per product
+        "idea",  # IntelliJ IDEA
+        "webstorm",
+        "pycharm",
+        "goland",
+        "clion",
+        "phpstorm",
+        "rubymine",
+        "rider",
+        "datagrip",
+        "fleet",  # JetBrains Fleet
+        # Version control clients
+        "github desktop",
+        "gitkraken",
+        "sourcetree",
+        "fork",
+        "git",  # git.exe, git-bash
+        "bash",  # git-bash
+        # Shells / terminals
+        "wezterm",
+        "alacritty",
+        "tabby",
+        # Docker / container tools
+        "docker desktop",
+        "docker",
+        "wsl",
+        "wslhost",
+        # Node runtime (Claude Code's cli.js runs under node.exe)
+        "node",
+    ],
+    "this_app": ["python", "pythonw", "windesktopmgr", "flask"],
     "games": ["steam", "steamwebhelper", "epicgameslauncher", "origin", "battlenet", "geforceexperience"],
     "cloud": ["onedrive", "dropbox", "googledrivefs", "box", "icloudservices"],
     "other": [],
@@ -5942,6 +5991,19 @@ def get_memory_analysis() -> dict:
         defender_baseline_mb = max(defender_mb, 150)
         mcafee_saving_mb = round(mcafee_mb - defender_baseline_mb, 0)
 
+        # 'Other' bucket audit (backlog #21): when unclassified processes
+        # cross 5 % of total RAM, surface the top 3 names so we know what
+        # entries to add to MEM_CATEGORIES next time. Small memory footprint
+        # processes (< 50 MB) get filtered out -- they're noise, not
+        # classification gaps.
+        other_total_mb = round(categories.get("other", 0), 0)
+        other_pct = round(other_total_mb / total_mb * 100, 1) if total_mb else 0.0
+        other_top = [
+            {"name": p["name"], "mem": p["mem"]}
+            for p in top_procs
+            if p.get("category") == "other" and p.get("mem", 0) >= 50
+        ][:3]
+
         return {
             "total_mb": total_mb,
             "used_mb": round(used_mb, 0),
@@ -5955,6 +6017,9 @@ def get_memory_analysis() -> dict:
             "defender_baseline": defender_baseline_mb,
             "mcafee_saving_mb": max(mcafee_saving_mb, 0),
             "has_mcafee": mcafee_mb > 50,
+            "other_pct": other_pct,
+            "other_top_unclassified": other_top,
+            "other_needs_audit": other_pct > 5.0,
             "accounting_note": (
                 "Vendor totals sum per-process RSS (Windows WorkingSet64). "
                 "Shared DLL pages are counted once per process, so totals "
