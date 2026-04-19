@@ -3638,8 +3638,11 @@ function renderDashboard(d) {
 
   // ── Quick Fixes cards ────────────────────────────────────────────────────
   fetch("/api/remediation/actions").then(r=>r.json()).then(actions=>{
+    // Risk → foreground colour (used for border hover + badge text + badge border)
     const rc = r=>r==="high"?"var(--red)":r==="medium"?"var(--orange)":"var(--green)";
-    const rb = r=>r==="high"?"#ff456012":r==="medium"?"#ff704312":"#00e67612";
+    // Risk → badge background. Alpha bumped from 0.07 -> 0.22 so LOW/MEDIUM/HIGH
+    // labels are legible at a glance instead of washing into the card (#8).
+    const rb = r=>r==="high"?"rgba(255,71,87,.22)":r==="medium"?"rgba(255,112,67,.22)":"rgba(0,229,160,.22)";
     document.getElementById("db-qf-cards").innerHTML = actions.map(a=>`
       <button onclick="runRemediationFromDashboard('${esc(a.id)}')"
         style="background:var(--card);border:1px solid var(--border);border-radius:8px;
@@ -3647,10 +3650,10 @@ function renderDashboard(d) {
         onmouseover="this.style.borderColor='${rc(a.risk)}'"
         onmouseout="this.style.borderColor='var(--border)'" title="${esc(a.description)}">
         <div style="font-size:16px;margin-bottom:4px">${esc(a.icon)}</div>
-        <div style="font-size:10px;color:var(--fg);font-family:var(--font-mono);line-height:1.3;margin-bottom:6px">${esc(a.label)}</div>
-        <span style="font-size:9px;font-weight:700;text-transform:uppercase;
+        <div style="font-size:11px;color:var(--text-bright);font-family:var(--font-mono);font-weight:500;line-height:1.3;margin-bottom:6px">${esc(a.label)}</div>
+        <span style="font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;
           color:${rc(a.risk)};background:${rb(a.risk)};
-          border:1px solid ${rc(a.risk)};padding:1px 6px;border-radius:8px">${a.risk}</span>
+          border:1px solid ${rc(a.risk)};padding:2px 7px;border-radius:8px">${a.risk}</span>
       </button>`).join("");
   }).catch(()=>{});
 
