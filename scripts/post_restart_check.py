@@ -242,6 +242,41 @@ def check_tray_resource_budget(host: str) -> bool:
     return ok
 
 
+def check_playwright_smoke() -> bool:
+    """Run the frontend Playwright smoke suite against the live server.
+
+    Opt-in: requires ``PLAYWRIGHT_SMOKE=1`` in the environment. When unset,
+    this is a no-op that returns True (success). When set, pytest is
+    invoked with ``-m playwright``; a non-zero exit fails the verify.
+
+    Rationale: Playwright tests take 3-5 minutes (browser launch + 20
+    tab-navigation assertions + network rate sampling). Running them on
+    every verify would balloon wall time from 2 min to 7+ min. The
+    explicit opt-in keeps the fast path fast while making the Playwright
+    gate a deliberate choice before a release / milestone.
+    """
+    import os as _os
+
+    if _os.environ.get("PLAYWRIGHT_SMOKE", "").strip() not in ("1", "true", "yes"):
+        return True
+
+    print(f"\n{BOLD}Running Playwright frontend smoke suite{RESET}")
+    cmd = [sys.executable, "-m", "pytest", "tests/test_playwright_smoke.py", "-m", "playwright", "--no-cov", "-q"]
+    import subprocess
+
+    start = time.time()
+    result = subprocess.run(cmd, capture_output=True, text=True)  # noqa: S603
+    elapsed = time.time() - start
+    if result.returncode == 0:
+        print(f"  {GREEN}passed{RESET} ({elapsed:.1f}s)")
+        return True
+    print(f"  {RED}FAILED{RESET} ({elapsed:.1f}s)")
+    output = (result.stdout + result.stderr).strip()
+    for line in output.splitlines()[-30:]:
+        print(f"    {line}")
+    return False
+
+
 def check_logs(host: str, since: str | None = None) -> bool:
     """Fetch recent ERROR and WARNING log entries and report them.
 
@@ -323,6 +358,9 @@ def main() -> int:
     logs_ok = check_logs(args.host, since=restart_ts)
     selftest_ok = body.get("ok", False)
 
+    # Playwright frontend smoke (backlog #26) — opt-in via PLAYWRIGHT_SMOKE=1
+    playwright_ok = check_playwright_smoke()
+
     if selftest_ok and not dash_ok:
         print(f"\n  {YELLOW}{BOLD}Selftest passed but dashboard/summary failed{RESET}")
         return 1
@@ -334,6 +372,9 @@ def main() -> int:
         return 1
     if selftest_ok and not logs_ok:
         print(f"\n  {YELLOW}{BOLD}Selftest passed but log errors detected{RESET}")
+        return 1
+    if selftest_ok and not playwright_ok:
+        print(f"\n  {YELLOW}{BOLD}Selftest passed but Playwright frontend smoke failed{RESET}")
         return 1
     return 0 if selftest_ok else 1
 

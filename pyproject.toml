@@ -34,12 +34,13 @@ addopts = [
     "--cov-report=term-missing:skip-covered",
     "--cov-fail-under=80",
     "-q",
-    "-m", "not integration",
+    "-m", "not integration and not playwright",
 ]
 markers = [
     "integration: real PowerShell/Windows tests (run with: pytest -m integration)",
     "snapshot: tests using captured real system output as fixtures",
     "e2e: end-to-end smoke tests hitting Flask routes with multi-layer mocks",
+    "playwright: frontend smoke tests (require live server; run with: pytest -m playwright)",
 ]
 
 # ── ruff ──────────────────────────────────────────────────────────────────────
