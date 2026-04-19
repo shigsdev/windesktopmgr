@@ -3635,13 +3635,15 @@ class TestAnalyzeDiskPath:
             self._make_direntry("Windows", "C:\\Windows", is_dir=True),
         ]
         self._mock_scandir(mocker, entries)
-        mocker.patch(
-            "disk._walk_dir_size",
-            side_effect=[
-                {"local": 500_000_000, "cloud": 20_000_000_000, "count": 5000},
-                {"local": 30_000_000_000, "cloud": 0, "count": 98765},
-            ],
-        )
+        # analyze_disk_path runs _walk_dir_size in a ThreadPoolExecutor, so
+        # using ``side_effect=[...]`` (consumed in call-order) was flaky:
+        # whichever worker won the race got the first return value. Key the
+        # mock by path instead so each directory gets its intended result.
+        path_returns = {
+            "C:\\Users\\me\\iCloud Photos": {"local": 500_000_000, "cloud": 20_000_000_000, "count": 5000},
+            "C:\\Windows": {"local": 30_000_000_000, "cloud": 0, "count": 98765},
+        }
+        mocker.patch("disk._walk_dir_size", side_effect=lambda p: path_returns[p])
         result = disk.analyze_disk_path("C:\\")
         assert result["ok"] is True
         assert result["total_bytes"] == 30_500_000_000
