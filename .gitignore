@@ -45,6 +45,9 @@ bios_audit_history.json
 # Memory warning snooze store (runtime state)
 memory_snoozes.json
 
+# Alert rules user overrides (runtime state)
+alert_rules.json
+
 # ── Sensitive / personal ───────────────────────────────────────────────────
 # Gmail credentials (encrypted, but best not committed)
 gmail_credentials.json

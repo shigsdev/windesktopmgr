@@ -328,6 +328,8 @@
         <div class="route-chip" id="rt-bios-audit"><span class="method">GET</span>/api/bios/audit/history</div>
         <div class="route-chip"><span class="method">GET</span>/api/bios/audit/snapshot</div>
         <div class="route-chip" id="rt-tasks-health"><span class="method">GET</span>/api/tasks/health</div>
+        <div class="route-chip" id="rt-alerts-rules"><span class="method">GET</span>/api/alerts/rules</div>
+        <div class="route-chip"><span class="method">PATCH</span>/api/alerts/rules/&lt;id&gt;</div>
         <div class="route-chip" id="rt-creds"><span class="method">GET</span>/api/credentials/health</div>
         <div class="route-chip"><span class="method">POST</span>/api/credentials/resume-onedrive</div>
         <div class="route-chip"><span class="method">POST</span>/api/credentials/resume-brokers</div>
@@ -665,6 +667,10 @@
           <div class="fs-chip">
             <div class="fs-title">task_watcher.py</div>
             <div class="fs-sub">Scheduled-task health observer · ~250 lines · log parsing + schtasks query · dashboard concerns</div>
+          </div>
+          <div class="fs-chip">
+            <div class="fs-title">alerts.py</div>
+            <div class="fs-sub">User-configurable threshold rules · ~290 lines · persistence + evaluator · dashboard concerns</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">applogging.py</div>

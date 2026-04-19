@@ -696,6 +696,16 @@
         <div id="db-qf-cards" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px"></div>
       </div>
 
+      <!-- Alert rules card (backlog #5) -->
+      <div id="db-alerts-card" style="margin-top:28px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+          <div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)">Alert Rules</div>
+          <div style="font-size:10px;color:var(--muted)">Tune thresholds that fire dashboard warnings</div>
+          <button onclick="loadAlertRules()" style="margin-left:auto;background:transparent;border:1px solid var(--border);color:var(--muted);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:10px">↺</button>
+        </div>
+        <div id="db-alerts-rows" style="display:flex;flex-direction:column;gap:6px">Loading…</div>
+      </div>
+
       <!-- Quick links to all tabs -->
       <div style="margin-top:28px">
         <div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:12px">All Monitoring Areas</div>
@@ -3869,8 +3879,85 @@ function renderDashboard(d) {
     </button>`
   ).join("");
 
+  // ── Alert Rules (backlog #5) ──────────────────────────────────────────────
+  loadAlertRules();
+
   document.getElementById("db-loading").style.display = "none";
   document.getElementById("db-content").style.display  = "";
+}
+
+// Alert rules card: list every rule with inline threshold / enable edits.
+// Backlog #5 — the user should never have to edit Python to tune warning
+// thresholds.
+async function loadAlertRules() {
+  const el = document.getElementById("db-alerts-rows");
+  if (!el) return;
+  try {
+    const r = await fetch("/api/alerts/rules");
+    const d = await r.json();
+    const rules = d.rules || [];
+    if (!rules.length) { el.innerHTML = '<div style="color:var(--muted);font-size:12px">No rules.</div>'; return; }
+    const lvlColor = l => l === "critical" ? "var(--red)" : l === "warning" ? "var(--orange)" : "var(--cyan)";
+    const esc = s => String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+    const unitFor = m => m === "temperature_c" ? "°C" : "%";
+    el.innerHTML = rules.map(rule => `
+      <div data-rule-id="${esc(rule.id)}" style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:var(--card);border:1px solid var(--border);border-left:3px solid ${lvlColor(rule.level)};border-radius:6px">
+        <span style="font-size:18px;flex-shrink:0">${esc(rule.icon || "⚠")}</span>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:12px;color:var(--text-bright)">${esc(rule.name)}</div>
+          <div style="font-size:10px;color:var(--muted);font-family:var(--font-mono)">${esc(rule.metric)} · <span style="color:${lvlColor(rule.level)}">${esc(rule.level.toUpperCase())}</span></div>
+        </div>
+        <label style="font-size:10px;color:var(--muted)">Threshold</label>
+        <input type="number" step="1" min="0" max="110" value="${rule.threshold}"
+               style="width:64px;padding:3px 6px;background:var(--bg);border:1px solid var(--border);color:var(--text-bright);border-radius:4px;font-family:var(--font-mono);font-size:11px"
+               data-field="threshold">
+        <span style="font-size:10px;color:var(--muted);margin-left:-6px">${unitFor(rule.metric)}</span>
+        <label style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px;cursor:pointer">
+          <input type="checkbox" ${rule.enabled ? "checked" : ""} data-field="enabled">
+          enabled
+        </label>
+        <button data-action="save" style="background:transparent;border:1px solid var(--border);color:var(--cyan);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:10px;font-weight:600">Save</button>
+      </div>
+    `).join("");
+    el.querySelectorAll("div[data-rule-id]").forEach(row => {
+      row.querySelector("button[data-action=save]").addEventListener("click", () =>
+        saveAlertRule(row)
+      );
+    });
+  } catch (ex) {
+    console.warn("loadAlertRules failed:", ex);
+    el.innerHTML = '<div style="color:var(--red);font-size:12px">Failed to load alert rules.</div>';
+  }
+}
+
+async function saveAlertRule(rowEl) {
+  const ruleId = rowEl.dataset.ruleId;
+  const threshold = parseFloat(rowEl.querySelector("input[data-field=threshold]").value);
+  const enabled = rowEl.querySelector("input[data-field=enabled]").checked;
+  const btn = rowEl.querySelector("button[data-action=save]");
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "…";
+  try {
+    const r = await fetch(`/api/alerts/rules/${encodeURIComponent(ruleId)}`, {
+      method: "PATCH",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({threshold, enabled}),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      btn.textContent = "✓ saved";
+      // Reload the concerns list so the new threshold takes effect immediately
+      if (typeof loadDashboard === "function") setTimeout(loadDashboard, 600);
+      setTimeout(() => { btn.textContent = prev; btn.disabled = false; }, 1500);
+    } else {
+      btn.textContent = "✗ " + (d.error || "failed");
+      setTimeout(() => { btn.textContent = prev; btn.disabled = false; }, 3000);
+    }
+  } catch (ex) {
+    btn.textContent = "✗ network";
+    setTimeout(() => { btn.textContent = prev; btn.disabled = false; }, 3000);
+  }
 }
 
 // Auto-load dashboard when it's the active tab on startup

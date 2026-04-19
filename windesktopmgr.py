@@ -7914,6 +7914,37 @@ def tasks_health_route():
         return jsonify({"ok": False, "error": str(e), "tasks": []})
 
 
+@app.route("/api/alerts/rules", methods=["GET"])
+def alerts_rules_list_route():
+    """Return the full merged (defaults + user overrides) alert rule list."""
+    import alerts
+
+    try:
+        return jsonify({"ok": True, "rules": [r.to_dict() for r in alerts.load_rules()]})
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(e), "rules": []}), 500
+
+
+@app.route("/api/alerts/rules/<rule_id>", methods=["PATCH"])
+def alerts_rule_update_route(rule_id: str):
+    """Update threshold / level / enabled for one rule.
+
+    Body: ``{"threshold": 88.0}`` or ``{"enabled": false}`` or both.
+    Returns the updated rule on success.
+    """
+    import alerts
+
+    data = request.get_json() or {}
+    # Only allow known fields to pass through
+    allowed = {k: v for k, v in data.items() if k in ("threshold", "level", "enabled")}
+    if not allowed:
+        return jsonify(
+            {"ok": False, "error": "no editable fields in payload (allowed: threshold, level, enabled)"}
+        ), 400
+    result = alerts.update_rule(rule_id, **allowed)
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
 @app.route("/api/tasks/open-logs-folder", methods=["POST"])
 def tasks_open_logs_folder_route():
     """Open the app's Logs/ directory in Windows Explorer."""
@@ -8605,34 +8636,61 @@ def dashboard_summary():
                 "action_fn": "switchTab('thermals')",
             }
         )
-    if cpu_pct >= 80:
-        concerns.append(
-            {
-                "level": "warning",
-                "tab": "thermals",
-                "icon": "💻",
-                "title": f"CPU at {cpu_pct}% utilisation",
-                "detail": "Check Processes tab for what is driving high CPU.",
-                "action": "View Processes",
-                "action_fn": "switchTab('processes')",
-            }
-        )
+    # CPU + Memory system pressure concerns now flow through alerts.py
+    # (backlog #5) so the user can tune thresholds without editing code.
+    # Per-drive disk percents also join the rule-driven stream.
+    try:
+        import alerts
 
-    # Memory — system-level pressure concern
-    mem = results.get("memory", {})
-    mem_pct = round(mem.get("used_mb", 0) / max(mem.get("total_mb", 1), 1) * 100, 1)
-    if mem_pct > 90:
-        concerns.append(
-            {
-                "level": "critical",
-                "tab": "memory",
-                "icon": "🧠",
-                "title": f"RAM at {mem_pct}% ({mem.get('used_mb', 0):,.0f} MB used)",
-                "detail": "Very little memory available — system may be unstable.",
-                "action": "View Memory Analysis",
-                "action_fn": "switchTab('memory')",
-            }
-        )
+        mem = results.get("memory", {})
+        mem_pct = round(mem.get("used_mb", 0) / max(mem.get("total_mb", 1), 1) * 100, 1)
+        metric_points: list[alerts.MetricPoint] = []
+        if cpu_pct:
+            metric_points.append(alerts.MetricPoint(metric="cpu_percent", value=float(cpu_pct), label=""))
+        if mem_pct:
+            metric_points.append(
+                alerts.MetricPoint(
+                    metric="memory_percent",
+                    value=float(mem_pct),
+                    label=f"{mem.get('used_mb', 0):,.0f} MB used",
+                )
+            )
+        # Per-drive disk usage (drive letters A..Z)
+        for d in (results.get("disk") or {}).get("drives", []):
+            pct = d.get("PctUsed") or d.get("pct_used")
+            letter = d.get("Letter") or d.get("letter") or ""
+            if pct is not None and letter:
+                metric_points.append(alerts.MetricPoint(metric="disk_percent", value=float(pct), label=f"{letter}:"))
+        concerns.extend(alerts.evaluate_rules(metric_points))
+    except Exception:  # noqa: BLE001 — alerts engine is best-effort
+        # Fallback to legacy hardcoded thresholds so the dashboard is never
+        # silent about real pressure even if the rules engine is broken.
+        mem = results.get("memory", {})
+        mem_pct = round(mem.get("used_mb", 0) / max(mem.get("total_mb", 1), 1) * 100, 1)
+        if cpu_pct >= 80:
+            concerns.append(
+                {
+                    "level": "warning",
+                    "tab": "thermals",
+                    "icon": "💻",
+                    "title": f"CPU at {cpu_pct}% utilisation",
+                    "detail": "Check Processes tab for what is driving high CPU.",
+                    "action": "View Processes",
+                    "action_fn": "switchTab('processes')",
+                }
+            )
+        if mem_pct > 90:
+            concerns.append(
+                {
+                    "level": "critical",
+                    "tab": "memory",
+                    "icon": "🧠",
+                    "title": f"RAM at {mem_pct}% ({mem.get('used_mb', 0):,.0f} MB used)",
+                    "detail": "Very little memory available — system may be unstable.",
+                    "action": "View Memory Analysis",
+                    "action_fn": "switchTab('memory')",
+                }
+            )
 
     # Memory — per-process hogs (backlog #19). Each concern carries
     # pid/process_name/mem_mb so the frontend can render inline action
@@ -8725,36 +8783,9 @@ def dashboard_summary():
     except Exception:  # noqa: BLE001
         pass  # audit trail is best-effort — never break dashboard
 
-    # Disk usage
-    disk = results.get("disk", {})
-    for v in disk.get("drives", []):
-        pct_used = v.get("PctUsed", 0)
-        drive_letter = v.get("Letter", "?")
-        free_gb = v.get("FreeGB", 0)
-        if pct_used >= 95:
-            concerns.append(
-                {
-                    "level": "critical",
-                    "tab": "disk",
-                    "icon": "💾",
-                    "title": f"Drive {drive_letter} is {pct_used}% full ({free_gb:.1f} GB free)",
-                    "detail": "Critically low disk space. System performance may be degraded.",
-                    "action": "View Disk Health",
-                    "action_fn": "switchTab('disk')",
-                }
-            )
-        elif pct_used >= 90:
-            concerns.append(
-                {
-                    "level": "warning",
-                    "tab": "disk",
-                    "icon": "💾",
-                    "title": f"Drive {drive_letter} is {pct_used}% full ({free_gb:.1f} GB free)",
-                    "detail": "Disk space is running low. Consider freeing up space.",
-                    "action": "View Disk Health",
-                    "action_fn": "switchTab('disk')",
-                }
-            )
+    # Disk usage is now driven by alerts.py (backlog #5) — see the
+    # per-drive points appended in the CPU/memory block above. Thresholds
+    # are user-configurable via /api/alerts/rules.
 
     # Driver health
     drv = results.get("drivers", {})
