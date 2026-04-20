@@ -2656,3 +2656,110 @@ class TestDashboardMemoryConcernActions:
         resp = client.get("/api/dashboard/summary")
         concerns = resp.get_json()["concerns"]
         assert not any(c.get("process_name") == "msmpeng" for c in concerns)
+
+
+# ── Trends / metrics history (backlog #4) ────────────────────────────────────
+
+
+class TestMetricsHistoryRoute:
+    """/api/metrics/history powers the dashboard Trends sparklines."""
+
+    @pytest.fixture
+    def mh_tmp(self, tmp_path, monkeypatch):
+        import metrics_history as mh
+
+        monkeypatch.setattr(mh, "HISTORY_FILE", str(tmp_path / "metrics_history.json"))
+        return mh
+
+    def test_empty_history_returns_empty_metrics(self, client, mh_tmp):
+        resp = client.get("/api/metrics/history")
+        assert resp.status_code == 200
+        d = resp.get_json()
+        assert d["window_h"] == 168  # default 7-day window
+        assert d["metrics"] == {}
+        assert d["available"] == []
+
+    def test_returns_recorded_samples(self, client, mh_tmp):
+        mh_tmp.record_sample({"thermals": {"perf": {"CPUPct": 33}}}, force=True)
+        resp = client.get("/api/metrics/history")
+        d = resp.get_json()
+        assert "cpu_percent" in d["metrics"]
+        assert d["metrics"]["cpu_percent"][0]["value"] == 33.0
+        assert "cpu_percent" in d["available"]
+
+    def test_window_clamped_to_max_720h(self, client, mh_tmp):
+        resp = client.get("/api/metrics/history?window_h=99999")
+        assert resp.get_json()["window_h"] == 720
+
+    def test_window_clamped_to_min_1h(self, client, mh_tmp):
+        resp = client.get("/api/metrics/history?window_h=0")
+        assert resp.get_json()["window_h"] == 1
+
+    def test_invalid_window_falls_back_to_default(self, client, mh_tmp):
+        resp = client.get("/api/metrics/history?window_h=abc")
+        assert resp.get_json()["window_h"] == 168
+
+    def test_metric_filter_returns_only_that_series(self, client, mh_tmp):
+        mh_tmp.record_sample(
+            {"thermals": {"perf": {"CPUPct": 11}}, "memory": {"used_mb": 100, "total_mb": 200}},
+            force=True,
+        )
+        resp = client.get("/api/metrics/history?metric=cpu_percent")
+        d = resp.get_json()
+        assert d["metric"] == "cpu_percent"
+        assert "series" in d
+        assert "metrics" not in d  # single-metric mode is the slim shape
+        assert d["series"][0]["value"] == 11.0
+
+    def test_unknown_metric_returns_empty_series_not_error(self, client, mh_tmp):
+        mh_tmp.record_sample({"thermals": {"perf": {"CPUPct": 11}}}, force=True)
+        resp = client.get("/api/metrics/history?metric=does_not_exist")
+        assert resp.status_code == 200
+        assert resp.get_json()["series"] == []
+
+
+class TestMetricsHistorySamplerHook:
+    """The /api/dashboard/summary route fires record_sample() as a side-effect."""
+
+    @pytest.fixture
+    def mh_tmp(self, tmp_path, monkeypatch):
+        import metrics_history as mh
+
+        monkeypatch.setattr(mh, "HISTORY_FILE", str(tmp_path / "metrics_history.json"))
+        return mh
+
+    def test_dashboard_summary_records_a_sample(self, client, mocker, mh_tmp):
+        # Mock every fan-out collector so the route runs offline. Only the
+        # ones whose data we want to flow into metrics need realistic shapes.
+        import windesktopmgr as wdm
+
+        mocker.patch.object(wdm, "get_thermals", return_value={"perf": {"CPUPct": 42}, "temps": []})
+        mocker.patch.object(wdm, "get_memory_analysis", return_value={"used_mb": 800, "total_mb": 1600})
+        mocker.patch.object(wdm, "get_bios_status", return_value={})
+        mocker.patch.object(wdm, "get_credentials_network_health", return_value={})
+        mocker.patch.object(wdm, "get_disk_health", return_value={"drives": []})
+        mocker.patch.object(wdm, "get_driver_health", return_value={})
+
+        resp = client.get("/api/dashboard/summary")
+        assert resp.status_code == 200
+
+        history = mh_tmp.load_history()
+        assert len(history) == 1
+        m = history[0]["metrics"]
+        assert m["cpu_percent"] == 42.0
+        assert m["memory_percent"] == 50.0
+
+    def test_sampler_failure_does_not_break_dashboard(self, client, mocker, mh_tmp):
+        # Even if record_sample raises, the dashboard must still respond.
+        import windesktopmgr as wdm
+
+        mocker.patch.object(wdm, "get_thermals", return_value={"perf": {"CPUPct": 1}, "temps": []})
+        mocker.patch.object(wdm, "get_memory_analysis", return_value={"used_mb": 1, "total_mb": 2})
+        mocker.patch.object(wdm, "get_bios_status", return_value={})
+        mocker.patch.object(wdm, "get_credentials_network_health", return_value={})
+        mocker.patch.object(wdm, "get_disk_health", return_value={"drives": []})
+        mocker.patch.object(wdm, "get_driver_health", return_value={})
+        mocker.patch.object(mh_tmp, "record_sample", side_effect=RuntimeError("boom"))
+
+        resp = client.get("/api/dashboard/summary")
+        assert resp.status_code == 200
