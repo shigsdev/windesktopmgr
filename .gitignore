@@ -48,6 +48,9 @@ memory_snoozes.json
 # Alert rules user overrides (runtime state)
 alert_rules.json
 
+# Trend sampler history (runtime state, regenerates on each tray poll)
+metrics_history.json
+
 # ── Sensitive / personal ───────────────────────────────────────────────────
 # Gmail credentials (encrypted, but best not committed)
 gmail_credentials.json

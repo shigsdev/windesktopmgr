@@ -193,7 +193,7 @@
       <button type="button" onclick="exportPDF()" title="Open the browser print dialog — choose 'Save as PDF'" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--yellow);border:none;cursor:pointer;border-right:1px solid var(--border)">Export PDF</button>
       <button type="button" onclick="exportHTML()" title="Download a self-contained copy of this diagram" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--blue);border:none;cursor:pointer">Export HTML</button>
     </div>
-    <div class="badge" style="color:var(--green);border-color:#00e67633">1,286 tests · 85% coverage</div>
+    <div class="badge" style="color:var(--green);border-color:#00e67633">1,454 tests · 85% coverage</div>
     <div class="badge">
       <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
     </div>
@@ -330,6 +330,7 @@
         <div class="route-chip" id="rt-tasks-health"><span class="method">GET</span>/api/tasks/health</div>
         <div class="route-chip" id="rt-alerts-rules"><span class="method">GET</span>/api/alerts/rules</div>
         <div class="route-chip"><span class="method">PATCH</span>/api/alerts/rules/&lt;id&gt;</div>
+        <div class="route-chip" id="rt-metrics-history"><span class="method">GET</span>/api/metrics/history</div>
         <div class="route-chip" id="rt-creds"><span class="method">GET</span>/api/credentials/health</div>
         <div class="route-chip"><span class="method">POST</span>/api/credentials/resume-onedrive</div>
         <div class="route-chip"><span class="method">POST</span>/api/credentials/resume-brokers</div>
@@ -459,6 +460,7 @@
         <div class="cache-chip" id="ch-process">process_cache.json</div>
         <div class="cache-chip" id="ch-bios">bios_cache.json</div>
         <div class="cache-chip" id="ch-bios-audit">bios_audit_history.json</div>
+        <div class="cache-chip" id="ch-metrics-history">metrics_history.json</div>
         <div class="cache-chip" id="ch-homenet" style="border-color:#448aff44;color:var(--blue)">homenet_inventory.json</div>
       </div>
     </div>
@@ -673,6 +675,10 @@
             <div class="fs-sub">User-configurable threshold rules · ~290 lines · persistence + evaluator · dashboard concerns</div>
           </div>
           <div class="fs-chip">
+            <div class="fs-title">metrics_history.py</div>
+            <div class="fs-sub">Trend sampler · ~262 lines · 10-min throttle · append-only JSON · sparkline data</div>
+          </div>
+          <div class="fs-chip">
             <div class="fs-title">applogging.py</div>
             <div class="fs-sub">RotatingFileHandler · ~212 lines · 10MB × 5 backups · /api/logs source</div>
           </div>
@@ -744,11 +750,11 @@
 
   <!-- ── LAYER 7: TEST SUITE ──────────────────────────────────── -->
   <div class="row row-tests" id="layer-tests">
-    <div class="row-label">🧪 Test Suite — 1,408 tests · pytest · 85% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E</div>
+    <div class="row-label">🧪 Test Suite — 1,454 tests · pytest · 85% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
       <div class="test-chip">
         <div class="test-title">test_routes.py</div>
-        <div class="test-sub">195 tests · all Flask endpoints · server config · warranty · sysinfo · stale data</div>
+        <div class="test-sub">216 tests · all Flask endpoints · server config · warranty · sysinfo · stale data · metrics history</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_powershell.py</div>
@@ -813,6 +819,10 @@
       <div class="test-chip">
         <div class="test-title">test_post_update_check.py</div>
         <div class="test-sub">47 tests · WMI mocks · state roundtrip · subprocess timeouts · SMTP + keyring · backlog prepend · orchestrator</div>
+      </div>
+      <div class="test-chip">
+        <div class="test-title">test_metrics_history.py</div>
+        <div class="test-sub">33 tests · extract metrics · throttle · capping · atomic-write failure · series query</div>
       </div>
     </div>
     <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">
@@ -1072,7 +1082,7 @@
           <div style="flex:0 0 auto;min-width:120px;background:#ff80ab0a;border:1px solid #ff80ab44;border-radius:8px;padding:10px 12px;text-align:center">
             <div style="font-size:16px;margin-bottom:4px">🧪</div>
             <div style="color:var(--pink);font-weight:700;font-size:10px">3. PYTEST</div>
-            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">1,286 tests · 85% cov · ~60s</div>
+            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">1,454 tests · 85% cov · ~60s</div>
           </div>
           <div style="display:flex;align-items:center;padding:0 4px;color:var(--pink);font-size:14px">→</div>
 
@@ -1214,7 +1224,7 @@
 
 
 <div class="footer">
-  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 1,286 tests · ~21,480 lines</span>
+  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 1,454 tests · ~21,480 lines</span>
   <span>github.com/shigsdev/windesktopmgr · Updated 2026-04-14</span>
 </div>
 

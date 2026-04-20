@@ -8871,6 +8871,22 @@ def dashboard_summary():
         else "ok"
     )
 
+    # Trend sampler (backlog #4). Best-effort, throttled internally to one
+    # sample per SAMPLE_INTERVAL — must never break the dashboard response.
+    try:
+        import metrics_history
+
+        metrics_history.record_sample(
+            {
+                "concerns": concerns,
+                "thermals": results.get("thermals") or {},
+                "memory": results.get("memory") or {},
+                "disk": results.get("disk") or {},
+            }
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
     return jsonify(
         {
             "concerns": concerns,
@@ -8879,6 +8895,42 @@ def dashboard_summary():
             "warnings": sum(1 for c in concerns if c["level"] == "warning"),
             "overall": overall,
             "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+
+@app.route("/api/metrics/history")
+def metrics_history_route():
+    """Return time-series samples for the dashboard Trends card (backlog #4).
+
+    Query params:
+        window_h:  hours of history to return (default 168 = 7 days, max 720)
+        metric:    optional metric key to drill into a single series
+    """
+    import metrics_history as mh
+
+    try:
+        window_h = int(request.args.get("window_h", "168"))
+    except (TypeError, ValueError):
+        window_h = 168
+    window_h = max(1, min(window_h, 720))
+    window = timedelta(hours=window_h)
+
+    metric = request.args.get("metric")
+    if metric:
+        return jsonify(
+            {
+                "window_h": window_h,
+                "metric": metric,
+                "series": mh.get_series(metric, window=window),
+            }
+        )
+
+    return jsonify(
+        {
+            "window_h": window_h,
+            "metrics": mh.get_all_series(window=window),
+            "available": mh.list_metrics(),
         }
     )
 

@@ -696,6 +696,16 @@
         <div id="db-qf-cards" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px"></div>
       </div>
 
+      <!-- Trends card (backlog #4) -->
+      <div id="db-trends-card" style="margin-top:28px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+          <div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)">Trends (last 7 days)</div>
+          <div style="font-size:10px;color:var(--muted)">Time-series view of key metrics</div>
+          <button onclick="loadTrends()" style="margin-left:auto;background:transparent;border:1px solid var(--border);color:var(--muted);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:10px">↺</button>
+        </div>
+        <div id="db-trends-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">Loading…</div>
+      </div>
+
       <!-- Alert rules card (backlog #5) -->
       <div id="db-alerts-card" style="margin-top:28px">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
@@ -3882,8 +3892,92 @@ function renderDashboard(d) {
   // ── Alert Rules (backlog #5) ──────────────────────────────────────────────
   loadAlertRules();
 
+  // ── Trends sparklines (backlog #4) ────────────────────────────────────────
+  loadTrends();
+
   document.getElementById("db-loading").style.display = "none";
   document.getElementById("db-content").style.display  = "";
+}
+
+// Trends card: fetch the last 7 days of metric samples and render one
+// inline-SVG sparkline per metric. Backlog #4 — turns point-in-time
+// snapshots into a "is this trending in the wrong direction?" signal.
+async function loadTrends() {
+  const el = document.getElementById("db-trends-grid");
+  if (!el) return;
+  // Metric key → display label + colour. Order here is the render order.
+  const labels = {
+    "cpu_percent":       {label: "CPU %",        color: "#00d4ff", unit: "%"},
+    "memory_percent":    {label: "Memory %",     color: "#a78bfa", unit: "%"},
+    "cpu_temp_c":        {label: "Max Temp",     color: "#ff7043", unit: "°C"},
+    "concerns_critical": {label: "Critical",     color: "#ff4560", unit: ""},
+    "concerns_warning":  {label: "Warnings",     color: "#ffd740", unit: ""},
+  };
+  try {
+    const r = await fetch("/api/metrics/history?window_h=168");
+    const d = await r.json();
+    const series = d.metrics || {};
+    const available = d.available || [];
+    // Disk drives are dynamic (one metric per drive letter). Add them after
+    // the fixed list so the layout stays consistent.
+    available.filter(k => k.startsWith("disk_percent.")).sort().forEach(k => {
+      const letter = k.split(".").pop();
+      labels[k] = {label: `Disk ${letter}: %`, color: "#00e5a0", unit: "%"};
+    });
+
+    const cards = Object.entries(labels).map(([metric, cfg]) => {
+      const points = (series[metric] || []).map(p => Number(p.value)).filter(v => Number.isFinite(v));
+      const n = points.length;
+      const last = n ? points[n - 1] : null;
+      const avg = n ? (points.reduce((a, b) => a + b, 0) / n) : null;
+      return `
+        <div style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:10px 12px">
+          <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px">
+            <div style="font-size:11px;color:var(--text-bright);font-weight:600">${cfg.label}</div>
+            <div style="font-size:10px;color:var(--muted);font-family:var(--font-mono)">n=${n}</div>
+          </div>
+          <div style="margin:4px 0">${trendSparkline(points, cfg.color)}</div>
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);font-family:var(--font-mono);margin-top:4px">
+            <span>now: ${last == null ? "—" : last.toFixed(1) + cfg.unit}</span>
+            <span>avg: ${avg == null ? "—" : avg.toFixed(1) + cfg.unit}</span>
+          </div>
+        </div>`;
+    });
+    el.innerHTML = cards.join("");
+    if (!Object.keys(series).length) {
+      el.innerHTML = `<div style="grid-column:1/-1;color:var(--muted);font-size:11px;padding:12px">
+        No samples yet — the dashboard records one snapshot every 10 minutes.
+        Trends will fill in over time.</div>`;
+    }
+  } catch (ex) {
+    console.warn("loadTrends failed:", ex);
+    el.innerHTML = '<div style="color:var(--red);font-size:12px">Failed to load trend data.</div>';
+  }
+}
+
+// Inline SVG sparkline: tiny line chart with no axes / labels. Returns a
+// <svg> string ready to drop into innerHTML. No dependency on Chart.js
+// or anything heavyweight — sparklines stay readable at this size.
+function trendSparkline(values, color = "#00d4ff", w = 160, h = 32) {
+  if (!values || values.length < 2) {
+    return `<div style="color:var(--muted);font-size:10px;height:${h}px;display:flex;align-items:center">need ≥2 samples</div>`;
+  }
+  const min = Math.min(...values), max = Math.max(...values);
+  const range = (max - min) || 1;
+  const pts = values.map((v, i) => {
+    const x = (i / (values.length - 1)) * (w - 2) + 1;
+    const y = h - 1 - ((v - min) / range) * (h - 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  // Polyline = the line itself. The two circle markers pin the start
+  // and end so the user can see direction at a glance even on flat lines.
+  const first = pts.split(" ")[0].split(",");
+  const lastPt = pts.split(" ").slice(-1)[0].split(",");
+  return `<svg width="100%" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="display:block">
+    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${first[0]}" cy="${first[1]}" r="2" fill="${color}" opacity="0.6"/>
+    <circle cx="${lastPt[0]}" cy="${lastPt[1]}" r="2.5" fill="${color}"/>
+  </svg>`;
 }
 
 // Alert rules card: list every rule with inline threshold / enable edits.
