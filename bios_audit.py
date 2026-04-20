@@ -39,11 +39,22 @@ import subprocess
 import threading
 from collections.abc import Callable
 from datetime import datetime, timedelta
+from typing import NamedTuple
+
+try:
+    from applogging import get_logger
+
+    _log = get_logger("bios_audit")
+except Exception:  # noqa: BLE001  -- logger is best-effort, never fatal
+    import logging
+
+    _log = logging.getLogger("windesktopmgr.bios_audit")
 
 HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bios_audit_history.json")
 MAX_HISTORY = 500
 SNAPSHOT_INTERVAL = timedelta(minutes=15)
 CHANGE_ALERT_WINDOW = timedelta(hours=24)
+ERROR_ALERT_WINDOW = timedelta(hours=24)
 
 _history_lock = threading.RLock()
 
@@ -51,10 +62,30 @@ _history_lock = threading.RLock()
 # ── Security-state capture helpers ─────────────────────────────────
 
 
-def _run_ps(command: str, timeout: int = 10) -> str:
-    """Run a short PowerShell one-liner, return stdout.strip() or ''.
+class PSResult(NamedTuple):
+    """Outcome of a single PowerShell subprocess call.
 
-    All errors swallowed -- callers must tolerate empty string.
+    ``ok=True`` means the command ran and exited 0; ``stdout`` is the
+    trimmed captured output. ``ok=False`` means the call failed for
+    *any* reason -- timeout, non-zero exit, process-launch error --
+    and ``error`` carries a short human-readable description so the
+    caller can flag rather than silently swallow.
+    """
+
+    ok: bool
+    stdout: str
+    error: str | None
+
+
+def _run_ps(command: str, timeout: int = 10) -> PSResult:
+    """Run a short PowerShell one-liner and return a PSResult.
+
+    Previously returned bare ``str`` and lost all error context, which
+    meant a transient PS failure (timeout, WMI hiccup) was recorded as
+    an empty snapshot value and flagged as a "change" against the
+    previous successful snapshot. Callers now get an explicit
+    ok/error signal and decide whether to omit the field vs. treat the
+    empty result as a real value.
     """
     try:
         r = subprocess.run(
@@ -63,70 +94,91 @@ def _run_ps(command: str, timeout: int = 10) -> str:
             text=True,
             timeout=timeout,
         )
-        if r.returncode == 0:
-            return (r.stdout or "").strip()
-    except (subprocess.TimeoutExpired, OSError, ValueError):
-        pass
-    return ""
+    except subprocess.TimeoutExpired:
+        return PSResult(False, "", f"timeout after {timeout}s")
+    except OSError as e:
+        return PSResult(False, "", f"OSError: {e}")
+    except ValueError as e:
+        return PSResult(False, "", f"ValueError: {e}")
+
+    if r.returncode != 0:
+        err = (r.stderr or "").strip().splitlines()[:1]
+        err_line = err[0] if err else f"returncode={r.returncode}"
+        return PSResult(False, "", err_line[:200])
+
+    return PSResult(True, (r.stdout or "").strip(), None)
 
 
-def _get_secure_boot_state() -> str | None:
-    """Return 'enabled', 'disabled', or None (unsupported / Legacy BIOS)."""
-    out = _run_ps("try { Confirm-SecureBootUEFI } catch { 'unsupported' }").lower()
+# Each _get_* helper now returns (value, error_or_None). On success
+# error is None. On failure value is None AND error describes why,
+# so take_snapshot can omit the field and record the reason.
+
+
+def _get_secure_boot_state() -> tuple[str | None, str | None]:
+    res = _run_ps("try { Confirm-SecureBootUEFI } catch { 'unsupported' }")
+    if not res.ok:
+        return None, res.error
+    out = res.stdout.lower()
     if out == "true":
-        return "enabled"
+        return "enabled", None
     if out == "false":
-        return "disabled"
+        return "disabled", None
     if out == "unsupported":
-        return "unsupported"
-    return None
+        return "unsupported", None
+    return None, None  # empty stdout -- treat as no-signal, not error
 
 
-def _get_tpm_state() -> dict:
-    """Return {present, enabled, ready, version}. Any field may be None."""
-    raw = _run_ps("Get-Tpm | ConvertTo-Json -Depth 2")
+def _get_tpm_state() -> tuple[dict | None, str | None]:
+    """Return ({present, enabled, ready, version}, error_or_None)."""
+    res = _run_ps("Get-Tpm | ConvertTo-Json -Depth 2")
+    if not res.ok:
+        return None, res.error
     try:
-        data = json.loads(raw) if raw else {}
-    except json.JSONDecodeError:
-        data = {}
+        data = json.loads(res.stdout) if res.stdout else {}
+    except json.JSONDecodeError as e:
+        return None, f"json decode: {e}"
     if not isinstance(data, dict):
-        data = {}
+        return None, "unexpected shape (not a JSON object)"
     return {
         "present": data.get("TpmPresent"),
         "enabled": data.get("TpmEnabled"),
         "ready": data.get("TpmReady"),
         "version": data.get("ManufacturerVersion"),
-    }
+    }, None
 
 
-def _get_boot_mode() -> str | None:
-    """Return 'UEFI', 'Legacy', or None.
+def _get_boot_mode() -> tuple[str | None, str | None]:
+    """Return ('UEFI'|'Legacy'|None, error_or_None).
 
     PEFirmwareType in HKLM\\SYSTEM\\CurrentControlSet\\Control:
         1 = Legacy BIOS, 2 = UEFI.
     """
-    out = _run_ps("(Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control').PEFirmwareType")
-    if out == "2":
-        return "UEFI"
-    if out == "1":
-        return "Legacy"
-    return None
+    res = _run_ps("(Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control').PEFirmwareType")
+    if not res.ok:
+        return None, res.error
+    if res.stdout == "2":
+        return "UEFI", None
+    if res.stdout == "1":
+        return "Legacy", None
+    return None, None
 
 
-def _get_vbs_state() -> dict:
+def _get_vbs_state() -> tuple[dict | None, str | None]:
     """Virtualization-Based Security / HVCI / Credential Guard state."""
-    raw = _run_ps(
+    res = _run_ps(
         "Get-CimInstance -ClassName Win32_DeviceGuard "
         "-Namespace root\\Microsoft\\Windows\\DeviceGuard | "
         "ConvertTo-Json -Depth 2",
         timeout=15,
     )
+    if not res.ok:
+        return None, res.error
     try:
-        data = json.loads(raw) if raw else {}
-    except json.JSONDecodeError:
-        data = {}
+        data = json.loads(res.stdout) if res.stdout else {}
+    except json.JSONDecodeError as e:
+        return None, f"json decode: {e}"
     if not isinstance(data, dict):
-        data = {}
+        return None, "unexpected shape (not a JSON object)"
     vbs_map = {0: "off", 1: "configured_not_running", 2: "running"}
     services = data.get("SecurityServicesRunning") or []
     if not isinstance(services, list):
@@ -135,13 +187,15 @@ def _get_vbs_state() -> dict:
         "vbs_status": vbs_map.get(data.get("VirtualizationBasedSecurityStatus")),
         "hvci_running": 2 in services if services else None,
         "cred_guard_running": 1 in services if services else None,
-    }
+    }, None
 
 
-def _get_bios_serial() -> str | None:
+def _get_bios_serial() -> tuple[str | None, str | None]:
     """SerialNumber from Win32_BIOS -- not exposed by get_current_bios()."""
-    out = _run_ps("(Get-CimInstance Win32_BIOS).SerialNumber")
-    return out or None
+    res = _run_ps("(Get-CimInstance Win32_BIOS).SerialNumber")
+    if not res.ok:
+        return None, res.error
+    return (res.stdout or None), None
 
 
 # ── Snapshot ───────────────────────────────────────────────────────
@@ -180,32 +234,99 @@ def take_snapshot(
 
         bios_reader = get_current_bios
 
+    errors: list[dict] = []
+
     try:
         bios = bios_reader() or {}
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        errors.append({"field": "bios_reader", "error": f"{type(e).__name__}: {e}"})
         bios = {}
 
-    snap = {
+    snap: dict = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "context": context,
-        "bios_version": bios.get("BIOSVersion"),
-        "bios_release_date": bios.get("BIOSDateFormatted") or bios.get("ReleaseDate"),
-        "bios_manufacturer": bios.get("Manufacturer"),
-        "bios_serial": _get_bios_serial(),
-        "board_product": bios.get("BoardProduct"),
-        "board_manufacturer": bios.get("BoardMfr"),
-        "vbs": _get_vbs_state(),
     }
+
+    # Fields sourced from bios_reader() (windesktopmgr.get_current_bios).
+    # Omit any that came back empty -- a missing key is "no signal",
+    # whereas storing None would diff against a previous real value and
+    # fire a false-positive change log next cycle.
+    _maybe_set(snap, "bios_version", bios.get("BIOSVersion"))
+    _maybe_set(
+        snap,
+        "bios_release_date",
+        bios.get("BIOSDateFormatted") or bios.get("ReleaseDate"),
+    )
+    _maybe_set(snap, "bios_manufacturer", bios.get("Manufacturer"))
+    _maybe_set(snap, "board_product", bios.get("BoardProduct"))
+    _maybe_set(snap, "board_manufacturer", bios.get("BoardMfr"))
+
+    serial, err = _get_bios_serial()
+    if err:
+        errors.append({"field": "bios_serial", "error": err})
+    else:
+        _maybe_set(snap, "bios_serial", serial)
+
+    vbs, err = _get_vbs_state()
+    if err:
+        errors.append({"field": "vbs", "error": err})
+    elif vbs:
+        snap["vbs"] = vbs
+
     if context == ELEVATED_CONTEXT:
-        snap["secure_boot"] = _get_secure_boot_state()
-        snap["tpm"] = _get_tpm_state()
-        snap["boot_mode"] = _get_boot_mode()
+        sb, err = _get_secure_boot_state()
+        if err:
+            errors.append({"field": "secure_boot", "error": err})
+        else:
+            _maybe_set(snap, "secure_boot", sb)
+
+        tpm, err = _get_tpm_state()
+        if err:
+            errors.append({"field": "tpm", "error": err})
+        elif tpm:
+            snap["tpm"] = tpm
+
+        bm, err = _get_boot_mode()
+        if err:
+            errors.append({"field": "boot_mode", "error": err})
+        else:
+            _maybe_set(snap, "boot_mode", bm)
+
+    if errors:
+        # Log every collection error at WARNING so it surfaces in the
+        # Logs tab, then attach the list to the snapshot so the audit
+        # endpoint + dashboard concern can surface it too.
+        for e in errors:
+            _log.warning(
+                "bios_audit collection failed for field=%s context=%s: %s",
+                e["field"],
+                context,
+                e["error"],
+            )
+        snap["_collection_errors"] = errors
+
     return snap
+
+
+def _maybe_set(snap: dict, key: str, value) -> None:
+    """Set snap[key]=value only if value is truthy-or-False-but-not-None.
+
+    False/0 are legitimate values (e.g. vbs.hvci_running=False), so we
+    discriminate only on None and empty-string-ish. Missing keys in a
+    snapshot mean "no signal" to the diff logic.
+    """
+    if value is None:
+        return
+    if isinstance(value, str) and not value.strip():
+        return
+    snap[key] = value
 
 
 # ── Diff ───────────────────────────────────────────────────────────
 
-_IGNORE_KEYS = frozenset({"timestamp", "context"})
+# Keys that carry metadata about the snapshot itself, not BIOS/security
+# state. Skipped by _flatten so they can never appear as a diff entry.
+_IGNORE_KEYS = frozenset({"timestamp", "context", "_collection_errors"})
 
 
 def _flatten(d: dict, prefix: str = "") -> dict:
@@ -228,6 +349,14 @@ def diff_snapshots(old: dict, new: dict) -> list[dict]:
     """Return list of {field, old, new} for each changed field. Empty if none.
 
     Returns [] for a first-run (old is falsy) since there is no baseline.
+
+    Only fires a change when *both* old and new have a real value that
+    differs. A missing key, or a key whose value is None on either
+    side, is treated as "no signal" -- we don't know the current or
+    prior state, so we can't claim a change happened. This is what
+    stops a transient PowerShell failure (previously recorded as a
+    null value) from spawning two spurious "change" entries: one when
+    the read fails, and the mirror entry when it recovers.
     """
     if not old:
         return []
@@ -235,8 +364,12 @@ def diff_snapshots(old: dict, new: dict) -> list[dict]:
     new_flat = _flatten(new)
     changes = []
     for key in sorted(old_flat.keys() | new_flat.keys()):
-        if old_flat.get(key) != new_flat.get(key):
-            changes.append({"field": key, "old": old_flat.get(key), "new": new_flat.get(key)})
+        o = old_flat.get(key)
+        n = new_flat.get(key)
+        if o is None or n is None:
+            continue
+        if o != n:
+            changes.append({"field": key, "old": o, "new": n})
     return changes
 
 
@@ -368,6 +501,7 @@ def check_and_log_bios_changes(
     previous = latest_snapshot(context=context)
     first_run = previous is None
     changes = diff_snapshots(previous or {}, snapshot)
+    collection_errors = snapshot.get("_collection_errors") or []
 
     if first_run:
         _append_history(
@@ -389,8 +523,23 @@ def check_and_log_bios_changes(
                 "snapshot": snapshot,
             }
         )
-    # If no changes and not first run, we deliberately don't append --
-    # avoids file bloat with identical snapshots every 15 minutes.
+    elif collection_errors:
+        # No change to log, but the snapshot had collection failures --
+        # persist an "error" entry so the dashboard / audit endpoint
+        # can see that a polling cycle came back partial. Without this
+        # branch the errors would only exist in the app log and vanish
+        # from the user-facing audit trail.
+        _append_history(
+            {
+                "kind": "error",
+                "context": context,
+                "timestamp": snapshot["timestamp"],
+                "errors": collection_errors,
+            }
+        )
+    # If no changes, no errors, and not first run, we deliberately
+    # don't append -- avoids file bloat with identical snapshots every
+    # 15 minutes.
 
     return {
         "ok": True,
@@ -399,6 +548,7 @@ def check_and_log_bios_changes(
         "context": context,
         "snapshot": snapshot,
         "changes": changes,
+        "errors": collection_errors,
     }
 
 
@@ -419,4 +569,47 @@ def recent_changes(window: timedelta = CHANGE_ALERT_WINDOW) -> list:
             continue
         if ts >= cutoff:
             out.append(entry)
+    return out
+
+
+def recent_errors(window: timedelta = ERROR_ALERT_WINDOW) -> list:
+    """Return collection-error entries from the last <window> hours.
+
+    Used by the dashboard concern to flag "some BIOS/security state
+    fields could not be read recently" -- we want this visible so a
+    systemic WMI outage or permission regression doesn't hide behind
+    silent None values.
+
+    Includes errors attached to change/baseline snapshots as well as
+    standalone kind="error" entries, since any of them represent a
+    polling cycle that came back partial.
+    """
+    history = load_history()
+    cutoff = datetime.now() - window
+    out: list = []
+    for entry in history:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            ts = datetime.fromisoformat(entry.get("timestamp", ""))
+        except (ValueError, TypeError):
+            continue
+        if ts < cutoff:
+            continue
+        errs = entry.get("errors")
+        if errs:
+            out.append(entry)
+            continue
+        snap = entry.get("snapshot") or {}
+        if isinstance(snap, dict) and snap.get("_collection_errors"):
+            # Normalise to the same shape as kind="error" entries so
+            # dashboard renderers can iterate uniformly.
+            out.append(
+                {
+                    "kind": entry.get("kind"),
+                    "context": entry.get("context"),
+                    "timestamp": entry.get("timestamp"),
+                    "errors": snap["_collection_errors"],
+                }
+            )
     return out
