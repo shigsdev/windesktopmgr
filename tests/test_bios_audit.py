@@ -851,6 +851,11 @@ class TestDashboardBiosErrorConcern:
         # Failed fields should be listed in the detail
         detail = matching[0].get("detail", "")
         assert "vbs" in detail and "bios_serial" in detail
+        # Action must send the user where the error actually lives: the Logs tab.
+        # Earlier this sent the user to the BIOS tab which didn't display
+        # kind="error" entries, making it look like nothing was wrong.
+        assert matching[0]["tab"] == "logs"
+        assert matching[0]["action_fn"] == "switchTab('logs')"
 
     def test_no_concern_when_no_recent_errors(self, client, bios_audit_tmp, mocker):
         self._mock_collectors(mocker)
