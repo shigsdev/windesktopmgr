@@ -8781,7 +8781,7 @@ def dashboard_summary():
     except Exception:  # noqa: BLE001
         pass  # best-effort — never break dashboard
 
-    # BIOS audit-trail concern: any logged change in the last 24h
+    # BIOS audit-trail concerns: logged changes + collection errors in the last 24h
     try:
         import bios_audit
 
@@ -8800,6 +8800,28 @@ def dashboard_summary():
                     "icon": "📋",
                     "title": f"BIOS/firmware setting change detected ({len(bios_changes)} in 24h)",
                     "detail": f"Fields: {fields_label}",
+                    "action": "View BIOS audit trail",
+                    "action_fn": "switchTab('bios')",
+                }
+            )
+        # Collection errors: PowerShell/WMI calls that failed during a
+        # BIOS snapshot. Surfaced so the user sees "we couldn't read
+        # field X" rather than a silent gap followed by a fake "change".
+        bios_errors = bios_audit.recent_errors()
+        if bios_errors:
+            err_fields = sorted(
+                {e.get("field", "?") for entry in bios_errors for e in entry.get("errors", []) if isinstance(e, dict)}
+            )
+            sample = ", ".join(err_fields[:4])
+            if len(err_fields) > 4:
+                sample += f" (+{len(err_fields) - 4} more)"
+            concerns.append(
+                {
+                    "level": "warning",
+                    "tab": "bios",
+                    "icon": "⚠",
+                    "title": f"BIOS audit collection errors ({len(bios_errors)} cycle(s) in 24h)",
+                    "detail": f"Failed fields: {sample}. Check the Logs tab for PowerShell/WMI error details.",
                     "action": "View BIOS audit trail",
                     "action_fn": "switchTab('bios')",
                 }
