@@ -107,6 +107,16 @@ def reset_globals():
     disk._winsxs_cache["ts"] = 0.0
     disk._winsxs_cache["data"] = None
 
+    # Dashboard summary cache (serves last-known-good for 30 s). Stale
+    # cache between tests would cause later tests to "see" an earlier
+    # test's mocked collectors and silently skip their own mocks.
+    wdm._dashboard_cache_clear()
+
+    # Request-log flood suppressor state -- a prior test's requests must
+    # not cause a later test's first request to be silently suppressed
+    # as a duplicate.
+    wdm._request_log_suppressor._state.clear()
+
     yield  # run the test
 
     # Post-test cleanup (same as pre-test for symmetry)

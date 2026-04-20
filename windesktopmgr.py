@@ -7169,6 +7169,69 @@ def summarize_credentials_network(data: dict) -> dict:
 _flask_log = get_logger("flask")
 
 
+class _RequestLogFloodSuppressor:
+    """Collapse runs of adjacent identical successful requests into one log
+    line with a suppressed count.
+
+    The 2026-04-20 UI incident generated thousands of identical
+    ``POST /api/summary/drivers status=200`` lines per second, burying
+    real signal (a BIOS-audit WARNING became invisible in the Logs tab
+    because it fell off the tail-read budget). This suppressor keyed by
+    ``(method, path, status)`` skips consecutive duplicates within a
+    short window and emits a running count on the next non-duplicate.
+
+    Kept per-key: the last-logged timestamp, and how many duplicates
+    were suppressed since. Only consecutive runs are folded -- A/B/A/B
+    alternation still logs every line. That matches the real failure
+    mode (one runaway client hammering one route) while keeping normal
+    traffic fully visible.
+
+    Thread-safe: every access is under ``self._lock``. The after_request
+    hook can run on many threads concurrently.
+    """
+
+    # If a new occurrence of the same key arrives within this many seconds
+    # of the last one we actually logged, it's a dup. Larger windows
+    # suppress more aggressively; smaller windows preserve more granularity.
+    # 10s chosen so a once-per-poll-tick endpoint at 5s cadence still gets
+    # logged every time, but a runaway 100-rps flood is collapsed.
+    WINDOW_SECONDS = 10.0
+
+    def __init__(self) -> None:
+        # key -> (last_logged_time, suppressed_count_since_last_log)
+        self._state: dict[tuple, tuple[float, int]] = {}
+        self._lock = threading.Lock()
+
+    def note(self, key: tuple) -> tuple[bool, int]:
+        """Record an occurrence of ``key``.
+
+        Returns ``(should_log, suppressed_count)``:
+
+            should_log=True  -> emit the log line. ``suppressed_count``
+                                is how many duplicates were skipped since
+                                the previous log for this key. Append to
+                                the log message when >0.
+            should_log=False -> skip. ``suppressed_count`` is always 0 in
+                                this branch.
+        """
+        now = time.time()
+        with self._lock:
+            last = self._state.get(key)
+            if last is not None:
+                last_ts, count = last
+                if now - last_ts < self.WINDOW_SECONDS:
+                    self._state[key] = (last_ts, count + 1)
+                    return (False, 0)
+                # Window expired — log this one and include the backlog
+                self._state[key] = (now, 0)
+                return (True, count)
+            self._state[key] = (now, 0)
+            return (True, 0)
+
+
+_request_log_suppressor = _RequestLogFloodSuppressor()
+
+
 @app.before_request
 def _log_request_start():
     """Stamp the start time so we can report request duration on completion."""
@@ -7179,6 +7242,10 @@ def _log_request_start():
 def _log_request_end(response):
     """Log every HTTP request with method, path, status, duration, size,
     client IP, and query string. Skip /api/health to avoid polluting the log.
+
+    Non-success responses (>=400) always log -- those are the signal
+    that must never be suppressed. Successful responses flow through
+    the flood suppressor so runaway clients can't bury real events.
     """
     try:
         path = request.path or ""
@@ -7200,9 +7267,21 @@ def _log_request_end(response):
             size = None
         size_str = f"{size}b" if size is not None else "-"
 
-        level = _flask_log.warning if response.status_code >= 400 else _flask_log.info
+        is_error = response.status_code >= 400
+
+        # Flood-suppress only successful requests -- errors are rare-by-
+        # definition AND they're exactly what we need to see in the logs.
+        suppressed = 0
+        if not is_error:
+            key = (request.method, path, response.status_code)
+            should_log, suppressed = _request_log_suppressor.note(key)
+            if not should_log:
+                return response
+
+        suffix = f" (+{suppressed} similar suppressed)" if suppressed else ""
+        level = _flask_log.warning if is_error else _flask_log.info
         level(
-            "%s %s%s status=%d elapsed=%dms size=%s client=%s",
+            "%s %s%s status=%d elapsed=%dms size=%s client=%s%s",
             request.method,
             path,
             qs_snip,
@@ -7210,6 +7289,7 @@ def _log_request_end(response):
             elapsed_ms,
             size_str,
             remote,
+            suffix,
         )
     except Exception:  # noqa: BLE001
         pass  # never break a request just because logging failed
@@ -8513,11 +8593,31 @@ def summarize_sysinfo(data: dict) -> dict:
     return {"status": status, "headline": headline, "insights": insights, "actions": actions}
 
 
-@app.route("/api/dashboard/summary")
-def dashboard_summary():
-    """
-    Aggregates key health checks from all tabs into a single fast response.
-    Runs checks in parallel threads for speed.
+# ── Dashboard summary cache ────────────────────────────────────────
+#
+# The full fan-out to get_thermals / get_memory_analysis / get_bios_status /
+# get_credentials_network_health / get_disk_health / get_driver_health is
+# slow (observed 37-47 s under load on 2026-04-20, normal 1-3 s). The UI
+# polls this endpoint frequently, and rapid-fire requests used to each
+# pay full fan-out cost plus pile up server-side.
+#
+# The cache serves the last-known-good payload instantly and kicks a
+# single background refresh when the cache goes stale. TTL is deliberately
+# short (30 s) -- long enough that a dashboard refresh click, a tray
+# status poll, and a Playwright smoke pass during the same window all
+# share one computation; short enough that truly new state (e.g. a
+# remediation action that just ran) is visible on the next refresh.
+_dashboard_state: dict = {"data": None, "ts": None}
+_dashboard_cache_lock = threading.Lock()
+_dashboard_refresh_lock = threading.Lock()
+_DASHBOARD_CACHE_TTL = timedelta(seconds=30)
+
+
+def _compute_dashboard_summary() -> dict:
+    """Synchronous fan-out over every dashboard collector.
+
+    Returns the full response dict (not a Flask Response) so the route
+    handler and the background refresher can share one implementation.
     """
     import concurrent.futures
 
@@ -8919,14 +9019,80 @@ def dashboard_summary():
     except Exception:  # noqa: BLE001
         pass
 
+    return {
+        "concerns": concerns,
+        "total": len(concerns),
+        "critical": sum(1 for c in concerns if c["level"] == "critical"),
+        "warnings": sum(1 for c in concerns if c["level"] == "warning"),
+        "overall": overall,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _trigger_dashboard_refresh_async():
+    """Kick off a background cache refresh if one isn't already running.
+
+    Single-flight: the refresh_lock is acquired non-blocking. If it's
+    already held, a refresh is in progress and we don't start a second
+    one -- the stale cache is served in the meantime, and the in-flight
+    refresh will land shortly.
+    """
+    if not _dashboard_refresh_lock.acquire(blocking=False):
+        return
+
+    def _refresh():
+        try:
+            data = _compute_dashboard_summary()
+            with _dashboard_cache_lock:
+                _dashboard_state["data"] = data
+                _dashboard_state["ts"] = datetime.now()
+        except Exception:  # noqa: BLE001 — a refresh crash must never take the cache down
+            pass
+        finally:
+            _dashboard_refresh_lock.release()
+
+    threading.Thread(target=_refresh, name="DashboardRefresh", daemon=True).start()
+
+
+def _dashboard_cache_clear() -> None:
+    """Test hook: drop the cached summary so the next request recomputes."""
+    with _dashboard_cache_lock:
+        _dashboard_state["data"] = None
+        _dashboard_state["ts"] = None
+
+
+@app.route("/api/dashboard/summary")
+def dashboard_summary():
+    """Dashboard concerns summary. Cached — see ``_compute_dashboard_summary``.
+
+    First call ever: compute synchronously, populate cache. Subsequent
+    calls: serve the cached payload instantly; if older than
+    ``_DASHBOARD_CACHE_TTL`` trigger a background refresh. The response
+    includes a ``cache`` field so the UI can tell fresh vs. cached.
+    """
+    # Snapshot cache state under the lock, then decide what to do outside
+    # the lock so we don't hold it across a multi-second fan-out.
+    with _dashboard_cache_lock:
+        cached = _dashboard_state["data"]
+        ts = _dashboard_state["ts"]
+
+    if cached is None:
+        # Cold start: nothing to serve yet, so we have to compute.
+        data = _compute_dashboard_summary()
+        with _dashboard_cache_lock:
+            _dashboard_state["data"] = data
+            _dashboard_state["ts"] = datetime.now()
+        return jsonify({**data, "cache": "miss"})
+
+    age_s = (datetime.now() - ts).total_seconds() if ts else None
+    is_stale = age_s is not None and age_s > _DASHBOARD_CACHE_TTL.total_seconds()
+    if is_stale:
+        _trigger_dashboard_refresh_async()
     return jsonify(
         {
-            "concerns": concerns,
-            "total": len(concerns),
-            "critical": sum(1 for c in concerns if c["level"] == "critical"),
-            "warnings": sum(1 for c in concerns if c["level"] == "warning"),
-            "overall": overall,
-            "checked_at": datetime.now(timezone.utc).isoformat(),
+            **cached,
+            "cache": "stale" if is_stale else "fresh",
+            "cache_age_s": round(age_s, 1) if age_s is not None else None,
         }
     )
 
