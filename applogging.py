@@ -103,6 +103,15 @@ def read_recent(lines: int = 500, min_level: str | None = None) -> list[dict]:
 
     Returns a list of parsed log entries (newest first):
         [{"timestamp": "...", "level": "INFO", "logger": "...", "message": "..."}]
+
+    When ``min_level`` is set, scans the full current log file instead of
+    a narrow tail. The old ``lines * 4`` budget silently hid legitimate
+    warnings when the log file was dominated by high-volume INFO traffic
+    (e.g. a polling loop writing thousands of lines per minute): a
+    warning a few hours old could fall outside the last 800 physical
+    lines and become invisible in the Logs tab. File size is capped by
+    the RotatingFileHandler at ~10 MB per rotation, so reading fully is
+    bounded and safe.
     """
     if not os.path.exists(LOG_FILE):
         return []
@@ -110,15 +119,18 @@ def read_recent(lines: int = 500, min_level: str | None = None) -> list[dict]:
     level_order = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3, "CRITICAL": 4}
     min_rank = level_order.get((min_level or "").upper(), 0)
 
-    # Read the last N*2 physical lines to account for filtering
-    read_budget = max(lines * 4, 200)
     try:
         with open(LOG_FILE, encoding="utf-8", errors="replace") as f:
             raw = f.readlines()
     except OSError:
         return []
 
-    raw = raw[-read_budget:]
+    # Unfiltered: keep the narrow tail read fast — the Logs tab's default
+    # view doesn't need more than the last ~4x its page size.
+    # Filtered: scan the whole file so low-frequency warnings / errors
+    # aren't buried by a flood of INFO entries from a polling loop.
+    if not min_level:
+        raw = raw[-max(lines * 4, 200) :]
     parsed: list[dict] = []
 
     for line in raw:

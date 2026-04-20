@@ -121,6 +121,44 @@ class TestReadRecent:
         assert len(entries) == 2
         assert all(e["level"] in ("WARNING", "ERROR") for e in entries)
 
+    def test_level_filter_finds_warning_buried_under_info_flood(self, tmp_path, monkeypatch):
+        """Regression: with min_level set, read_recent must scan the full file,
+        not a narrow tail. A polling loop that writes thousands of INFO lines
+        between a warning and 'now' used to push the warning off the tail-read
+        budget (lines*4), making it invisible in the Logs tab filtered view.
+        That's how the user couldn't find a BIOS-audit warning known to be in
+        the log file.
+        """
+        log_path = tmp_path / "test.log"
+        # Old warning first, then many thousand INFO lines after it
+        lines_out = ["2026-04-20 10:00:00 WARNING windesktopmgr.bios_audit   bios_serial timeout after 10s\n"]
+        for i in range(5000):
+            lines_out.append(f"2026-04-20 10:30:{i % 60:02d} INFO windesktopmgr.flask      GET /api/ok {i}\n")
+        log_path.write_text("".join(lines_out), encoding="utf-8")
+        monkeypatch.setattr(applogging, "LOG_FILE", str(log_path))
+
+        entries = applogging.read_recent(lines=200, min_level="WARNING")
+        assert len(entries) == 1, (
+            "warning was buried beyond lines*4 tail window; read_recent must read the full file when filtering by level"
+        )
+        assert "bios_serial" in entries[0]["message"]
+
+    def test_unfiltered_read_keeps_narrow_tail_fast(self, tmp_path, monkeypatch):
+        """Sanity: the no-filter path still uses the narrow tail so it stays
+        cheap on large log files. We assert by behaviour: a warning older than
+        the tail budget (lines*4) must NOT be returned in an unfiltered call."""
+        log_path = tmp_path / "test.log"
+        # lines=10 -> tail budget is lines*4 = 40. Put the warning before 100 infos.
+        lines_out = ["2026-04-20 10:00:00 WARNING windesktopmgr.bios_audit   old warning\n"]
+        for i in range(100):
+            lines_out.append(f"2026-04-20 10:30:{i % 60:02d} INFO windesktopmgr.flask      msg {i}\n")
+        log_path.write_text("".join(lines_out), encoding="utf-8")
+        monkeypatch.setattr(applogging, "LOG_FILE", str(log_path))
+
+        entries = applogging.read_recent(lines=10)  # no filter
+        # Only the most recent 10 are returned; the old WARNING is beyond them.
+        assert not any("old warning" in e["message"] for e in entries)
+
     def test_skips_blank_and_unparseable_lines(self, tmp_path, monkeypatch):
         log_path = tmp_path / "test.log"
         log_path.write_text(

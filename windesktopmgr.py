@@ -8828,12 +8828,12 @@ def dashboard_summary():
             concerns.append(
                 {
                     "level": "warning",
-                    "tab": "bios",
+                    "tab": "logs",
                     "icon": "⚠",
                     "title": f"BIOS audit collection errors ({len(bios_errors)} cycle(s) in 24h)",
-                    "detail": f"Failed fields: {sample}. Check the Logs tab for PowerShell/WMI error details.",
-                    "action": "View BIOS audit trail",
-                    "action_fn": "switchTab('bios')",
+                    "detail": f"Failed fields: {sample}. Open the Logs tab for PowerShell/WMI error details.",
+                    "action": "View Logs",
+                    "action_fn": "switchTab('logs')",
                 }
             )
     except Exception:  # noqa: BLE001
