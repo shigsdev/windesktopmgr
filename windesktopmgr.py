@@ -8536,14 +8536,18 @@ def dashboard_summary():
                 "action_fn": "switchTab('thermals')",
             }
         )
+    # Hoist mem/mem_pct OUT of the try/except so downstream code (per-process
+    # memory concerns loop at line ~8605) can't hit NameError if the alerts
+    # block is ever refactored. Audit finding (2026-04-19 security review).
+    mem = results.get("memory", {})
+    mem_pct = round(mem.get("used_mb", 0) / max(mem.get("total_mb", 1), 1) * 100, 1)
+
     # CPU + Memory system pressure concerns now flow through alerts.py
     # (backlog #5) so the user can tune thresholds without editing code.
     # Per-drive disk percents also join the rule-driven stream.
     try:
         import alerts
 
-        mem = results.get("memory", {})
-        mem_pct = round(mem.get("used_mb", 0) / max(mem.get("total_mb", 1), 1) * 100, 1)
         metric_points: list[alerts.MetricPoint] = []
         if cpu_pct:
             metric_points.append(alerts.MetricPoint(metric="cpu_percent", value=float(cpu_pct), label=""))
@@ -8565,8 +8569,6 @@ def dashboard_summary():
     except Exception:  # noqa: BLE001 — alerts engine is best-effort
         # Fallback to legacy hardcoded thresholds so the dashboard is never
         # silent about real pressure even if the rules engine is broken.
-        mem = results.get("memory", {})
-        mem_pct = round(mem.get("used_mb", 0) / max(mem.get("total_mb", 1), 1) * 100, 1)
         if cpu_pct >= 80:
             concerns.append(
                 {
@@ -8589,6 +8591,28 @@ def dashboard_summary():
                     "detail": "Very little memory available — system may be unstable.",
                     "action": "View Memory Analysis",
                     "action_fn": "switchTab('memory')",
+                }
+            )
+        # Disk fullness fallback (audit finding: previously silent in the
+        # fallback path, so a broken alerts.py would stop surfacing
+        # drive-full warnings). Mirrors the default disk_warning / disk_critical
+        # thresholds (85 / 95 %) from alerts.DEFAULT_RULES.
+        for d in (results.get("disk") or {}).get("drives", []):
+            pct = d.get("PctUsed") or d.get("pct_used") or 0
+            letter = d.get("Letter") or d.get("letter") or ""
+            free_gb = d.get("FreeGB") or 0
+            if not letter or pct < 85:
+                continue
+            level = "critical" if pct >= 95 else "warning"
+            concerns.append(
+                {
+                    "level": level,
+                    "tab": "disk",
+                    "icon": "💾",
+                    "title": f"Drive {letter} is {pct}% full ({free_gb:.1f} GB free)",
+                    "detail": "Disk space is running low. Consider freeing up space.",
+                    "action": "View Disk Health",
+                    "action_fn": "switchTab('disk')",
                 }
             )
 

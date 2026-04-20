@@ -94,35 +94,38 @@ _LOG_TAIL_BYTES = 16 * 1024
 _TS_IN_NAME = re.compile(r"(\d{4}-\d{2}-\d{2})[_-](\d{2}[-.]\d{2}[-.]\d{2})")
 
 
-def _read_tail(path: str, nbytes: int = _LOG_TAIL_BYTES) -> str:
-    """Read the last nbytes of a file, auto-detecting UTF-16 BOM vs UTF-8.
+def _read_range(path: str, start: int, nbytes: int) -> str:
+    """Read ``nbytes`` bytes from ``start``, auto-detecting UTF-16 LE vs UTF-8.
 
     Returns '' on any read error.
     """
     try:
         with open(path, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            read_size = min(nbytes, size)
-            f.seek(max(0, size - read_size))
-            raw = f.read()
+            head_bom = f.read(2)
+            f.seek(start)
+            raw = f.read(nbytes)
     except OSError:
         return ""
 
-    # Also read the first 2 bytes for BOM detection
+    if head_bom == b"\xff\xfe":
+        return raw.decode("utf-16-le", errors="replace")
+    return raw.decode("utf-8", errors="replace")
+
+
+def _read_tail(path: str, nbytes: int = _LOG_TAIL_BYTES) -> str:
+    """Read the last ``nbytes`` of a file, auto-detecting encoding."""
     try:
         with open(path, "rb") as f:
-            head = f.read(2)
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
     except OSError:
-        head = b""
+        return ""
+    return _read_range(path, max(0, size - nbytes), min(nbytes, size))
 
-    if head == b"\xff\xfe":
-        # UTF-16 LE BOM -- the PowerShell Tee-Object wrapper wrote these.
-        # The tail we grabbed may start mid-codepoint; errors="replace" covers it.
-        return raw.decode("utf-16-le", errors="replace")
-    # Assume UTF-8 (new wrapper after 2026-04-18 unicode fix). errors="replace"
-    # gracefully handles any stray binary.
-    return raw.decode("utf-8", errors="replace")
+
+def _read_head(path: str, nbytes: int = _LOG_TAIL_BYTES) -> str:
+    """Read the first ``nbytes`` of a file, auto-detecting encoding."""
+    return _read_range(path, 0, nbytes)
 
 
 def _timestamp_from_name(path: str) -> datetime | None:
@@ -148,6 +151,11 @@ def parse_log(path: str) -> LogSummary:
     saved to:' or 'Email sent successfully') the run is considered OK even
     if a trailing exception occurred during cleanup. The exception
     signature is still captured for observability.
+
+    Success markers are searched in BOTH the head and the tail of the
+    file -- SystemHealthDiag logs can be 50+ KB and the success line
+    may live early in the run (before a cleanup crash that gets
+    appended at the end). Audit finding 2026-04-19.
     """
     size = 0
     try:
@@ -157,7 +165,9 @@ def parse_log(path: str) -> LogSummary:
 
     tail = _read_tail(path)
     has_error = any(p.search(tail) for p in _ERROR_PATTERNS)
-    has_success_marker = any(p.search(tail) for p in _SUCCESS_MARKERS)
+    # For small files the head overlaps the tail -- skip the duplicate read
+    head = tail if size <= _LOG_TAIL_BYTES else _read_head(path)
+    has_success_marker = any(p.search(head) or p.search(tail) for p in _SUCCESS_MARKERS)
     exc_match = _EXCEPTION_TYPE_RE.search(tail)
     exc_sig = exc_match.group(1) if exc_match else None
 
