@@ -91,6 +91,27 @@ class TestParseLog:
         assert s.timestamp is None
         assert s.ok is True
 
+    def test_success_marker_in_head_survives_large_log(self, tmp_path, monkeypatch):
+        """Audit finding 2026-04-19: the 16 KB tail window could miss a
+        success marker that appeared near the top of a >16 KB log. Now we
+        search both head and tail. Shrink the window to 1 KB for test
+        speed, then pad a log with 5 KB of filler between the success
+        marker (near the start) and the trailing error."""
+        monkeypatch.setattr(task_watcher, "_LOG_TAIL_BYTES", 1024)
+        body = (
+            "[1/13] Checking Intel CPU Microcode...\n"
+            "  passed\n"
+            "Report saved to: C:\\reports\\Report.html\n"
+            + ("filler line to push the success marker out of the tail window\n" * 150)
+            + "Traceback (most recent call last):\n"
+            '  File "cleanup.py", line 1\n'
+            "UnicodeEncodeError: charmap can't encode\n"
+        )
+        path = _write_log(tmp_path, "SystemHealthDiag_2026-04-19_07-00-00.log", body)
+        s = task_watcher.parse_log(path)
+        assert s.ok is True, "success marker in the log HEAD must still win over trailing error"
+        assert s.exception_signature == "UnicodeEncodeError"
+
     def test_work_completed_before_cleanup_error_is_success(self, tmp_path):
         """The 2026-04-18 bug: user saw 'no successful run in 48h' even
         though the diagnostic had been running fine — it just hit a
