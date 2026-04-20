@@ -857,3 +857,194 @@ class TestDashboardBiosErrorConcern:
         resp = client.get("/api/dashboard/summary")
         concerns = resp.get_json().get("concerns", [])
         assert not any("BIOS audit collection errors" in c.get("title", "") for c in concerns)
+
+
+# ── Phantom-entry filter (cleanup of pre-fix history) ──────────────
+
+
+class TestIsPhantomChangeEntry:
+    """Phantom = a historical change entry where every change has None on
+    at least one side, i.e. a null-vs-value flicker from the pre-fix era.
+    """
+
+    def test_value_to_none_everywhere_is_phantom(self):
+        entry = {
+            "kind": "change",
+            "changes": [
+                {"field": "bios_serial", "old": "9T46D14", "new": None},
+                {"field": "vbs.vbs_status", "old": "running", "new": None},
+            ],
+        }
+        assert bios_audit.is_phantom_change_entry(entry) is True
+
+    def test_none_to_value_everywhere_is_phantom(self):
+        entry = {
+            "kind": "change",
+            "changes": [
+                {"field": "bios_serial", "old": None, "new": "9T46D14"},
+                {"field": "vbs.vbs_status", "old": None, "new": "running"},
+            ],
+        }
+        assert bios_audit.is_phantom_change_entry(entry) is True
+
+    def test_mixed_null_sides_still_phantom(self):
+        """Every change has SOME None side -> still phantom. A mix of
+        value->None and None->value in one entry is extremely unlikely in
+        practice, but still can't represent a real observable transition."""
+        entry = {
+            "kind": "change",
+            "changes": [
+                {"field": "a", "old": "x", "new": None},
+                {"field": "b", "old": None, "new": "y"},
+            ],
+        }
+        assert bios_audit.is_phantom_change_entry(entry) is True
+
+    def test_real_value_change_is_not_phantom(self):
+        entry = {
+            "kind": "change",
+            "changes": [{"field": "secure_boot", "old": "enabled", "new": "disabled"}],
+        }
+        assert bios_audit.is_phantom_change_entry(entry) is False
+
+    def test_partial_real_change_is_not_phantom(self):
+        """If ANY change has values on both sides, treat the whole entry as
+        real -- we must never hide a legitimate change behind a phantom
+        sibling."""
+        entry = {
+            "kind": "change",
+            "changes": [
+                {"field": "a", "old": None, "new": "y"},
+                {"field": "b", "old": "1", "new": "2"},  # real
+            ],
+        }
+        assert bios_audit.is_phantom_change_entry(entry) is False
+
+    def test_non_change_kinds_are_never_phantom(self):
+        for kind in ("baseline", "error"):
+            entry = {"kind": kind, "changes": [{"old": None, "new": "x"}]}
+            assert bios_audit.is_phantom_change_entry(entry) is False
+
+    def test_malformed_inputs_safe(self):
+        assert bios_audit.is_phantom_change_entry({}) is False
+        assert bios_audit.is_phantom_change_entry({"kind": "change"}) is False
+        assert bios_audit.is_phantom_change_entry({"kind": "change", "changes": []}) is False
+        assert bios_audit.is_phantom_change_entry({"kind": "change", "changes": "nope"}) is False  # type: ignore[arg-type]
+        assert bios_audit.is_phantom_change_entry(None) is False  # type: ignore[arg-type]
+
+
+class TestRecentChangesFiltersPhantoms:
+    def test_phantoms_hidden_by_default(self, bios_audit_tmp):
+        now = datetime.now()
+        # Phantom (pre-fix null flicker)
+        bios_audit._append_history(
+            {
+                "kind": "change",
+                "timestamp": (now - timedelta(hours=1)).isoformat(timespec="seconds"),
+                "changes": [{"field": "bios_serial", "old": "9T46D14", "new": None}],
+                "snapshot": {},
+            }
+        )
+        # Real change
+        bios_audit._append_history(
+            {
+                "kind": "change",
+                "timestamp": (now - timedelta(hours=2)).isoformat(timespec="seconds"),
+                "changes": [{"field": "secure_boot", "old": "enabled", "new": "disabled"}],
+                "snapshot": {},
+            }
+        )
+        kept = bios_audit.recent_changes()
+        assert len(kept) == 1
+        assert kept[0]["changes"][0]["field"] == "secure_boot"
+
+    def test_include_phantoms_true_returns_everything(self, bios_audit_tmp):
+        now = datetime.now()
+        bios_audit._append_history(
+            {
+                "kind": "change",
+                "timestamp": (now - timedelta(hours=1)).isoformat(timespec="seconds"),
+                "changes": [{"field": "bios_serial", "old": "9T46D14", "new": None}],
+                "snapshot": {},
+            }
+        )
+        assert bios_audit.recent_changes(include_phantoms=True)
+
+    def test_dashboard_concern_not_fired_by_phantom_only_history(self, client, bios_audit_tmp, mocker):
+        """The 2026-04-19 phantom entries must not keep firing the
+        'BIOS/firmware setting change detected' concern forever."""
+        now = datetime.now()
+        bios_audit._append_history(
+            {
+                "kind": "change",
+                "timestamp": (now - timedelta(hours=1)).isoformat(timespec="seconds"),
+                "changes": [
+                    {"field": "bios_serial", "old": "9T46D14", "new": None},
+                    {"field": "vbs.vbs_status", "old": "running", "new": None},
+                ],
+                "snapshot": {},
+            }
+        )
+        import windesktopmgr as wdm
+
+        mocker.patch.object(wdm, "get_driver_health", return_value={"ok": True})
+        mocker.patch.object(wdm, "get_bios_status", return_value={"current": {}, "update": {}})
+        mocker.patch.object(wdm, "get_disk_health", return_value={"ok": True})
+        mocker.patch.object(wdm, "get_network_data", return_value={"ok": True})
+        mocker.patch.object(wdm, "get_memory_analysis", return_value={"ok": True})
+        mocker.patch.object(wdm, "get_credentials_network_health", return_value={"ok": True})
+        resp = client.get("/api/dashboard/summary")
+        titles = [c.get("title", "") for c in resp.get_json().get("concerns", [])]
+        assert not any("BIOS/firmware setting change" in t for t in titles), (
+            f"phantom should not fire change concern, got: {titles}"
+        )
+
+
+class TestHistoryRouteFiltersPhantoms:
+    def _seed_mixed(self, bios_audit_tmp):
+        now = datetime.now()
+        bios_audit._append_history(
+            {
+                "kind": "baseline",
+                "timestamp": (now - timedelta(hours=5)).isoformat(timespec="seconds"),
+                "snapshot": {"bios_version": "1.0"},
+            }
+        )
+        bios_audit._append_history(
+            {
+                "kind": "change",
+                "timestamp": (now - timedelta(hours=3)).isoformat(timespec="seconds"),
+                "changes": [{"field": "bios_serial", "old": "9T46D14", "new": None}],
+                "snapshot": {},
+            }
+        )
+        bios_audit._append_history(
+            {
+                "kind": "change",
+                "timestamp": (now - timedelta(hours=1)).isoformat(timespec="seconds"),
+                "changes": [{"field": "secure_boot", "old": "enabled", "new": "disabled"}],
+                "snapshot": {},
+            }
+        )
+
+    def test_default_hides_phantoms(self, client, bios_audit_tmp):
+        self._seed_mixed(bios_audit_tmp)
+        resp = client.get("/api/bios/audit/history")
+        body = resp.get_json()
+        assert body["include_phantoms"] is False
+        kinds_and_fields = [
+            (e["kind"], e.get("changes", [{}])[0].get("field", ""))
+            for e in body["history"]
+            if e.get("kind") in ("baseline", "change")
+        ]
+        assert ("baseline", "") in kinds_and_fields
+        assert ("change", "secure_boot") in kinds_and_fields
+        # The phantom bios_serial entry must be gone
+        assert ("change", "bios_serial") not in kinds_and_fields
+
+    def test_include_phantoms_query_param_shows_all(self, client, bios_audit_tmp):
+        self._seed_mixed(bios_audit_tmp)
+        resp = client.get("/api/bios/audit/history?include_phantoms=1")
+        body = resp.get_json()
+        assert body["include_phantoms"] is True
+        assert len(body["history"]) == 3

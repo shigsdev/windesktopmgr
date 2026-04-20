@@ -7879,14 +7879,24 @@ def bios_cache_clear_route():
 
 @app.route("/api/bios/audit/history")
 def bios_audit_history_route():
-    """Return the BIOS audit trail (baselines + change events)."""
+    """Return the BIOS audit trail (baselines + change + error events).
+
+    Query params:
+        limit             -- trim to last N entries (default: all)
+        include_phantoms  -- "1" to keep historical pre-fix null-vs-value
+                             flicker entries visible (default: drop them)
+    """
     import bios_audit
 
     limit_arg = request.args.get("limit", type=int)
+    include_phantoms = request.args.get("include_phantoms") == "1"
+
     history = bios_audit.load_history()
+    if not include_phantoms:
+        history = [e for e in history if not bios_audit.is_phantom_change_entry(e)]
     if limit_arg is not None and limit_arg > 0:
         history = history[-limit_arg:]
-    return jsonify({"ok": True, "history": history})
+    return jsonify({"ok": True, "history": history, "include_phantoms": include_phantoms})
 
 
 @app.route("/api/bios/audit/snapshot")

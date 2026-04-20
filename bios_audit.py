@@ -555,8 +555,48 @@ def check_and_log_bios_changes(
 # ── Dashboard / UI helper ──────────────────────────────────────────
 
 
-def recent_changes(window: timedelta = CHANGE_ALERT_WINDOW) -> list:
-    """Return change entries from the last <window> hours (default 24)."""
+def is_phantom_change_entry(entry: dict) -> bool:
+    """Decide whether a change entry is a historical false positive.
+
+    Before the 2026-04-20 fix, a transient PowerShell failure recorded
+    fields as None in the snapshot; the next cycle (successful or also
+    failed) then diffed None against the previous real value and wrote
+    a ``kind="change"`` entry. One outage produced TWO of these: one
+    value->None when the read failed, one None->value when it
+    recovered.
+
+    A phantom entry is recognised by a simple shape: *every* change
+    inside it has None on at least one side. A legitimate change
+    flipping from value-A to value-B would have None on neither side,
+    so this check is conservative -- it only suppresses entries that
+    could not possibly represent a real, observable transition.
+
+    Returns False for anything that isn't a well-formed change entry.
+    """
+    if not isinstance(entry, dict) or entry.get("kind") != "change":
+        return False
+    changes = entry.get("changes")
+    if not isinstance(changes, list) or not changes:
+        return False
+    for c in changes:
+        if not isinstance(c, dict):
+            return False
+        if c.get("old") is not None and c.get("new") is not None:
+            return False
+    return True
+
+
+def recent_changes(
+    window: timedelta = CHANGE_ALERT_WINDOW,
+    include_phantoms: bool = False,
+) -> list:
+    """Return change entries from the last <window> hours (default 24).
+
+    By default, phantom entries (historical null-vs-value flickers from
+    the pre-fix era -- see ``is_phantom_change_entry``) are filtered
+    out so the dashboard concern and UI don't keep surfacing them.
+    Pass ``include_phantoms=True`` for debugging / audit completeness.
+    """
     history = load_history()
     cutoff = datetime.now() - window
     out = []
@@ -567,8 +607,11 @@ def recent_changes(window: timedelta = CHANGE_ALERT_WINDOW) -> list:
             ts = datetime.fromisoformat(entry.get("timestamp", ""))
         except (ValueError, TypeError):
             continue
-        if ts >= cutoff:
-            out.append(entry)
+        if ts < cutoff:
+            continue
+        if not include_phantoms and is_phantom_change_entry(entry):
+            continue
+        out.append(entry)
     return out
 
 
