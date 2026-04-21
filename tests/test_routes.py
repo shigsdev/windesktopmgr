@@ -2763,3 +2763,218 @@ class TestMetricsHistorySamplerHook:
 
         resp = client.get("/api/dashboard/summary")
         assert resp.status_code == 200
+
+
+# ── Dashboard summary cache (perf hardening A) ───────────────────────────────
+
+
+class TestDashboardSummaryCache:
+    """The dashboard endpoint serves cached data inside the TTL and triggers
+    an async refresh when stale, instead of paying full fan-out cost on
+    every call."""
+
+    def _mock_collectors(self, mocker, cpu=10):
+        import windesktopmgr as wdm
+
+        mocker.patch.object(wdm, "get_thermals", return_value={"perf": {"CPUPct": cpu}, "temps": []})
+        mocker.patch.object(wdm, "get_memory_analysis", return_value={"used_mb": 1, "total_mb": 2})
+        mocker.patch.object(wdm, "get_bios_status", return_value={})
+        mocker.patch.object(wdm, "get_credentials_network_health", return_value={})
+        mocker.patch.object(wdm, "get_disk_health", return_value={"drives": []})
+        mocker.patch.object(wdm, "get_driver_health", return_value={})
+
+    def test_first_request_is_cache_miss(self, client, mocker):
+        self._mock_collectors(mocker)
+        resp = client.get("/api/dashboard/summary")
+        assert resp.status_code == 200
+        d = resp.get_json()
+        assert d["cache"] == "miss"
+
+    def test_second_request_within_ttl_is_cache_fresh(self, client, mocker):
+        self._mock_collectors(mocker)
+        client.get("/api/dashboard/summary")  # populate
+        resp2 = client.get("/api/dashboard/summary")
+        d = resp2.get_json()
+        assert d["cache"] == "fresh"
+        assert isinstance(d.get("cache_age_s"), (int, float))
+
+    def test_stale_cache_returns_cached_payload_and_triggers_refresh(self, client, mocker):
+        """When the cache is older than TTL, the route must still return
+        immediately (with the stale payload) and kick a background refresh.
+        Latency under load was the original problem."""
+        import windesktopmgr as wdm
+
+        self._mock_collectors(mocker, cpu=7)
+        client.get("/api/dashboard/summary")  # seed cache
+
+        # Force the cache to look stale by back-dating its timestamp.
+        from datetime import datetime, timedelta
+
+        with wdm._dashboard_cache_lock:
+            wdm._dashboard_state["ts"] = datetime.now() - timedelta(seconds=999)
+
+        refresh_called = mocker.patch.object(wdm, "_trigger_dashboard_refresh_async")
+        resp = client.get("/api/dashboard/summary")
+        d = resp.get_json()
+        assert d["cache"] == "stale"
+        assert refresh_called.called, "stale cache must trigger a background refresh"
+
+    def test_cache_clear_hook_drops_cached_payload(self, client, mocker):
+        import windesktopmgr as wdm
+
+        self._mock_collectors(mocker)
+        client.get("/api/dashboard/summary")
+        assert wdm._dashboard_state["data"] is not None
+        wdm._dashboard_cache_clear()
+        assert wdm._dashboard_state["data"] is None
+        assert wdm._dashboard_state["ts"] is None
+
+    def test_single_flight_prevents_concurrent_background_refreshes(self, mocker):
+        """The single-flight lock ensures at most one refresh thread runs at
+        a time. A second trigger while one is in flight must no-op instead
+        of spawning a duplicate."""
+        import windesktopmgr as wdm
+
+        # Acquire the refresh lock to simulate an in-flight refresh
+        assert wdm._dashboard_refresh_lock.acquire(blocking=False)
+        try:
+            thread_spawn = mocker.patch("windesktopmgr.threading.Thread")
+            wdm._trigger_dashboard_refresh_async()
+            assert not thread_spawn.called, "should not spawn a second refresh while one is in flight"
+        finally:
+            wdm._dashboard_refresh_lock.release()
+
+    def test_compute_returns_same_shape_as_cached(self, mocker):
+        """The synchronous fan-out and the cached payload must share one
+        shape -- the route adds the ``cache`` / ``cache_age_s`` keys on
+        top but must not alter the core fields."""
+        import windesktopmgr as wdm
+
+        self._mock_collectors(mocker)
+        data = wdm._compute_dashboard_summary()
+        for key in ("concerns", "total", "critical", "warnings", "overall", "checked_at"):
+            assert key in data
+
+
+# ── Request-log flood suppressor (perf hardening B) ──────────────────────────
+
+
+class TestRequestLogFloodSuppressor:
+    """Collapses runs of identical successful requests so one runaway client
+    can't bury real signal in the log file."""
+
+    def _suppressor(self, window_seconds=None):
+        import windesktopmgr as wdm
+
+        s = wdm._RequestLogFloodSuppressor()
+        if window_seconds is not None:
+            s.WINDOW_SECONDS = window_seconds
+        return s
+
+    def test_first_occurrence_logs_with_zero_suppressed(self):
+        s = self._suppressor()
+        should, suppressed = s.note(("GET", "/api/x", 200))
+        assert should is True
+        assert suppressed == 0
+
+    def test_consecutive_duplicate_in_window_suppressed(self):
+        s = self._suppressor(window_seconds=60)
+        s.note(("GET", "/api/x", 200))
+        should, suppressed = s.note(("GET", "/api/x", 200))
+        assert should is False
+        assert suppressed == 0  # count only surfaces on the NEXT logged line
+
+    def test_backlog_reported_when_window_expires(self, mocker):
+        s = self._suppressor(window_seconds=60)
+        # Fake the clock so we don't have to sleep
+        t = [1000.0]
+        mocker.patch("windesktopmgr.time.time", side_effect=lambda: t[0])
+
+        s.note(("GET", "/api/x", 200))  # logs
+        for _ in range(5):
+            s.note(("GET", "/api/x", 200))  # 5 suppressed
+        # Advance past the window
+        t[0] += 61.0
+        should, suppressed = s.note(("GET", "/api/x", 200))
+        assert should is True
+        assert suppressed == 5, "suppressed count must surface on the next emit"
+
+    def test_distinct_keys_tracked_independently(self):
+        s = self._suppressor(window_seconds=60)
+        a1 = s.note(("GET", "/api/a", 200))
+        b1 = s.note(("GET", "/api/b", 200))
+        a2 = s.note(("GET", "/api/a", 200))
+        assert a1 == (True, 0)
+        assert b1 == (True, 0), "different key must not be suppressed by /api/a"
+        assert a2 == (False, 0), "second /api/a IS a duplicate and should be suppressed"
+
+    def test_status_code_differentiates_keys(self):
+        """Same method+path but different status code is a different event."""
+        s = self._suppressor(window_seconds=60)
+        r1 = s.note(("GET", "/api/x", 200))
+        r2 = s.note(("GET", "/api/x", 500))
+        assert r1 == (True, 0)
+        assert r2 == (True, 0)
+
+    def test_error_responses_reach_log_even_after_duplicates(self, client, mocker):
+        """Integration check: even when a successful route is being
+        flood-suppressed, an error response (>=400) must still log.
+        Signal must never be suppressed."""
+        import windesktopmgr as wdm
+
+        log_mock = mocker.patch.object(wdm._flask_log, "info")
+        warn_mock = mocker.patch.object(wdm._flask_log, "warning")
+
+        # First two calls to /api/health are skipped by the logger entirely
+        # (path == "/api/health"), so fire a real successful endpoint.
+        client.get("/api/scan/status")  # 200, first time -> logged
+        client.get("/api/scan/status")  # 200, duplicate -> suppressed
+        client.get("/api/does-not-exist")  # 404 -> must log
+
+        # At least one INFO for the first /api/scan/status
+        assert log_mock.call_count >= 1
+        # 404 must always emit a warning
+        assert warn_mock.call_count >= 1
+
+
+# ── Heartbeat JS guardrails (perf hardening C) ───────────────────────────────
+
+
+class TestHeartbeatJsGuards:
+    """The heartbeat logic lives in templates/index.html JS. We can't unit-
+    test browser behaviour from pytest, but we can pin the specific
+    guardrails that prevent the 2026-04-20 "banner stuck forever" incident
+    so a refactor can't silently regress them.
+    """
+
+    HTML_PATH = (
+        PROJECT_ROOT / "templates" / "index.html"
+        if (PROJECT_ROOT := __import__("pathlib").Path(__file__).resolve().parents[1])
+        else None
+    )  # type: ignore[misc]
+
+    def _html(self) -> str:
+        import pathlib
+
+        return (pathlib.Path(__file__).resolve().parents[1] / "templates" / "index.html").read_text(encoding="utf-8")
+
+    def test_fetch_timeout_is_at_least_five_seconds(self):
+        """2-second timeout was too tight under browser-connection-cap pressure."""
+        html = self._html()
+        assert "AbortSignal.timeout(5000)" in html, (
+            "heartbeat fetch timeout must be >=5000ms to survive temporary browser connection saturation"
+        )
+        assert "AbortSignal.timeout(2000)" not in html, (
+            "2-second heartbeat timeout was the 2026-04-20 failure mode; do not re-introduce it"
+        )
+
+    def test_fail_threshold_constant_present(self):
+        """Banner must require multiple consecutive failures, not one blip."""
+        html = self._html()
+        assert "_HEARTBEAT_FAIL_THRESHOLD = 3" in html
+        assert "_heartbeatFailures >= _HEARTBEAT_FAIL_THRESHOLD" in html
+
+    def test_keepalive_and_no_store_set_on_heartbeat_fetch(self):
+        html = self._html()
+        assert "keepalive: true" in html
+        assert 'cache: "no-store"' in html

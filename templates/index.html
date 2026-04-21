@@ -946,8 +946,23 @@ function fmtTs(ts) {
 // ── Server Heartbeat ─────────────────────────────────────────────────────────
 // Detects when Flask server is unavailable (e.g. during restart) and shows
 // a reconnection banner instead of letting fetches hang silently.
+//
+// 2026-04-20 hardening: the original heartbeat used a 2-second fetch timeout
+// and flipped ``_serverAlive`` on the first failure. A runaway polling loop
+// in another tab saturated the browser's 6-connection-per-host cap, which
+// meant /api/health couldn't even get a socket in 2s and the banner flashed
+// up permanently even though the server was healthy. The new behaviour:
+//
+//  - 5-second fetch timeout, giving the browser time to recycle a socket
+//  - ``keepalive:true`` so the probe has a shot at outliving pagehide
+//  - ``cache:"no-store"`` so we don't get the ghost of a cached 200
+//  - Requires THREE consecutive failures (~15 s) before claiming the
+//    server is down. One blip no longer blames the server.
+//  - Counter resets immediately on the next success.
 let _serverAlive = true;
 let _heartbeatId = null;
+let _heartbeatFailures = 0;
+const _HEARTBEAT_FAIL_THRESHOLD = 3;
 
 function _startHeartbeat() {
   if (_heartbeatId) return;
@@ -955,9 +970,14 @@ function _startHeartbeat() {
 }
 
 function _checkServer() {
-  fetch("/api/health", {signal: AbortSignal.timeout(2000)})
+  fetch("/api/health", {
+    signal: AbortSignal.timeout(5000),
+    keepalive: true,
+    cache: "no-store",
+  })
     .then(r => r.json())
     .then(() => {
+      _heartbeatFailures = 0;
       if (!_serverAlive) {
         _serverAlive = true;
         _hideReconnectBanner();
@@ -966,7 +986,8 @@ function _checkServer() {
       }
     })
     .catch(() => {
-      if (_serverAlive) {
+      _heartbeatFailures++;
+      if (_heartbeatFailures >= _HEARTBEAT_FAIL_THRESHOLD && _serverAlive) {
         _serverAlive = false;
         _showReconnectBanner();
       }
