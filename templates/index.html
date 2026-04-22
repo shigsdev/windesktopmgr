@@ -2438,7 +2438,14 @@ function renderProcesses() {
          : `<div style="font-size:11px;color:var(--muted)">${esc(p.Description||p.CmdLine||"—").substring(0,80)}</div>`);
 
     const memColor = p.MemMB>=1500?"var(--red)":p.MemMB>=500?"var(--orange)":"var(--text)";
-    const cpuColor = (p.CPU||0)>=25?"var(--orange)":"var(--muted)";
+    // CPUPct is the real current-load percentage (0-100, normalised across
+    // cores). Fall back to the legacy CPU field (cumulative seconds) only
+    // if the backend didn't populate CPUPct. Colour thresholds match
+    // CPU_WARN_PCT (25%) and a pragmatic "hot" tier at 60%.
+    const cpuPct  = (p.CPUPct != null) ? p.CPUPct : 0;
+    const cpuSec  = p.CPUTime || p.CPU || 0;
+    const cpuColor = cpuPct >= 60 ? "var(--red)" : cpuPct >= 25 ? "var(--orange)" : "var(--muted)";
+    const cpuTitle = `Cumulative CPU time: ${cpuSec.toFixed(1)} s (since process started)`;
 
     const canKill  = p.PID && p.PID > 4 && safeKill !== false &&
                      !["system","idle"].includes((p.Name||"").toLowerCase());
@@ -2454,7 +2461,7 @@ function renderProcesses() {
       <td style="padding:8px 10px;max-width:280px">${whatCell}</td>
       <td style="padding:8px 10px;text-align:right;color:var(--muted);vertical-align:middle">${p.PID}</td>
       <td style="padding:8px 10px;text-align:right;color:${memColor};font-weight:${p.MemMB>=500?"700":"400"};vertical-align:middle">${(p.MemMB||0).toFixed(0)}</td>
-      <td style="padding:8px 10px;text-align:right;color:${cpuColor};vertical-align:middle">${(p.CPU||0).toFixed(1)}</td>
+      <td style="padding:8px 10px;text-align:right;color:${cpuColor};vertical-align:middle" title="${cpuTitle}">${cpuPct.toFixed(1)}%</td>
       <td style="padding:8px 10px;text-align:right;color:var(--muted);vertical-align:middle">${p.Threads||0}</td>
       <td style="padding:8px 10px;color:${flagColor(p.flag)};font-size:11px;white-space:nowrap;vertical-align:middle;font-weight:700">${flagLabel(p.flag)}</td>
       <td style="padding:8px 10px;vertical-align:middle">${killBtn}</td>
@@ -5344,7 +5351,7 @@ function renderSystemInfo(d) {
           <th style="padding:6px 10px">What It Does</th>
           <th style="padding:6px 10px;text-align:right">PID</th>
           <th style="padding:6px 10px;text-align:right">RAM MB</th>
-          <th style="padding:6px 10px;text-align:right">CPU s</th>
+          <th style="padding:6px 10px;text-align:right" title="Real current CPU load (0-100%, normalised across cores). Hover a cell to see cumulative CPU time.">CPU %</th>
           <th style="padding:6px 10px;text-align:right">Threads</th>
           <th style="padding:6px 10px">Status</th>
           <th style="padding:6px 10px"></th>
