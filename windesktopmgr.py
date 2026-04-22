@@ -4491,6 +4491,56 @@ MEM_WARN_MB = 500
 MEM_CRIT_MB = 1500
 
 
+# CPU-percentage sample cache (Processes tab bug fix, 2026-04-20).
+# Keyed by PID -> (cumulative_cpu_seconds, wall_clock_timestamp) recorded on
+# the last ``get_process_list()`` call. On the next call we compute
+#     delta_sec / delta_time * 100 / num_cores
+# to get the real CPU percentage (0-100) used between the two samples.
+#
+# Why this exists: psutil's ``Process.cpu_percent(interval=None)`` is the
+# "right" API for this, but it requires priming (first call always returns
+# 0) and needs a baseline per Process instance. Because we rebuild
+# Process objects from scratch each call via ``process_iter()``, that
+# per-instance state is lost. Keeping the baseline in a module-level dict
+# survives across calls and lets a PID accumulate a real rate over time.
+_last_cpu_samples: dict[int, tuple[float, float]] = {}
+_cpu_samples_lock = threading.Lock()
+
+
+def _compute_cpu_pct(
+    pid: int,
+    cpu_sec: float,
+    now: float,
+    num_cores: int,
+    prev_samples: dict[int, tuple[float, float]],
+) -> float:
+    """Compute current CPU-% (0-100) for one process using a sample delta.
+
+    Returns 0.0 whenever we can't compute a meaningful rate:
+      - First ever observation of this PID (no baseline)
+      - Zero elapsed time (shouldn't happen, but guard against it)
+      - Negative delta (PID reuse -- old PID died, new process got it;
+        the new process has smaller cumulative CPU than the old one)
+
+    Values are clamped to [0, 100] to keep the UI sane -- a runaway
+    all-cores-pegged process on a 10-core box shows "100%" not "1000%".
+    """
+    prev = prev_samples.get(pid)
+    if not prev:
+        return 0.0
+    prev_sec, prev_ts = prev
+    dt = now - prev_ts
+    if dt <= 0:
+        return 0.0
+    delta = cpu_sec - prev_sec
+    if delta < 0:
+        # PID reuse, or psutil returned a weird snapshot. Either way we
+        # don't have a trustworthy rate; 0% is safer than a negative pct.
+        return 0.0
+    pct = (delta / dt) * 100.0 / max(1, num_cores)
+    return max(0.0, min(pct, 100.0))
+
+
 def get_process_list() -> dict:
     """Enumerate running processes using psutil (no PowerShell).
 
@@ -4499,29 +4549,56 @@ def get_process_list() -> dict:
     ~10x faster per call and avoids the ~200–400 ms ``powershell.exe``
     cold start.
 
-    The ``CPU`` field preserves the previous semantics: cumulative CPU
-    **seconds** (user + system), not a percentage — matching what
-    ``Get-Process .CPU`` returned. ``MEM_CRIT_MB`` / ``CPU_WARN_PCT``
-    thresholds are applied unchanged.
+    Field semantics:
+      - ``CPU``     — cumulative CPU **seconds** (user + system) since the
+                      process started. Preserved for backwards compatibility
+                      with consumers that expect the old ``Get-Process .CPU``
+                      shape, but NOT a percentage.
+      - ``CPUTime`` — alias of ``CPU``, named honestly. New code should use
+                      this.
+      - ``CPUPct``  — actual CPU % (0-100, normalised across cores) used
+                      since the previous ``get_process_list()`` call.
+                      Always 0 on first call (no baseline yet). This is the
+                      field the summarizer's warn threshold compares against.
+
+    Fix for 2026-04-20: the summarizer used to compare ``CPU`` (cumulative
+    seconds) against ``CPU_WARN_PCT`` (25.0) and format the value as "%
+    CPU", which produced misleading labels like "Edge using 231% CPU" -
+    actually 231 cumulative CPU-seconds, which any long-running browser
+    accumulates quickly. CPUPct gives the honest current-load number.
     """
     procs: list[dict] = []
+    now = time.time()
+    num_cores = psutil.cpu_count(logical=True) or 1
+
+    # Snapshot the previous sample map under the lock so the read is
+    # consistent even if another caller mutates the dict mid-iteration.
+    with _cpu_samples_lock:
+        prev_samples = dict(_last_cpu_samples)
+
+    new_samples: dict[int, tuple[float, float]] = {}
+
     try:
         for proc in psutil.process_iter(
             ["pid", "name", "cpu_times", "memory_info", "num_threads", "num_handles", "exe", "cmdline"],
         ):
             try:
                 info = proc.info
+                pid = info.get("pid", 0)
                 cpu_t = info.get("cpu_times")
                 cpu_sec = round((cpu_t.user + cpu_t.system), 1) if cpu_t else 0
+                cpu_pct = _compute_cpu_pct(pid, cpu_sec, now, num_cores, prev_samples)
                 mem = info.get("memory_info")
                 mem_mb = round(mem.rss / (1024 * 1024), 1) if mem else 0
                 cmdline_list = info.get("cmdline") or []
                 cmdline = " ".join(cmdline_list).replace('"', "")
                 procs.append(
                     {
-                        "PID": info.get("pid", 0),
+                        "PID": pid,
                         "Name": info.get("name", "") or "",
-                        "CPU": cpu_sec,
+                        "CPU": cpu_sec,  # legacy name: cumulative seconds
+                        "CPUTime": cpu_sec,  # honest name for the same value
+                        "CPUPct": round(cpu_pct, 1),  # real current-load %
                         "MemMB": mem_mb,
                         "Threads": info.get("num_threads") or 0,
                         "Handles": info.get("num_handles") or 0,
@@ -4532,6 +4609,7 @@ def get_process_list() -> dict:
                         "CmdLine": cmdline,
                     }
                 )
+                new_samples[pid] = (cpu_sec, now)
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 # Process exited between iter and read, or we can't see it (protected).
                 continue
@@ -4541,12 +4619,18 @@ def get_process_list() -> dict:
         print(f"[ProcessMonitor] error: {e}")
         return {"processes": [], "total": 0, "total_mem_mb": 0, "flagged": [], "flag_notes": []}
 
+    # Replace the cache with only the PIDs we saw this call -- processes
+    # that died drop out naturally, so the dict can't grow unboundedly.
+    with _cpu_samples_lock:
+        _last_cpu_samples.clear()
+        _last_cpu_samples.update(new_samples)
+
     total_mem = sum(p.get("MemMB", 0) for p in procs)
     flags = []
     for p in procs:
         name_l = (p.get("Name", "") + ".exe").lower()
         mem = p.get("MemMB", 0)
-        cpu = p.get("CPU", 0)
+        cpu_pct = p.get("CPUPct", 0)
         # Attach enrichment info
         p["info"] = get_process_info(p.get("Name", ""), p.get("Path", ""))
         # Use safe_kill from KB/cache to refine flagging
@@ -4559,10 +4643,10 @@ def get_process_list() -> dict:
                 flags.append(f"{plain} using {mem:.0f} MB RAM")
             elif mem >= MEM_WARN_MB:
                 p["flag"] = "warning"
-            elif cpu >= CPU_WARN_PCT:
+            elif cpu_pct >= CPU_WARN_PCT:
                 plain = (p["info"] or {}).get("plain", p["Name"])
                 p["flag"] = "warning"
-                flags.append(f"{plain} using {cpu:.0f}% CPU")
+                flags.append(f"{plain} using {cpu_pct:.0f}% CPU")
 
     return {
         "processes": procs,
@@ -4627,8 +4711,10 @@ def summarize_processes(data: dict) -> dict:
         plain = info.get("plain", p["Name"])
         what = info.get("what", "")
         mem = p.get("MemMB", 0)
-        cpu = p.get("CPU", 0)
-        metric = f"{mem:.0f} MB RAM" if mem >= MEM_WARN_MB else f"{cpu:.0f}% CPU"
+        # CPUPct = real current-load % (0-100). Falls back to CPU (cumulative
+        # seconds) only for legacy callers that never populated CPUPct.
+        cpu_pct = p.get("CPUPct", p.get("CPU", 0))
+        metric = f"{mem:.0f} MB RAM" if mem >= MEM_WARN_MB else f"{cpu_pct:.0f}% CPU"
         what_str = f" — {what[:80]}…" if len(what) > 80 else (f" — {what}" if what else "")
         insights.append(_insight("warning", f"{plain} using {metric}.{what_str}"))
 

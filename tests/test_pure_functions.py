@@ -217,3 +217,83 @@ class TestWmiDateToStr:
     def test_garbage_falls_back_to_first_8_chars(self):
         result = wdm._wmi_date_to_str("ABCDEFGHIJKLMNOP")
         assert result == "ABCDEFGH"
+
+
+class TestComputeCpuPct:
+    """Regression tests for the Processes-tab CPU-% bug fix (2026-04-20).
+
+    Before the fix, the CPU field was cumulative CPU **seconds** but was
+    compared against a % threshold and formatted as "% CPU" -- producing
+    labels like "Edge using 231% CPU" that actually meant "Edge has 231
+    seconds of accumulated CPU time since it started". _compute_cpu_pct()
+    produces the real current-load percentage by sampling the cumulative
+    CPU-time delta between two snapshots and dividing by wall-clock delta.
+    """
+
+    def test_first_sample_returns_zero(self):
+        """No previous baseline -> no rate computable -> report 0%."""
+        result = wdm._compute_cpu_pct(pid=1234, cpu_sec=10.0, now=1000.0, num_cores=8, prev_samples={})
+        assert result == 0.0
+
+    def test_full_core_usage_one_core_box(self):
+        """1 second of CPU time over 1 second wall clock on a 1-core box = 100%."""
+        prev = {1234: (10.0, 1000.0)}
+        result = wdm._compute_cpu_pct(pid=1234, cpu_sec=11.0, now=1001.0, num_cores=1, prev_samples=prev)
+        assert result == 100.0
+
+    def test_normalised_across_cores(self):
+        """2.31 cores' worth of CPU on a 10-core box = 23.1% (not 231%).
+
+        This is the exact case from the user's bug report: Edge using
+        231% of a single core = 2.31 cores out of 10 = 23.1% of total CPU.
+        """
+        prev = {9999: (0.0, 1000.0)}
+        # 23.1 CPU-seconds in 10 wall-clock seconds = 2.31 cores busy
+        result = wdm._compute_cpu_pct(pid=9999, cpu_sec=23.1, now=1010.0, num_cores=10, prev_samples=prev)
+        assert result == 23.1
+
+    def test_idle_process_reports_zero(self):
+        prev = {1234: (5.0, 1000.0)}
+        result = wdm._compute_cpu_pct(pid=1234, cpu_sec=5.0, now=1005.0, num_cores=4, prev_samples=prev)
+        assert result == 0.0
+
+    def test_clamped_to_100_on_runaway(self):
+        """A process somehow reporting more CPU-seconds than wall-clock allows
+        (spike glitch, clock skew) is clamped to 100% so the UI stays sane."""
+        prev = {1234: (0.0, 1000.0)}
+        # 20 CPU-seconds in 1 wall-second on a 4-core box = 500% raw. Clamp.
+        result = wdm._compute_cpu_pct(pid=1234, cpu_sec=20.0, now=1001.0, num_cores=4, prev_samples=prev)
+        assert result == 100.0
+
+    def test_pid_reuse_negative_delta_returns_zero(self):
+        """Old PID 1234 died with 50s cumulative; new PID 1234 starts at 2s.
+        Delta would be -48, which doesn't mean anything; return 0, not a
+        negative percentage."""
+        prev = {1234: (50.0, 1000.0)}
+        result = wdm._compute_cpu_pct(pid=1234, cpu_sec=2.0, now=1010.0, num_cores=4, prev_samples=prev)
+        assert result == 0.0
+
+    def test_zero_time_delta_returns_zero(self):
+        """Guard against div-by-zero if two samples land at the same timestamp."""
+        prev = {1234: (5.0, 1000.0)}
+        result = wdm._compute_cpu_pct(pid=1234, cpu_sec=6.0, now=1000.0, num_cores=4, prev_samples=prev)
+        assert result == 0.0
+
+    def test_negative_time_delta_returns_zero(self):
+        """Clock went backwards (NTP adjustment, suspend/resume)."""
+        prev = {1234: (5.0, 1000.0)}
+        result = wdm._compute_cpu_pct(pid=1234, cpu_sec=6.0, now=999.0, num_cores=4, prev_samples=prev)
+        assert result == 0.0
+
+    def test_zero_core_count_does_not_crash(self):
+        """Some environments (containers, psutil edge cases) return 0 for
+        num_cores. The helper must treat 0 as 1 rather than div-by-zero."""
+        prev = {1234: (0.0, 1000.0)}
+        result = wdm._compute_cpu_pct(pid=1234, cpu_sec=1.0, now=1001.0, num_cores=0, prev_samples=prev)
+        # 1 sec / 1 sec / 1 core = 100%
+        assert result == 100.0
+
+    def test_returns_float(self):
+        prev = {1234: (0.0, 1000.0)}
+        result = wdm._compute_cpu_pct(pid=1234, cpu_sec=0.5, now=1001.0, num_cores=4, prev_samples=prev)
+        assert isinstance(result, float)
