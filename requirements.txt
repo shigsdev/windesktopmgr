@@ -4,3 +4,8 @@ keyring>=25.0.0
 pysnmp>=7.0.0
 psutil>=5.9.0,<8.0.0
 wmi>=1.5.1
+# Official NVIDIA NVML Python binding -- powers get_gpu_metrics() for the
+# Trends dashboard (backlog #37). In-process C library calls, no subprocess
+# fork per sample. Falls back to "available=False" gracefully on non-NVIDIA
+# or driverless machines, so pinning is safe.
+nvidia-ml-py>=12.0.0

@@ -127,6 +127,22 @@ def extract_metrics(summary: dict) -> dict:
             if letter and isinstance(pct, int | float):
                 metrics[f"disk_percent.{str(letter).upper()[:1]}"] = float(pct)
 
+    # GPU metrics (backlog #37). Only recorded when the collector returned
+    # available=True -- a machine with no NVIDIA driver should show the
+    # existing CPU/memory/disk/concerns sparklines and no GPU series at
+    # all, rather than a series of zeros pretending to be a GPU at idle.
+    gpu = summary.get("gpu") or {}
+    if isinstance(gpu, dict) and gpu.get("available"):
+        util = gpu.get("utilization_pct")
+        if isinstance(util, int | float):
+            metrics["gpu_utilization_pct"] = float(util)
+        vram_pct = gpu.get("vram_pct")
+        if isinstance(vram_pct, int | float):
+            metrics["gpu_vram_pct"] = float(vram_pct)
+        temp = gpu.get("temp_c")
+        if isinstance(temp, int | float):
+            metrics["gpu_temp_c"] = float(temp)
+
     return metrics
 
 

@@ -55,6 +55,10 @@ TEST_FILES = [
     "test_bios_audit.py",
     "test_task_watcher.py",
     "test_architecture_html.py",
+    "test_alerts.py",
+    "test_metrics_history.py",
+    "test_post_update_check.py",
+    "test_gpu.py",
 ]
 
 
