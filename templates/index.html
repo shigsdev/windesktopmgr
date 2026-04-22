@@ -2957,10 +2957,36 @@ function renderTimeline() {
 // ══════════════════════════════════════════════════════════════════════════
 let _memChart = null;
 
+// System-process glossary (backlog #36). Fetched once per page load and
+// cached; the Memory tab renderer looks up process names to decide whether
+// to show an info icon and whether to hide the Kill button.
+let _processGlossary = null;
+async function _loadProcessGlossary() {
+  if (_processGlossary !== null) return _processGlossary;
+  try {
+    const r = await fetch("/api/processes/glossary");
+    const d = await r.json();
+    _processGlossary = (d && d.glossary) ? d.glossary : {};
+  } catch (e) {
+    console.warn("Glossary fetch failed (non-fatal):", e);
+    _processGlossary = {};  // empty -> no tooltips, no button hiding — safe fallback
+  }
+  return _processGlossary;
+}
+
+// Normalise psutil process names for glossary lookup: lowercase + strip .exe.
+// The glossary keys are stored without the suffix; psutil returns names
+// inconsistently (MemCompression has no .exe, csrss.exe does).
+function _glossaryKey(name) {
+  const s = String(name || "").toLowerCase();
+  return s.endsWith(".exe") ? s.slice(0, -4) : s;
+}
+
 async function loadMemory() {
   try {
     document.getElementById("mem-loading").style.display = "block";
     document.getElementById("mem-content").style.display = "none";
+    await _loadProcessGlossary();
     const r = await fetch("/api/memory/data");
     const d = await r.json();
     renderMemory(d);
@@ -3097,13 +3123,41 @@ function renderMemory(d) {
     }
   }
 
-  // Top processes table
+  // Top processes table (backlog #35 + #36 adds action buttons + glossary tooltips)
   const maxMem = (d.top_procs||[])[0]?.mem || 1;
   const catBadgeColor = c => ({security:"var(--red)",browser:"var(--cyan)",comms:"var(--orange)",
                                microsoft:"#4488ff",other:"#888"})[c] || "#888";
-  const rows = (d.top_procs||[]).map(p =>
-    `<tr style="border-bottom:1px solid var(--border)">
-      <td style="padding:6px 10px;font-weight:600">${esc(p.name)}</td>
+  const glossary = _processGlossary || {};
+  // Action button style reused from the dashboard memory-concern buttons
+  const actBtn = "padding:4px 8px;border-radius:5px;cursor:pointer;font-size:10px;font-weight:700;" +
+                 "white-space:nowrap;background:transparent;border:1px solid var(--border);color:var(--muted);" +
+                 "font-family:var(--font-mono)";
+  const rows = (d.top_procs||[]).map(p => {
+    const pid = p.pid || 0;
+    const pname = esc(p.name);
+    const key = _glossaryKey(p.name);
+    const gloss = glossary[key];
+    // Info icon: shown only when we have a glossary entry for this name.
+    // Native title= tooltip is universally supported, accessible, and zero-JS.
+    const infoIcon = gloss
+      ? `<span title="${esc(gloss.title)} — ${esc(gloss.explanation)}" style="display:inline-block;margin-left:6px;cursor:help;color:var(--cyan);font-size:11px;user-select:none" aria-label="What is ${pname}?">ⓘ</span>`
+      : "";
+    // Protected processes show a 🛡 badge instead of Kill. Same tooltip
+    // explains WHY it's protected so the user learns rather than being stonewalled.
+    const protectedBadge = gloss && gloss.protected
+      ? `<span title="Protected — ${esc(gloss.title)}: ${esc(gloss.explanation)}" style="font-size:10px;color:var(--muted);border:1px solid var(--border);padding:2px 8px;border-radius:5px;cursor:help">🛡 Protected</span>`
+      : "";
+    // When not protected, render the 3-button action group (Kill / Investigate / Snooze).
+    // No PID -> no Investigate/Kill, just Snooze by name.
+    const actions = gloss && gloss.protected
+      ? protectedBadge
+      : pid
+        ? `<button data-mem-act="investigate" data-pid="${pid}" data-pname="${pname}" title="Filter Process Monitor to this PID" style="${actBtn}">🔍</button>
+           <button data-mem-act="kill"        data-pid="${pid}" data-pname="${pname}" title="Kill this process (with confirmation)" style="${actBtn}">🔪</button>
+           <button data-mem-act="snooze"                       data-pname="${pname}" title="Suppress this process's warnings for 24 h" style="${actBtn}">⏳</button>`
+        : `<button data-mem-act="snooze" data-pname="${pname}" title="Suppress warnings for this process name (PID unknown)" style="${actBtn}">⏳</button>`;
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:6px 10px;font-weight:600">${pname}${infoIcon}</td>
       <td style="padding:6px 10px"><span style="font-size:10px;color:${catBadgeColor(p.category)};border:1px solid currentColor;padding:1px 6px;border-radius:8px">${esc(catNames[p.category]||p.category)}</span></td>
       <td style="padding:6px 10px;text-align:right;font-weight:700;color:${p.mem>1500?"var(--red)":p.mem>500?"var(--orange)":"var(--text)"}">${p.mem.toLocaleString()}</td>
       <td style="padding:6px 10px;width:200px">
@@ -3111,9 +3165,24 @@ function renderMemory(d) {
           <div style="background:${p.mem>1500?"var(--red)":p.mem>500?"var(--orange)":"var(--cyan)"};height:100%;border-radius:3px;width:${Math.min(100,p.mem/maxMem*100).toFixed(0)}%"></div>
         </div>
       </td>
-    </tr>`
-  ).join("");
-  document.getElementById("mem-tbody").innerHTML = rows;
+      <td style="padding:6px 10px;white-space:nowrap;text-align:right">${actions}</td>
+    </tr>`;
+  }).join("");
+  const tbody = document.getElementById("mem-tbody");
+  tbody.innerHTML = rows;
+  // Wire the action buttons via the same helpers the dashboard concerns use
+  // (backlog #19). Event delegation would also work, but per-button listeners
+  // match the pattern in renderDashboard so the code stays consistent.
+  tbody.querySelectorAll("button[data-mem-act]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const act   = btn.dataset.memAct;
+      const pid   = parseInt(btn.dataset.pid, 10) || 0;
+      const pname = btn.dataset.pname || "";
+      if (act === "investigate") investigateProcess(pid, pname);
+      else if (act === "kill")   killProcessFromConcern(pid, pname);
+      else if (act === "snooze") snoozeMemoryConcern(pname);
+    });
+  });
 
   document.getElementById("mem-loading").style.display = "none";
   document.getElementById("mem-content").style.display = "";
@@ -5498,6 +5567,7 @@ function renderSystemInfo(d) {
           <th style="padding:6px 10px">Category</th>
           <th style="padding:6px 10px;text-align:right">RAM MB</th>
           <th style="padding:6px 10px">Bar</th>
+          <th style="padding:6px 10px;text-align:right">Actions</th>
         </tr></thead>
         <tbody id="mem-tbody"></tbody>
       </table>

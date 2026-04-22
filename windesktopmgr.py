@@ -4242,7 +4242,12 @@ def get_process_info(proc_name: str, path: str = "") -> dict | None:
 SAFE_PROCESSES = {
     "system",
     "system idle process",
+    "secure system",  # VBS/HVCI virtual secure mode (backlog #36)
     "registry",
+    "memcompression",  # compressed RAM pages -- not a leak (backlog #36)
+    "memory compression",  # alt display name for MemCompression
+    "vmmem",  # Hyper-V / Docker / WSL VM host process (backlog #36)
+    "vmmemwsl",  # WSL 2 VM memory specifically
     "smss.exe",
     "csrss.exe",
     "wininit.exe",
@@ -4280,6 +4285,205 @@ SAFE_PROCESSES = {
     "pythonw.exe",
     "py.exe",
 }
+
+
+# Plain-English explanations for opaque system processes shown in the Memory
+# tab (backlog #36). Users commonly see names like "MemCompression" and "vmmem"
+# with no idea what they do -- or whether they're safe to kill. This dict
+# backs the info-icon tooltips (Memory tab) and is also served by
+# /api/processes/glossary so NLQ / future clients share one source of truth.
+#
+# Keys are LOWERCASED process names WITHOUT the .exe suffix so lookups can
+# normalise from psutil's Name (which varies: "MemCompression" on Windows 10+
+# vs "Memory Compression" on some builds). Every key present here also
+# appears in SAFE_PROCESSES -- the two sets are deliberately kept in sync
+# by ``_assert_glossary_in_safe_processes`` at module-load time.
+SYSTEM_PROCESSES_GLOSSARY: dict[str, dict] = {
+    "memcompression": {
+        "title": "Memory Compression (Windows)",
+        "explanation": (
+            "Windows system process that holds compressed RAM pages. When memory "
+            "gets tight, Windows compresses less-used pages in-place rather than "
+            "swapping them to disk. High usage here is a perf win, not a leak. "
+            "Do not kill -- Windows recreates it immediately and you lose the "
+            "compression saving."
+        ),
+        "protected": True,
+    },
+    "memory compression": {
+        "title": "Memory Compression (Windows)",
+        "explanation": (
+            "Same as MemCompression -- Windows system process holding compressed "
+            "RAM pages. See the MemCompression entry for details."
+        ),
+        "protected": True,
+    },
+    "vmmem": {
+        "title": "Hyper-V Virtual Machine Memory",
+        "explanation": (
+            "Hosts a Hyper-V utility VM's memory on the Windows side. On this "
+            "machine it's almost certainly Docker Desktop or WSL 2. Free the "
+            "memory by shutting the VM down through its own tool "
+            "(Docker Desktop quit, or `wsl --shutdown`) -- killing vmmem "
+            "force-stops every container / WSL session."
+        ),
+        "protected": True,
+    },
+    "vmmemwsl": {
+        "title": "WSL 2 VM Memory",
+        "explanation": (
+            "The Linux VM that hosts your WSL 2 distros. Use `wsl --shutdown` "
+            "in a Windows terminal to release this cleanly instead of killing "
+            "the process."
+        ),
+        "protected": True,
+    },
+    "system": {
+        "title": "Windows System (kernel + drivers)",
+        "explanation": (
+            "The Windows kernel and every loaded driver share this process. "
+            "Terminating it bluescreens the machine -- cannot be killed from "
+            "user space anyway."
+        ),
+        "protected": True,
+    },
+    "secure system": {
+        "title": "Secure System (VBS / HVCI)",
+        "explanation": (
+            "Runs inside Virtual Secure Mode to enforce Hypervisor-protected "
+            "Code Integrity. Isolated from the normal kernel by design and "
+            "cannot be terminated."
+        ),
+        "protected": True,
+    },
+    "registry": {
+        "title": "Windows Registry",
+        "explanation": (
+            "Holds the registry hive in memory. Cannot be safely terminated -- "
+            "Windows depends on it for every configuration lookup."
+        ),
+        "protected": True,
+    },
+    "dwm": {
+        "title": "Desktop Window Manager",
+        "explanation": (
+            "Composites the Windows desktop: window animations, transparency, "
+            "multi-monitor. Killing briefly blanks the screen while Windows "
+            "restarts it -- unsaved work in windowed apps can be lost."
+        ),
+        "protected": True,
+    },
+    "csrss": {
+        "title": "Client / Server Runtime (critical)",
+        "explanation": (
+            "Handles the Windows console subsystem and window/thread creation. Terminating forces an immediate restart."
+        ),
+        "protected": True,
+    },
+    "lsass": {
+        "title": "Local Security Authority",
+        "explanation": (
+            "Handles Windows sign-in, password validation, and security tokens. "
+            "Critical -- killing signs you out and usually forces a reboot."
+        ),
+        "protected": True,
+    },
+    "services": {
+        "title": "Service Control Manager",
+        "explanation": ("Starts and stops every Windows service. Critical -- do not terminate."),
+        "protected": True,
+    },
+    "winlogon": {
+        "title": "Windows Logon",
+        "explanation": (
+            "Manages sign-on / sign-off and the secure attention sequence "
+            "(Ctrl+Alt+Del). Terminating triggers a reboot."
+        ),
+        "protected": True,
+    },
+    "svchost": {
+        "title": "Service Host (shared)",
+        "explanation": (
+            "A container process for multiple Windows services. Many svchost "
+            "instances are normal. To see which services a specific svchost "
+            "PID hosts, open Task Manager -> Services tab and match the PID."
+        ),
+        "protected": True,
+    },
+    "runtimebroker": {
+        "title": "UWP Runtime Broker",
+        "explanation": (
+            "Enforces permissions (camera, location, microphone) for UWP / "
+            "Microsoft Store apps. One instance per running UWP app is normal."
+        ),
+        "protected": True,
+    },
+    "audiodg": {
+        "title": "Windows Audio Device Graph Isolation",
+        "explanation": (
+            "Runs audio drivers in a sandboxed process. Killing briefly drops sound; Windows restarts it automatically."
+        ),
+        "protected": True,
+    },
+    "fontdrvhost": {
+        "title": "Font Driver Host",
+        "explanation": ("Isolates font rendering from the kernel. Windows restarts it automatically if it misbehaves."),
+        "protected": True,
+    },
+    "smss": {
+        "title": "Session Manager Subsystem",
+        "explanation": ("First user-mode process Windows starts at boot. Cannot be terminated from user space."),
+        "protected": True,
+    },
+    "wininit": {
+        "title": "Windows Initialization",
+        "explanation": ("Starts user sessions and critical services during boot. Critical -- do not terminate."),
+        "protected": True,
+    },
+    "conhost": {
+        "title": "Console Window Host",
+        "explanation": (
+            "Renders each classic console window (cmd.exe, PowerShell). One "
+            "conhost instance per open console is normal."
+        ),
+        "protected": False,  # technically OK to kill, just closes a console
+    },
+    "explorer": {
+        "title": "Windows Explorer",
+        "explanation": (
+            "The taskbar, Start menu, and File Explorer. Killing it hides the "
+            "taskbar briefly until Windows auto-restarts it."
+        ),
+        "protected": True,
+    },
+    "dllhost": {
+        "title": "COM Surrogate",
+        "explanation": (
+            "Hosts COM components (file-preview thumbnails, some Explorer "
+            "extensions) in an isolated process. Normal to see multiple."
+        ),
+        "protected": False,
+    },
+}
+
+
+def _assert_glossary_in_safe_processes() -> None:
+    """Runtime invariant: every PROTECTED entry in the glossary must also be
+    listed in SAFE_PROCESSES. Otherwise we could show a "don't kill this"
+    tooltip to the user while the kill endpoint happily terminated it.
+    """
+    missing = []
+    for name, entry in SYSTEM_PROCESSES_GLOSSARY.items():
+        if not entry.get("protected"):
+            continue
+        if name in SAFE_PROCESSES or f"{name}.exe" in SAFE_PROCESSES:
+            continue
+        missing.append(name)
+    if missing:
+        raise RuntimeError(f"SYSTEM_PROCESSES_GLOSSARY/SAFE_PROCESSES drift: {missing}")
+
+
+_assert_glossary_in_safe_processes()
 
 # High-resource thresholds
 CPU_WARN_PCT = 25.0
@@ -7733,7 +7937,51 @@ def process_kill():
         return jsonify({"ok": False, "error": "pid must be an integer"}), 400
     if pid <= 0:
         return jsonify({"ok": False, "error": "Invalid PID"}), 400
+
+    # SAFE_PROCESSES guard (backlog #35). The memory-tab Kill button
+    # hides for protected processes, but that's a UI-side guard only --
+    # NLQ, future clients, or a handcrafted curl could still hit this
+    # endpoint with a system PID. Look the process up by PID and refuse
+    # if its name is in SAFE_PROCESSES. Match both "foo" and "foo.exe"
+    # since the set carries entries in both styles.
+    try:
+        proc_name = psutil.Process(pid).name() or ""
+    except psutil.NoSuchProcess:
+        return jsonify({"ok": False, "error": f"No such process: {pid}"}), 404
+    except psutil.AccessDenied:
+        # Can't read the name — be cautious and refuse rather than kill
+        # blind. User can retry as admin if they really mean it.
+        return jsonify({"ok": False, "error": "Access denied reading process name"}), 403
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"process lookup failed: {e}"}), 500
+
+    name_l = proc_name.lower()
+    name_noext = name_l.removesuffix(".exe")
+    if name_l in SAFE_PROCESSES or name_noext in SAFE_PROCESSES:
+        return jsonify(
+            {
+                "ok": False,
+                "error": f"Refusing to kill protected system process: {proc_name}",
+                "protected": True,
+            }
+        ), 403
+
     return jsonify(kill_process(pid))
+
+
+@app.route("/api/processes/glossary")
+def processes_glossary_route():
+    """Return the curated glossary of opaque system process names (backlog #36).
+
+    Shape:
+        {"ok": true, "glossary": {"memcompression": {"title": ..., "explanation": ..., "protected": true}, ...}}
+
+    Keys are lowercased process names without the ``.exe`` suffix so
+    client-side lookups can normalise consistently. The frontend fetches
+    this once per page load and caches it; NLQ can also call it to
+    explain a process name the user asked about.
+    """
+    return jsonify({"ok": True, "glossary": SYSTEM_PROCESSES_GLOSSARY})
 
 
 @app.route("/api/thermals/data")

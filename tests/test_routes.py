@@ -731,6 +731,150 @@ class TestProcessKillRoute:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Backlog #35/#36 — SAFE_PROCESSES guard on /api/processes/kill + glossary route
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestProcessKillSafeProcessesGuard:
+    """Defence-in-depth: even if the UI hides the Kill button for a
+    protected process, NLQ / future clients / a handcrafted curl must NOT
+    be able to terminate a system process by calling the raw endpoint.
+    """
+
+    def _patch_psutil(self, mocker, *, name: str, kill_side_effect=None):
+        proc = mocker.MagicMock()
+        proc.name.return_value = name
+        if kill_side_effect:
+            proc.kill.side_effect = kill_side_effect
+        return mocker.patch("windesktopmgr.psutil.Process", return_value=proc)
+
+    def test_protected_process_rejected_with_403(self, client, mocker):
+        proc_mock = self._patch_psutil(mocker, name="MemCompression")
+        resp = client.post("/api/processes/kill", json={"pid": 4})
+        assert resp.status_code == 403
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert data.get("protected") is True
+        assert "MemCompression" in data["error"]
+        # Must NEVER have called kill() on a protected process.
+        proc_mock.return_value.kill.assert_not_called()
+
+    def test_protected_process_with_exe_suffix_rejected(self, client, mocker):
+        proc_mock = self._patch_psutil(mocker, name="csrss.exe")
+        resp = client.post("/api/processes/kill", json={"pid": 500})
+        assert resp.status_code == 403
+        assert resp.get_json().get("protected") is True
+        proc_mock.return_value.kill.assert_not_called()
+
+    def test_vmmem_rejected(self, client, mocker):
+        proc_mock = self._patch_psutil(mocker, name="vmmem")
+        resp = client.post("/api/processes/kill", json={"pid": 8888})
+        assert resp.status_code == 403
+        proc_mock.return_value.kill.assert_not_called()
+
+    def test_case_insensitive_name_match(self, client, mocker):
+        """psutil returns MemCompression with original case; guard must not
+        depend on exact casing to protect it."""
+        proc_mock = self._patch_psutil(mocker, name="MEMCOMPRESSION")
+        resp = client.post("/api/processes/kill", json={"pid": 4})
+        assert resp.status_code == 403
+        proc_mock.return_value.kill.assert_not_called()
+
+    def test_non_protected_process_still_killed(self, client, mocker):
+        proc_mock = self._patch_psutil(mocker, name="chrome.exe")
+        resp = client.post("/api/processes/kill", json={"pid": 12345})
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+        proc_mock.return_value.kill.assert_called_once()
+
+    def test_no_such_process_during_name_lookup_returns_404(self, client, mocker):
+        import psutil as _psutil
+
+        mocker.patch("windesktopmgr.psutil.Process", side_effect=_psutil.NoSuchProcess(pid=99))
+        resp = client.post("/api/processes/kill", json={"pid": 99})
+        assert resp.status_code == 404
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert "99" in data["error"]
+
+    def test_access_denied_during_name_lookup_refuses_kill(self, client, mocker):
+        """If we can't even read the process name, don't kill blind --
+        cautious-by-default protects against killing a protected process we
+        simply couldn't identify."""
+        import psutil as _psutil
+
+        mocker.patch("windesktopmgr.psutil.Process", side_effect=_psutil.AccessDenied(pid=4))
+        resp = client.post("/api/processes/kill", json={"pid": 4})
+        assert resp.status_code == 403
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert "Access denied" in data["error"]
+
+
+class TestProcessesGlossaryRoute:
+    """/api/processes/glossary backs the Memory tab info-icon tooltips."""
+
+    def test_returns_glossary_dict(self, client):
+        resp = client.get("/api/processes/glossary")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert isinstance(data["glossary"], dict)
+
+    def test_core_entries_present(self, client):
+        """Sanity: the names the user specifically asked about (#36) must
+        be in the glossary or the feature is half-done."""
+        gloss = client.get("/api/processes/glossary").get_json()["glossary"]
+        for required in ("memcompression", "vmmem", "system", "dwm", "csrss", "lsass"):
+            assert required in gloss, f"glossary missing required entry: {required}"
+
+    def test_every_entry_has_required_fields(self, client):
+        gloss = client.get("/api/processes/glossary").get_json()["glossary"]
+        for name, entry in gloss.items():
+            assert "title" in entry, f"{name} missing title"
+            assert "explanation" in entry, f"{name} missing explanation"
+            assert "protected" in entry, f"{name} missing protected flag"
+            assert isinstance(entry["protected"], bool)
+            # Explanations should be real sentences, not placeholders
+            assert len(entry["explanation"]) > 30, f"{name} explanation suspiciously short"
+
+    def test_keys_are_lowercased_no_exe_suffix(self, client):
+        """Clients normalise psutil names by lowercasing + stripping .exe
+        before lookup; the dict keys must follow the same convention."""
+        gloss = client.get("/api/processes/glossary").get_json()["glossary"]
+        for k in gloss:
+            assert k == k.lower(), f"glossary key not lowercased: {k!r}"
+            assert not k.endswith(".exe"), f"glossary key has .exe suffix: {k!r}"
+
+
+class TestGlossarySafeProcessesInvariant:
+    """Drift guard: every protected glossary entry MUST also be in
+    SAFE_PROCESSES. Otherwise we could show a "don't kill this" tooltip
+    while the backend happily honoured a kill request for the same name.
+    """
+
+    def test_invariant_holds_at_module_load(self):
+        """The _assert_glossary_in_safe_processes() runs at import time;
+        if the invariant breaks, import itself raises. Re-run here so
+        the failure points at this test rather than at a cryptic import."""
+        import windesktopmgr as wdm
+
+        wdm._assert_glossary_in_safe_processes()
+
+    def test_memcompression_is_in_safe_processes(self):
+        """User specifically asked about this one -- lock it down."""
+        import windesktopmgr as wdm
+
+        assert "memcompression" in wdm.SAFE_PROCESSES
+
+    def test_vmmem_is_in_safe_processes(self):
+        import windesktopmgr as wdm
+
+        assert "vmmem" in wdm.SAFE_PROCESSES
+        assert "vmmemwsl" in wdm.SAFE_PROCESSES
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # GET  /api/thermals/data
 # ══════════════════════════════════════════════════════════════════════════════
 
