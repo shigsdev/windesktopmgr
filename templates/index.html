@@ -4004,17 +4004,24 @@ async function loadTrends() {
   if (!el) return;
   // Metric key → display label + colour. Order here is the render order.
   const labels = {
-    "cpu_percent":           {label: "CPU %",        color: "#00d4ff", unit: "%"},
-    "memory_percent":        {label: "Memory %",     color: "#a78bfa", unit: "%"},
-    "cpu_temp_c":            {label: "Max Temp",     color: "#ff7043", unit: "°C"},
+    "cpu_percent":                  {label: "CPU %",        color: "#00d4ff", unit: "%"},
+    "memory_percent":               {label: "Memory %",     color: "#a78bfa", unit: "%"},
+    "cpu_temp_c":                   {label: "Max Temp",     color: "#ff7043", unit: "°C"},
     // GPU sparklines (backlog #37). Only render when the backend actually
     // reported GPU data -- a machine with no NVIDIA driver simply won't
     // have these series in the response, so the cards self-hide below.
-    "gpu_utilization_pct":   {label: "GPU %",        color: "#76b900", unit: "%"},
-    "gpu_vram_pct":          {label: "GPU VRAM %",   color: "#4ade80", unit: "%"},
-    "gpu_temp_c":            {label: "GPU Temp",     color: "#f97316", unit: "°C"},
-    "concerns_critical":     {label: "Critical",     color: "#ff4560", unit: ""},
-    "concerns_warning":      {label: "Warnings",     color: "#ffd740", unit: ""},
+    "gpu_utilization_pct":          {label: "GPU %",        color: "#76b900", unit: "%"},
+    "gpu_vram_pct":                 {label: "GPU VRAM %",   color: "#4ade80", unit: "%"},
+    "gpu_temp_c":                   {label: "GPU Temp",     color: "#f97316", unit: "°C"},
+    // Network sparklines (backlog #38). in/out throughput + TCP latency
+    // to Cloudflare DNS + active-connections count. Mbps keys have units
+    // of "Mbps" for the now/avg row; connections is unitless integer.
+    "net_throughput_mbps.in":       {label: "Net In",       color: "#38bdf8", unit: " Mbps"},
+    "net_throughput_mbps.out":      {label: "Net Out",      color: "#0ea5e9", unit: " Mbps"},
+    "net_latency_ms":               {label: "Net Latency",  color: "#c084fc", unit: " ms"},
+    "net_connections_established":  {label: "TCP Conns",    color: "#60a5fa", unit: ""},
+    "concerns_critical":            {label: "Critical",     color: "#ff4560", unit: ""},
+    "concerns_warning":             {label: "Warnings",     color: "#ffd740", unit: ""},
   };
   try {
     const r = await fetch("/api/metrics/history?window_h=168");

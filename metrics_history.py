@@ -143,6 +143,25 @@ def extract_metrics(summary: dict) -> dict:
         if isinstance(temp, int | float):
             metrics["gpu_temp_c"] = float(temp)
 
+    # Network metrics (backlog #38). Flat keys per direction / probe so
+    # each field renders as its own sparkline, same pattern as disk_pct.
+    # Latency gets skipped (not recorded as 0) when the probe fails --
+    # None -> no data point, preserving "outage" visibility in the chart.
+    net = summary.get("network") or {}
+    if isinstance(net, dict) and net.get("available"):
+        t_in = net.get("throughput_in_mbps")
+        if isinstance(t_in, int | float):
+            metrics["net_throughput_mbps.in"] = float(t_in)
+        t_out = net.get("throughput_out_mbps")
+        if isinstance(t_out, int | float):
+            metrics["net_throughput_mbps.out"] = float(t_out)
+        lat = net.get("latency_ms")
+        if isinstance(lat, int | float):
+            metrics["net_latency_ms"] = float(lat)
+        conns = net.get("connections_established")
+        if isinstance(conns, int):
+            metrics["net_connections_established"] = conns
+
     return metrics
 
 
