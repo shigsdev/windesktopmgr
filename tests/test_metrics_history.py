@@ -177,6 +177,79 @@ class TestExtractMetrics:
         assert m["gpu_vram_pct"] == 0.0
         assert m["gpu_temp_c"] == 35.0
 
+    # ── Network extraction (backlog #38) ───────────────────────────
+
+    def test_network_available_populates_four_series(self):
+        """get_network_metrics returns available=True in the happy path.
+        extract_metrics emits four flat keys, one per sparkline."""
+        net = {
+            "available": True,
+            "source": "psutil+socket",
+            "throughput_in_mbps": 12.5,
+            "throughput_out_mbps": 3.2,
+            "latency_ms": 15.0,
+            "latency_target": "1.1.1.1:53",
+            "connections_established": 42,
+            "error": None,
+        }
+        m = mh.extract_metrics({"network": net})
+        assert m["net_throughput_mbps.in"] == 12.5
+        assert m["net_throughput_mbps.out"] == 3.2
+        assert m["net_latency_ms"] == 15.0
+        assert m["net_connections_established"] == 42
+
+    def test_network_missing_section_produces_no_keys(self):
+        m = mh.extract_metrics({})
+        assert not any(k.startswith("net_") for k in m)
+
+    def test_network_unavailable_produces_no_keys(self):
+        """available=False -- should not add any net_* series."""
+        net = {"available": False, "error": "net_io_counters failed"}
+        m = mh.extract_metrics({"network": net})
+        assert not any(k.startswith("net_") for k in m)
+
+    def test_network_latency_none_is_skipped_not_zero(self):
+        """Failed latency probe -> None in the payload. extract_metrics
+        MUST NOT record that as 0 ms -- zero would hide real outages."""
+        net = {
+            "available": True,
+            "throughput_in_mbps": 1.0,
+            "throughput_out_mbps": 0.5,
+            "latency_ms": None,  # probe failed
+            "connections_established": 10,
+        }
+        m = mh.extract_metrics({"network": net})
+        assert "net_latency_ms" not in m
+        # Other fields still recorded
+        assert m["net_throughput_mbps.in"] == 1.0
+        assert m["net_connections_established"] == 10
+
+    def test_network_connections_none_is_skipped(self):
+        """AccessDenied on net_connections -> None. Skip the field, keep others."""
+        net = {
+            "available": True,
+            "throughput_in_mbps": 2.0,
+            "throughput_out_mbps": 1.0,
+            "latency_ms": 8.0,
+            "connections_established": None,
+        }
+        m = mh.extract_metrics({"network": net})
+        assert "net_connections_established" not in m
+        assert m["net_latency_ms"] == 8.0
+
+    def test_network_idle_zero_throughput_kept(self):
+        """0 Mbps throughput on a quiet network is a real reading, not missing."""
+        net = {
+            "available": True,
+            "throughput_in_mbps": 0.0,
+            "throughput_out_mbps": 0.0,
+            "latency_ms": 12.0,
+            "connections_established": 5,
+        }
+        m = mh.extract_metrics({"network": net})
+        assert m["net_throughput_mbps.in"] == 0.0
+        assert m["net_throughput_mbps.out"] == 0.0
+
 
 # ── load_history ───────────────────────────────────────────────────
 

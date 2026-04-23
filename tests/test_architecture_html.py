@@ -59,6 +59,7 @@ TEST_FILES = [
     "test_metrics_history.py",
     "test_post_update_check.py",
     "test_gpu.py",
+    "test_network_metrics.py",
 ]
 
 

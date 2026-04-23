@@ -2450,6 +2450,173 @@ def get_network_data() -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# NETWORK METRICS — Trends dashboard (backlog #38)
+#
+# Lightweight time-series metrics for the Trends sparklines, separate from
+# get_network_data() which powers the full Network Monitor tab (connection
+# table + per-adapter detail). Four numbers per sample:
+#
+#   throughput_in_mbps       — sum of all non-loopback adapters
+#   throughput_out_mbps      — same
+#   latency_ms               — single TCP-connect probe to Cloudflare DNS
+#   connections_established  — count of ESTABLISHED TCP connections
+#
+# Python-first: psutil + stdlib socket. No subprocess anywhere.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Throughput needs a baseline to compute Mbps (same pattern as the Processes
+# tab CPU % fix -- see _last_cpu_samples). Dict layout:
+#   {"total": (bytes_sent_cumulative, bytes_recv_cumulative, wall_clock_ts)}
+# Only one key ("total") because the Trends card shows aggregate throughput
+# across every non-loopback NIC, not per-adapter. Per-NIC breakdown would
+# add N sparklines for marginal value on a home rig.
+_last_net_samples: dict[str, tuple[float, float, float]] = {}
+_net_samples_lock = threading.Lock()
+
+# External target for the TCP-connect latency probe. Cloudflare DNS: 1.1.1.1
+# on port 53 is widely open (not firewalled the way ICMP often is), has
+# predictable sub-50 ms RTT from most places, and doesn't require admin
+# privileges for a raw-socket ping. Changing this target would shift every
+# recorded historic latency sample upward/downward, so pin it here.
+_LATENCY_PROBE_TARGET: tuple[str, int] = ("1.1.1.1", 53)
+_LATENCY_PROBE_TIMEOUT_S: float = 2.0
+
+
+def _measure_tcp_latency(
+    target: tuple[str, int] = _LATENCY_PROBE_TARGET, timeout: float = _LATENCY_PROBE_TIMEOUT_S
+) -> float | None:
+    """Return round-trip milliseconds of a TCP connect to ``target``.
+
+    Returns ``None`` on any failure (DNS fail, connection refused, timeout,
+    no route to host, firewall drop). Callers treat None as "no signal"
+    rather than "zero latency" -- recording 0 ms for a failed probe would
+    lie to the trend chart.
+
+    Uses ``socket.create_connection`` which does DNS + TCP handshake in one
+    call. Measured in ``time.perf_counter()`` for monotonic accuracy even
+    across NTP adjustments.
+    """
+    import socket
+
+    try:
+        t0 = time.perf_counter()
+        with socket.create_connection(target, timeout=timeout):
+            return round((time.perf_counter() - t0) * 1000.0, 1)
+    except (OSError, TimeoutError, socket.gaierror):
+        # socket.timeout is an alias for TimeoutError in Py 3.10+; listed
+        # explicitly via TimeoutError to satisfy ruff UP041. socket.gaierror
+        # is a distinct subclass of OSError for DNS-resolution failures.
+        return None
+
+
+def _is_loopback_adapter(name: str) -> bool:
+    """True for Windows / Linux loopback NIC names.
+
+    Windows usually calls it "Loopback Pseudo-Interface 1" but can vary by
+    locale / virtualisation stack. Matching the substring ``loopback`` is
+    generous enough to catch every variant I've seen and strict enough to
+    avoid false positives -- real user-facing NICs don't include the word.
+    """
+    n = name.lower()
+    return "loopback" in n or n == "lo"
+
+
+def get_network_metrics() -> dict:
+    """Sample lightweight network metrics for the Trends card (backlog #38).
+
+    Fields:
+        available                — always True (collector never errors
+                                    fatally; individual fields degrade to
+                                    None / 0 as noted)
+        source                   — "psutil+socket"
+        throughput_in_mbps       — Mbps averaged across all non-loopback
+                                    NICs between the previous call and now.
+                                    0 on the very first call (no baseline).
+        throughput_out_mbps      — same, upload direction.
+        latency_ms               — TCP-connect RTT to Cloudflare DNS; None
+                                    on probe failure.
+        connections_established  — count of ESTABLISHED TCP connections;
+                                    None when psutil can't enumerate
+                                    (AccessDenied without admin on some
+                                    setups).
+        latency_target           — "host:port" the probe hit, for display.
+        error                    — None in the happy path; populated only
+                                    if the counter read itself blew up.
+
+    Thread safety: ``_net_samples_lock`` is held for the minimum window
+    (copy prev, write new) so parallel dashboard_summary calls don't race
+    on the rate calculation.
+    """
+    result = {
+        "available": True,
+        "source": "psutil+socket",
+        "throughput_in_mbps": 0.0,
+        "throughput_out_mbps": 0.0,
+        "latency_ms": None,
+        "latency_target": f"{_LATENCY_PROBE_TARGET[0]}:{_LATENCY_PROBE_TARGET[1]}",
+        "connections_established": None,
+        "error": None,
+    }
+
+    now = time.time()
+
+    # ── Aggregate counters across all non-loopback NICs ──────────────
+    try:
+        counters = psutil.net_io_counters(pernic=True)
+    except Exception as e:  # noqa: BLE001 -- psutil can surface OS-specific surprises
+        result["error"] = f"net_io_counters failed: {type(e).__name__}: {e}"
+        return result
+
+    total_sent = 0
+    total_recv = 0
+    for name, c in (counters or {}).items():
+        if _is_loopback_adapter(name):
+            continue
+        total_sent += c.bytes_sent
+        total_recv += c.bytes_recv
+
+    with _net_samples_lock:
+        prev = _last_net_samples.get("total")
+        _last_net_samples["total"] = (float(total_sent), float(total_recv), now)
+
+    if prev is not None:
+        prev_sent, prev_recv, prev_ts = prev
+        dt = now - prev_ts
+        # Guard dt>0 against clock skew / zero-interval rapid calls; guard
+        # delta>=0 against counter rollover or NIC reset (which would
+        # produce a negative delta -- treat as "no reliable rate" not a
+        # negative Mbps).
+        if dt > 0:
+            d_sent = max(0.0, float(total_sent) - prev_sent)
+            d_recv = max(0.0, float(total_recv) - prev_recv)
+            # Mbps = bytes/s * 8 bits/byte / 1_000_000 bits/Mb
+            result["throughput_out_mbps"] = round(d_sent * 8.0 / 1_000_000.0 / dt, 3)
+            result["throughput_in_mbps"] = round(d_recv * 8.0 / 1_000_000.0 / dt, 3)
+
+    # ── Latency probe (TCP connect to Cloudflare DNS) ─────────────────
+    result["latency_ms"] = _measure_tcp_latency()
+
+    # ── Active connection count ───────────────────────────────────────
+    # psutil.net_connections(kind='tcp') can raise AccessDenied on some
+    # configurations (non-admin user enumerating other users' sockets).
+    # Fall back to kind='inet4' which is often more permissive; if that
+    # also fails, leave the field None so the extractor skips it.
+    try:
+        conns = psutil.net_connections(kind="tcp")
+        result["connections_established"] = sum(1 for c in conns if c.status == "ESTABLISHED")
+    except (psutil.AccessDenied, PermissionError):
+        try:
+            conns = psutil.net_connections(kind="inet4")
+            result["connections_established"] = sum(1 for c in conns if c.status == "ESTABLISHED")
+        except Exception:  # noqa: BLE001
+            result["connections_established"] = None
+    except Exception:  # noqa: BLE001
+        result["connections_established"] = None
+
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # WINDOWS UPDATE HISTORY
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -9088,9 +9255,10 @@ def _compute_dashboard_summary() -> dict:
         "disk": get_disk_health,
         "drivers": get_driver_health,
         "gpu": get_gpu_metrics,
+        "network": get_network_metrics,
     }
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=7) as ex:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
         futs = {ex.submit(fn): name for name, fn in checks.items()}
         try:
             for fut in concurrent.futures.as_completed(futs, timeout=45):
@@ -9467,6 +9635,7 @@ def _compute_dashboard_summary() -> dict:
                 "memory": results.get("memory") or {},
                 "disk": results.get("disk") or {},
                 "gpu": results.get("gpu") or {},
+                "network": results.get("network") or {},
             }
         )
     except Exception:  # noqa: BLE001
