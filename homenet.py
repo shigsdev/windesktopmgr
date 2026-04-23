@@ -15,11 +15,26 @@ import re
 import socket
 import subprocess
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 import requests
 from flask import Blueprint, jsonify, request
+
+# IEEE OUI vendor lookup (backlog #10). Optional dep -- collector degrades
+# to the curated _MAC_VENDORS dict only if mac-vendor-lookup isn't
+# installed or its cached IEEE registry is missing.
+try:
+    from mac_vendor_lookup import MacLookup, VendorNotFoundError
+
+    _IEEE_LOOKUP: "MacLookup | None" = MacLookup()
+except Exception:  # noqa: BLE001 -- any import / init failure -> no IEEE lookup
+    _IEEE_LOOKUP = None
+
+    class VendorNotFoundError(Exception):  # type: ignore[no-redef]
+        """Placeholder so call sites can except cleanly when mac-vendor-lookup is absent."""
+
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -106,10 +121,82 @@ _MAC_VENDORS = {
 }
 
 
+# Module-level cache: OUI prefix → resolved vendor name. Populated on
+# first lookup per prefix, cleared when the app restarts. IEEE lookups
+# are fast (in-memory after initial file read) but caching in our
+# namespace lets tests reset state cleanly via _vendor_cache.clear().
+_vendor_cache: dict[str, str] = {}
+_vendor_cache_lock = threading.Lock()
+
+
+def _is_locally_admin_mac(mac: str) -> bool:
+    """True if the MAC's locally-administered bit is set.
+
+    Bit 1 (LSB count) of the first octet = 1 means the MAC was
+    self-assigned, not IEEE-issued. Modern iOS / Android randomise
+    MACs per-SSID for privacy, so these MACs never resolve to a
+    real vendor -- returning "Random MAC (Phone)" is much more
+    honest than "Unknown".
+    """
+    try:
+        first_hex = mac.replace(":", "").replace("-", "")[:2]
+        return bool(int(first_hex, 16) & 0x02)
+    except (ValueError, IndexError):
+        return False
+
+
 def _mac_vendor(mac: str) -> str:
-    """Look up vendor from MAC OUI prefix."""
+    """Look up vendor for a MAC address with layered sources (backlog #10).
+
+    Priority, highest → lowest:
+      1. Curated overrides in _MAC_VENDORS — friendly short names we want
+         to keep ("Netgear" vs IEEE's "NETGEAR", "Random MAC (Phone)" for
+         known randomised prefixes we've already seen).
+      2. IEEE MA-L / MA-M / MA-S registry via ``mac-vendor-lookup`` —
+         covers ~36 k manufacturers; replaces the old 65-entry hardcoded
+         dict for everything not in #1.
+      3. "Random MAC (Phone)" if the locally-admin bit is set and IEEE
+         didn't match — catches randomised phone MACs the curated dict
+         hasn't memorised yet.
+      4. "Unknown" final fallback.
+
+    Results cached by OUI prefix so repeated lookups are O(1).
+    """
+    if not mac:
+        return "Unknown"
     prefix = mac[:8].upper().replace("-", ":")
-    return _MAC_VENDORS.get(prefix, "Unknown")
+
+    # 1. Curated override wins outright
+    curated = _MAC_VENDORS.get(prefix)
+    if curated:
+        return curated
+
+    # 2. Cache check
+    with _vendor_cache_lock:
+        cached = _vendor_cache.get(prefix)
+    if cached is not None:
+        return cached
+
+    # 3. IEEE lookup
+    vendor = ""
+    if _IEEE_LOOKUP is not None:
+        try:
+            vendor = (_IEEE_LOOKUP.lookup(mac) or "").strip()
+        except VendorNotFoundError:
+            vendor = ""
+        except Exception:  # noqa: BLE001 -- any IEEE failure is non-fatal
+            vendor = ""
+
+    # 4. Randomised-MAC detection
+    if not vendor and _is_locally_admin_mac(mac):
+        vendor = "Random MAC (Phone)"
+
+    if not vendor:
+        vendor = "Unknown"
+
+    with _vendor_cache_lock:
+        _vendor_cache[prefix] = vendor
+    return vendor
 
 
 def _get_homenet_cred(device_key: str) -> tuple:
@@ -606,7 +693,58 @@ _VENDOR_CATEGORY_MAP = {
     "Aruba/HPE": "Network",
     "LinkSys": "Network",
     "Intel": "Computer",
+    "Random MAC (Phone)": "Phone",
 }
+
+
+# IEEE returns long vendor names like "Amazon Technologies Inc." that don't
+# match the curated map keys. Substring patterns let us categorise those
+# without maintaining every exact string form. First matching tuple wins
+# (order matters — more specific patterns above more generic ones).
+_VENDOR_CATEGORY_PATTERNS: tuple[tuple[tuple[str, ...], str], ...] = (
+    # TVs / streamers — check before generic "samsung" since Samsung makes both
+    (("roku", "chromecast", "google cast", "firestick", "fire tv", "apple tv"), "TV"),
+    (("samsung electronics", "lg electronics", "sony", "vizio", "tcl"), "TV"),
+    # Printers
+    (("brother", "epson", "canon", "lexmark", "xerox", "kyocera"), "Printer"),
+    (("hewlett packard", "hewlett-packard", "hp inc", "hp enterprise"), "Printer"),
+    # IoT / smart home
+    (("amazon technologies", "ring llc", "ring, llc", "blink"), "IoT"),
+    (("google, inc", "google llc", "nest labs", "nest lab"), "IoT"),
+    (("philips lighting", "signify", "philips hue"), "IoT"),
+    (("sonos",), "IoT"),
+    (("ecobee", "ecobee inc"), "IoT"),
+    (("shelly", "allterco"), "IoT"),
+    (("tuya smart", "tuya inc"), "IoT"),
+    (("espressif", "itead"), "IoT"),
+    (("smartthings", "wyze"), "IoT"),
+    # Phones / tablets -- default to Phone for ambiguous mobile-first vendors
+    (("apple, inc", "apple inc", "apple computer"), "Phone"),
+    (("xiaomi", "oneplus", "huawei", "oppo"), "Phone"),
+    # Network gear
+    (("netgear", "tp-link", "tplink", "linksys", "ubiquiti", "ubnt", "aruba", "cisco"), "Network"),
+    (("actiontec", "arris", "verizon"), "Network"),
+    # Storage / NAS
+    (("synology", "qnap", "western digital", "seagate"), "Storage"),
+    # Computers / SoCs
+    (("intel corporate", "intel corp", "dell inc", "lenovo", "asustek"), "Computer"),
+    (("microsoft corporation",), "Other"),  # Xbox, Surface, Hyper-V, etc.
+)
+
+
+def _categorise_by_vendor_substring(vendor: str) -> str:
+    """Return a category if `vendor` contains any pattern, else "".
+
+    Case-insensitive. Used as a fallback after _VENDOR_CATEGORY_MAP misses
+    on an IEEE-sourced long-form vendor name.
+    """
+    if not vendor:
+        return ""
+    v = vendor.lower()
+    for needles, category in _VENDOR_CATEGORY_PATTERNS:
+        if any(n in v for n in needles):
+            return category
+    return ""
 
 
 def _dns_resolve_ip(ip: str) -> tuple:
@@ -618,6 +756,106 @@ def _dns_resolve_ip(ip: str) -> tuple:
     except (socket.herror, socket.gaierror, OSError):
         pass
     return ip, ""
+
+
+def _mdns_resolve_batch(ips: list, timeout_s: float = 3.0) -> dict:
+    """Discover Bonjour / mDNS services and map IP → hostname (backlog #10).
+
+    Python-first alternative to shelling out to ``dns-sd`` / ``avahi-browse``.
+    Uses the ``zeroconf`` pip package to passively browse a handful of the
+    most common service types, collect advertised hostnames, and return
+    ``{ip: hostname}`` for any IP in ``ips`` that advertised.
+
+    Covers:
+      * Apple devices (``_airplay._tcp``, ``_raop._tcp``)
+      * Chromecasts (``_googlecast._tcp``)
+      * AirPrint printers (``_ipp._tcp``)
+      * HomeKit accessories (``_hap._tcp``)
+      * Any device that advertises a web UI (``_http._tcp``)
+
+    Returns an empty dict on import failure, zeroconf init failure, or
+    when no IP in ``ips`` advertises within ``timeout_s``. Never raises.
+    """
+    try:
+        from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
+    except ImportError:
+        return {}
+
+    if not ips:
+        return {}
+
+    ips_set = set(ips)
+    results: dict[str, str] = {}
+    results_lock = threading.Lock()
+
+    class _Listener(ServiceListener):
+        def _extract(self, zc, type_, name):
+            try:
+                info = zc.get_service_info(type_, name, timeout=1000)
+            except Exception:  # noqa: BLE001
+                return
+            if not info:
+                return
+            server = (info.server or "").rstrip(".")
+            if not server:
+                return
+            try:
+                addrs = info.parsed_addresses()
+            except Exception:  # noqa: BLE001
+                return
+            for addr in addrs:
+                if addr in ips_set:
+                    # Short hostname: strip ".local" and trailing domain
+                    short = server.split(".")[0]
+                    if short:
+                        with results_lock:
+                            if addr not in results:
+                                results[addr] = short
+
+        def add_service(self, zc, type_, name):
+            self._extract(zc, type_, name)
+
+        def update_service(self, zc, type_, name):
+            self._extract(zc, type_, name)
+
+        def remove_service(self, zc, type_, name):
+            pass
+
+    # Common service types covering the vast majority of home devices.
+    # Keeping the list short limits network chatter; adding more means
+    # catching more devices at the cost of slightly longer discovery.
+    service_types = (
+        "_http._tcp.local.",
+        "_ipp._tcp.local.",
+        "_airplay._tcp.local.",
+        "_raop._tcp.local.",
+        "_googlecast._tcp.local.",
+        "_hap._tcp.local.",
+        "_printer._tcp.local.",
+        "_workstation._tcp.local.",
+    )
+
+    zc = None
+    try:
+        zc = Zeroconf()
+        listener = _Listener()
+        browsers = [ServiceBrowser(zc, st, listener) for st in service_types]
+        time.sleep(timeout_s)
+        for b in browsers:
+            try:
+                b.cancel()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception as e:  # noqa: BLE001 -- zeroconf is best-effort
+        print(f"[HomeNet] mDNS resolution error: {e}")
+    finally:
+        if zc is not None:
+            try:
+                zc.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    return results
 
 
 def _nbt_resolve_ip(ip: str) -> tuple:
@@ -650,6 +888,9 @@ def _resolve_names_batch(devices: list) -> dict:
     Resolve hostnames for a batch of devices using multiple methods.
     Returns {ip: resolved_name} dict.
 
+    Phase 0: mDNS / Bonjour broadcast — catches Apple devices, Chromecasts,
+             Rokus, AirPrint printers, Sonos, HomeKit, most modern IoT.
+             Runs across all subnets the host can reach via multicast.
     Phase 1: Parallel reverse-DNS via ``socket.gethostbyaddr`` for 192.x (wired).
     Phase 2: ``nbtstat -A`` directly for wired IPs that DNS missed.
     Phase 3: ``nbtstat -A`` directly for 10.x (wireless/Orbi) if Wi-Fi is connected.
@@ -666,6 +907,19 @@ def _resolve_names_batch(devices: list) -> dict:
 
     if not ips_to_resolve:
         return results
+
+    # Phase 0: mDNS sweeps ALL subnets in one multicast pass, so run it
+    # first. Covers devices DNS/NetBIOS can't see (Chromecasts, HomeKit,
+    # many IoT). Skipped silently if zeroconf isn't installed.
+    try:
+        mdns_hits = _mdns_resolve_batch(ips_to_resolve, timeout_s=3.0)
+        for ip, name in mdns_hits.items():
+            results[ip] = name
+    except Exception as e:  # noqa: BLE001 -- mDNS is best-effort
+        print(f"[HomeNet] mDNS phase failed: {e}")
+
+    # Remove mDNS-resolved IPs from the list the later phases chase
+    ips_to_resolve = [ip for ip in ips_to_resolve if ip not in results]
 
     # Split IPs by subnet — DNS only works for 192.x (wired/Verizon DHCP).
     # 10.x devices are behind Orbi NAT so reverse DNS always times out.
@@ -764,9 +1018,15 @@ def _auto_categorize(vendor: str, hostname: str, device_type: str, device_os: st
         if "windows" in os_lower or "macos" in os_lower or "linux" in os_lower:
             return "Computer"
 
-    # Category from vendor
+    # Category from vendor (exact match on the curated map first, then
+    # substring-match against IEEE's long-form vendor names -- the map's
+    # short keys like "Amazon" won't equal IEEE's "Amazon Technologies
+    # Inc." so we fall through to the substring patterns for coverage).
     if vendor in _VENDOR_CATEGORY_MAP:
         return _VENDOR_CATEGORY_MAP[vendor]
+    substr_cat = _categorise_by_vendor_substring(vendor)
+    if substr_cat:
+        return substr_cat
 
     # Category from hostname patterns
     if hostname:

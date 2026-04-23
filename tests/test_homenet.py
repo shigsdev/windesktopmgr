@@ -3,6 +3,8 @@
 import subprocess
 from unittest.mock import MagicMock
 
+import pytest  # noqa: F401 -- used by backlog #10 classes via pytest.skip
+
 
 class TestHomeNetCredentialRoutes:
     """Test credential management endpoints."""
@@ -387,14 +389,322 @@ class TestMacVendor:
         assert _mac_vendor("80:6A:10:31:42:E8") == "Apple"
 
     def test_unknown_vendor(self):
-        from homenet import _mac_vendor
+        """OUI that isn't in the curated dict, isn't in IEEE, and isn't
+        locally-admin -> should return 'Unknown'. 99:99:99 is reserved /
+        unallocated in IEEE MA-L at the time of writing."""
+        from homenet import _mac_vendor, _vendor_cache
 
+        _vendor_cache.clear()  # don't let prior tests colour the lookup
         assert _mac_vendor("99:99:99:00:00:00") == "Unknown"
 
     def test_dash_format(self):
         from homenet import _mac_vendor
 
         assert _mac_vendor("28-94-01-3F-73-E1") == "Netgear"
+
+
+# ── Backlog #10: IEEE OUI lookup + randomized-MAC detection ──────────────
+
+
+class TestIsLocallyAdminMac:
+    """Bit 1 (second from LSB) of the first octet = locally-administered.
+    Used to classify randomized phone MACs without a real vendor."""
+
+    def test_universal_mac_returns_false(self):
+        from homenet import _is_locally_admin_mac
+
+        # Real IEEE-issued OUIs (bit 1 = 0)
+        assert _is_locally_admin_mac("28:94:01:00:00:00") is False  # Netgear
+        assert _is_locally_admin_mac("80:6A:10:00:00:00") is False  # Apple
+        assert _is_locally_admin_mac("00:15:5D:00:00:00") is False  # Microsoft
+
+    def test_locally_admin_mac_returns_true(self):
+        from homenet import _is_locally_admin_mac
+
+        # Bit 1 set in first octet -> randomised MAC
+        # 0x02 = 00000010 -> bit 1 set
+        assert _is_locally_admin_mac("02:00:00:00:00:00") is True
+        # 0x16 = 00010110 -> bit 1 set (from live device)
+        assert _is_locally_admin_mac("16:3C:BE:A4:6C:C9") is True
+        # 0xFA = 11111010 -> bit 1 set
+        assert _is_locally_admin_mac("FA:93:62:00:00:00") is True
+
+    def test_dash_separator_works(self):
+        from homenet import _is_locally_admin_mac
+
+        assert _is_locally_admin_mac("02-00-00-00-00-00") is True
+        assert _is_locally_admin_mac("28-94-01-00-00-00") is False
+
+    def test_malformed_mac_returns_false_safely(self):
+        """Defensive: garbage input must not crash -- return False so the
+        caller falls through to the normal IEEE / Unknown path."""
+        from homenet import _is_locally_admin_mac
+
+        assert _is_locally_admin_mac("") is False
+        assert _is_locally_admin_mac("xx:xx") is False
+        assert _is_locally_admin_mac("not a mac") is False
+
+
+class TestMacVendorIEEELookup:
+    """Backlog #10: vendor lookup falls through to IEEE registry when the
+    curated _MAC_VENDORS dict doesn't have the OUI. Tests mock the
+    _IEEE_LOOKUP.lookup call so we don't depend on the live IEEE file."""
+
+    def _reset_cache(self):
+        import homenet as hn
+
+        hn._vendor_cache.clear()
+
+    def test_curated_dict_wins_over_ieee(self, mocker):
+        """Curated friendly names ('Netgear') take priority over IEEE's
+        long-form ('NETGEAR')."""
+        from homenet import _IEEE_LOOKUP, _mac_vendor
+
+        self._reset_cache()
+        if _IEEE_LOOKUP is not None:
+            mocker.patch.object(_IEEE_LOOKUP, "lookup", return_value="NETGEAR")
+        assert _mac_vendor("28:94:01:00:00:00") == "Netgear"  # curated wins
+
+    def test_ieee_lookup_used_when_not_in_curated(self, mocker):
+        from homenet import _IEEE_LOOKUP, _mac_vendor
+
+        self._reset_cache()
+        if _IEEE_LOOKUP is None:
+            pytest.skip("mac-vendor-lookup not installed")
+        mocker.patch.object(_IEEE_LOOKUP, "lookup", return_value="Amazon Technologies Inc.")
+        # 64:CD:C2 is Amazon per IEEE -- not in our curated dict
+        assert _mac_vendor("64:CD:C2:00:00:00") == "Amazon Technologies Inc."
+
+    def test_random_mac_fallback_when_ieee_misses(self, mocker):
+        from homenet import _IEEE_LOOKUP, VendorNotFoundError, _mac_vendor
+
+        self._reset_cache()
+        if _IEEE_LOOKUP is not None:
+            mocker.patch.object(_IEEE_LOOKUP, "lookup", side_effect=VendorNotFoundError("00:00:00:00:00:00"))
+        # 16:3C:BE has the locally-admin bit set AND no IEEE match
+        assert _mac_vendor("16:3C:BE:A4:6C:C9") == "Random MAC (Phone)"
+
+    def test_unknown_when_no_match_anywhere(self, mocker):
+        from homenet import _IEEE_LOOKUP, VendorNotFoundError, _mac_vendor
+
+        self._reset_cache()
+        if _IEEE_LOOKUP is not None:
+            mocker.patch.object(_IEEE_LOOKUP, "lookup", side_effect=VendorNotFoundError("00:00:00:00:00:00"))
+        # 64:CD:C2 is universally admin + not in curated -> "Unknown"
+        # (once IEEE is mocked to fail)
+        assert _mac_vendor("64:CD:C2:00:00:00") == "Unknown"
+
+    def test_cache_prevents_duplicate_ieee_calls(self, mocker):
+        from homenet import _IEEE_LOOKUP, _mac_vendor
+
+        self._reset_cache()
+        if _IEEE_LOOKUP is None:
+            pytest.skip("mac-vendor-lookup not installed")
+        spy = mocker.patch.object(_IEEE_LOOKUP, "lookup", return_value="Fake Vendor Inc")
+        _mac_vendor("AA:BB:CC:00:00:01")
+        _mac_vendor("AA:BB:CC:00:00:02")  # same OUI prefix
+        _mac_vendor("AA:BB:CC:11:22:33")  # same OUI prefix
+        assert spy.call_count == 1, "second+ lookups with the same OUI must hit cache"
+
+    def test_ieee_exception_degrades_to_unknown(self, mocker):
+        from homenet import _IEEE_LOOKUP, _mac_vendor
+
+        self._reset_cache()
+        if _IEEE_LOOKUP is None:
+            pytest.skip("mac-vendor-lookup not installed")
+        # Any unexpected exception (file corrupt, network blip during init)
+        # must not propagate -- degrade to Unknown so the UI keeps working.
+        mocker.patch.object(_IEEE_LOOKUP, "lookup", side_effect=RuntimeError("corrupt file"))
+        assert _mac_vendor("64:CD:C2:00:00:00") == "Unknown"
+
+    def test_empty_mac_returns_unknown(self):
+        from homenet import _mac_vendor
+
+        self._reset_cache()
+        assert _mac_vendor("") == "Unknown"
+
+
+class TestVendorCategorySubstring:
+    """IEEE returns long names like 'Amazon Technologies Inc.' that won't
+    exact-match the curated _VENDOR_CATEGORY_MAP. Substring patterns pick
+    those up. This test pins the pattern set so a future edit that
+    reorders / drops a needle fails loudly."""
+
+    def test_amazon_variants_become_iot(self):
+        from homenet import _categorise_by_vendor_substring
+
+        assert _categorise_by_vendor_substring("Amazon Technologies Inc.") == "IoT"
+        assert _categorise_by_vendor_substring("Ring LLC") == "IoT"
+        assert _categorise_by_vendor_substring("Blink, Inc.") == "IoT"
+
+    def test_apple_becomes_phone(self):
+        from homenet import _categorise_by_vendor_substring
+
+        assert _categorise_by_vendor_substring("Apple, Inc.") == "Phone"
+        assert _categorise_by_vendor_substring("Apple Inc") == "Phone"
+
+    def test_samsung_becomes_tv(self):
+        """Samsung sells phones AND TVs; we default to TV since the curated
+        _MAC_VENDORS dict had that mapping already."""
+        from homenet import _categorise_by_vendor_substring
+
+        assert _categorise_by_vendor_substring("Samsung Electronics Co., Ltd.") == "TV"
+
+    def test_google_nest_ring_iot(self):
+        from homenet import _categorise_by_vendor_substring
+
+        assert _categorise_by_vendor_substring("Google LLC") == "IoT"
+        assert _categorise_by_vendor_substring("Nest Labs Inc.") == "IoT"
+        assert _categorise_by_vendor_substring("Ring LLC") == "IoT"
+
+    def test_printer_vendors(self):
+        from homenet import _categorise_by_vendor_substring
+
+        assert _categorise_by_vendor_substring("Brother Industries, Ltd.") == "Printer"
+        assert _categorise_by_vendor_substring("Seiko Epson Corp.") == "Printer"
+        assert _categorise_by_vendor_substring("Canon Inc.") == "Printer"
+        assert _categorise_by_vendor_substring("Hewlett-Packard") == "Printer"
+
+    def test_network_gear(self):
+        from homenet import _categorise_by_vendor_substring
+
+        assert _categorise_by_vendor_substring("NETGEAR") == "Network"
+        assert _categorise_by_vendor_substring("TP-Link Technologies") == "Network"
+        assert _categorise_by_vendor_substring("Cisco Systems Inc") == "Network"
+        assert _categorise_by_vendor_substring("Ubiquiti Networks") == "Network"
+
+    def test_storage_vendors(self):
+        from homenet import _categorise_by_vendor_substring
+
+        assert _categorise_by_vendor_substring("Synology Incorporated") == "Storage"
+        assert _categorise_by_vendor_substring("QNAP Systems") == "Storage"
+
+    def test_microsoft_goes_other(self):
+        """Microsoft covers Xbox, Surface, Hyper-V -- no clear category."""
+        from homenet import _categorise_by_vendor_substring
+
+        assert _categorise_by_vendor_substring("Microsoft Corporation") == "Other"
+
+    def test_empty_input_returns_empty(self):
+        from homenet import _categorise_by_vendor_substring
+
+        assert _categorise_by_vendor_substring("") == ""
+        assert _categorise_by_vendor_substring("Random MAC (Phone)") == ""
+
+    def test_unknown_vendor_returns_empty(self):
+        from homenet import _categorise_by_vendor_substring
+
+        assert _categorise_by_vendor_substring("Some Random Company") == ""
+
+    def test_case_insensitive(self):
+        from homenet import _categorise_by_vendor_substring
+
+        assert _categorise_by_vendor_substring("AMAZON TECHNOLOGIES INC.") == "IoT"
+        assert _categorise_by_vendor_substring("apple inc.") == "Phone"
+
+
+class TestMdnsResolveBatch:
+    """Mock the zeroconf module so we don't actually broadcast during tests."""
+
+    def test_empty_ip_list_returns_empty(self):
+        from homenet import _mdns_resolve_batch
+
+        assert _mdns_resolve_batch([]) == {}
+
+    def test_returns_empty_when_zeroconf_unavailable(self, mocker):
+        """Import-time failure of zeroconf -> graceful empty dict, no raise."""
+        import sys
+
+        # Force import failure
+        saved = sys.modules.pop("zeroconf", None)
+        mocker.patch.dict(sys.modules, {"zeroconf": None})
+        try:
+            from homenet import _mdns_resolve_batch
+
+            result = _mdns_resolve_batch(["192.168.1.100"], timeout_s=0.1)
+            assert result == {}
+        finally:
+            if saved is not None:
+                sys.modules["zeroconf"] = saved
+
+    def test_zeroconf_init_failure_returns_empty(self, mocker):
+        """zeroconf installed but Zeroconf() raises (no interfaces, etc.)."""
+        import sys
+        import types
+
+        fake = types.ModuleType("zeroconf")
+
+        class _FakeZeroconf:
+            def __init__(self, *a, **kw):
+                raise OSError("no interfaces available")
+
+        fake.Zeroconf = _FakeZeroconf
+        fake.ServiceBrowser = lambda *a, **kw: None
+        fake.ServiceListener = type(
+            "ServiceListener", (), {"add_service": None, "remove_service": None, "update_service": None}
+        )
+
+        mocker.patch.dict(sys.modules, {"zeroconf": fake})
+        from homenet import _mdns_resolve_batch
+
+        result = _mdns_resolve_batch(["192.168.1.100"], timeout_s=0.1)
+        assert result == {}
+
+    def test_mdns_collects_hostname_for_matched_ip(self, mocker):
+        """Happy path: zeroconf browses, listener gets a service, hostname
+        lands in results under the matching IP. Uses a fake module that
+        captures the listener and drives it synchronously."""
+        import sys
+        import types
+
+        captured_listeners = []
+
+        class _FakeServiceInfo:
+            def __init__(self, server, addresses):
+                self.server = server
+                self._addresses = addresses
+
+            def parsed_addresses(self):
+                return self._addresses
+
+        class _FakeZeroconf:
+            def __init__(self, *a, **kw):
+                pass
+
+            def get_service_info(self, type_, name, timeout=None):
+                # Resolve to a predictable hostname per name
+                return _FakeServiceInfo(server=f"{name.split('.')[0]}.local.", addresses=["192.168.1.42"])
+
+            def close(self):
+                pass
+
+        class _FakeServiceBrowser:
+            def __init__(self, zc, service_type, listener):
+                captured_listeners.append((zc, listener))
+                # Immediately fire an "add_service" event synchronously
+                listener.add_service(zc, service_type, "MyAppleTV")
+
+            def cancel(self):
+                pass
+
+        fake = types.ModuleType("zeroconf")
+        fake.Zeroconf = _FakeZeroconf
+        fake.ServiceBrowser = _FakeServiceBrowser
+        fake.ServiceListener = type(
+            "ServiceListener",
+            (),
+            {
+                "add_service": lambda self, *a, **kw: None,
+                "remove_service": lambda self, *a, **kw: None,
+                "update_service": lambda self, *a, **kw: None,
+            },
+        )
+        mocker.patch.dict(sys.modules, {"zeroconf": fake})
+
+        from homenet import _mdns_resolve_batch
+
+        result = _mdns_resolve_batch(["192.168.1.42", "192.168.1.99"], timeout_s=0.05)
+        assert result == {"192.168.1.42": "MyAppleTV"}
 
 
 class TestVerizonJsParsing:
@@ -1280,7 +1590,15 @@ class TestAutoCategorizee:
         from homenet import _auto_categorize
 
         assert _auto_categorize("Unknown", "", "", "") == ""
-        assert _auto_categorize("Random MAC (Phone)", "", "", "") == ""
+
+    def test_categorize_random_mac_is_phone(self):
+        """Backlog #10 behaviour change: Random MAC (Phone) now categorises
+        as Phone. iOS / Android randomise MACs per-SSID for privacy; there
+        is nothing else in the universe that does this, so Phone is a safe
+        default (vs the old "" that forced the user to re-guess)."""
+        from homenet import _auto_categorize
+
+        assert _auto_categorize("Random MAC (Phone)", "", "", "") == "Phone"
 
 
 class TestNameResolution:
