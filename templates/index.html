@@ -4047,8 +4047,12 @@ async function loadTrends() {
         const n = points.length;
         const last = n ? points[n - 1] : null;
         const avg = n ? (points.reduce((a, b) => a + b, 0) / n) : null;
+        // data-metric makes the Playwright regression test (backlog #39)
+        // able to pair rendered cards with the API's ``available`` list
+        // without parsing visible label text. Future additions to the
+        // labels dict must preserve this attribute or the test fails.
         return `
-          <div style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:10px 12px">
+          <div data-metric="${metric.replace(/"/g, '&quot;')}" style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:10px 12px">
             <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px">
               <div style="font-size:11px;color:var(--text-bright);font-weight:600">${cfg.label}</div>
               <div style="font-size:10px;color:var(--muted);font-family:var(--font-mono)">n=${n}</div>

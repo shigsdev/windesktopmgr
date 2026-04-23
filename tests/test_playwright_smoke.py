@@ -240,3 +240,108 @@ class TestScanButtonPollAccumulator:
             f"/api/scan/status firing at {rate:.1f} r/s after 3 clicks -- "
             f"poll-accumulator regression (lint_setinterval.py should also catch this)"
         )
+
+
+# ── Trends-card coverage regression (backlog #39) ──────────────────
+
+
+class TestTrendsCardCoverage:
+    """Every metric key that ``/api/metrics/history`` reports in
+    ``available`` MUST have a rendered card in the Trends grid. The
+    frontend's ``labels`` dict in ``loadTrends()`` must be refreshed
+    alongside any backend change that adds a new metric series, or
+    the card silently stops rendering for that key.
+
+    The 2026-04-22 network-trends work (#38) had a cache-driven false
+    alarm where the user reported "no metrics visible" after deploy --
+    hard refresh cleared it, confirming the code was right. But a real
+    forgotten-label-entry bug of the same shape would have shipped
+    undetected because no test inspected the rendered cards. This
+    class closes that gap.
+
+    Assertion model: the authoritative list comes from
+    ``/api/metrics/history``'s ``available`` array; the rendered set
+    comes from every ``[data-metric]`` under ``#db-trends-grid``. If
+    ``available`` ⊈ ``rendered``, fail with the missing keys.
+    """
+
+    def test_every_available_metric_has_a_rendered_card(self, loaded_page):
+        page, _ = loaded_page
+
+        # Explicit switch to Dashboard so the test doesn't depend on
+        # loaded_page's starting tab. loadTrends() fires on every
+        # dashboard render.
+        page.evaluate("switchTab('dashboard')")
+
+        # Wait for the Trends grid to settle -- either populated with
+        # cards OR explicitly showing the "no samples yet" placeholder.
+        # 'Loading…' is the transient state we must NOT read from.
+        page.wait_for_function(
+            """
+            () => {
+                const el = document.getElementById('db-trends-grid');
+                if (!el) return false;
+                const txt = el.textContent.trim();
+                // settled = "has cards" OR "shows the no-samples message"
+                return txt !== 'Loading…' && (
+                    el.querySelector('[data-metric]') !== null
+                    || txt.startsWith('No samples yet')
+                    || txt.startsWith('Failed to load')
+                );
+            }
+            """,
+            timeout=15_000,
+        )
+
+        # Fetch the authoritative list of metrics the backend is tracking
+        available = page.evaluate(
+            """
+            fetch('/api/metrics/history?window_h=168')
+                .then(r => r.json())
+                .then(d => d.available || [])
+            """
+        )
+
+        if not available:
+            # Fresh deploy / empty history -- no samples to render against.
+            # The grid should show "No samples yet" in that case, not
+            # explode -- the earlier wait_for_function verifies the grid
+            # is in a defined terminal state, which is enough.
+            pytest.skip("no metrics recorded yet -- sampler hasn't populated 'available'")
+
+        rendered = page.evaluate(
+            """
+            Array.from(document.querySelectorAll('#db-trends-grid [data-metric]'))
+                 .map(el => el.dataset.metric)
+            """
+        )
+
+        missing = sorted(set(available) - set(rendered))
+        assert not missing, (
+            f"Trends card dropped {len(missing)} metric(s) that /api/metrics/history "
+            f"reports as available: {missing}. "
+            f"Likely cause: the `labels` dict in loadTrends() in templates/index.html "
+            f"is missing an entry for each of these keys. Every new backend metric "
+            f"series requires a matching label entry, or the card silently vanishes."
+        )
+
+    def test_rendered_cards_have_unique_data_metric(self, loaded_page):
+        """Defence against a copy-paste bug in the labels dict producing two
+        cards for the same key. If this fires, some label was duplicated."""
+        page, _ = loaded_page
+        page.evaluate("switchTab('dashboard')")
+        page.wait_for_function(
+            """
+            () => {
+                const el = document.getElementById('db-trends-grid');
+                return el && (el.querySelector('[data-metric]') !== null
+                              || el.textContent.includes('No samples yet'));
+            }
+            """,
+            timeout=15_000,
+        )
+        rendered = page.evaluate(
+            "Array.from(document.querySelectorAll('#db-trends-grid [data-metric]')).map(el => el.dataset.metric)"
+        )
+        dupes = sorted({m for m in rendered if rendered.count(m) > 1})
+        assert not dupes, f"duplicate data-metric cards: {dupes}"
