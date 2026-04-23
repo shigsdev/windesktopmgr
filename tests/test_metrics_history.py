@@ -119,6 +119,64 @@ class TestExtractMetrics:
         m = mh.extract_metrics(_summary(cpu=15))
         assert m == {"cpu_percent": 15.0}
 
+    # ── GPU extraction (backlog #37) ───────────────────────────────
+
+    def test_gpu_available_populates_three_series(self):
+        """get_gpu_metrics returns a dict with available=True on NVIDIA
+        machines. extract_metrics should pull utilization_pct, vram_pct,
+        and temp_c as flat series keys (gpu_utilization_pct, gpu_vram_pct,
+        gpu_temp_c)."""
+        gpu = {
+            "available": True,
+            "source": "pynvml",
+            "utilization_pct": 42.0,
+            "vram_memctrl_pct": 12.0,
+            "vram_used_mb": 1024.0,
+            "vram_total_mb": 8192.0,
+            "vram_pct": 12.5,
+            "temp_c": 55.0,
+            "power_w": 80.0,
+        }
+        m = mh.extract_metrics({"gpu": gpu})
+        assert m["gpu_utilization_pct"] == 42.0
+        assert m["gpu_vram_pct"] == 12.5
+        assert m["gpu_temp_c"] == 55.0
+
+    def test_gpu_unavailable_produces_no_series(self):
+        """No NVIDIA driver / no GPU -> collector returns available=False.
+        extractor must NOT emit gpu_* keys in that case -- a machine
+        without a GPU shouldn't get an empty "GPU 0%" series forever."""
+        gpu = {"available": False, "error": "no NVIDIA GPU detected"}
+        m = mh.extract_metrics({"gpu": gpu})
+        assert not any(k.startswith("gpu_") for k in m)
+
+    def test_gpu_missing_section_produces_no_series(self):
+        m = mh.extract_metrics({})  # no "gpu" key at all
+        assert not any(k.startswith("gpu_") for k in m)
+
+    def test_gpu_partial_fields_still_extracted(self):
+        """If the collector returned available=True but temperature sensor
+        wasn't supported (None), we should still record utilization and
+        vram_pct, just skip temp."""
+        gpu = {
+            "available": True,
+            "utilization_pct": 10.0,
+            "vram_pct": 5.0,
+            "temp_c": None,  # sensor not available
+        }
+        m = mh.extract_metrics({"gpu": gpu})
+        assert m["gpu_utilization_pct"] == 10.0
+        assert m["gpu_vram_pct"] == 5.0
+        assert "gpu_temp_c" not in m
+
+    def test_gpu_idle_zero_kept_not_dropped(self):
+        """0% GPU utilization on an idle card is a real signal, not missing."""
+        gpu = {"available": True, "utilization_pct": 0.0, "vram_pct": 0.0, "temp_c": 35.0}
+        m = mh.extract_metrics({"gpu": gpu})
+        assert m["gpu_utilization_pct"] == 0.0
+        assert m["gpu_vram_pct"] == 0.0
+        assert m["gpu_temp_c"] == 35.0
+
 
 # ── load_history ───────────────────────────────────────────────────
 

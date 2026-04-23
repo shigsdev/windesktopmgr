@@ -569,6 +569,123 @@ def _get_nvidia_gpu_info() -> dict | None:
     return {"name": gpu_name, "installed": nv_short, "win_ver": win_ver}
 
 
+def _gpu_metrics_blank(error: str | None = None) -> dict:
+    """Shared empty-result factory so every exit path returns the same shape."""
+    return {
+        "available": False,
+        "source": None,
+        "name": "",
+        "utilization_pct": None,
+        "vram_memctrl_pct": None,
+        "vram_used_mb": None,
+        "vram_total_mb": None,
+        "vram_pct": None,
+        "temp_c": None,
+        "power_w": None,
+        "error": error,
+    }
+
+
+def get_gpu_metrics() -> dict:
+    """Collect runtime GPU metrics for the Trends card (backlog #37).
+
+    Python-first: uses the ``pynvml`` package (the official NVIDIA Python
+    binding for NVML -- what ``nvidia-smi`` itself is built on). In-process
+    C calls, no subprocess fork, ~50 ms on first init and microseconds
+    thereafter -- vs the 200-500 ms cold start of shelling out to
+    ``nvidia-smi.exe``. Falls through to an empty ``available=False`` dict
+    on import failure, NVML-init failure, or no GPU present -- the
+    dashboard fan-out treats an empty result as "no GPU signal to
+    display" rather than an error.
+
+    Requires the ``nvidia-ml-py`` pip package (import name ``pynvml``).
+    Added to ``requirements.txt`` alongside this function.
+
+    Returns:
+        {
+            "available": bool,
+            "source": "pynvml" | None,
+            "name": str,
+            "utilization_pct":      float | None,  # 0-100 current load
+            "vram_memctrl_pct":     float | None,  # memory controller
+                                                    # throughput (NOT
+                                                    # vram-used-%)
+            "vram_used_mb":         float | None,
+            "vram_total_mb":        float | None,
+            "vram_pct":             float | None,  # computed: used/total
+            "temp_c":               float | None,
+            "power_w":              float | None,
+            "error":                str | None,    # populated on failure
+        }
+    """
+    try:
+        import pynvml
+    except ImportError as e:
+        return _gpu_metrics_blank(f"pynvml not installed: {e}")
+
+    try:
+        pynvml.nvmlInit()
+    except pynvml.NVMLError as e:
+        # Most common causes: no NVIDIA driver, driver/library version
+        # mismatch, no GPU in the machine. Surface the NVML error text so
+        # the dashboard concern is actionable.
+        return _gpu_metrics_blank(f"NVML init failed: {e}")
+
+    try:
+        count = pynvml.nvmlDeviceGetCount()
+        if count == 0:
+            return _gpu_metrics_blank("no NVIDIA GPU detected")
+
+        # First card only -- multi-GPU rigs get the primary for now; a
+        # follow-up could surface each card as its own series.
+        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+
+        # Name: pynvml 12+ returns str; older versions return bytes.
+        raw_name = pynvml.nvmlDeviceGetName(handle)
+        name = raw_name.decode("utf-8", errors="replace") if isinstance(raw_name, bytes) else str(raw_name)
+
+        util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+        mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+
+        # Power is optional -- lower-tier cards / passthrough VMs can
+        # return NVML_ERROR_NOT_SUPPORTED. Treat as "no signal" (None),
+        # not an error for the whole collector.
+        try:
+            power_w: float | None = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
+        except pynvml.NVMLError:
+            power_w = None
+
+        vram_used_mb = round(mem.used / (1024 * 1024), 1)
+        vram_total_mb = round(mem.total / (1024 * 1024), 1)
+        vram_pct = round(mem.used / mem.total * 100, 1) if mem.total else None
+
+        return {
+            "available": True,
+            "source": "pynvml",
+            "name": name,
+            "utilization_pct": float(util.gpu),
+            "vram_memctrl_pct": float(util.memory),
+            "vram_used_mb": vram_used_mb,
+            "vram_total_mb": vram_total_mb,
+            "vram_pct": vram_pct,
+            "temp_c": float(temp),
+            "power_w": round(power_w, 1) if power_w is not None else None,
+            "error": None,
+        }
+    except pynvml.NVMLError as e:
+        return _gpu_metrics_blank(f"NVML query failed: {e}")
+    except Exception as e:  # noqa: BLE001 -- defensive; pynvml surprises are survivable
+        return _gpu_metrics_blank(f"unexpected GPU collector error: {type(e).__name__}: {e}")
+    finally:
+        # Best-effort -- if shutdown fails the next init will still work
+        # (NVML is reference-counted internally).
+        try:
+            pynvml.nvmlShutdown()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 # Known GPU product family IDs for the NVIDIA driver lookup API.
 # Resolved via https://www.nvidia.com/Download/API/lookupValueSearch.aspx?TypeID=3&ParentID=<series>
 # Series 127 = GeForce RTX 40 Series (Desktop)
@@ -8970,9 +9087,10 @@ def _compute_dashboard_summary() -> dict:
         "credentials": get_credentials_network_health,
         "disk": get_disk_health,
         "drivers": get_driver_health,
+        "gpu": get_gpu_metrics,
     }
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=7) as ex:
         futs = {ex.submit(fn): name for name, fn in checks.items()}
         try:
             for fut in concurrent.futures.as_completed(futs, timeout=45):
@@ -9348,6 +9466,7 @@ def _compute_dashboard_summary() -> dict:
                 "thermals": results.get("thermals") or {},
                 "memory": results.get("memory") or {},
                 "disk": results.get("disk") or {},
+                "gpu": results.get("gpu") or {},
             }
         )
     except Exception:  # noqa: BLE001
