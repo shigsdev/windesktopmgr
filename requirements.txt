@@ -9,3 +9,14 @@ wmi>=1.5.1
 # fork per sample. Falls back to "available=False" gracefully on non-NVIDIA
 # or driverless machines, so pinning is safe.
 nvidia-ml-py>=12.0.0
+# IEEE OUI → vendor lookup for the Home Network tab (backlog #10). Uses IEEE
+# MA-L/M/S registries instead of our ~65-entry curated dict, bringing ~36k
+# vendors into the lookup (Amazon Echo/Fire, Google Nest, Ring, Philips Hue,
+# Shelly, etc). Lookup is sync + offline after first IEEE registry download;
+# collector degrades to "Unknown" if the package or registry is missing.
+mac-vendor-lookup>=0.1.13
+# mDNS / Bonjour service discovery for friendly hostnames (backlog #10).
+# Covers Apple devices, Chromecasts, Rokus, AirPrint printers, Sonos,
+# HomeKit accessories, and most modern IoT that advertises via mDNS.
+# Python-first alternative to shelling out to ``avahi-browse`` / ``dns-sd``.
+zeroconf>=0.132.0
