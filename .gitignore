@@ -51,6 +51,10 @@ alert_rules.json
 # Trend sampler history (runtime state, regenerates on each tray poll)
 metrics_history.json
 
+# Baseline / drift-detection (backlog #14 runtime state)
+baseline_snapshot.json
+baseline_history.json
+
 # ── Sensitive / personal ───────────────────────────────────────────────────
 # Gmail credentials (encrypted, but best not committed)
 gmail_credentials.json
