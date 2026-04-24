@@ -351,13 +351,19 @@ def _diff_category(old_by_key: dict, new_by_key: dict, fields: tuple) -> dict:
         new = new_by_key[key]
         delta_fields = [f for f in fields if old.get(f) != new.get(f)]
         if delta_fields:
+            # Ship the FULL old+new entries (not just the delta fields) so
+            # the UI can render a Parameter / Previous / Current table
+            # showing every tracked parameter and highlighting which ones
+            # actually changed via the separate ``delta`` list. Also
+            # includes display-only fields like ``display_name`` /
+            # ``author`` that aren't in ``fields`` but add context.
             changed.append(
                 {
                     "key": key,
                     "name": new.get("name") or old.get("name") or key,
                     "delta": delta_fields,
-                    "old": {f: old.get(f) for f in delta_fields},
-                    "new": {f: new.get(f) for f in delta_fields},
+                    "old": dict(old),
+                    "new": dict(new),
                 }
             )
 

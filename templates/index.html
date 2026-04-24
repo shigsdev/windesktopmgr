@@ -4833,17 +4833,39 @@ async function loadBaseline() {
       </div>
     </div>`;
 
-  // Render each category section
-  _blRenderCategory("bl-cat-startup",  "Startup Items",      "🚀", drift.startup,  "command");
-  _blRenderCategory("bl-cat-services", "Windows Services",   "⚙",  drift.services, "image_path");
-  _blRenderCategory("bl-cat-tasks",    "Scheduled Tasks",    "⏱",  drift.tasks,    "image_path");
+  // Render each category section. Each category has its own column plan:
+  // the order of tracked fields shown in the Parameter|Previous|Current
+  // table, and the subset of those that are "diff-critical" (highlighted
+  // in orange when changed -- these mirror baseline.py's _DIFF_FIELDS).
+  _blRenderCategory("bl-cat-startup",  "Startup Items",    "🚀", drift.startup,  _BL_CATS.startup);
+  _blRenderCategory("bl-cat-services", "Windows Services", "⚙",  drift.services, _BL_CATS.services);
+  _blRenderCategory("bl-cat-tasks",    "Scheduled Tasks",  "⏱",  drift.tasks,    _BL_CATS.tasks);
 
   content.style.display = "";
 }
 
+// Per-category field layout for the Parameter|Previous|Current table.
+// ``fields`` is the ordered list of parameters shown as rows. ``critical``
+// is the subset that baseline.py actually diffs on -- any difference here
+// is real drift (the other fields are context the user wants to see).
+const _BL_CATS = {
+  startup: {
+    fields:   ["name", "location", "type", "enabled", "command"],
+    critical: ["command", "enabled"],
+  },
+  services: {
+    fields:   ["name", "display_name", "status", "start_mode", "image_path"],
+    critical: ["start_mode", "image_path"],
+  },
+  tasks: {
+    fields:   ["name", "path", "state", "author", "run_as", "image_path"],
+    critical: ["state", "image_path", "run_as"],
+  },
+};
+
 // Helper: render one drift category (added/removed/changed lists) into
 // ``elId`` or hide the section if nothing changed for this category.
-function _blRenderCategory(elId, label, icon, catDrift, primaryField) {
+function _blRenderCategory(elId, label, icon, catDrift, cfg) {
   const el = document.getElementById(elId);
   if (!el) return;
   if (!catDrift) { el.style.display = "none"; return; }
@@ -4868,41 +4890,82 @@ function _blRenderCategory(elId, label, icon, catDrift, primaryField) {
 
   if (added.length) {
     html += `<div style="margin:8px 0 4px;font-size:11px;color:var(--green);font-weight:700">＋ Added (${added.length})</div>`;
-    html += added.map(item => _blRenderEntry(item, primaryField, "var(--green)")).join("");
+    // For added entries: Previous column is —, Current column carries the value.
+    html += added.map(item =>
+      _blRenderEntry(item, /*old*/ null, /*new*/ item, /*delta*/ null, cfg, "var(--green)")
+    ).join("");
   }
   if (removed.length) {
     html += `<div style="margin:10px 0 4px;font-size:11px;color:var(--red);font-weight:700">− Removed (${removed.length})</div>`;
-    html += removed.map(item => _blRenderEntry(item, primaryField, "var(--red)")).join("");
+    // For removed entries: Previous column carries the value, Current is —.
+    html += removed.map(item =>
+      _blRenderEntry(item, /*old*/ item, /*new*/ null, /*delta*/ null, cfg, "var(--red)")
+    ).join("");
   }
   if (changed.length) {
     html += `<div style="margin:10px 0 4px;font-size:11px;color:var(--orange);font-weight:700">~ Changed (${changed.length})</div>`;
-    html += changed.map(item => {
-      const fields = Object.keys(item.old || {});
-      const deltaHtml = fields.map(f =>
-        `<div style="font-family:var(--font-mono);font-size:11px;padding:2px 0">
-          <span style="color:var(--cyan)">${escHtml(f)}</span>:
-          <span style="color:var(--muted);text-decoration:line-through">${escHtml(item.old[f])}</span>
-          → <strong style="color:var(--orange)">${escHtml(item.new[f])}</strong>
-        </div>`
-      ).join("");
-      return `<div style="padding:6px 10px;margin:3px 0;background:var(--surface);border-left:2px solid var(--orange);border-radius:4px">
-        <div style="font-weight:600;font-size:12px;color:var(--text-bright)">${escHtml(item.name || item.key)}</div>
-        ${deltaHtml}
-      </div>`;
-    }).join("");
+    html += changed.map(item =>
+      _blRenderEntry(item, item.old || {}, item.new || {}, item.delta || [], cfg, "var(--orange)")
+    ).join("");
   }
 
   html += `</div>`;
   el.innerHTML = html;
 }
 
-function _blRenderEntry(item, primaryField, accent) {
-  const primary = item[primaryField] || "";
-  const location = item.location || item.path || "";
-  return `<div style="padding:6px 10px;margin:3px 0;background:var(--surface);border-left:2px solid ${accent};border-radius:4px">
-    <div style="font-weight:600;font-size:12px;color:var(--text-bright)">${escHtml(item.name || item.key)}</div>
-    ${location ? `<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono)">${escHtml(location)}</div>` : ""}
-    ${primary ? `<div style="font-size:10px;color:var(--text);font-family:var(--font-mono);margin-top:2px">${escHtml(primary)}</div>` : ""}
+// Render one drift entry as a 3-column table: Parameter | Previous | Current.
+//   old   -- object whose fields populate the Previous column (null => —)
+//   new   -- object whose fields populate the Current column  (null => —)
+//   delta -- array of field names that changed (only for "changed" kind).
+//            null for added/removed. Used to highlight diff-critical rows
+//            where the value actually differs.
+//   cfg   -- {fields, critical} for this category (see _BL_CATS).
+function _blRenderEntry(header, oldObj, newObj, delta, cfg, accent) {
+  const title = escHtml(header.name || header.key || "");
+  const subtitle = header.location || header.path || "";
+
+  const deltaSet = new Set(delta || []);
+  const critSet = new Set(cfg.critical || []);
+
+  const rows = cfg.fields.map(f => {
+    const oldVal = oldObj ? oldObj[f] : null;
+    const newVal = newObj ? newObj[f] : null;
+    // Treat undefined/null/"" all as "—" visually; differs() cares about
+    // the raw pair so "" vs null don't light up as drift.
+    const oldDisp = (oldObj == null || oldVal === undefined || oldVal === null || oldVal === "") ? "—" : String(oldVal);
+    const newDisp = (newObj == null || newVal === undefined || newVal === null || newVal === "") ? "—" : String(newVal);
+
+    // A row highlights in orange only when (a) this is a Changed entry,
+    // (b) the field actually differs (backend's delta array says so), and
+    // (c) it's one of the diff-critical fields. Context rows that happen
+    // to carry different values (e.g. ``status`` flip) stay neutral.
+    const isDiff = deltaSet.has(f);
+    const isCrit = critSet.has(f);
+    const rowBg   = isDiff ? "background:rgba(255,165,0,0.08)" : "";
+    const paramColor = isCrit ? "color:var(--cyan)" : "color:var(--muted)";
+    const prevColor = isDiff ? "color:var(--muted);text-decoration:line-through" : "color:var(--text)";
+    const curColor  = isDiff ? "color:var(--orange);font-weight:700" : "color:var(--text)";
+
+    return `<tr style="${rowBg}">
+      <td style="padding:3px 8px;font-family:var(--font-mono);font-size:10px;${paramColor};white-space:nowrap;vertical-align:top">${escHtml(f)}</td>
+      <td style="padding:3px 8px;font-family:var(--font-mono);font-size:11px;${prevColor};word-break:break-all;vertical-align:top">${escHtml(oldDisp)}</td>
+      <td style="padding:3px 8px;font-family:var(--font-mono);font-size:11px;${curColor};word-break:break-all;vertical-align:top">${escHtml(newDisp)}</td>
+    </tr>`;
+  }).join("");
+
+  return `<div style="padding:8px 10px;margin:4px 0;background:var(--surface);border-left:2px solid ${accent};border-radius:4px">
+    <div style="font-weight:600;font-size:12px;color:var(--text-bright)">${title}</div>
+    ${subtitle ? `<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono);margin-bottom:4px">${escHtml(subtitle)}</div>` : ""}
+    <table style="width:100%;border-collapse:collapse;margin-top:4px">
+      <thead>
+        <tr style="border-bottom:1px solid var(--border)">
+          <th style="text-align:left;padding:3px 8px;font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Parameter</th>
+          <th style="text-align:left;padding:3px 8px;font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Previous</th>
+          <th style="text-align:left;padding:3px 8px;font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Current</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
   </div>`;
 }
 
