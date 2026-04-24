@@ -363,7 +363,13 @@ def _diff_category(old_by_key: dict, new_by_key: dict, fields: tuple) -> dict:
     for key in sorted(old_keys & new_keys):
         old = old_by_key[key]
         new = new_by_key[key]
-        delta_fields = [f for f in fields if old.get(f) != new.get(f)]
+        # Schema-migration tolerance: if a tracked field is MISSING from the
+        # old snapshot entirely (not just None-valued), the user captured the
+        # baseline before we started tracking that field. Skip those fields
+        # to avoid a false-positive wave on first drift check after an
+        # upgrade. Once the user re-accepts the baseline the full field set
+        # gets persisted and drift detection resumes as normal.
+        delta_fields = [f for f in fields if f in old and f in new and old.get(f) != new.get(f)]
         if delta_fields:
             # Ship the FULL old+new entries (not just the delta fields) so
             # the UI can render a Parameter / Previous / Current table
