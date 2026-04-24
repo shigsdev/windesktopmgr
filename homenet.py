@@ -191,8 +191,16 @@ def _mac_vendor(mac: str) -> str:
     if not vendor and _is_locally_admin_mac(mac):
         vendor = "Random MAC (Phone)"
 
+    # Only cache POSITIVE resolutions. A cached "Unknown" poisons the
+    # result for the lifetime of the process -- observed post-deploy on
+    # 2026-04-23: the first scan after tray restart hit a race where
+    # mac-vendor-lookup's IEEE file hadn't finished loading, lookups
+    # returned nothing, and "Unknown" got cached. Subsequent scans
+    # saw the cache hit and never retried, even though IEEE had since
+    # fully loaded. By not caching Unknown, the next call retries and
+    # picks up the real vendor once the registry is warm.
     if not vendor:
-        vendor = "Unknown"
+        return "Unknown"
 
     with _vendor_cache_lock:
         _vendor_cache[prefix] = vendor

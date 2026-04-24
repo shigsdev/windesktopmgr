@@ -523,6 +523,39 @@ class TestMacVendorIEEELookup:
         self._reset_cache()
         assert _mac_vendor("") == "Unknown"
 
+    def test_unknown_result_is_not_cached(self, mocker):
+        """Regression pin for the 2026-04-23 cache-poisoning bug: a
+        transient IEEE-lookup failure returned "Unknown" and got cached,
+        so subsequent calls never retried even after the registry
+        finished loading. Fix: only cache positive resolutions. Next
+        call with a now-working lookup must pick up the real vendor."""
+        from homenet import _IEEE_LOOKUP, VendorNotFoundError, _mac_vendor
+
+        self._reset_cache()
+        if _IEEE_LOOKUP is None:
+            pytest.skip("mac-vendor-lookup not installed")
+        # First call: simulate transient failure -> "Unknown"
+        call1 = mocker.patch.object(_IEEE_LOOKUP, "lookup", side_effect=VendorNotFoundError("64:CD:C2:00:00:00"))
+        assert _mac_vendor("64:CD:C2:00:00:00") == "Unknown"
+        # Second call: IEEE now works and returns a real vendor.
+        # Cache must NOT have poisoned the result -- retry must find it.
+        call1.side_effect = None
+        call1.return_value = "Amazon Technologies Inc."
+        assert _mac_vendor("64:CD:C2:00:00:00") == "Amazon Technologies Inc."
+
+    def test_positive_result_is_cached(self, mocker):
+        """Positive results still cache -- only the negative path skips.
+        Ensures the cache's performance benefit is preserved."""
+        from homenet import _IEEE_LOOKUP, _mac_vendor
+
+        self._reset_cache()
+        if _IEEE_LOOKUP is None:
+            pytest.skip("mac-vendor-lookup not installed")
+        spy = mocker.patch.object(_IEEE_LOOKUP, "lookup", return_value="Fake Vendor Ltd")
+        _mac_vendor("AA:BB:CC:00:00:01")
+        _mac_vendor("AA:BB:CC:11:22:33")  # same OUI
+        assert spy.call_count == 1, "positive result must still cache"
+
 
 class TestVendorCategorySubstring:
     """IEEE returns long names like 'Amazon Technologies Inc.' that won't
