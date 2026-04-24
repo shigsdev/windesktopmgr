@@ -1684,6 +1684,12 @@ def homenet_scan_light():
         if mac not in live_macs:
             dev["active"] = False
 
+    # Re-apply the IP-aggregation rollup so link-aggregated NICs stay
+    # green even when only one bond member wins the ARP hash this minute.
+    # Without this, the light scan stomps the full scan's rollup every
+    # polling cycle and the QNAP's bonded NICs flicker grey after 60 s.
+    _rollup_active_by_ip(inventory)
+
     inventory["last_scan"] = datetime.now(timezone.utc).isoformat()
     _save_homenet_inventory(inventory)
 
