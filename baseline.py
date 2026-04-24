@@ -105,12 +105,62 @@ def _collect_startup() -> dict:
     return by_key
 
 
-def _collect_services() -> dict:
-    """Enumerate Windows services via psutil (no PowerShell).
+def _collect_services_wmi_enrichment() -> dict:
+    """Per-service WMI enrichment -- the fields psutil doesn't expose.
 
-    Returns dict keyed by service name (internal, not display). Each
-    value carries start_mode, image_path, display_name -- the three
-    fields an attacker is most likely to modify.
+    Returns ``{service_name: {field: value, ...}}`` for these extra fields:
+      - service_type   (Own Process / Share Process / Kernel Driver / ...)
+      - error_control  (Ignore / Normal / Severe / Critical)
+      - delayed_auto_start  (bool -- covert-persistence evasion pattern)
+      - desktop_interact    (bool -- highly suspicious on modern Windows)
+      - tag_id          (load order within service group)
+      - started         (bool -- running flag; context-only)
+
+    WMI.Win32_Service() is one round-trip for all services (~1-2 s on
+    this box) so even 327 services enrich in a single query. On failure
+    (WMI COM fault, insufficient rights) returns {} and the psutil path
+    keeps working without enrichment.
+    """
+    try:
+        import wmi
+    except ImportError:
+        _log.warning("wmi package not installed -- service enrichment skipped")
+        return {}
+
+    try:
+        c = wmi.WMI()
+        services = c.Win32_Service()
+    except Exception as e:  # noqa: BLE001 -- WMI can fault on Win32_Service for many reasons
+        _log.warning("WMI Win32_Service enumeration failed: %s", e)
+        return {}
+
+    out: dict[str, dict] = {}
+    for s in services:
+        try:
+            name = s.Name
+            if not name:
+                continue
+            out[name] = {
+                "service_type": s.ServiceType or "",
+                "error_control": s.ErrorControl or "",
+                "delayed_auto_start": bool(s.DelayedAutoStart) if s.DelayedAutoStart is not None else False,
+                "desktop_interact": bool(s.DesktopInteract) if s.DesktopInteract is not None else False,
+                "tag_id": str(s.TagId) if s.TagId is not None else "",
+                "started": bool(s.Started) if s.Started is not None else False,
+            }
+        except Exception:  # noqa: BLE001 -- skip unreadable rows
+            continue
+    return out
+
+
+def _collect_services() -> dict:
+    """Enumerate Windows services via psutil + WMI.
+
+    psutil is the fast iteration path (in-process, ~100 ms) and covers
+    name / display_name / status / start_type / username / image_path /
+    description. WMI enrichment adds service_type, error_control, delayed
+    auto-start, desktop_interact, tag_id, started -- fields the security
+    baseline cares about that psutil can't reach.
     """
     try:
         import psutil
@@ -134,6 +184,8 @@ def _collect_services() -> dict:
         "disabled": "Disabled",
     }
 
+    wmi_by_name = _collect_services_wmi_enrichment()
+
     try:
         for svc in psutil.win_service_iter():
             try:
@@ -143,7 +195,7 @@ def _collect_services() -> dict:
             name = d.get("name") or ""
             if not name:
                 continue
-            by_key[name] = {
+            entry = {
                 "name": name,
                 "display_name": d.get("display_name") or "",
                 "description": d.get("description") or "",
@@ -152,6 +204,9 @@ def _collect_services() -> dict:
                 "username": d.get("username") or "",
                 "image_path": d.get("binpath") or "",
             }
+            # Merge WMI enrichment (service_type, error_control, flags, etc.)
+            entry.update(wmi_by_name.get(name, {}))
+            by_key[name] = entry
     except Exception as e:  # noqa: BLE001
         _log.warning("services enumeration failed: %s", e)
 
@@ -201,19 +256,44 @@ def _collect_scheduled_tasks() -> dict:
             # by task_name (first row wins -- they share all top-level fields).
             if task_name in by_key:
                 continue
+            # Capture EVERY column schtasks /v emits (except redundant
+            # HostName / Status). Missing columns default to "" so the
+            # shape stays uniform across Windows versions even if
+            # Microsoft changes the verbose output.
             by_key[task_name] = {
+                # Identity
                 "name": task_name.rsplit("\\", 1)[-1],
                 "path": task_name,
+                # State
                 "state": (row.get("Scheduled Task State") or row.get("Status") or "").strip(),
                 "author": (row.get("Author") or "").strip(),
                 "run_as": (row.get("Run As User") or "").strip(),
                 "logon_mode": (row.get("Logon Mode") or "").strip(),
+                # What it runs
+                "image_path": (row.get("Task To Run") or "").strip(),
+                "start_in": (row.get("Start In") or "").strip(),
+                "comment": (row.get("Comment") or "").strip(),
+                # When it runs
+                "schedule": (row.get("Schedule") or "").strip(),
                 "schedule_type": (row.get("Schedule Type") or "").strip(),
+                "start_time": (row.get("Start Time") or "").strip(),
+                "start_date": (row.get("Start Date") or "").strip(),
+                "end_date": (row.get("End Date") or "").strip(),
+                "days": (row.get("Days") or "").strip(),
+                "months": (row.get("Months") or "").strip(),
+                "repeat_every": (row.get("Repeat: Every") or "").strip(),
+                "repeat_until_time": (row.get("Repeat: Until: Time") or "").strip(),
+                "repeat_until_duration": (row.get("Repeat: Until: Duration") or "").strip(),
+                "repeat_stop_if_running": (row.get("Repeat: Stop If Still Running") or "").strip(),
+                # Behaviour flags
+                "idle_time": (row.get("Idle Time") or "").strip(),
+                "power_management": (row.get("Power Management") or "").strip(),
+                "delete_if_not_rescheduled": (row.get("Delete Task If Not Rescheduled") or "").strip(),
+                "stop_if_runs_x_hours": (row.get("Stop Task If Runs X Hours and X Mins") or "").strip(),
+                # Run history
                 "last_run_time": (row.get("Last Run Time") or "").strip(),
                 "last_result": (row.get("Last Result") or "").strip(),
                 "next_run_time": (row.get("Next Run Time") or "").strip(),
-                "comment": (row.get("Comment") or "").strip(),
-                "image_path": (row.get("Task To Run") or "").strip(),
             }
     except Exception as e:  # noqa: BLE001 -- malformed CSV from schtasks is a real risk
         _log.warning("schtasks CSV parse failed: %s", e)
@@ -340,14 +420,37 @@ def _append_history(entry: dict) -> bool:
 # key-presence test only.
 _DIFF_FIELDS = {
     "startup": ("command", "enabled"),
-    # ``username`` is security-critical: an attacker flipping a service from
-    # NetworkService to LocalSystem = privilege escalation.
-    "services": ("start_mode", "image_path", "username"),
-    # ``logon_mode`` flips (Interactive -> Batch, etc.) are a classic covert-
-    # persistence pattern worth flagging. last_run_time / next_run_time /
-    # last_result / comment / schedule_type are context-only -- they change
-    # on every task run or reschedule and would swamp the signal.
-    "tasks": ("state", "image_path", "run_as", "logon_mode"),
+    # Security-critical service fields:
+    #   start_mode / image_path / username -- classic tamper surface
+    #   service_type         -- flipping "Share Process" -> "Own Process" or "Kernel Driver" is unusual
+    #   error_control        -- lowering to "Ignore" can hide a broken/malicious service at boot
+    #   delayed_auto_start   -- toggling on is a covert-persistence evasion pattern
+    #   desktop_interact     -- flipping True on modern Windows is a high-severity red flag
+    "services": (
+        "start_mode",
+        "image_path",
+        "username",
+        "service_type",
+        "error_control",
+        "delayed_auto_start",
+        "desktop_interact",
+    ),
+    # Security-critical task fields:
+    #   state / image_path / run_as / logon_mode -- existing
+    #   start_in         -- working dir flip (e.g. C:\Windows\System32 -> C:\tmp) is a masquerade signal
+    #   schedule_type    -- retiming a daily task to On Logon is a persistence shift
+    # last_run_time / next_run_time / last_result change on every task run
+    # (context-only, never flagged as drift). Same for schedule / start_date
+    # / repeat_* which can shift mildly due to time-zone or DST without
+    # being malicious.
+    "tasks": (
+        "state",
+        "image_path",
+        "run_as",
+        "logon_mode",
+        "start_in",
+        "schedule_type",
+    ),
 }
 
 

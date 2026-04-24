@@ -4787,6 +4787,14 @@ async function loadBaseline() {
   acceptBtn.style.display  = "none";
   const migBanner = document.getElementById("bl-migration-banner");
   if (migBanner) { migBanner.style.display = "none"; migBanner.removeAttribute("data-migration-fields"); }
+  // Clear inventory cache -- loadBaseline() is called on accept-baseline too,
+  // and stale cache would show the pre-accept state under the fresh drift.
+  _blInventoryCache = null;
+  _blInventoryDrift = null;
+  const invBody = document.getElementById("bl-inv-body");
+  const invToggle = document.getElementById("bl-inv-toggle");
+  if (invBody) invBody.style.display = "none";
+  if (invToggle) invToggle.textContent = "Show inventory";
 
   let data;
   try {
@@ -4897,8 +4905,15 @@ const _BL_CATS = {
     },
   },
   services: {
-    fields:   ["name", "display_name", "description", "status", "start_mode", "username", "image_path"],
-    critical: ["start_mode", "image_path", "username"],
+    // Full set: psutil + WMI Win32_Service enrichment. 13 fields.
+    fields: [
+      "name", "display_name", "description",
+      "status", "start_mode", "delayed_auto_start",
+      "username", "image_path",
+      "service_type", "error_control",
+      "desktop_interact", "tag_id", "started",
+    ],
+    critical: ["start_mode", "image_path", "username", "service_type", "error_control", "delayed_auto_start", "desktop_interact"],
     remediation: {
       console_label: "Open services.msc",
       console_hint:  "Use the Services console to inspect, stop, or change startup type.",
@@ -4912,8 +4927,24 @@ const _BL_CATS = {
     },
   },
   tasks: {
-    fields:   ["name", "path", "state", "author", "run_as", "logon_mode", "schedule_type", "last_run_time", "last_result", "next_run_time", "comment", "image_path"],
-    critical: ["state", "image_path", "run_as", "logon_mode"],
+    // Full set: every schtasks /v column except redundant HostName/Status. 26 fields.
+    fields: [
+      // Identity
+      "name", "path",
+      // State
+      "state", "author", "run_as", "logon_mode",
+      // What it runs
+      "image_path", "start_in", "comment",
+      // When it runs
+      "schedule", "schedule_type", "start_time", "start_date", "end_date",
+      "days", "months",
+      "repeat_every", "repeat_until_time", "repeat_until_duration", "repeat_stop_if_running",
+      // Behaviour flags
+      "idle_time", "power_management", "delete_if_not_rescheduled", "stop_if_runs_x_hours",
+      // Run history
+      "last_run_time", "last_result", "next_run_time",
+    ],
+    critical: ["state", "image_path", "run_as", "logon_mode", "start_in", "schedule_type"],
     remediation: {
       console_label: "Open Task Scheduler",
       console_hint:  "Navigate to the task's folder path and inspect Actions / Triggers / General.",
@@ -5096,6 +5127,229 @@ async function blLaunchConsole(category, btn) {
   } finally {
     if (btn) { btn.disabled = false; btn.innerHTML = btn.dataset.orig || btn.innerHTML; }
   }
+}
+
+// ── Full-inventory browser (shows EVERY monitored item) ────────────────
+//
+// The drift detail only shows items that changed. Users want assurance
+// that the whole inventory is being tracked. This browser fetches the
+// current snapshot via /api/baseline/snapshot, groups items by category,
+// and renders a collapsible list of every one. Clicking an item expands
+// its full Parameter / Previous / Current table in-line so the user sees
+// every tracked field for that item.
+
+let _blInventoryCache = null;  // cached snapshot; cleared on loadBaseline re-entry
+let _blInventoryDrift = null;  // pairs items with their drift state for the indicator dot
+
+// Toggle the inventory body + lazy-load the snapshot the first time.
+async function blToggleInventory() {
+  const body = document.getElementById("bl-inv-body");
+  const toggle = document.getElementById("bl-inv-toggle");
+  if (!body || !toggle) return;
+  const isHidden = body.style.display === "none";
+  if (isHidden) {
+    body.style.display = "";
+    toggle.textContent = "Hide inventory";
+    // Lazy fetch on first expand. Snapshot is ~600 items; keep it lean.
+    if (!_blInventoryCache) {
+      try {
+        const [snap, drift] = await Promise.all([
+          fetch("/api/baseline/snapshot").then(r => r.json()),
+          fetch("/api/baseline/drift").then(r => r.json()),
+        ]);
+        _blInventoryCache = snap.snapshot || snap;
+        _blInventoryDrift = drift.drift || {};
+      } catch (e) {
+        document.getElementById("bl-inv-startup").innerHTML =
+          `<div style="color:var(--red);font-size:12px;padding:8px">Failed to load inventory: ${escHtml(e.message)}</div>`;
+        return;
+      }
+    }
+    blRenderInventory();
+  } else {
+    body.style.display = "none";
+    toggle.textContent = "Show inventory";
+  }
+}
+
+// Build the drift-state indicator for an item: added / removed / changed / clean.
+// Returns a small colored dot with a tooltip string.
+function _blItemDriftState(category, key) {
+  const drift = (_blInventoryDrift && _blInventoryDrift[category]) || {};
+  const added   = (drift.added   || []).some(e => e.key === key);
+  const removed = (drift.removed || []).some(e => e.key === key);
+  const changed = (drift.changed || []).some(e => e.key === key);
+  if (added)   return {color: "var(--green)",  label: "Added",   kind: "added"};
+  if (removed) return {color: "var(--red)",    label: "Removed", kind: "removed"};
+  if (changed) return {color: "var(--orange)", label: "Changed", kind: "changed"};
+  return {color: "var(--border)", label: "Matches baseline", kind: "clean"};
+}
+
+// Render the three category sections from the cached snapshot + drift.
+// Filters by the search box contents (case-insensitive, matches the
+// item name OR key).
+function blRenderInventory() {
+  if (!_blInventoryCache) return;
+  const filterEl = document.getElementById("bl-inv-filter");
+  const q = ((filterEl && filterEl.value) || "").toLowerCase().trim();
+
+  const labels = {
+    startup:  {title: "🚀 Startup Items",   icon: "🚀"},
+    services: {title: "⚙ Windows Services", icon: "⚙"},
+    tasks:    {title: "⏱ Scheduled Tasks",  icon: "⏱"},
+  };
+
+  for (const cat of ["startup", "services", "tasks"]) {
+    const byKey = ((_blInventoryCache[cat] || {}).by_key) || {};
+    const keys = Object.keys(byKey).sort((a, b) => a.localeCompare(b));
+    const matchingKeys = q ? keys.filter(k => {
+      const item = byKey[k];
+      return k.toLowerCase().includes(q) ||
+             (item.name || "").toLowerCase().includes(q) ||
+             (item.display_name || "").toLowerCase().includes(q);
+    }) : keys;
+
+    const driftEntries = (_blInventoryDrift && _blInventoryDrift[cat]) || {};
+    const driftCount = (driftEntries.added || []).length
+                     + (driftEntries.removed || []).length
+                     + (driftEntries.changed || []).length;
+
+    const itemsHtml = matchingKeys.map(k => {
+      const item = byKey[k];
+      const ds = _blItemDriftState(cat, k);
+      const name = item.name || k;
+      const sub  = item.location || item.path || item.display_name || "";
+      // Row: clickable summary; hidden detail panel toggled by click.
+      // data-inv-key lets us find the detail panel on click without DOM query.
+      const detailId = `blinv-${cat}-${_blHashKey(k)}`;
+      return `
+        <div class="bl-inv-row" data-inv-key="${escHtml(k)}" data-inv-category="${cat}" data-inv-kind="${ds.kind}">
+          <div onclick="blToggleInventoryRow('${detailId}', this)" style="display:flex;align-items:center;gap:10px;padding:5px 10px;cursor:pointer;border-bottom:1px solid var(--border)" onmouseover="this.style.background='var(--surface)'" onmouseout="this.style.background=''">
+            <span title="${escHtml(ds.label)}" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${ds.color};flex-shrink:0"></span>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:12px;color:var(--text-bright);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(name)}</div>
+              ${sub ? `<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(sub)}</div>` : ""}
+            </div>
+            <span style="font-size:10px;color:var(--muted);font-family:var(--font-mono)">${escHtml(ds.label)}</span>
+          </div>
+          <div id="${detailId}" style="display:none;padding:6px 10px"></div>
+        </div>`;
+    }).join("");
+
+    const el = document.getElementById(`bl-inv-${cat}`);
+    if (!el) continue;
+    el.innerHTML = `
+      <details open>
+        <summary style="cursor:pointer;font-size:13px;font-weight:700;color:var(--text-bright);padding:6px 0;list-style:none">
+          ${labels[cat].title}
+          <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:8px">
+            ${matchingKeys.length} of ${keys.length}${driftCount ? ` · <span style='color:var(--orange)'>${driftCount} drifted</span>` : ""}
+          </span>
+        </summary>
+        <div style="border:1px solid var(--border);border-radius:6px;max-height:400px;overflow-y:auto;margin-top:6px">
+          ${matchingKeys.length ? itemsHtml : `<div style="padding:10px;font-size:11px;color:var(--muted);text-align:center">No items match filter</div>`}
+        </div>
+      </details>`;
+  }
+}
+
+// Simple hash for inventory-row detail IDs. We can't put the raw key
+// into an HTML id (it may contain backslashes, colons, spaces). Using
+// a hash collapses exotic characters to a safe suffix.
+function _blHashKey(k) {
+  let h = 0;
+  for (let i = 0; i < k.length; i++) {
+    h = ((h << 5) - h) + k.charCodeAt(i);
+    h |= 0;
+  }
+  return Math.abs(h).toString(36);
+}
+
+// Click handler for an inventory row: expand/collapse its detail table.
+// The detail table shows EVERY tracked field for that item, regardless
+// of drift state. For drifted items we include both Previous and Current
+// columns; for clean items Previous == Current so we render a single
+// Value column for clarity.
+function blToggleInventoryRow(detailId, rowEl) {
+  const detail = document.getElementById(detailId);
+  if (!detail) return;
+  if (detail.style.display !== "none") {
+    detail.style.display = "none";
+    return;
+  }
+  // Find the item data: category + key live on the parent .bl-inv-row.
+  const rowContainer = rowEl.closest(".bl-inv-row");
+  const category = rowContainer.dataset.invCategory;
+  const key = rowContainer.dataset.invKey;
+  const kind = rowContainer.dataset.invKind;
+  const byKey = (((_blInventoryCache || {})[category] || {}).by_key) || {};
+  const item = byKey[key];
+  if (!item) {
+    detail.innerHTML = `<div style="color:var(--red);font-size:11px">Item data missing from cache</div>`;
+    detail.style.display = "";
+    return;
+  }
+
+  // For drifted items we also fetch the baseline-side values from the
+  // drift payload so Previous column reflects the baseline, not the
+  // current (which is always "item").
+  let oldItem = null;
+  if (kind === "changed") {
+    const drift = (_blInventoryDrift && _blInventoryDrift[category]) || {};
+    const match = (drift.changed || []).find(e => e.key === key);
+    if (match) oldItem = match.old || null;
+  } else if (kind === "removed") {
+    const drift = (_blInventoryDrift && _blInventoryDrift[category]) || {};
+    const match = (drift.removed || []).find(e => e.key === key);
+    if (match) oldItem = match;  // removed entries carry the old value directly
+  }
+
+  const cfg = _BL_CATS[category];
+  const critSet = new Set(cfg.critical || []);
+  const isDrifted = kind !== "clean";
+  const showBothCols = isDrifted && (oldItem !== null || kind === "added");
+
+  const rows = cfg.fields.map(f => {
+    const curVal = item[f];
+    const oldVal = oldItem ? oldItem[f] : curVal;
+    const curDisp = (curVal === undefined || curVal === null || curVal === "") ? "—" : String(curVal);
+    const oldDisp = kind === "added" ? "—"
+                  : (oldVal === undefined || oldVal === null || oldVal === "") ? "—" : String(oldVal);
+    const isCrit = critSet.has(f);
+    const changed = showBothCols && curDisp !== oldDisp;
+    const paramCol = isCrit ? "color:var(--cyan)" : "color:var(--muted)";
+    const rowBg = changed ? "background:rgba(255,165,0,0.08)" : "";
+    if (showBothCols) {
+      const prevColor = changed ? "color:var(--muted);text-decoration:line-through" : "color:var(--text)";
+      const curColor  = changed ? "color:var(--orange);font-weight:700" : "color:var(--text)";
+      return `<tr style="${rowBg}">
+        <td style="padding:3px 8px;font-family:var(--font-mono);font-size:10px;${paramCol};white-space:nowrap;vertical-align:top">${escHtml(f)}</td>
+        <td style="padding:3px 8px;font-family:var(--font-mono);font-size:11px;${prevColor};word-break:break-all;vertical-align:top">${escHtml(oldDisp)}</td>
+        <td style="padding:3px 8px;font-family:var(--font-mono);font-size:11px;${curColor};word-break:break-all;vertical-align:top">${escHtml(curDisp)}</td>
+      </tr>`;
+    }
+    return `<tr>
+      <td style="padding:3px 8px;font-family:var(--font-mono);font-size:10px;${paramCol};white-space:nowrap;vertical-align:top">${escHtml(f)}</td>
+      <td style="padding:3px 8px;font-family:var(--font-mono);font-size:11px;color:var(--text);word-break:break-all;vertical-align:top">${escHtml(curDisp)}</td>
+    </tr>`;
+  }).join("");
+
+  const headers = showBothCols
+    ? `<tr style="border-bottom:1px solid var(--border)">
+         <th style="text-align:left;padding:3px 8px;font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase">Parameter</th>
+         <th style="text-align:left;padding:3px 8px;font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase">Previous</th>
+         <th style="text-align:left;padding:3px 8px;font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase">Current</th>
+       </tr>`
+    : `<tr style="border-bottom:1px solid var(--border)">
+         <th style="text-align:left;padding:3px 8px;font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase">Parameter</th>
+         <th style="text-align:left;padding:3px 8px;font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase">Value</th>
+       </tr>`;
+
+  detail.innerHTML = `<table class="bl-inv-param-table" style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:4px">
+    <thead>${headers}</thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+  detail.style.display = "";
 }
 
 async function acceptBaseline() {
@@ -6600,6 +6854,26 @@ function renderSystemInfo(d) {
       <div id="bl-cat-startup"  class="bl-category" data-category="startup"  style="margin-bottom:16px"></div>
       <div id="bl-cat-services" class="bl-category" data-category="services" style="margin-bottom:16px"></div>
       <div id="bl-cat-tasks"    class="bl-category" data-category="tasks"    style="margin-bottom:16px"></div>
+    </div>
+
+    <!-- Full monitored inventory: shows EVERY item being tracked, not just
+         drifted ones. Lets the user verify the full scope of what's being
+         baselined. Rendered lazy (fetch on first expand) because it's
+         a lot of data (~600 items). -->
+    <div id="bl-inventory" style="margin-top:20px;padding:14px 18px;background:var(--card);border:1px solid var(--border);border-radius:10px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:10px">
+        <div>
+          <div style="font-size:14px;font-weight:700;color:var(--text-bright)">📋 Full monitored inventory</div>
+          <div id="bl-inv-detail" style="font-size:10px;color:var(--muted);margin-top:2px">Every startup item, service, and scheduled task currently tracked by the baseline.</div>
+        </div>
+        <button id="bl-inv-toggle" onclick="blToggleInventory()" style="background:transparent;border:1px solid var(--border);color:var(--text);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:11px">Show inventory</button>
+      </div>
+      <div id="bl-inv-body" style="display:none">
+        <input id="bl-inv-filter" type="text" placeholder="Filter by name (any category)…" oninput="blRenderInventory()" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:12px;margin-bottom:10px;font-family:var(--font-mono)">
+        <div id="bl-inv-startup"  data-inv-category="startup"  style="margin-bottom:12px"></div>
+        <div id="bl-inv-services" data-inv-category="services" style="margin-bottom:12px"></div>
+        <div id="bl-inv-tasks"    data-inv-category="tasks"    style="margin-bottom:12px"></div>
+      </div>
     </div>
   </div>
 

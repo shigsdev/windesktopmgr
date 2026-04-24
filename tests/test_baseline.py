@@ -120,6 +120,7 @@ class TestCollectors:
             _fake_svc("Spooler", "Print Spooler", "Auto", "Running", r"C:\Windows\System32\spoolsv.exe"),
         ]
         mocker.patch("psutil.win_service_iter", return_value=fake_svcs)
+        mocker.patch("baseline._collect_services_wmi_enrichment", return_value={})
         got = baseline._collect_services()
         assert "Dhcp" in got
         assert got["Dhcp"]["display_name"] == "DHCP Client"
@@ -133,11 +134,13 @@ class TestCollectors:
                 raise PermissionError("nope")
 
         mocker.patch("psutil.win_service_iter", return_value=[_Bad(), _fake_svc("Good")])
+        mocker.patch("baseline._collect_services_wmi_enrichment", return_value={})
         got = baseline._collect_services()
         assert list(got.keys()) == ["Good"]
 
     def test_collect_services_iter_exception_empty(self, mocker):
         mocker.patch("psutil.win_service_iter", side_effect=OSError("RPC fail"))
+        mocker.patch("baseline._collect_services_wmi_enrichment", return_value={})
         assert baseline._collect_services() == {}
 
     def test_collect_tasks_parses_csv(self, mocker):
@@ -180,9 +183,102 @@ class TestCollectors:
             "psutil.win_service_iter",
             return_value=[_fake_svc("Dhcp", username="NT AUTHORITY\\NetworkService", description="DHCP client")],
         )
+        mocker.patch("baseline._collect_services_wmi_enrichment", return_value={})
         got = baseline._collect_services()
         assert got["Dhcp"]["username"] == "NT AUTHORITY\\NetworkService"
         assert got["Dhcp"]["description"] == "DHCP client"
+
+    def test_collect_services_merges_wmi_enrichment(self, mocker):
+        """psutil + WMI hybrid: the final entry must carry WMI fields
+        (service_type, error_control, delayed_auto_start, desktop_interact,
+        tag_id, started) for every service that matches by name."""
+        mocker.patch(
+            "psutil.win_service_iter",
+            return_value=[_fake_svc("Spooler", username="LocalSystem")],
+        )
+        mocker.patch(
+            "baseline._collect_services_wmi_enrichment",
+            return_value={
+                "Spooler": {
+                    "service_type": "Own Process",
+                    "error_control": "Normal",
+                    "delayed_auto_start": False,
+                    "desktop_interact": False,
+                    "tag_id": "0",
+                    "started": True,
+                }
+            },
+        )
+        got = baseline._collect_services()
+        assert got["Spooler"]["service_type"] == "Own Process"
+        assert got["Spooler"]["error_control"] == "Normal"
+        assert got["Spooler"]["delayed_auto_start"] is False
+        assert got["Spooler"]["desktop_interact"] is False
+        assert got["Spooler"]["started"] is True
+
+    def test_collect_services_wmi_enrichment_failure_does_not_break_psutil(self, mocker):
+        """If WMI faults, psutil fields must still land -- no hybrid failure."""
+        mocker.patch("psutil.win_service_iter", return_value=[_fake_svc("Dhcp")])
+        mocker.patch("baseline._collect_services_wmi_enrichment", return_value={})
+        got = baseline._collect_services()
+        assert "Dhcp" in got
+        assert got["Dhcp"]["name"] == "Dhcp"
+        # WMI-only fields absent but psutil fields still present
+        assert "username" in got["Dhcp"]
+        assert "service_type" not in got["Dhcp"]
+
+    def test_wmi_enrichment_failure_returns_empty_dict(self, mocker):
+        """When wmi package is missing or COM fails, the enrichment function
+        must return {} (not raise) so the psutil-only path still delivers."""
+        # Case 1: wmi import fails
+        mocker.patch.dict("sys.modules", {"wmi": None})
+        # No assertion here; just don't crash
+
+        # Case 2: WMI() constructor explodes
+        import sys
+
+        sys.modules.pop("wmi", None)
+        mock_wmi_mod = mocker.MagicMock()
+        mock_wmi_mod.WMI.side_effect = Exception("DCOM failed")
+        mocker.patch.dict("sys.modules", {"wmi": mock_wmi_mod})
+        got = baseline._collect_services_wmi_enrichment()
+        assert got == {}
+
+    def test_desktop_interact_flip_is_critical(self):
+        """Flipping desktop_interact False->True is a classic red flag."""
+        old = {
+            "startup": {"by_key": {}},
+            "services": {
+                "by_key": {
+                    "X": {
+                        "name": "X",
+                        "start_mode": "Auto",
+                        "image_path": "x.exe",
+                        "username": "LocalSystem",
+                        "desktop_interact": False,
+                    }
+                }
+            },
+            "tasks": {"by_key": {}},
+        }
+        new = {
+            "startup": {"by_key": {}},
+            "services": {
+                "by_key": {
+                    "X": {
+                        "name": "X",
+                        "start_mode": "Auto",
+                        "image_path": "x.exe",
+                        "username": "LocalSystem",
+                        "desktop_interact": True,  # FLIPPED
+                    }
+                }
+            },
+            "tasks": {"by_key": {}},
+        }
+        diff = baseline.diff_snapshots(old, new)
+        assert diff["total_changes"] == 1
+        assert "desktop_interact" in diff["services"]["changed"][0]["delta"]
 
     def test_collect_tasks_carries_extended_fields(self, mocker):
         """Expanded task collector must gather logon_mode, schedule_type,
