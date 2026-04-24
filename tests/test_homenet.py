@@ -1995,6 +1995,78 @@ class TestEnrichDeviceNames:
         assert inventory["devices"]["X0:00:00:00:00:02"]["active"] is False
         assert inventory["devices"]["L1:00:00:00:00:02"]["active"] is False
 
+    def test_light_scan_applies_rollup_so_bond_members_stay_active(self, client, mocker):
+        """Backlog #10 (2026-04-23): the full scan applies _rollup_active_
+        by_ip correctly, but the light-scan path (runs every 60s as a fast
+        ARP sweep) was stomping that rollup. Line 1685 set active=False
+        for any MAC not in the current ARP sweep, so QNAP bond NICs
+        flickered grey between full scans. Fix: light scan now also calls
+        the rollup before saving.
+
+        Fixture: 3 QNAP MACs at 192.168.1.13 in the saved inventory, ARP
+        sweep sees only the primary bond winner (the classic balance-alb
+        per-destination-hash behaviour). After the light scan, all three
+        MACs must still show active=True."""
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        fresh = (now - timedelta(seconds=5)).isoformat()
+
+        existing = {
+            "devices": {
+                "24:5E:BE:50:6F:CB": {
+                    "mac": "24:5E:BE:50:6F:CB",
+                    "ip": "192.168.1.13",
+                    "active": True,
+                    "last_seen": fresh,
+                    "hostname": "qnap-bond",
+                    "vendor": "QNAP Systems, Inc.",
+                    "network": "wired",
+                    "source": "arp",
+                },
+                "24:5E:BE:50:6F:CC": {
+                    "mac": "24:5E:BE:50:6F:CC",
+                    "ip": "192.168.1.13",
+                    "active": True,
+                    "last_seen": fresh,
+                    "hostname": "qnap-bond",
+                    "vendor": "QNAP Systems, Inc.",
+                    "network": "wired",
+                    "source": "arp",
+                },
+                "24:5E:BE:50:6F:CD": {
+                    "mac": "24:5E:BE:50:6F:CD",
+                    "ip": "192.168.1.13",
+                    "active": True,
+                    "last_seen": fresh,
+                    "hostname": "qnap-bond",
+                    "vendor": "QNAP Systems, Inc.",
+                    "network": "wired",
+                    "source": "arp",
+                },
+            },
+            "last_scan": fresh,
+        }
+
+        mocker.patch("homenet._load_homenet_inventory", return_value=existing)
+        saved: dict = {}
+        mocker.patch("homenet._save_homenet_inventory", side_effect=lambda inv: saved.update(inv))
+
+        # Only the primary bond winner shows up in ARP this sweep --
+        # classic balance-alb per-destination-hash behaviour.
+        mocker.patch(
+            "homenet._arp_scan",
+            return_value=[{"MAC": "24:5E:BE:50:6F:CB", "IP": "192.168.1.13", "Type": "dynamic"}],
+        )
+
+        resp = client.post("/api/homenet/scan/light")
+        assert resp.status_code == 200
+
+        for mac in ("24:5E:BE:50:6F:CB", "24:5E:BE:50:6F:CC", "24:5E:BE:50:6F:CD"):
+            assert saved["devices"][mac]["active"] is True, (
+                f"{mac} went inactive after light scan -- rollup wasn't applied"
+            )
+
     def test_rollup_malformed_last_seen_does_not_crash(self):
         """Defensive: garbage timestamp string must not propagate."""
         from homenet import _rollup_active_by_ip
