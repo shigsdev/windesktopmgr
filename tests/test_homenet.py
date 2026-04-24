@@ -1788,6 +1788,96 @@ class TestNameResolution:
 class TestEnrichDeviceNames:
     """Test the full enrichment pipeline."""
 
+    def test_enrich_refreshes_stale_unknown_vendors(self, mocker):
+        """Regression pin for the 2026-04-23 stale-entry bug (backlog #10).
+
+        The scan merge (_merge_device_data) only calls _mac_vendor() for
+        devices seen in the CURRENT ARP/router response. Offline devices
+        keep their vendor from the LAST scan that saw them -- which may
+        be days or weeks ago, before the IEEE OUI lookup was introduced.
+
+        _enrich_device_names now backfills: any inventory entry whose
+        vendor is 'Unknown' or empty gets re-resolved via _mac_vendor on
+        every scan, so the IEEE lookup can upgrade stale entries once
+        the device owner has installed the new code."""
+        # Avoid real network calls (gethostbyaddr / mDNS would try them)
+        import socket as _socket
+
+        from homenet import _enrich_device_names
+
+        mocker.patch("homenet.socket.gethostbyaddr", side_effect=_socket.herror("no DNS"))
+        mocker.patch("homenet._mdns_resolve_batch", return_value={})
+        # Fake _mac_vendor to simulate the IEEE lookup now resolving what
+        # was previously Unknown. Use the prefix the live bug hit.
+        mocker.patch(
+            "homenet._mac_vendor",
+            side_effect=lambda m: "Samsung Electronics Co.,Ltd" if m.startswith("8C:79:F5") else "Unknown",
+        )
+
+        inventory = {
+            "devices": {
+                "8C:79:F5:6B:98:14": {
+                    "mac": "8C:79:F5:6B:98:14",
+                    "ip": "192.168.1.151",
+                    "hostname": "Samsung.local",
+                    "vendor": "Unknown",  # stale from pre-IEEE-code scan
+                    "category": "",
+                    "device_type": "",
+                    "device_os": "",
+                },
+                "99:99:99:00:00:00": {
+                    "mac": "99:99:99:00:00:00",
+                    "ip": "192.168.1.200",
+                    "hostname": "RealRandom",
+                    "vendor": "Unknown",  # genuinely unknowable
+                    "category": "",
+                    "device_type": "",
+                    "device_os": "",
+                },
+            },
+            "last_scan": None,
+        }
+        result = _enrich_device_names(inventory)
+
+        # Stale Samsung entry got upgraded
+        assert result["devices"]["8C:79:F5:6B:98:14"]["vendor"] == "Samsung Electronics Co.,Ltd"
+        # Genuinely-unknown stays Unknown (IEEE has no data, locally-admin bit off)
+        assert result["devices"]["99:99:99:00:00:00"]["vendor"] == "Unknown"
+
+    def test_enrich_preserves_non_unknown_vendors(self, mocker):
+        """If a device already has a real vendor, the refresh pass must NOT
+        overwrite it -- otherwise curated names like "Netgear" would get
+        stomped with IEEE's "NETGEAR"."""
+        import socket as _socket
+
+        from homenet import _enrich_device_names
+
+        mocker.patch("homenet.socket.gethostbyaddr", side_effect=_socket.herror("no DNS"))
+        mocker.patch("homenet._mdns_resolve_batch", return_value={})
+        spy = mocker.patch("homenet._mac_vendor", return_value="NETGEAR")
+
+        inventory = {
+            "devices": {
+                "28:94:01:00:00:01": {
+                    "mac": "28:94:01:00:00:01",
+                    "ip": "10.0.0.1",
+                    "hostname": "Orbi",
+                    "vendor": "Netgear",  # curated friendly name
+                    "category": "",
+                    "device_type": "",
+                    "device_os": "",
+                },
+            },
+            "last_scan": None,
+        }
+        _enrich_device_names(inventory)
+        # _mac_vendor should NOT have been called for vendor-refresh purposes
+        # on this entry -- it was already non-Unknown.
+        # (May still be called from _auto_categorize downstream, hence
+        # not asserting call_count == 0; we verify the vendor value instead.)
+        assert inventory["devices"]["28:94:01:00:00:01"]["vendor"] == "Netgear"
+        del spy  # silence unused warning
+
     def test_enrich_fills_names(self, mocker):
         mocker.patch(
             "homenet.socket.gethostbyaddr",
