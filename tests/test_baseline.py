@@ -229,6 +229,54 @@ class TestDiffSnapshots:
         assert diff["total_changes"] == 1
         assert diff["startup"]["removed"][0]["key"] == "HKLM Run::Old"
 
+    def test_changed_ships_full_old_and_new_dicts(self):
+        """The ``old`` / ``new`` payloads must carry EVERY tracked field
+        (not just the delta ones) so the UI can render a Parameter /
+        Previous / Current table across all parameters. ``delta`` lists
+        the subset that actually differs."""
+        old = {
+            "startup": {"by_key": {}},
+            "services": {
+                "by_key": {
+                    "Spooler": {
+                        "name": "Spooler",
+                        "display_name": "Print Spooler",
+                        "start_mode": "Auto",
+                        "image_path": r"C:\Windows\System32\spoolsv.exe",
+                        "status": "Running",  # non-tracked but still shipped
+                    }
+                }
+            },
+            "tasks": {"by_key": {}},
+        }
+        new = {
+            "startup": {"by_key": {}},
+            "services": {
+                "by_key": {
+                    "Spooler": {
+                        "name": "Spooler",
+                        "display_name": "Print Spooler",
+                        "start_mode": "Auto",  # unchanged
+                        "image_path": r"C:\tmp\rogue.exe",  # CHANGED
+                        "status": "Running",
+                    }
+                }
+            },
+            "tasks": {"by_key": {}},
+        }
+        diff = baseline.diff_snapshots(old, new)
+        entry = diff["services"]["changed"][0]
+        # delta lists only the changed field
+        assert entry["delta"] == ["image_path"]
+        # But full old/new dicts carry EVERY field so UI can tabulate
+        for k in ("name", "display_name", "start_mode", "image_path", "status"):
+            assert k in entry["old"], f"old missing {k}"
+            assert k in entry["new"], f"new missing {k}"
+        # Unchanged fields have matching values in both
+        assert entry["old"]["start_mode"] == entry["new"]["start_mode"] == "Auto"
+        # Changed fields differ
+        assert entry["old"]["image_path"] != entry["new"]["image_path"]
+
     def test_changed_image_path_detected(self):
         """Attacker swaps a service binary -- the image_path change MUST fire."""
         old = {
