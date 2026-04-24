@@ -8665,6 +8665,46 @@ def baseline_history_route():
     return jsonify({"ok": True, "hours": hours, "entries": entries})
 
 
+# Maps a drift category to the Windows console that edits it. No user
+# input reaches the command line -- the category is validated against
+# this whitelist, so there's no injection surface.
+_BASELINE_CONSOLES = {
+    "services": "services.msc",
+    "tasks": "taskschd.msc",
+    # Task Manager's Startup tab is the user-friendly way to toggle
+    # startup items; msconfig is the deep-cut alternative.
+    "startup": "taskmgr.exe",
+}
+
+
+@app.route("/api/baseline/launch_console", methods=["POST"])
+def baseline_launch_console_route():
+    """Open the native Windows console for a drift category.
+
+    Called by the "Open Task Scheduler" / "Open services.msc" / "Open
+    Task Manager" buttons in the Baseline tab's remediation block. Lets
+    the user jump straight from "here's what drifted" to "the place to
+    fix it" without hunting through Start menu.
+    """
+    data = request.get_json(silent=True) or {}
+    category = (data.get("category") or "").lower().strip()
+    if category not in _BASELINE_CONSOLES:
+        return jsonify({"ok": False, "error": f"unknown category: {category}"}), 400
+
+    console = _BASELINE_CONSOLES[category]
+    try:
+        # os.startfile is the Windows shell-execute equivalent -- the right
+        # tool to "open this MMC snap-in as if the user double-clicked it".
+        # Services/tasks snap-ins are .msc files (MMC); taskmgr.exe is a
+        # direct executable launch. Both work via startfile.
+        if not hasattr(os, "startfile"):
+            return jsonify({"ok": False, "error": "os.startfile unavailable (non-Windows host)"}), 500
+        os.startfile(console)  # noqa: S606  # deliberate: fixed console path, no user input
+        return jsonify({"ok": True, "launched": console, "category": category})
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e), "launched": console}), 500
+
+
 @app.route("/api/tasks/health")
 def tasks_health_route():
     """Return health status for every managed scheduled task."""

@@ -36,15 +36,25 @@ def baseline_tmp(tmp_path, monkeypatch):
     return {"snapshot": snap, "history": hist}
 
 
-def _fake_svc(name="svc1", display="Service 1", start="Auto", status="Running", binpath=r"C:\bin\x.exe"):
+def _fake_svc(
+    name="svc1",
+    display="Service 1",
+    start="Auto",
+    status="Running",
+    binpath=r"C:\bin\x.exe",
+    username="LocalSystem",
+    description="",
+):
     """Build a psutil.win_service-like object with .as_dict() returning usable fields."""
     svc = SimpleNamespace()
     svc.as_dict = lambda: {
         "name": name,
         "display_name": display,
+        "description": description,
         # psutil emits "automatic"/"manual"/"disabled", not "auto"/etc.
         "start_type": {"Auto": "automatic", "Manual": "manual", "Disabled": "disabled"}.get(start, "automatic"),
         "status": status.lower(),
+        "username": username,
         "binpath": binpath,
     }
     return svc
@@ -162,6 +172,111 @@ class TestCollectors:
             return_value=SimpleNamespace(returncode=1, stdout="", stderr="access denied\n"),
         )
         assert baseline._collect_scheduled_tasks() == {}
+
+    def test_collect_services_carries_username_and_description(self, mocker):
+        """Expanded collector must ship username + description so the UI can
+        show account-context AND so username drift is detectable."""
+        mocker.patch(
+            "psutil.win_service_iter",
+            return_value=[_fake_svc("Dhcp", username="NT AUTHORITY\\NetworkService", description="DHCP client")],
+        )
+        got = baseline._collect_services()
+        assert got["Dhcp"]["username"] == "NT AUTHORITY\\NetworkService"
+        assert got["Dhcp"]["description"] == "DHCP client"
+
+    def test_collect_tasks_carries_extended_fields(self, mocker):
+        """Expanded task collector must gather logon_mode, schedule_type,
+        last_run_time, last_result, next_run_time, comment."""
+        csv_out = (
+            '"HostName","TaskName","Next Run Time","Status","Logon Mode","Last Run Time","Last Result",'
+            '"Author","Task To Run","Run As User","Scheduled Task State","Comment","Schedule Type"\n'
+            '"WIN","\\Sample","1/1/2026 3:00","Ready","Interactive Only","12/31/2025 3:00","0",'
+            '"Acme","C:\\foo.exe","SYSTEM","Enabled","Nightly housekeeping","Daily"\n'
+        )
+        mocker.patch(
+            "subprocess.run",
+            return_value=SimpleNamespace(returncode=0, stdout=csv_out, stderr=""),
+        )
+        got = baseline._collect_scheduled_tasks()
+        t = got[r"\Sample"]
+        assert t["logon_mode"] == "Interactive Only"
+        assert t["schedule_type"] == "Daily"
+        assert t["last_run_time"] == "12/31/2025 3:00"
+        assert t["last_result"] == "0"
+        assert t["next_run_time"] == "1/1/2026 3:00"
+        assert t["comment"] == "Nightly housekeeping"
+
+    def test_username_diff_is_critical_for_services(self):
+        """A service flipping from NetworkService to LocalSystem is
+        privilege escalation -- must appear in delta list."""
+        old = {
+            "startup": {"by_key": {}},
+            "services": {
+                "by_key": {
+                    "X": {
+                        "name": "X",
+                        "start_mode": "Auto",
+                        "image_path": "x.exe",
+                        "username": "NT AUTHORITY\\NetworkService",
+                    }
+                }
+            },
+            "tasks": {"by_key": {}},
+        }
+        new = {
+            "startup": {"by_key": {}},
+            "services": {
+                "by_key": {
+                    "X": {
+                        "name": "X",
+                        "start_mode": "Auto",
+                        "image_path": "x.exe",
+                        "username": "LocalSystem",
+                    }
+                }
+            },
+            "tasks": {"by_key": {}},
+        }
+        diff = baseline.diff_snapshots(old, new)
+        assert diff["total_changes"] == 1
+        entry = diff["services"]["changed"][0]
+        assert "username" in entry["delta"]
+
+    def test_logon_mode_diff_is_critical_for_tasks(self):
+        """Interactive -> Batch is a classic covert-persistence pattern."""
+        old = {
+            "startup": {"by_key": {}},
+            "services": {"by_key": {}},
+            "tasks": {
+                "by_key": {
+                    r"\T": {
+                        "name": "T",
+                        "state": "Enabled",
+                        "image_path": "x.exe",
+                        "run_as": "SYSTEM",
+                        "logon_mode": "Interactive Only",
+                    }
+                }
+            },
+        }
+        new = {
+            "startup": {"by_key": {}},
+            "services": {"by_key": {}},
+            "tasks": {
+                "by_key": {
+                    r"\T": {
+                        "name": "T",
+                        "state": "Enabled",
+                        "image_path": "x.exe",
+                        "run_as": "SYSTEM",
+                        "logon_mode": "Batch",
+                    }
+                }
+            },
+        }
+        diff = baseline.diff_snapshots(old, new)
+        assert diff["total_changes"] == 1
+        assert "logon_mode" in diff["tasks"]["changed"][0]["delta"]
 
 
 # ── Snapshot shape ─────────────────────────────────────────────────
@@ -601,6 +716,50 @@ class TestBaselineRoutes:
     def test_history_route_invalid_hours_defaults_to_24(self, client, baseline_tmp):
         resp = client.get("/api/baseline/history?hours=abc")
         assert resp.get_json()["hours"] == 24
+
+    # ── launch_console (remediation button) ────────────────────────
+    def test_launch_console_unknown_category_400(self, client):
+        resp = client.post(
+            "/api/baseline/launch_console",
+            json={"category": "not-a-real-category"},
+        )
+        assert resp.status_code == 400
+        assert resp.get_json()["ok"] is False
+
+    def test_launch_console_missing_category_400(self, client):
+        resp = client.post("/api/baseline/launch_console", json={})
+        assert resp.status_code == 400
+
+    def test_launch_console_services_invokes_startfile(self, client, mocker):
+        """Services category must pass services.msc -- not some injected value."""
+        mock_startfile = mocker.patch("os.startfile", return_value=None, create=True)
+        resp = client.post("/api/baseline/launch_console", json={"category": "services"})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["launched"] == "services.msc"
+        mock_startfile.assert_called_once_with("services.msc")
+
+    def test_launch_console_tasks_opens_taskschd(self, client, mocker):
+        mock_startfile = mocker.patch("os.startfile", return_value=None, create=True)
+        resp = client.post("/api/baseline/launch_console", json={"category": "tasks"})
+        assert resp.status_code == 200
+        assert resp.get_json()["launched"] == "taskschd.msc"
+        mock_startfile.assert_called_once_with("taskschd.msc")
+
+    def test_launch_console_startup_opens_taskmgr(self, client, mocker):
+        mocker.patch("os.startfile", return_value=None, create=True)
+        resp = client.post("/api/baseline/launch_console", json={"category": "startup"})
+        assert resp.status_code == 200
+        assert resp.get_json()["launched"] == "taskmgr.exe"
+
+    def test_launch_console_oserror_returns_500(self, client, mocker):
+        mocker.patch("os.startfile", side_effect=OSError("shell-execute failed"), create=True)
+        resp = client.post("/api/baseline/launch_console", json={"category": "services"})
+        assert resp.status_code == 500
+        body = resp.get_json()
+        assert body["ok"] is False
+        assert "shell-execute failed" in body["error"]
 
 
 # ── Dashboard concern wiring ───────────────────────────────────────

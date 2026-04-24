@@ -4848,19 +4848,65 @@ async function loadBaseline() {
 // ``fields`` is the ordered list of parameters shown as rows. ``critical``
 // is the subset that baseline.py actually diffs on -- any difference here
 // is real drift (the other fields are context the user wants to see).
+// ``remediation`` is the guidance block shown below each drift entry:
+//   console_label -- button text ("Open Task Scheduler")
+//   console_hint  -- short one-liner under the button
+//   steps         -- ordered list of manual steps for the user
 const _BL_CATS = {
   startup: {
     fields:   ["name", "location", "type", "enabled", "command"],
     critical: ["command", "enabled"],
+    remediation: {
+      console_label: "Open Task Manager (Startup tab)",
+      console_hint:  "Right-click the entry and choose Disable, or uninstall the originating app.",
+      steps: [
+        "Click the button above to open Task Manager.",
+        "Switch to the Startup apps tab.",
+        "Find the entry matching the Name shown in the table.",
+        "If it's unexpected, select it and click Disable.",
+        "If it's a legitimate change you want to keep, come back here and click 'Accept current as baseline' to absorb it.",
+      ],
+    },
   },
   services: {
-    fields:   ["name", "display_name", "status", "start_mode", "image_path"],
-    critical: ["start_mode", "image_path"],
+    fields:   ["name", "display_name", "description", "status", "start_mode", "username", "image_path"],
+    critical: ["start_mode", "image_path", "username"],
+    remediation: {
+      console_label: "Open services.msc",
+      console_hint:  "Use the Services console to inspect, stop, or change startup type.",
+      steps: [
+        "Click the button above to open the Services console.",
+        "Sort by Name and locate the service shown in the table.",
+        "Double-click to inspect its Startup type, Log On account, and Path to executable.",
+        "If a critical field (Startup type / Path / Log On As) was changed unexpectedly, revert it via the dialog.",
+        "If the change is legitimate (Windows Update, new software install), come back here and click 'Accept current as baseline' to absorb it.",
+      ],
+    },
   },
   tasks: {
-    fields:   ["name", "path", "state", "author", "run_as", "image_path"],
-    critical: ["state", "image_path", "run_as"],
+    fields:   ["name", "path", "state", "author", "run_as", "logon_mode", "schedule_type", "last_run_time", "last_result", "next_run_time", "comment", "image_path"],
+    critical: ["state", "image_path", "run_as", "logon_mode"],
+    remediation: {
+      console_label: "Open Task Scheduler",
+      console_hint:  "Navigate to the task's folder path and inspect Actions / Triggers / General.",
+      steps: [
+        "Click the button above to open Task Scheduler.",
+        "In the left pane, navigate to the folder shown under 'path' (e.g. \\Microsoft\\Windows\\Printing).",
+        "Right-click the task and choose Properties.",
+        "Compare the task's Actions, Triggers, and General tabs against the Previous column above.",
+        "To re-enable a disabled task: right-click -> Enable. To revert an edited task: re-open Properties and restore the original fields.",
+        "If the change is legitimate, come back here and click 'Accept current as baseline' to absorb it.",
+      ],
+    },
   },
+};
+
+// Stable key for "what category does this element belong to" -- passed
+// into _blRenderCategory so we can wire up the remediation block.
+const _BL_CAT_KEYS = {
+  "bl-cat-startup":  "startup",
+  "bl-cat-services": "services",
+  "bl-cat-tasks":    "tasks",
 };
 
 // Helper: render one drift category (added/removed/changed lists) into
@@ -4888,24 +4934,26 @@ function _blRenderCategory(elId, label, icon, catDrift, cfg) {
         </div>
       </div>`;
 
+  const catKey = _BL_CAT_KEYS[elId] || "";
+
   if (added.length) {
     html += `<div style="margin:8px 0 4px;font-size:11px;color:var(--green);font-weight:700">＋ Added (${added.length})</div>`;
     // For added entries: Previous column is —, Current column carries the value.
     html += added.map(item =>
-      _blRenderEntry(item, /*old*/ null, /*new*/ item, /*delta*/ null, cfg, "var(--green)")
+      _blRenderEntry(item, /*old*/ null, /*new*/ item, /*delta*/ null, cfg, catKey, "added", "var(--green)")
     ).join("");
   }
   if (removed.length) {
     html += `<div style="margin:10px 0 4px;font-size:11px;color:var(--red);font-weight:700">− Removed (${removed.length})</div>`;
     // For removed entries: Previous column carries the value, Current is —.
     html += removed.map(item =>
-      _blRenderEntry(item, /*old*/ item, /*new*/ null, /*delta*/ null, cfg, "var(--red)")
+      _blRenderEntry(item, /*old*/ item, /*new*/ null, /*delta*/ null, cfg, catKey, "removed", "var(--red)")
     ).join("");
   }
   if (changed.length) {
     html += `<div style="margin:10px 0 4px;font-size:11px;color:var(--orange);font-weight:700">~ Changed (${changed.length})</div>`;
     html += changed.map(item =>
-      _blRenderEntry(item, item.old || {}, item.new || {}, item.delta || [], cfg, "var(--orange)")
+      _blRenderEntry(item, item.old || {}, item.new || {}, item.delta || [], cfg, catKey, "changed", "var(--orange)")
     ).join("");
   }
 
@@ -4914,13 +4962,16 @@ function _blRenderCategory(elId, label, icon, catDrift, cfg) {
 }
 
 // Render one drift entry as a 3-column table: Parameter | Previous | Current.
-//   old   -- object whose fields populate the Previous column (null => —)
-//   new   -- object whose fields populate the Current column  (null => —)
-//   delta -- array of field names that changed (only for "changed" kind).
-//            null for added/removed. Used to highlight diff-critical rows
-//            where the value actually differs.
-//   cfg   -- {fields, critical} for this category (see _BL_CATS).
-function _blRenderEntry(header, oldObj, newObj, delta, cfg, accent) {
+//   old     -- object whose fields populate the Previous column (null => —)
+//   new     -- object whose fields populate the Current column  (null => —)
+//   delta   -- array of field names that changed (only for "changed" kind).
+//              null for added/removed. Used to highlight diff-critical rows
+//              where the value actually differs.
+//   cfg     -- {fields, critical, remediation} for this category (see _BL_CATS).
+//   catKey  -- category id ("startup"/"services"/"tasks") used by the
+//              launch-console button to tell the backend which MMC to open.
+//   kind    -- "added" | "removed" | "changed" — tunes the explainer prose.
+function _blRenderEntry(header, oldObj, newObj, delta, cfg, catKey, kind, accent) {
   const title = escHtml(header.name || header.key || "");
   const subtitle = header.location || header.path || "";
 
@@ -4953,6 +5004,30 @@ function _blRenderEntry(header, oldObj, newObj, delta, cfg, accent) {
     </tr>`;
   }).join("");
 
+  // Remediation block -- "what to do about this drift" with a button that
+  // opens the relevant Windows console. We show it on changed/added entries
+  // where the user most likely wants to act; on removed entries the usual
+  // remediation is "confirm the uninstall was intentional" so we soften the
+  // wording but still offer the console as a verification jumping-off point.
+  const rem = cfg.remediation || {};
+  const kindExplainer = {
+    added:   `<strong style="color:var(--green)">New entry</strong> appeared after the baseline was captured. If you installed software or enabled a feature recently this is expected; otherwise investigate.`,
+    removed: `<strong style="color:var(--red)">Entry is gone</strong> since the baseline was captured. If you uninstalled something recently this is expected; otherwise it may have been tampered with.`,
+    changed: `<strong style="color:var(--orange)">Tracked field(s) changed</strong> on an existing entry. Highlighted rows above show exactly what flipped. Verify the change is legitimate.`,
+  }[kind] || "";
+  const stepsHtml = (rem.steps || []).map(s => `<li style="margin:2px 0">${escHtml(s)}</li>`).join("");
+  const remediationHtml = `
+    <div style="margin-top:8px;padding:8px 10px;background:var(--card);border:1px dashed var(--border);border-radius:4px;font-size:11px">
+      <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:4px">How to fix</div>
+      <div style="color:var(--text);margin-bottom:6px">${kindExplainer}</div>
+      ${rem.console_label ? `
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:4px 0 6px">
+          <button onclick="blLaunchConsole('${escHtml(catKey)}', this)" style="background:var(--cyan);border:none;color:#000;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">🔧 ${escHtml(rem.console_label)}</button>
+          ${rem.console_hint ? `<span style="font-size:10px;color:var(--muted)">${escHtml(rem.console_hint)}</span>` : ""}
+        </div>` : ""}
+      ${stepsHtml ? `<ol style="margin:4px 0 0 18px;padding:0;color:var(--text);font-size:11px;line-height:1.5">${stepsHtml}</ol>` : ""}
+    </div>`;
+
   return `<div style="padding:8px 10px;margin:4px 0;background:var(--surface);border-left:2px solid ${accent};border-radius:4px">
     <div style="font-weight:600;font-size:12px;color:var(--text-bright)">${title}</div>
     ${subtitle ? `<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono);margin-bottom:4px">${escHtml(subtitle)}</div>` : ""}
@@ -4966,7 +5041,29 @@ function _blRenderEntry(header, oldObj, newObj, delta, cfg, accent) {
       </thead>
       <tbody>${rows}</tbody>
     </table>
+    ${remediationHtml}
   </div>`;
+}
+
+// Launch a Windows console (services.msc, taskschd.msc, taskmgr.exe) for the
+// given drift category. Called from the "How to fix" block's button. Disables
+// the button while the request is in flight so rapid double-click doesn't
+// spawn two consoles.
+async function blLaunchConsole(category, btn) {
+  if (btn) { btn.disabled = true; const orig = btn.innerHTML; btn.innerHTML = "Opening..."; btn.dataset.orig = orig; }
+  try {
+    const r = await fetch("/api/baseline/launch_console", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({category}),
+    });
+    const data = await r.json();
+    if (!data.ok) alert("Failed to open console: " + (data.error || "unknown"));
+  } catch (e) {
+    alert("Failed to open console: " + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = btn.dataset.orig || btn.innerHTML; }
+  }
 }
 
 async function acceptBaseline() {

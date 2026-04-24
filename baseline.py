@@ -146,8 +146,10 @@ def _collect_services() -> dict:
             by_key[name] = {
                 "name": name,
                 "display_name": d.get("display_name") or "",
+                "description": d.get("description") or "",
                 "start_mode": _start_map.get((d.get("start_type") or "").lower(), d.get("start_type") or ""),
                 "status": _status_map.get((d.get("status") or "").lower(), d.get("status") or ""),
+                "username": d.get("username") or "",
                 "image_path": d.get("binpath") or "",
             }
     except Exception as e:  # noqa: BLE001
@@ -205,6 +207,12 @@ def _collect_scheduled_tasks() -> dict:
                 "state": (row.get("Scheduled Task State") or row.get("Status") or "").strip(),
                 "author": (row.get("Author") or "").strip(),
                 "run_as": (row.get("Run As User") or "").strip(),
+                "logon_mode": (row.get("Logon Mode") or "").strip(),
+                "schedule_type": (row.get("Schedule Type") or "").strip(),
+                "last_run_time": (row.get("Last Run Time") or "").strip(),
+                "last_result": (row.get("Last Result") or "").strip(),
+                "next_run_time": (row.get("Next Run Time") or "").strip(),
+                "comment": (row.get("Comment") or "").strip(),
                 "image_path": (row.get("Task To Run") or "").strip(),
             }
     except Exception as e:  # noqa: BLE001 -- malformed CSV from schtasks is a real risk
@@ -332,8 +340,14 @@ def _append_history(entry: dict) -> bool:
 # key-presence test only.
 _DIFF_FIELDS = {
     "startup": ("command", "enabled"),
-    "services": ("start_mode", "image_path"),
-    "tasks": ("state", "image_path", "run_as"),
+    # ``username`` is security-critical: an attacker flipping a service from
+    # NetworkService to LocalSystem = privilege escalation.
+    "services": ("start_mode", "image_path", "username"),
+    # ``logon_mode`` flips (Interactive -> Batch, etc.) are a classic covert-
+    # persistence pattern worth flagging. last_run_time / next_run_time /
+    # last_result / comment / schedule_type are context-only -- they change
+    # on every task run or reschedule and would swamp the signal.
+    "tasks": ("state", "image_path", "run_as", "logon_mode"),
 }
 
 
