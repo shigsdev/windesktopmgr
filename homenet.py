@@ -1070,6 +1070,64 @@ def _auto_categorize(vendor: str, hostname: str, device_type: str, device_os: st
     return ""
 
 
+# How recent a peer MAC at the same IP must have been seen for the
+# whole group to inherit active=True. 15 minutes matches the tray's
+# standard polling cadence; longer windows leak across genuine offline
+# transitions, shorter windows miss slower aggregation modes.
+_IP_ACTIVE_ROLLUP_WINDOW_S = 15 * 60
+
+
+def _rollup_active_by_ip(inventory: dict) -> None:
+    """Treat multiple MACs at the same IP as one logical device for
+    active-status reporting (backlog #10 third hotfix, 2026-04-23).
+
+    Link-aggregated NICs (LACP, balance-alb, balance-tlb, active-backup)
+    present multiple physical MACs sharing one IP. Our ARP-based scanner
+    only sees the MAC that wins the bond's per-destination hash at any
+    moment, so the other NICs in the bundle falsely appear as offline in
+    the Home Network table -- even though they are physically connected
+    and actively forwarding traffic.
+
+    Rule: if ANY MAC at a given IP was seen within the last
+    ``_IP_ACTIVE_ROLLUP_WINDOW_S`` seconds, every MAC at that IP
+    inherits ``active=True``. Loopback, empty IPs, and link-local
+    addresses are excluded so a stale entry at 0.0.0.0 can't
+    accidentally activate a populated row at a real IP.
+
+    Mutates ``inventory`` in place. Preserves each MAC's own
+    ``last_seen`` timestamp so power users can still distinguish which
+    NIC was the most recent hash winner.
+    """
+    now = datetime.now(timezone.utc)
+    by_ip: dict[str, list[dict]] = {}
+    for _mac, dev in inventory.get("devices", {}).items():
+        ip = (dev.get("ip") or "").strip()
+        # "0.0.0.0" is a catch-all for devices with no real IP; skipping it
+        # here prevents stale entries at the placeholder from activating
+        # real entries. Link-local 169.254.x.x is APIPA -- also not a real
+        # shared-device IP. noqa: S104 is fine here; these are values we
+        # compare against, not addresses we're binding to.
+        if not ip or ip == "0.0.0.0" or ip.startswith("169.254."):  # noqa: S104
+            continue
+        by_ip.setdefault(ip, []).append(dev)
+
+    for _ip, group in by_ip.items():
+        if len(group) < 2:
+            continue  # single-MAC IPs use their own active flag unchanged
+        any_recent = False
+        for dev in group:
+            try:
+                ls = datetime.fromisoformat(dev.get("last_seen", ""))
+                if (now - ls).total_seconds() <= _IP_ACTIVE_ROLLUP_WINDOW_S:
+                    any_recent = True
+                    break
+            except (ValueError, TypeError):
+                continue
+        if any_recent:
+            for dev in group:
+                dev["active"] = True
+
+
 def _enrich_device_names(inventory: dict) -> dict:
     """
     Enrich device inventory with resolved names and auto-categories.
@@ -1118,6 +1176,12 @@ def _enrich_device_names(inventory: dict) -> dict:
             )
             if auto_cat:
                 dev["category"] = auto_cat
+
+    # Roll up active-status across NICs sharing an IP so link-aggregated
+    # devices (LACP / balance-alb / active-backup) show a consistent
+    # "green dot" across every registered MAC -- see _rollup_active_by_ip
+    # docstring for the full rationale.
+    _rollup_active_by_ip(inventory)
 
     return inventory
 

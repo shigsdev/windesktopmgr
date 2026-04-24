@@ -1844,6 +1844,182 @@ class TestEnrichDeviceNames:
         # Genuinely-unknown stays Unknown (IEEE has no data, locally-admin bit off)
         assert result["devices"]["99:99:99:00:00:00"]["vendor"] == "Unknown"
 
+    def test_rollup_active_by_ip_lacp_bond_all_three_active(self):
+        """Backlog #10 (2026-04-23): link-aggregated NICs share one IP
+        across 2-3 MACs. Our ARP scanner only sees the MAC that wins the
+        bond's per-destination hash at any moment, so the other bond
+        members falsely appear offline. The roll-up pass makes every MAC
+        at the same IP inherit active=True when any one was seen recently.
+
+        Fixture models the exact live QNAP setup: 3 MACs on 192.168.1.13
+        in balance-alb bonding, the scanner recently saw only MAC '...CB'.
+        After roll-up, '...CC' and '...CD' must also show active=True
+        without their last_seen being rewritten."""
+        from datetime import datetime, timedelta, timezone
+
+        from homenet import _rollup_active_by_ip
+
+        now = datetime.now(timezone.utc)
+        fresh = (now - timedelta(seconds=30)).isoformat()
+        stale = (now - timedelta(hours=12)).isoformat()
+
+        inventory = {
+            "devices": {
+                "24:5E:BE:50:6F:CB": {
+                    "mac": "24:5E:BE:50:6F:CB",
+                    "ip": "192.168.1.13",
+                    "active": True,
+                    "last_seen": fresh,
+                },
+                "24:5E:BE:50:6F:CC": {
+                    "mac": "24:5E:BE:50:6F:CC",
+                    "ip": "192.168.1.13",
+                    "active": False,
+                    "last_seen": stale,
+                },
+                "24:5E:BE:50:6F:CD": {
+                    "mac": "24:5E:BE:50:6F:CD",
+                    "ip": "192.168.1.13",
+                    "active": False,
+                    "last_seen": stale,
+                },
+            }
+        }
+        _rollup_active_by_ip(inventory)
+        for mac in ("24:5E:BE:50:6F:CB", "24:5E:BE:50:6F:CC", "24:5E:BE:50:6F:CD"):
+            assert inventory["devices"][mac]["active"] is True, f"{mac} should be active"
+        # last_seen must NOT be rewritten -- power users still want to see
+        # which NIC was the last observed hash winner
+        assert inventory["devices"]["24:5E:BE:50:6F:CC"]["last_seen"] == stale
+        assert inventory["devices"]["24:5E:BE:50:6F:CD"]["last_seen"] == stale
+
+    def test_rollup_no_fresh_mac_at_ip_leaves_all_inactive(self):
+        """If EVERY MAC at an IP is stale (> 15 min), the rollup must NOT
+        activate anyone. Genuinely-offline devices stay offline."""
+        from datetime import datetime, timedelta, timezone
+
+        from homenet import _rollup_active_by_ip
+
+        stale = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        inventory = {
+            "devices": {
+                "AA:BB:CC:00:00:01": {
+                    "mac": "AA:BB:CC:00:00:01",
+                    "ip": "10.0.0.50",
+                    "active": False,
+                    "last_seen": stale,
+                },
+                "AA:BB:CC:00:00:02": {
+                    "mac": "AA:BB:CC:00:00:02",
+                    "ip": "10.0.0.50",
+                    "active": False,
+                    "last_seen": stale,
+                },
+            }
+        }
+        _rollup_active_by_ip(inventory)
+        for dev in inventory["devices"].values():
+            assert dev["active"] is False
+
+    def test_rollup_different_ips_are_independent(self):
+        """Two unrelated devices at two different IPs must not cross-activate."""
+        from datetime import datetime, timedelta, timezone
+
+        from homenet import _rollup_active_by_ip
+
+        now = datetime.now(timezone.utc)
+        fresh = (now - timedelta(seconds=10)).isoformat()
+        stale = (now - timedelta(hours=48)).isoformat()
+        inventory = {
+            "devices": {
+                "A1:00:00:00:00:01": {"mac": "A1:00:00:00:00:01", "ip": "10.0.0.1", "active": True, "last_seen": fresh},
+                "B2:00:00:00:00:01": {
+                    "mac": "B2:00:00:00:00:01",
+                    "ip": "10.0.0.2",
+                    "active": False,
+                    "last_seen": stale,
+                },
+            }
+        }
+        _rollup_active_by_ip(inventory)
+        assert inventory["devices"]["A1:00:00:00:00:01"]["active"] is True
+        assert inventory["devices"]["B2:00:00:00:00:01"]["active"] is False
+
+    def test_rollup_single_mac_at_ip_untouched(self):
+        """Rollup only kicks in for 2+ MACs per IP. A single-MAC IP keeps
+        its existing active flag -- good or bad."""
+        from homenet import _rollup_active_by_ip
+
+        inventory = {
+            "devices": {
+                "A1:00:00:00:00:01": {
+                    "mac": "A1:00:00:00:00:01",
+                    "ip": "10.0.0.1",
+                    "active": False,
+                    "last_seen": "2020-01-01T00:00:00+00:00",
+                },
+            }
+        }
+        _rollup_active_by_ip(inventory)
+        assert inventory["devices"]["A1:00:00:00:00:01"]["active"] is False
+
+    def test_rollup_excludes_link_local_and_empty_ips(self):
+        """Stale entries at 0.0.0.0 or 169.254.x.y must NOT accidentally
+        activate a real device at a populated IP. Same-IP grouping must
+        skip those 'catch-all' addresses."""
+        from datetime import datetime, timedelta, timezone
+
+        from homenet import _rollup_active_by_ip
+
+        fresh = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+        stale = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+        inventory = {
+            "devices": {
+                "X0:00:00:00:00:01": {"mac": "X0:00:00:00:00:01", "ip": "0.0.0.0", "active": True, "last_seen": fresh},
+                "X0:00:00:00:00:02": {"mac": "X0:00:00:00:00:02", "ip": "0.0.0.0", "active": False, "last_seen": stale},
+                "L1:00:00:00:00:01": {
+                    "mac": "L1:00:00:00:00:01",
+                    "ip": "169.254.1.1",
+                    "active": True,
+                    "last_seen": fresh,
+                },
+                "L1:00:00:00:00:02": {
+                    "mac": "L1:00:00:00:00:02",
+                    "ip": "169.254.1.1",
+                    "active": False,
+                    "last_seen": stale,
+                },
+            }
+        }
+        _rollup_active_by_ip(inventory)
+        assert inventory["devices"]["X0:00:00:00:00:02"]["active"] is False
+        assert inventory["devices"]["L1:00:00:00:00:02"]["active"] is False
+
+    def test_rollup_malformed_last_seen_does_not_crash(self):
+        """Defensive: garbage timestamp string must not propagate."""
+        from homenet import _rollup_active_by_ip
+
+        inventory = {
+            "devices": {
+                "A1:00:00:00:00:01": {
+                    "mac": "A1:00:00:00:00:01",
+                    "ip": "10.0.0.1",
+                    "active": True,
+                    "last_seen": "not-a-date",
+                },
+                "A1:00:00:00:00:02": {
+                    "mac": "A1:00:00:00:00:02",
+                    "ip": "10.0.0.1",
+                    "active": False,
+                    "last_seen": "",
+                },
+            }
+        }
+        _rollup_active_by_ip(inventory)
+        # Neither entry has a parseable last_seen, so no rollup -- original flags preserved.
+        assert inventory["devices"]["A1:00:00:00:00:01"]["active"] is True
+        assert inventory["devices"]["A1:00:00:00:00:02"]["active"] is False
+
     def test_enrich_preserves_non_unknown_vendors(self, mocker):
         """If a device already has a real vendor, the refresh pass must NOT
         overwrite it -- otherwise curated names like "Netgear" would get
