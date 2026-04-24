@@ -418,7 +418,7 @@ class TestBaselineTabCoverage:
         # (the JS literal is the authoritative source; this Python copy must
         # be kept in sync -- the assertion below names the drift with a
         # clear remediation hint if it goes out of date).
-        expected_rows = {"startup": 5, "services": 13, "tasks": 26}
+        expected_rows = {"startup": 5, "services": 13, "tasks": 27}
 
         entries = page.evaluate(
             """
