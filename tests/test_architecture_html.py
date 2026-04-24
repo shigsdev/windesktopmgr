@@ -60,6 +60,7 @@ TEST_FILES = [
     "test_post_update_check.py",
     "test_gpu.py",
     "test_network_metrics.py",
+    "test_baseline.py",
 ]
 
 

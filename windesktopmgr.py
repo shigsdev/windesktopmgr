@@ -8610,6 +8610,61 @@ def bios_audit_snapshot_route():
     return jsonify({"ok": True, "snapshot": snap})
 
 
+# ── Baseline / drift detection (backlog #14) ────────────────────────
+
+
+@app.route("/api/baseline/drift")
+def baseline_drift_route():
+    """Return the current drift vs the accepted baseline.
+
+    This is the heavy call (~5 s total: 287 ms services + 3 s schtasks +
+    ~2 s startup-via-PS) and is the primary source for the Baseline UI
+    tab. Records an entry in the drift history if drift > 0 AND a
+    baseline exists, so recent_drift() can power a dashboard concern
+    without the user having to open the tab first.
+    """
+    import baseline
+
+    return jsonify(baseline.record_drift_if_any())
+
+
+@app.route("/api/baseline/snapshot")
+def baseline_snapshot_route():
+    """Return a live snapshot of the current state (no diff, no history)."""
+    import baseline
+
+    return jsonify({"ok": True, "snapshot": baseline.take_snapshot()})
+
+
+@app.route("/api/baseline/accept", methods=["POST"])
+def baseline_accept_route():
+    """Promote the current system state to the accepted baseline.
+
+    Idempotent: re-accepting after legitimate changes (Windows Update
+    installed new services, user added a startup item they like) is
+    the expected way to clear drift.
+    """
+    import baseline
+
+    result = baseline.accept_current_as_baseline()
+    status = 200 if result.get("ok") else 500
+    return jsonify(result), status
+
+
+@app.route("/api/baseline/history")
+def baseline_history_route():
+    """Return recent drift-detection history entries (default 24h window)."""
+    import baseline
+
+    try:
+        hours = int(request.args.get("hours", "24"))
+    except (TypeError, ValueError):
+        hours = 24
+    hours = max(1, min(hours, 720))  # clamp 1h..30d
+    entries = baseline.recent_drift(window=timedelta(hours=hours))
+    return jsonify({"ok": True, "hours": hours, "entries": entries})
+
+
 @app.route("/api/tasks/health")
 def tasks_health_route():
     """Return health status for every managed scheduled task."""
@@ -9510,6 +9565,44 @@ def _compute_dashboard_summary() -> dict:
         concerns.extend(task_watcher.concerns_from_health(task_results))
     except Exception:  # noqa: BLE001
         pass  # best-effort — never break dashboard
+
+    # Baseline drift concerns (backlog #14). Reads the drift history file
+    # (fast), NOT the live compute_drift() call (~5 s: too slow for the
+    # dashboard fan-out). The history is appended by /api/baseline/drift
+    # whenever the user opens the Baseline tab, which is also the place
+    # they act on it. Concern fires at "info" level because drift is
+    # often benign (Windows Update installed a service); critical only
+    # if the user has explicitly marked something suspicious.
+    try:
+        import baseline
+
+        drift_entries = baseline.recent_drift()
+        if drift_entries:
+            latest = drift_entries[-1]
+            total = latest.get("total_changes", 0)
+            breakdown = latest.get("drift", {})
+            parts = []
+            for cat in ("startup", "services", "tasks"):
+                cat_d = breakdown.get(cat) or {}
+                a = len(cat_d.get("added", []))
+                r = len(cat_d.get("removed", []))
+                c = len(cat_d.get("changed", []))
+                if a + r + c:
+                    parts.append(f"{cat}: +{a}/-{r}/~{c}")
+            detail = "; ".join(parts) if parts else f"{total} change(s) vs baseline"
+            concerns.append(
+                {
+                    "level": "info",
+                    "tab": "baseline",
+                    "icon": "📐",
+                    "title": f"System baseline drift detected ({total} change(s) in 24h)",
+                    "detail": detail,
+                    "action": "Review baseline drift",
+                    "action_fn": "switchTab('baseline')",
+                }
+            )
+    except Exception:  # noqa: BLE001 -- baseline is best-effort
+        pass
 
     # BIOS audit-trail concerns: logged changes + collection errors in the last 24h
     try:

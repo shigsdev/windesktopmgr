@@ -620,6 +620,7 @@
       <button class="page-tab" data-page="sysinfo">🖥 System Info</button>
       <button class="page-tab" data-page="remediation">🔧 Remediation</button>
       <button class="page-tab" data-page="homenet">🏠 Home Network</button>
+      <button class="page-tab" data-page="baseline">📐 Baseline</button>
       <button class="page-tab" data-page="logs">📜 Logs</button>
       <button class="page-tab" data-page="architecture">🏗 Architecture</button>
     </div>
@@ -1116,7 +1117,7 @@ document.querySelectorAll(".page-tab").forEach(btn => {
     const page = btn.dataset.page;
     // Stop home network polling when leaving the tab
     if (page !== "homenet" && typeof _hnStopPolling === "function") _hnStopPolling();
-    ["dashboard","drivers","bsod","startup","disk","network","updates","events","processes","thermals","services","health-history","timeline","memory","bios","credentials","sysinfo","remediation","homenet","logs","architecture"].forEach(function(p) {
+    ["dashboard","drivers","bsod","startup","disk","network","updates","events","processes","thermals","services","health-history","timeline","memory","bios","credentials","sysinfo","remediation","homenet","baseline","logs","architecture"].forEach(function(p) {
       var el = document.getElementById("page-" + p);
       if (el) el.style.display = (p === page) ? "" : "none";
     });
@@ -1156,6 +1157,11 @@ document.querySelectorAll(".page-tab").forEach(btn => {
       if (!_tabLoaded["remediation"])    { _tabLoaded["remediation"]    = true; loadRemediation(); }
     } else if (page === "homenet") {
       if (!_tabLoaded["homenet"])        { _tabLoaded["homenet"]        = true; loadHomeNet(); }
+    } else if (page === "baseline") {
+      // Force-reload baseline on every visit -- the drift list is only
+      // useful if it's current, and the compute is slow enough that
+      // caching across visits would serve stale data.
+      loadBaseline();
     } else if (page === "logs") {
       if (!_tabLoaded["logs"])           { _tabLoaded["logs"]           = true; logLoad(); }
     } else if (page === "architecture") {
@@ -3817,6 +3823,7 @@ const ALL_TABS = [
   { page:"bios",         icon:"🔩", label:"BIOS & Firmware" },
   { page:"credentials",  icon:"🔐", label:"Credentials & Network" },
   { page:"remediation",  icon:"🔧", label:"Remediation" },
+  { page:"baseline",     icon:"📐", label:"Baseline / Drift" },
   { page:"logs",         icon:"📜", label:"Application Logs" },
 ];
 
@@ -4760,6 +4767,182 @@ async function saveDeviceEdit() {
     alert("Save failed: " + data.message);
   }
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// BASELINE / DRIFT TAB (backlog #14, prefix: bl)
+// ══════════════════════════════════════════════════════════════════════════
+
+async function loadBaseline() {
+  const loading    = document.getElementById("bl-loading");
+  const nobaseline = document.getElementById("bl-nobaseline");
+  const nodrift    = document.getElementById("bl-nodrift");
+  const content    = document.getElementById("bl-drift-content");
+  const acceptBtn  = document.getElementById("bl-accept-btn");
+  if (!loading) return;
+
+  loading.style.display    = "block";
+  nobaseline.style.display = "none";
+  nodrift.style.display    = "none";
+  content.style.display    = "none";
+  acceptBtn.style.display  = "none";
+
+  let data;
+  try {
+    const r = await fetch("/api/baseline/drift");
+    data = await r.json();
+  } catch (e) {
+    loading.innerHTML = `<div style="color:var(--red);padding:20px">Drift check failed: ${e.message}</div>`;
+    return;
+  }
+  loading.style.display = "none";
+
+  // First-run: no baseline exists yet. Show the capture prompt with a
+  // preview of what we'd be capturing so the user knows the scale.
+  if (!data.has_baseline) {
+    const c = data.counts || {};
+    document.getElementById("bl-initial-counts").textContent =
+      `${c.startup || 0} startup items · ${c.services || 0} services · ${c.tasks || 0} scheduled tasks`;
+    nobaseline.style.display = "block";
+    return;
+  }
+
+  const drift = data.drift || {};
+  const total = drift.total_changes || 0;
+
+  // Always offer the re-accept button once a baseline exists so legit
+  // changes (Windows Update, new app install) can be absorbed quickly.
+  acceptBtn.style.display = "";
+
+  if (total === 0) {
+    nodrift.style.display = "";
+    document.getElementById("bl-nodrift-detail").textContent =
+      `Baseline: ${data.baseline_timestamp || "—"}  ·  Current: ${data.current_timestamp}`;
+    return;
+  }
+
+  // Summary header
+  const baselineTs = data.baseline_timestamp ? new Date(data.baseline_timestamp).toLocaleString() : "—";
+  document.getElementById("bl-summary").innerHTML = `
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:16px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:14px;font-weight:700;color:var(--orange)">⚠ ${total} change${total!==1?"s":""} detected vs baseline</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:3px">Baseline accepted: ${escHtml(baselineTs)}</div>
+      </div>
+      <div style="font-size:11px;color:var(--muted)">
+        Review each change below. Click "Accept current as baseline" to promote the current state once you've confirmed these are legitimate.
+      </div>
+    </div>`;
+
+  // Render each category section
+  _blRenderCategory("bl-cat-startup",  "Startup Items",      "🚀", drift.startup,  "command");
+  _blRenderCategory("bl-cat-services", "Windows Services",   "⚙",  drift.services, "image_path");
+  _blRenderCategory("bl-cat-tasks",    "Scheduled Tasks",    "⏱",  drift.tasks,    "image_path");
+
+  content.style.display = "";
+}
+
+// Helper: render one drift category (added/removed/changed lists) into
+// ``elId`` or hide the section if nothing changed for this category.
+function _blRenderCategory(elId, label, icon, catDrift, primaryField) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  if (!catDrift) { el.style.display = "none"; return; }
+  const added   = catDrift.added   || [];
+  const removed = catDrift.removed || [];
+  const changed = catDrift.changed || [];
+  if (added.length + removed.length + changed.length === 0) {
+    el.style.display = "none";
+    return;
+  }
+  el.style.display = "";
+
+  let html = `
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 18px">
+      <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:10px">
+        <div style="font-size:16px">${icon}</div>
+        <div style="font-size:13px;font-weight:700;color:var(--text-bright)">${escHtml(label)}</div>
+        <div style="font-size:10px;color:var(--muted);font-family:var(--font-mono)">
+          +${added.length} added · -${removed.length} removed · ~${changed.length} changed
+        </div>
+      </div>`;
+
+  if (added.length) {
+    html += `<div style="margin:8px 0 4px;font-size:11px;color:var(--green);font-weight:700">＋ Added (${added.length})</div>`;
+    html += added.map(item => _blRenderEntry(item, primaryField, "var(--green)")).join("");
+  }
+  if (removed.length) {
+    html += `<div style="margin:10px 0 4px;font-size:11px;color:var(--red);font-weight:700">− Removed (${removed.length})</div>`;
+    html += removed.map(item => _blRenderEntry(item, primaryField, "var(--red)")).join("");
+  }
+  if (changed.length) {
+    html += `<div style="margin:10px 0 4px;font-size:11px;color:var(--orange);font-weight:700">~ Changed (${changed.length})</div>`;
+    html += changed.map(item => {
+      const fields = Object.keys(item.old || {});
+      const deltaHtml = fields.map(f =>
+        `<div style="font-family:var(--font-mono);font-size:11px;padding:2px 0">
+          <span style="color:var(--cyan)">${escHtml(f)}</span>:
+          <span style="color:var(--muted);text-decoration:line-through">${escHtml(item.old[f])}</span>
+          → <strong style="color:var(--orange)">${escHtml(item.new[f])}</strong>
+        </div>`
+      ).join("");
+      return `<div style="padding:6px 10px;margin:3px 0;background:var(--surface);border-left:2px solid var(--orange);border-radius:4px">
+        <div style="font-weight:600;font-size:12px;color:var(--text-bright)">${escHtml(item.name || item.key)}</div>
+        ${deltaHtml}
+      </div>`;
+    }).join("");
+  }
+
+  html += `</div>`;
+  el.innerHTML = html;
+}
+
+function _blRenderEntry(item, primaryField, accent) {
+  const primary = item[primaryField] || "";
+  const location = item.location || item.path || "";
+  return `<div style="padding:6px 10px;margin:3px 0;background:var(--surface);border-left:2px solid ${accent};border-radius:4px">
+    <div style="font-weight:600;font-size:12px;color:var(--text-bright)">${escHtml(item.name || item.key)}</div>
+    ${location ? `<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono)">${escHtml(location)}</div>` : ""}
+    ${primary ? `<div style="font-size:10px;color:var(--text);font-family:var(--font-mono);margin-top:2px">${escHtml(primary)}</div>` : ""}
+  </div>`;
+}
+
+async function acceptBaseline() {
+  const btn = document.getElementById("bl-accept-btn");
+  const confirmed = confirm(
+    "Accept the CURRENT system state as the new baseline?\n\n" +
+    "After this, any future additions/removals/changes to startup items, " +
+    "Windows services, or scheduled tasks will show up here as drift.\n\n" +
+    "Only do this if the current state is what you want to consider 'known good.'"
+  );
+  if (!confirmed) return;
+
+  if (btn) { btn.disabled = true; btn.textContent = "Capturing..."; }
+  try {
+    const r = await fetch("/api/baseline/accept", { method: "POST" });
+    const data = await r.json();
+    if (data.ok) {
+      await loadBaseline();  // reload → should now show "No drift" state
+    } else {
+      alert("Baseline accept failed: " + (data.error || "unknown"));
+    }
+  } catch (e) {
+    alert("Baseline accept failed: " + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Accept current as baseline"; }
+  }
+}
+
+// Local HTML-escape helper for the Baseline tab. Uses the same pattern
+// as other tabs -- keeps dependency-free from window.esc helpers that
+// may or may not be in scope here.
+function escHtml(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 
 // ══════════════════════════════════════════════════════════════════════════
 // LOGS TAB (prefix: log)
@@ -6170,6 +6353,56 @@ function renderSystemInfo(d) {
           <button onclick="saveCredential()" class="btn-action" style="padding:6px 16px;font-size:12px">Save</button>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       PAGE: BASELINE / DRIFT DETECTION (backlog #14)
+  ══════════════════════════════════════════ -->
+  <div id="page-baseline" style="display:none">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <div style="font-size:22px">📐</div>
+      <div style="flex:1">
+        <div style="font-size:18px;font-weight:700;color:var(--text-bright)">System Baseline &amp; Drift</div>
+        <div style="font-size:11px;color:var(--muted)">Track changes to startup items, Windows services, and scheduled tasks versus a known-good baseline.</div>
+      </div>
+      <button onclick="acceptBaseline()" id="bl-accept-btn" style="display:none;background:var(--cyan);border:none;color:#000;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700">Accept current as baseline</button>
+      <button onclick="loadBaseline()" title="Recompute drift" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:8px 10px;border-radius:6px;cursor:pointer;font-size:11px">↻ Refresh</button>
+    </div>
+
+    <div id="bl-loading" style="text-align:center;padding:40px;color:var(--muted)">
+      <div style="font-size:32px;margin-bottom:12px;animation:pulse 1.5s infinite">⟳</div>
+      <div>Scanning startup items, services, and scheduled tasks…</div>
+      <div style="font-size:11px;margin-top:6px">This takes ~5 seconds on first load.</div>
+    </div>
+
+    <!-- No-baseline first-run state -->
+    <div id="bl-nobaseline" style="display:none;padding:40px 24px;text-align:center;background:var(--card);border:1px solid var(--border);border-radius:10px">
+      <div style="font-size:40px;margin-bottom:12px">📐</div>
+      <div style="font-size:16px;font-weight:700;color:var(--text-bright);margin-bottom:8px">No baseline set yet</div>
+      <div style="font-size:12px;color:var(--muted);max-width:540px;margin:0 auto 16px;line-height:1.5">
+        The baseline is your system's known-good snapshot. Once accepted, any future drift
+        (new startup item, changed service, unexpected scheduled task) will show up here
+        and as a dashboard concern. Right now we see:
+      </div>
+      <div id="bl-initial-counts" style="font-family:var(--font-mono);font-size:13px;color:var(--cyan);margin-bottom:20px"></div>
+      <button onclick="acceptBaseline()" style="background:var(--cyan);border:none;color:#000;padding:10px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700">📐 Capture initial baseline</button>
+    </div>
+
+    <!-- No-drift state -->
+    <div id="bl-nodrift" style="display:none;padding:40px 24px;text-align:center;background:var(--card);border:1px solid var(--border);border-left:4px solid var(--green);border-radius:10px">
+      <div style="font-size:40px;margin-bottom:12px">✅</div>
+      <div style="font-size:16px;font-weight:700;color:var(--green);margin-bottom:6px">System matches baseline</div>
+      <div id="bl-nodrift-detail" style="font-size:11px;color:var(--muted)"></div>
+    </div>
+
+    <!-- Drift detail sections -->
+    <div id="bl-drift-content" style="display:none">
+      <div id="bl-summary" style="padding:14px 18px;background:var(--card);border:1px solid var(--orange);border-left:4px solid var(--orange);border-radius:10px;margin-bottom:16px"></div>
+
+      <div id="bl-cat-startup"  class="bl-category" style="margin-bottom:16px"></div>
+      <div id="bl-cat-services" class="bl-category" style="margin-bottom:16px"></div>
+      <div id="bl-cat-tasks"    class="bl-category" style="margin-bottom:16px"></div>
     </div>
   </div>
 
