@@ -1075,6 +1075,21 @@ def _enrich_device_names(inventory: dict) -> dict:
     Enrich device inventory with resolved names and auto-categories.
     Called after scan to fill in missing names.
     """
+    # Phase A: Refresh vendor for any inventory entry currently marked
+    # "Unknown" or empty (backlog #10 second hotfix, 2026-04-23). The
+    # scan merge only calls _mac_vendor() for devices seen in the
+    # current ARP/router responses -- but offline-for-days devices
+    # stay in the inventory with whatever vendor they had at the time
+    # of their last scan. When the IEEE OUI lookup was introduced,
+    # these stale entries kept their old "Unknown" value even though
+    # the new code would resolve them. This pass backfills them.
+    for _mac, dev in inventory["devices"].items():
+        current = (dev.get("vendor") or "").strip()
+        if current in ("", "Unknown"):
+            new_vendor = _mac_vendor(dev.get("mac", ""))
+            if new_vendor and new_vendor != "Unknown":
+                dev["vendor"] = new_vendor
+
     devices_needing_names = []
     for _mac, dev in inventory["devices"].items():
         hostname = dev.get("hostname", "")
