@@ -556,6 +556,55 @@ class TestMacVendorIEEELookup:
         _mac_vendor("AA:BB:CC:11:22:33")  # same OUI
         assert spy.call_count == 1, "positive result must still cache"
 
+    def test_ieee_lookup_is_serialized_across_threads(self, mocker):
+        """Regression pin for the 2026-04-23 threaded-race bug: mac-vendor-
+        lookup wraps its async core with ``loop.run_until_complete()`` on a
+        private event loop shared by the MacLookup instance. Concurrent
+        calls from multiple threads race on that loop and some lookups
+        silently fail -- observed live as 14/76 still-Unknown devices
+        despite REPL resolving every one of them.
+
+        Fix: ``_ieee_lookup_lock`` serialises lookup() calls. This test
+        hammers 20 threads at the lock with distinct OUI prefixes and
+        asserts every thread gets its expected vendor back. Without the
+        lock the test is flaky; with the lock it's deterministic.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        from homenet import _IEEE_LOOKUP, VendorNotFoundError, _mac_vendor
+
+        self._reset_cache()
+        if _IEEE_LOOKUP is None:
+            pytest.skip("mac-vendor-lookup not installed")
+
+        # Use 00:04:xx prefix -- first octet 0x00 has bit 1 = 0 so the
+        # locally-admin fallback doesn't kick in if IEEE misses, and we
+        # can cleanly distinguish "threaded race failed" from "fell
+        # through to Random MAC" in the assertion message.
+        fake_vendors = {f"00:04:{i:02X}": f"Vendor-{i:02X}" for i in range(20)}
+
+        def fake_lookup(mac):
+            prefix = mac[:8].upper()  # 3-octet OUI with colons
+            if prefix in fake_vendors:
+                return fake_vendors[prefix]
+            raise VendorNotFoundError(mac)
+
+        mocker.patch.object(_IEEE_LOOKUP, "lookup", side_effect=fake_lookup)
+
+        def one(i):
+            mac = f"00:04:{i:02X}:00:00:01"
+            return _mac_vendor(mac)
+
+        with ThreadPoolExecutor(max_workers=20) as pool:
+            results = list(pool.map(one, range(20)))
+
+        expected = [f"Vendor-{i:02X}" for i in range(20)]
+        assert results == expected, (
+            f"threaded lookup produced inconsistent results -- likely the "
+            f"_ieee_lookup_lock was removed. Missing: "
+            f"{set(expected) - set(results)}"
+        )
+
 
 class TestVendorCategorySubstring:
     """IEEE returns long names like 'Amazon Technologies Inc.' that won't

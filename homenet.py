@@ -36,6 +36,18 @@ except Exception:  # noqa: BLE001 -- any import / init failure -> no IEEE lookup
         """Placeholder so call sites can except cleanly when mac-vendor-lookup is absent."""
 
 
+# Serialises IEEE lookup calls. Rationale: mac_vendor_lookup is built on
+# asyncio -- MacLookup.lookup() wraps the underlying async call with
+# ``loop.run_until_complete()`` on a single private event loop shared by
+# the instance. Multi-threaded callers (Flask ``threaded=True`` + parallel
+# homenet scans + dashboard fan-out) race on that shared loop and some
+# calls silently fail -- observed live 2026-04-23 as 14/76 devices still
+# showing "Unknown" even though REPL on identical code + env resolved
+# every one of them. Holding this lock around the lookup forces sequential
+# access to the event loop and eliminates the race.
+_ieee_lookup_lock = threading.Lock()
+
+
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 homenet_bp = Blueprint("homenet", __name__)
@@ -177,11 +189,14 @@ def _mac_vendor(mac: str) -> str:
     if cached is not None:
         return cached
 
-    # 3. IEEE lookup
+    # 3. IEEE lookup. Serialised via _ieee_lookup_lock because
+    # mac_vendor_lookup uses a shared asyncio event loop that races under
+    # concurrent calls -- see _ieee_lookup_lock docstring above.
     vendor = ""
     if _IEEE_LOOKUP is not None:
         try:
-            vendor = (_IEEE_LOOKUP.lookup(mac) or "").strip()
+            with _ieee_lookup_lock:
+                vendor = (_IEEE_LOOKUP.lookup(mac) or "").strip()
         except VendorNotFoundError:
             vendor = ""
         except Exception:  # noqa: BLE001 -- any IEEE failure is non-fatal
