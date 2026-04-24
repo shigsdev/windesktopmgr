@@ -242,6 +242,40 @@ class TestCollectors:
         entry = diff["services"]["changed"][0]
         assert "username" in entry["delta"]
 
+    def test_schema_migration_does_not_false_positive(self):
+        """When we add a new tracked field (e.g. ``username``) the user's
+        existing baseline was captured without it. On the first drift
+        check after upgrade, every single service would otherwise appear
+        as drifted (old missing username, new has it). The diff MUST be
+        tolerant -- skip fields that were not present in the old snapshot
+        at all -- so the user doesn't see a thousand false positives.
+        Once they re-accept baseline, real drift resumes."""
+        old = {
+            "startup": {"by_key": {}},
+            "services": {
+                "by_key": {
+                    # Old-schema entry: no ``username`` captured
+                    "X": {"name": "X", "start_mode": "Auto", "image_path": "x.exe"}
+                }
+            },
+            "tasks": {"by_key": {}},
+        }
+        new = {
+            "startup": {"by_key": {}},
+            "services": {
+                "by_key": {
+                    # New-schema entry: username appears
+                    "X": {"name": "X", "start_mode": "Auto", "image_path": "x.exe", "username": "LocalSystem"}
+                }
+            },
+            "tasks": {"by_key": {}},
+        }
+        diff = baseline.diff_snapshots(old, new)
+        assert diff["total_changes"] == 0, (
+            "Schema migration (new field added to collector) must not trip drift; "
+            "got false-positive changed-entries: %r" % diff["services"]["changed"]
+        )
+
     def test_logon_mode_diff_is_critical_for_tasks(self):
         """Interactive -> Batch is a classic covert-persistence pattern."""
         old = {
