@@ -242,6 +242,72 @@ class TestCollectors:
         entry = diff["services"]["changed"][0]
         assert "username" in entry["delta"]
 
+    def test_schema_migration_fields_lists_missing_fields(self, mocker):
+        """compute_drift must report which tracked fields are in the current
+        schema but absent from the baseline. The UI uses this to render a
+        'Tracking system upgraded' banner so the user understands why
+        Previous-column cells show '—' for certain rows."""
+        # Baseline (old-schema: no username on services, no logon_mode on tasks)
+        mocker.patch(
+            "baseline.load_baseline",
+            return_value={
+                "timestamp": "2026-04-20T00:00:00",
+                "startup": {"by_key": {}},
+                "services": {"by_key": {"X": {"name": "X", "start_mode": "Auto", "image_path": "x.exe"}}},
+                "tasks": {
+                    "by_key": {r"\T": {"name": "T", "state": "Enabled", "image_path": "t.exe", "run_as": "SYSTEM"}}
+                },
+            },
+        )
+        # Current snapshot (new-schema: adds username + logon_mode)
+        mocker.patch(
+            "baseline.take_snapshot",
+            return_value={
+                "timestamp": "2026-04-24T00:00:00",
+                "startup": {"by_key": {}},
+                "services": {
+                    "by_key": {
+                        "X": {"name": "X", "start_mode": "Auto", "image_path": "x.exe", "username": "LocalSystem"}
+                    }
+                },
+                "tasks": {
+                    "by_key": {
+                        r"\T": {
+                            "name": "T",
+                            "state": "Enabled",
+                            "image_path": "t.exe",
+                            "run_as": "SYSTEM",
+                            "logon_mode": "Interactive Only",
+                        }
+                    }
+                },
+                "counts": {"startup": 0, "services": 1, "tasks": 1},
+            },
+        )
+        result = baseline.compute_drift()
+        assert "schema_migration_fields" in result
+        fields = result["schema_migration_fields"]
+        assert "services.username" in fields
+        assert "tasks.logon_mode" in fields
+        # And no false-positive drift from the migration
+        assert result["drift"]["total_changes"] == 0
+
+    def test_schema_migration_fields_empty_when_no_baseline(self, mocker):
+        """First-run case: no baseline -> nothing migrated, empty list."""
+        mocker.patch("baseline.load_baseline", return_value=None)
+        mocker.patch(
+            "baseline.take_snapshot",
+            return_value={
+                "timestamp": "2026-04-24T00:00:00",
+                "startup": {"by_key": {}},
+                "services": {"by_key": {}},
+                "tasks": {"by_key": {}},
+                "counts": {"startup": 0, "services": 0, "tasks": 0},
+            },
+        )
+        result = baseline.compute_drift()
+        assert result["schema_migration_fields"] == []
+
     def test_schema_migration_does_not_false_positive(self):
         """When we add a new tracked field (e.g. ``username``) the user's
         existing baseline was captured without it. On the first drift

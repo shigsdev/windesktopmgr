@@ -432,6 +432,38 @@ def diff_snapshots(old: dict, new: dict) -> dict:
 # ══════════════════════════════════════════════════════════════════════
 
 
+def _schema_migration_fields(baseline: dict | None, current: dict) -> list:
+    """Return ``[cat.field, ...]`` for every tracked field that exists in the
+    current schema but NOT in the baseline snapshot's entries.
+
+    Shape example: ``["services.username", "tasks.logon_mode", ...]``
+
+    Used by the UI to explain why Previous-column cells show "—" for certain
+    rows: the baseline predates those fields being tracked. The user can
+    accept the current snapshot as the new baseline to absorb them and
+    resume normal drift detection.
+    """
+    if not baseline:
+        return []
+    out: list[str] = []
+    for cat, fields in _DIFF_FIELDS.items():
+        bl_by_key = (baseline.get(cat) or {}).get("by_key") or {}
+        cur_by_key = (current.get(cat) or {}).get("by_key") or {}
+        if not bl_by_key or not cur_by_key:
+            continue
+        # Sample one baseline entry and one current entry to compare schemas.
+        # All entries in the same snapshot share the same keys (collector
+        # writes a uniform shape), so one sample is representative.
+        sample_old = next(iter(bl_by_key.values()))
+        sample_new = next(iter(cur_by_key.values()))
+        if not isinstance(sample_old, dict) or not isinstance(sample_new, dict):
+            continue
+        for f in fields:
+            if f in sample_new and f not in sample_old:
+                out.append(f"{cat}.{f}")
+    return sorted(out)
+
+
 def compute_drift() -> dict:
     """Snap the current state and diff it against the accepted baseline.
 
@@ -442,6 +474,7 @@ def compute_drift() -> dict:
             "current_timestamp": "<iso>",
             "drift": { ... same shape as diff_snapshots(...) ... },
             "has_baseline": bool,
+            "schema_migration_fields": [str],  # new tracked fields not in baseline
         }
 
     If no baseline exists, ``drift.total_changes`` is 0 and
@@ -458,6 +491,7 @@ def compute_drift() -> dict:
         "drift": drift,
         "has_baseline": baseline is not None,
         "counts": current.get("counts", {}),
+        "schema_migration_fields": _schema_migration_fields(baseline, current),
     }
 
 

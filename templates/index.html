@@ -4785,6 +4785,8 @@ async function loadBaseline() {
   nodrift.style.display    = "none";
   content.style.display    = "none";
   acceptBtn.style.display  = "none";
+  const migBanner = document.getElementById("bl-migration-banner");
+  if (migBanner) { migBanner.style.display = "none"; migBanner.removeAttribute("data-migration-fields"); }
 
   let data;
   try {
@@ -4812,6 +4814,32 @@ async function loadBaseline() {
   // Always offer the re-accept button once a baseline exists so legit
   // changes (Windows Update, new app install) can be absorbed quickly.
   acceptBtn.style.display = "";
+
+  // Schema-migration banner: fires when the collector started tracking
+  // a field after the baseline was captured. Without this, the user
+  // sees "—" in the Previous column for rows like logon_mode and has
+  // no idea why. The banner explains + nudges them to re-accept so
+  // real drift detection resumes on those fields.
+  const migFields = Array.isArray(data.schema_migration_fields) ? data.schema_migration_fields : [];
+  if (migBanner && migFields.length) {
+    migBanner.dataset.migrationFields = migFields.join(",");
+    migBanner.style.display = "";
+    migBanner.innerHTML = `
+      <div style="display:flex;align-items:flex-start;gap:10px">
+        <div style="font-size:16px;line-height:1">🔄</div>
+        <div style="flex:1">
+          <div style="font-weight:700;color:var(--cyan);margin-bottom:4px">Tracking system upgraded</div>
+          <div style="color:var(--text);margin-bottom:6px">
+            ${migFields.length} new parameter${migFields.length !== 1 ? "s" : ""}
+            (<code style="font-size:11px;background:var(--surface);padding:1px 4px;border-radius:3px">${escHtml(migFields.join(", "))}</code>)
+            ${migFields.length !== 1 ? "are" : "is"} now tracked, but ${migFields.length !== 1 ? "they" : "it"} weren't part of your existing baseline — that's why the <strong>Previous</strong> column shows <strong>—</strong> for those rows.
+          </div>
+          <div style="color:var(--muted);font-size:11px">
+            Click <strong>Accept current as baseline</strong> (top right) to capture these fields into the baseline so future changes are detected normally.
+          </div>
+        </div>
+      </div>`;
+  }
 
   if (total === 0) {
     nodrift.style.display = "";
@@ -5028,10 +5056,14 @@ function _blRenderEntry(header, oldObj, newObj, delta, cfg, catKey, kind, accent
       ${stepsHtml ? `<ol style="margin:4px 0 0 18px;padding:0;color:var(--text);font-size:11px;line-height:1.5">${stepsHtml}</ol>` : ""}
     </div>`;
 
-  return `<div style="padding:8px 10px;margin:4px 0;background:var(--surface);border-left:2px solid ${accent};border-radius:4px">
+  // data-drift-* attributes let Playwright tests introspect the rendered
+  // drift entries without parsing visible text: category = startup/services/
+  // tasks, kind = added/removed/changed, row-count = number of parameter
+  // rows rendered (should equal _BL_CATS[cat].fields.length).
+  return `<div class="bl-entry" data-drift-category="${escHtml(catKey)}" data-drift-kind="${escHtml(kind)}" data-drift-rows="${cfg.fields.length}" style="padding:8px 10px;margin:4px 0;background:var(--surface);border-left:2px solid ${accent};border-radius:4px">
     <div style="font-weight:600;font-size:12px;color:var(--text-bright)">${title}</div>
     ${subtitle ? `<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono);margin-bottom:4px">${escHtml(subtitle)}</div>` : ""}
-    <table style="width:100%;border-collapse:collapse;margin-top:4px">
+    <table class="bl-param-table" style="width:100%;border-collapse:collapse;margin-top:4px">
       <thead>
         <tr style="border-bottom:1px solid var(--border)">
           <th style="text-align:left;padding:3px 8px;font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Parameter</th>
@@ -6556,13 +6588,18 @@ function renderSystemInfo(d) {
       <div id="bl-nodrift-detail" style="font-size:11px;color:var(--muted)"></div>
     </div>
 
+    <!-- Schema-migration banner: fires when the current collector tracks
+         fields that weren't tracked at the time the baseline was captured.
+         Explains why Previous-column cells show "—" for those rows. -->
+    <div id="bl-migration-banner" style="display:none;padding:10px 14px;background:var(--card);border:1px solid var(--cyan);border-left:4px solid var(--cyan);border-radius:8px;margin-bottom:12px;font-size:12px;color:var(--text)"></div>
+
     <!-- Drift detail sections -->
     <div id="bl-drift-content" style="display:none">
       <div id="bl-summary" style="padding:14px 18px;background:var(--card);border:1px solid var(--orange);border-left:4px solid var(--orange);border-radius:10px;margin-bottom:16px"></div>
 
-      <div id="bl-cat-startup"  class="bl-category" style="margin-bottom:16px"></div>
-      <div id="bl-cat-services" class="bl-category" style="margin-bottom:16px"></div>
-      <div id="bl-cat-tasks"    class="bl-category" style="margin-bottom:16px"></div>
+      <div id="bl-cat-startup"  class="bl-category" data-category="startup"  style="margin-bottom:16px"></div>
+      <div id="bl-cat-services" class="bl-category" data-category="services" style="margin-bottom:16px"></div>
+      <div id="bl-cat-tasks"    class="bl-category" data-category="tasks"    style="margin-bottom:16px"></div>
     </div>
   </div>
 

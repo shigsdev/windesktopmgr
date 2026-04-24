@@ -60,6 +60,7 @@ TAB_IDS = [
     "homenet",
     "remediation",
     "nlq",
+    "baseline",
 ]
 
 
@@ -345,3 +346,159 @@ class TestTrendsCardCoverage:
         )
         dupes = sorted({m for m in rendered if rendered.count(m) > 1})
         assert not dupes, f"duplicate data-metric cards: {dupes}"
+
+
+# ── Baseline tab coverage regression (backlog #14) ─────────────────
+
+
+class TestBaselineTabCoverage:
+    """The Baseline tab renders a Parameter|Previous|Current table with a
+    "How to fix" block per drift entry. Frontend has a ``_BL_CATS`` dict
+    that must stay in sync with the backend collectors -- if the backend
+    adds a new tracked field (e.g. ``username``) but the frontend's field
+    list isn't updated, that column silently stops rendering.
+
+    Gaps this class closes (reported 2026-04-24):
+      (a) No test verified the Baseline tab renders at all when a
+          baseline exists with drift -- a syntax error in the JS would
+          ship undetected.
+      (b) No test verified that every drift entry renders the FULL
+          parameter table expected for its category.
+      (c) No test verified the schema-migration banner fires when the
+          backend reports ``schema_migration_fields``.
+      (d) No test verified the "How to fix" / launch-console button
+          plumbing is wired.
+    """
+
+    def _goto_baseline(self, page):
+        page.evaluate("switchTab('baseline')")
+        # Wait for the baseline panel to leave its loading state. Same
+        # settled-state pattern as TestTrendsCardCoverage: either the
+        # drift detail appeared, the no-drift panel appeared, or the
+        # no-baseline first-run panel appeared. Never time out on the
+        # "Loading..." transient.
+        page.wait_for_function(
+            """
+            () => {
+                const loading = document.getElementById('bl-loading');
+                if (!loading || loading.style.display !== 'none') return false;
+                const content = document.getElementById('bl-drift-content');
+                const nobaseline = document.getElementById('bl-nobaseline');
+                const nodrift = document.getElementById('bl-nodrift');
+                return (content && content.style.display !== 'none')
+                    || (nobaseline && nobaseline.style.display !== 'none')
+                    || (nodrift && nodrift.style.display !== 'none');
+            }
+            """,
+            timeout=15_000,
+        )
+
+    def test_baseline_tab_renders_without_console_errors(self, loaded_page):
+        page, errors = loaded_page
+        self._goto_baseline(page)
+        page.wait_for_timeout(300)  # let async XHRs settle
+        actionable = [e for e in errors if "favicon" not in e.lower()]
+        assert not actionable, f"Baseline tab console errors: {actionable}"
+
+    def test_every_changed_entry_has_full_parameter_table(self, loaded_page):
+        """For every Changed entry the backend reports, the UI must render
+        the full parameter table -- not a subset. Each category has its own
+        row count in _BL_CATS; the DOM must match.
+        """
+        page, _ = loaded_page
+        drift = page.evaluate("fetch('/api/baseline/drift').then(r => r.json())")
+        if not drift.get("has_baseline"):
+            pytest.skip("no baseline captured yet")
+        if (drift.get("drift") or {}).get("total_changes", 0) == 0:
+            pytest.skip("no drift currently -- nothing to verify")
+
+        self._goto_baseline(page)
+
+        # Expected row counts mirror _BL_CATS.fields in templates/index.html
+        # (the JS literal is the authoritative source; this Python copy must
+        # be kept in sync -- the assertion below names the drift with a
+        # clear remediation hint if it goes out of date).
+        expected_rows = {"startup": 5, "services": 7, "tasks": 12}
+
+        entries = page.evaluate(
+            """
+            Array.from(document.querySelectorAll('#bl-drift-content .bl-entry')).map(el => ({
+                category: el.dataset.driftCategory,
+                kind: el.dataset.driftKind,
+                claimed_rows: parseInt(el.dataset.driftRows || '0', 10),
+                actual_rows: el.querySelectorAll('table.bl-param-table tbody tr').length,
+                has_howtofix: el.textContent.includes('How to fix'),
+                has_console_button: el.querySelector('button[onclick^="blLaunchConsole"]') !== null,
+            }))
+            """
+        )
+        assert entries, "drift reported by API but no .bl-entry rendered in DOM"
+
+        mismatches = []
+        missing_howtofix = []
+        missing_button = []
+        for e in entries:
+            exp = expected_rows.get(e["category"])
+            if exp is None:
+                mismatches.append(f"unknown category {e['category']}")
+                continue
+            if e["actual_rows"] != exp:
+                mismatches.append(
+                    f"{e['category']}/{e['kind']}: expected {exp} rows, got {e['actual_rows']} "
+                    f"(data-drift-rows claims {e['claimed_rows']})"
+                )
+            if not e["has_howtofix"]:
+                missing_howtofix.append(f"{e['category']}/{e['kind']}")
+            if not e["has_console_button"]:
+                missing_button.append(f"{e['category']}/{e['kind']}")
+
+        assert not mismatches, (
+            "Baseline drift table row count doesn't match _BL_CATS.fields. "
+            "If you added a new tracked field to baseline.py's _DIFF_FIELDS "
+            "or a collector, update _BL_CATS in templates/index.html AND "
+            "expected_rows in this test. Mismatches: " + "; ".join(mismatches)
+        )
+        assert not missing_howtofix, f"drift entries without 'How to fix' block: {missing_howtofix}"
+        assert not missing_button, f"drift entries without Open Console button: {missing_button}"
+
+    def test_schema_migration_banner_matches_api(self, loaded_page):
+        """If the API reports schema_migration_fields, the banner must be
+        visible and carry the field list in data-migration-fields. If the
+        API reports none, the banner must be hidden.
+        """
+        page, _ = loaded_page
+        drift = page.evaluate("fetch('/api/baseline/drift').then(r => r.json())")
+        if not drift.get("has_baseline"):
+            pytest.skip("no baseline captured yet")
+        api_fields = drift.get("schema_migration_fields") or []
+
+        self._goto_baseline(page)
+
+        state = page.evaluate(
+            """
+            () => {
+                const b = document.getElementById('bl-migration-banner');
+                if (!b) return {present: false};
+                return {
+                    present: true,
+                    visible: b.style.display !== 'none',
+                    fields: (b.dataset.migrationFields || '').split(',').filter(Boolean),
+                };
+            }
+            """
+        )
+        assert state["present"], "bl-migration-banner element is missing from the template"
+
+        if api_fields:
+            assert state["visible"], (
+                f"API reports {len(api_fields)} migration fields {api_fields} "
+                f"but the banner is hidden -- UI isn't reading schema_migration_fields"
+            )
+            assert sorted(state["fields"]) == sorted(api_fields), (
+                f"banner data-migration-fields={state['fields']} doesn't match API schema_migration_fields={api_fields}"
+            )
+        else:
+            assert not state["visible"], (
+                "API reports no migration fields but banner is visible -- "
+                "UI leaked stale banner state across re-renders"
+            )
