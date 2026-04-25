@@ -2594,6 +2594,110 @@ class TestBuildTopology:
         assert "28:94:01:3F:73:E2" not in t["via_verizon_or_moca"]
         assert "28:94:01:3F:73:E2" not in t["unmapped"]
 
+    def test_wired_via_field_splits_into_two_buckets(self, mocker):
+        """User feedback 2026-04-25: 'Verizon-direct / MoCA' was conflating
+        two physically-distinct paths. New per-device ``wired_via`` field
+        splits them into ``verizon_lan`` and ``via_moca`` buckets in the
+        topology response. Empty/unknown values default to verizon_lan."""
+        from homenet import build_topology
+
+        mocker.patch("homenet._save_homenet_inventory")
+        inv = self._inventory(
+            {
+                "mac": "AA:00:00:00:00:01",
+                "ip": "192.168.1.50",
+                "network": "wired",
+                "wired_via": "moca",
+                "vendor": "Apple",
+            },
+            {
+                "mac": "AA:00:00:00:00:02",
+                "ip": "192.168.1.51",
+                "network": "wired",
+                "wired_via": "verizon_lan",
+                "vendor": "Apple",
+            },
+            {"mac": "AA:00:00:00:00:03", "ip": "192.168.1.52", "network": "wired", "vendor": "Apple"},
+        )
+        t = build_topology(inv, switch_data={})
+        assert "AA:00:00:00:00:01" in t["via_moca"]
+        assert "AA:00:00:00:00:02" in t["verizon_lan"]
+        # Untagged defaults to verizon_lan
+        assert "AA:00:00:00:00:03" in t["verizon_lan"]
+        assert t["stats"]["via_moca"] == 1
+        assert t["stats"]["verizon_lan"] == 2
+        # Backwards-compat alias still includes both
+        assert set(t["via_verizon_or_moca"]) == {"AA:00:00:00:00:01", "AA:00:00:00:00:02", "AA:00:00:00:00:03"}
+
+    def test_wired_via_switch_force_excludes_from_leftover_buckets(self, mocker):
+        """When the user marks wired_via='switch' on a device, it's a force-
+        override that says 'I know this is on the switch even though SNMP
+        didn't see it'. Such a device must NOT appear in via_moca or
+        verizon_lan -- it would double-count and confuse the diagram."""
+        from homenet import build_topology
+
+        mocker.patch("homenet._save_homenet_inventory")
+        inv = self._inventory(
+            {
+                "mac": "AA:00:00:00:00:01",
+                "ip": "192.168.1.50",
+                "network": "wired",
+                "wired_via": "switch",
+                "vendor": "Apple",
+            },
+        )
+        t = build_topology(inv, switch_data={})
+        assert "AA:00:00:00:00:01" not in t["via_moca"]
+        assert "AA:00:00:00:00:01" not in t["verizon_lan"]
+        assert "AA:00:00:00:00:01" not in t["unmapped"]
+
+    def test_device_update_route_accepts_wired_via(self, client, mocker):
+        """The /api/homenet/device/update route must persist wired_via with
+        a whitelist (only 'moca'/'verizon_lan'/'switch'/'' allowed) so
+        garbage values can't leak into the topology classifier."""
+        # Set up an inventory with one device
+        mocker.patch(
+            "homenet._load_homenet_inventory",
+            return_value={
+                "devices": {
+                    "AA:00:00:00:00:01": {
+                        "mac": "AA:00:00:00:00:01",
+                        "ip": "192.168.1.50",
+                        "wired_via": "",
+                    },
+                },
+                "last_scan": "",
+            },
+        )
+        save_mock = mocker.patch("homenet._save_homenet_inventory")
+        # Valid value -> persisted
+        resp = client.post("/api/homenet/device/update", json={"mac": "AA:00:00:00:00:01", "wired_via": "moca"})
+        assert resp.status_code == 200
+        # The save_mock got called with inventory carrying the new field
+        saved_inv = save_mock.call_args[0][0]
+        assert saved_inv["devices"]["AA:00:00:00:00:01"]["wired_via"] == "moca"
+
+    def test_device_update_route_rejects_invalid_wired_via(self, client, mocker):
+        """Whitelist guard: junk values (SQL-injection-style attempts,
+        garbage strings) must NOT land in inventory."""
+        mocker.patch(
+            "homenet._load_homenet_inventory",
+            return_value={
+                "devices": {
+                    "AA:00:00:00:00:01": {"mac": "AA:00:00:00:00:01", "wired_via": "moca"},
+                },
+                "last_scan": "",
+            },
+        )
+        save_mock = mocker.patch("homenet._save_homenet_inventory")
+        resp = client.post(
+            "/api/homenet/device/update", json={"mac": "AA:00:00:00:00:01", "wired_via": "DROP TABLE devices"}
+        )
+        assert resp.status_code == 200  # the call succeeds
+        # but the bad value isn't persisted -- the prior 'moca' value stays
+        saved_inv = save_mock.call_args[0][0]
+        assert saved_inv["devices"]["AA:00:00:00:00:01"]["wired_via"] == "moca"
+
     def test_base_labelled_as_base_not_satellite(self):
         """Bug 2026-04-25: The Orbi base (10.0.0.1) was being labelled
         'Orbi satellite (73E1)' instead of 'Orbi RBRE960 (Base)' because
