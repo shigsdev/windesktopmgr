@@ -1806,7 +1806,37 @@ _MOCA_VENDOR_PATTERNS: tuple[str, ...] = (
     "screenbeam",  # ScreenBeam (Actiontec spinoff) MoCA adapters
     "hitron",  # Hitron Coda MoCA bridges
     "westell",  # Verizon-branded older MoCA extenders
+    # Verizon FiOS Set-Top Boxes are MoCA endpoints (the VMS4100/VMS1100
+    # series uses MoCA-over-coax for everything: video, guide updates, IP).
+    # Both Arris and its acquirer Commscope ship these. We intentionally
+    # match the broad vendor name -- in the FiOS context essentially every
+    # Commscope/Arris device on the LAN is going to be a MoCA endpoint.
+    "commscope",  # Verizon FiOS STBs (VMS4100ATV etc.) -- MoCA over coax
+    "arris",  # pre-Commscope STB OEM
 )
+
+
+# Hostname substrings that identify infrastructure devices the inventory
+# may have multiple MAC entries for (e.g. the Orbi has separate WAN-side
+# and LAN-side MACs that ARP scans pick up as two different devices).
+# Anything whose hostname matches lands in the infrastructure set and is
+# excluded from "via_verizon_or_moca" / "unmapped" -- it's rendered as
+# its own infra tier-2 node instead.
+_INFRA_HOSTNAME_PATTERNS: tuple[str, ...] = (
+    "rbre",  # Orbi RBRE960 -- WAN-side MAC has hostname like "RBRE960.mynetworksettings.com"
+    "cr1000",  # Verizon CR1000A / CR1000B
+    "tl-sg",  # TP-Link TL-SG2218
+)
+
+
+def _is_infra_by_hostname(device: dict) -> bool:
+    """True if the device's hostname matches a known infra-device pattern.
+    Catches the case where ARP picks up the Orbi's WAN-side MAC at a
+    192.x address even though its primary LAN-side MAC is at 10.0.0.1."""
+    host = (device.get("hostname") or "").lower()
+    if not host:
+        return False
+    return any(p in host for p in _INFRA_HOSTNAME_PATTERNS)
 
 
 def _is_moca_bridge(device: dict) -> bool:
@@ -1938,11 +1968,36 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
         }
     ]
 
+    # ── Identify the router (do this BEFORE classification) ───────────
+    router = {"id": "router", "name": "Verizon CR1000A", "ip": "192.168.1.1", "mac": ""}
+    for mac, dev in devices_by_mac.items():
+        if dev.get("ip") == "192.168.1.1":
+            router["mac"] = mac.upper()
+            break
+
+    # ── Build the runtime infrastructure-MAC set ──────────────────────
+    # Anything in here is excluded from device-tier classification (it's
+    # rendered as a tier-2 infra node instead). Three sources contribute:
+    #   1. Hard-pinned MACs from _INFRA_LABELS (the TP-Link switch)
+    #   2. The router's MAC (resolved from inventory by IP lookup above)
+    #   3. Every AP MAC we discovered (Orbi base + satellites)
+    #   4. Devices whose hostname matches a known infra pattern -- catches
+    #      the case where a router/AP is in the inventory under multiple
+    #      MACs (Orbi WAN-side at 192.x AND LAN-side at 10.0.0.1)
+    infra_macs: set[str] = set(_INFRA_LABELS.keys())
+    if router["mac"]:
+        infra_macs.add(router["mac"])
+    for ap in aps_out:
+        infra_macs.add(ap["mac"])
+    for mac, dev in devices_by_mac.items():
+        if _is_infra_by_hostname(dev):
+            infra_macs.add(mac.upper())
+
     # ── Compute mapped / unmapped sets ────────────────────────────────
     mapped_wired: set[str] = set()
     for port_macs in switch_ports.values():
         for m in port_macs:
-            if m in devices_by_mac and not _is_infrastructure_mac(m):
+            if m in devices_by_mac and m not in infra_macs:
                 mapped_wired.add(m)
     mapped_wireless: set[str] = set()
     for ap in aps_out:
@@ -1952,16 +2007,16 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
 
     all_macs = set(devices_by_mac.keys())
     # Don't count infrastructure as "unmapped" -- we render it explicitly.
-    candidate = {m for m in all_macs if not _is_infrastructure_mac(m)}
+    candidate = all_macs - infra_macs
     leftover = candidate - mapped_wired - mapped_wireless
 
     # ── MoCA bridges ──────────────────────────────────────────────────
-    # Devices we recognise as MoCA endpoints (Actiontec ECB6200 etc.) get
-    # their own bucket. They're "wired" but not on the switch's MAC table
-    # because they sit on the coax → Verizon path. The remaining wired
-    # devices that are leftover AND not MoCA bridges go into "Verizon-
-    # direct or via MoCA" -- the catch-all explanation for "wired but not
-    # seen by the switch".
+    # Devices we recognise as MoCA endpoints (Actiontec ECB6200, FiOS Set-
+    # Top Boxes, etc.) get their own bucket. They're "wired" but not on the
+    # switch's MAC table because they sit on the coax → Verizon path. The
+    # remaining wired devices that are leftover AND not MoCA bridges go
+    # into "Verizon-direct or via MoCA" -- the catch-all explanation for
+    # "wired but not seen by the switch".
     moca_bridges: list[str] = []
     leftover_after_moca: set[str] = set()
     for m in leftover:
@@ -1982,13 +2037,6 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
         m for m in leftover_after_moca if (devices_by_mac.get(m, {}).get("network") == "wired")
     )
     unmapped = sorted(leftover_after_moca - set(via_verizon_or_moca))
-
-    # ── Identify the router ───────────────────────────────────────────
-    router = {"id": "router", "name": "Verizon CR1000A", "ip": "192.168.1.1", "mac": ""}
-    for mac, dev in devices_by_mac.items():
-        if dev.get("ip") == "192.168.1.1":
-            router["mac"] = mac.upper()
-            break
 
     return {
         "ok": True,
