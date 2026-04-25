@@ -2343,3 +2343,192 @@ class TestResolveNamesBatchCommands:
         m.assert_called_once()
         args = m.call_args[0][0]
         assert args == ("10.0.0.1", 443)
+
+
+# ════════════════════════════════════════════════════════════════════
+# Network Topology Diagram (#9)
+# ════════════════════════════════════════════════════════════════════
+
+
+class TestOrbiSoapConnApMacExtraction:
+    """Backlog #9 added ``conn_ap_mac`` extraction to _parse_orbi_soap.
+    Without it the topology diagram can't tell which Orbi node a wireless
+    client is associated with."""
+
+    def test_conn_ap_mac_is_extracted_and_normalised(self):
+        from homenet import _parse_orbi_soap
+
+        xml = """<Device>
+        <IP>10.0.0.50</IP>
+        <Name>Phone</Name>
+        <MAC>AA:BB:CC:DD:EE:FF</MAC>
+        <ConnectionType>5GHz</ConnectionType>
+        <ConnAPMAC>11-22-33-44-55-66</ConnAPMAC>
+        </Device>"""
+        devs = _parse_orbi_soap(xml)
+        assert len(devs) == 1
+        # Hyphens normalised to colons, lowercase->upper, so it joins cleanly
+        # against the satellite MAC list later.
+        assert devs[0]["conn_ap_mac"] == "11:22:33:44:55:66"
+
+    def test_conn_ap_mac_empty_string_when_absent(self):
+        """Wired clients have no ConnAPMAC -- must default to '' so the
+        topology builder can distinguish 'wireless client of base' (empty
+        because base MAC unknown) from 'wired client' (empty by design)."""
+        from homenet import _parse_orbi_soap
+
+        xml = """<Device>
+        <IP>10.0.0.10</IP>
+        <Name>WiredThing</Name>
+        <MAC>AA:BB:CC:DD:EE:FF</MAC>
+        </Device>"""
+        devs = _parse_orbi_soap(xml)
+        assert devs[0]["conn_ap_mac"] == ""
+
+
+class TestBuildTopology:
+    """Topology builder is the heart of #9 -- joins three data sources
+    (device inventory, switch MAC table, Orbi per-AP mapping) into one
+    nested structure the SVG renderer can walk."""
+
+    def _inventory(self, *device_dicts):
+        """Helper: wrap device dicts into the inventory shape build_topology
+        expects. Each device dict needs at least mac+ip; missing fields
+        fall back to defaults via _merge_device_data semantics."""
+        return {
+            "devices": {d["mac"]: d for d in device_dicts},
+            "last_scan": "2026-04-25T00:00:00",
+        }
+
+    def test_router_label_picks_up_inventory_mac(self):
+        """When a 192.168.1.1 device is in inventory, build_topology fills
+        router.mac so the diagram can use it as the connection anchor."""
+        from homenet import build_topology
+
+        inv = self._inventory({"mac": "11:11:11:11:11:11", "ip": "192.168.1.1", "active": True})
+        t = build_topology(inv, switch_data={})
+        assert t["router"]["ip"] == "192.168.1.1"
+        assert t["router"]["mac"] == "11:11:11:11:11:11"
+        assert t["router"]["name"] == "Verizon CR1000A"
+
+    def test_switch_unavailable_is_reported_not_fatal(self):
+        from homenet import build_topology
+
+        inv = self._inventory({"mac": "AA:AA:AA:AA:AA:AA", "ip": "192.168.1.50"})
+        t = build_topology(inv, switch_data={"error": "snmp timeout"})
+        assert t["ok"] is True
+        assert t["switches"][0]["available"] is False
+        assert "snmp timeout" in t["switches"][0]["error"]
+        # Device with no port mapping ends up unmapped, not lost
+        assert "AA:AA:AA:AA:AA:AA" in t["unmapped"]
+
+    def test_switch_mac_table_groups_by_port(self):
+        """The wired devices on switch ports must be bucketed by port_index."""
+        from homenet import build_topology
+
+        inv = self._inventory(
+            {"mac": "AA:AA:AA:AA:AA:01", "ip": "192.168.1.10"},
+            {"mac": "AA:AA:AA:AA:AA:02", "ip": "192.168.1.11"},
+            {"mac": "AA:AA:AA:AA:AA:03", "ip": "192.168.1.12"},
+        )
+        switch_data = {
+            "mac_table": [
+                {"mac": "AA:AA:AA:AA:AA:01", "port_index": 1},
+                {"mac": "AA:AA:AA:AA:AA:02", "port_index": 1},
+                {"mac": "AA:AA:AA:AA:AA:03", "port_index": 5},
+            ]
+        }
+        t = build_topology(inv, switch_data=switch_data)
+        ports = t["switches"][0]["ports"]
+        assert sorted(ports[1]) == ["AA:AA:AA:AA:AA:01", "AA:AA:AA:AA:AA:02"]
+        assert ports[5] == ["AA:AA:AA:AA:AA:03"]
+        # All three are mapped (none unmapped)
+        assert t["stats"]["wired_mapped"] == 3
+        assert t["stats"]["unmapped"] == 0
+
+    def test_orbi_clients_grouped_by_satellite(self):
+        """conn_ap_mac on wireless devices buckets them under their AP."""
+        from homenet import build_topology
+
+        inv = self._inventory(
+            # Orbi base (10.0.0.1 in inventory)
+            {"mac": "BA:5E:00:00:00:01", "ip": "10.0.0.1"},
+            # Two clients on the base
+            {"mac": "CC:CC:CC:00:00:01", "ip": "10.0.0.10", "conn_ap_mac": "BA:5E:00:00:00:01"},
+            {"mac": "CC:CC:CC:00:00:02", "ip": "10.0.0.11", "conn_ap_mac": "BA:5E:00:00:00:01"},
+            # Two clients on an unknown satellite
+            {"mac": "CC:CC:CC:00:00:03", "ip": "10.0.0.12", "conn_ap_mac": "5A:71:11:11:11:11"},
+            {"mac": "CC:CC:CC:00:00:04", "ip": "10.0.0.13", "conn_ap_mac": "5A:71:11:11:11:11"},
+        )
+        t = build_topology(inv, switch_data={})
+        aps = {ap["mac"]: ap for ap in t["aps"]}
+        assert "BA:5E:00:00:00:01" in aps
+        assert aps["BA:5E:00:00:00:01"]["is_base"] is True
+        assert sorted(aps["BA:5E:00:00:00:01"]["clients"]) == [
+            "CC:CC:CC:00:00:01",
+            "CC:CC:CC:00:00:02",
+        ]
+        assert "5A:71:11:11:11:11" in aps
+        assert aps["5A:71:11:11:11:11"]["is_base"] is False
+        assert "satellite" in aps["5A:71:11:11:11:11"]["name"].lower()
+        assert sorted(aps["5A:71:11:11:11:11"]["clients"]) == [
+            "CC:CC:CC:00:00:03",
+            "CC:CC:CC:00:00:04",
+        ]
+        assert t["stats"]["wireless_mapped"] == 4
+
+    def test_devices_without_uplink_land_in_unmapped(self):
+        """ARP-discovered offline devices with no switch entry and no
+        Orbi conn_ap_mac end up in the unmapped bucket -- they don't
+        vanish from the topology entirely."""
+        from homenet import build_topology
+
+        inv = self._inventory(
+            {"mac": "DE:AD:BE:EF:00:01", "ip": "192.168.1.99", "active": False},
+        )
+        t = build_topology(inv, switch_data={})
+        assert "DE:AD:BE:EF:00:01" in t["unmapped"]
+
+    def test_infrastructure_macs_excluded_from_unmapped(self):
+        """The router itself / switch itself / Orbi base shouldn't show
+        up as 'unmapped devices' -- they're rendered as their own infra
+        nodes elsewhere in the diagram."""
+        from homenet import build_topology
+
+        inv = self._inventory(
+            {"mac": "DC:62:79:F3:52:5C", "ip": "192.168.1.5"},  # the switch itself
+        )
+        t = build_topology(inv, switch_data={})
+        assert "DC:62:79:F3:52:5C" not in t["unmapped"]
+
+
+class TestTopologyRoute:
+    def test_route_returns_topology_shape(self, client, mocker):
+        mocker.patch(
+            "homenet._load_homenet_inventory",
+            return_value={
+                "devices": {
+                    "AA:AA:AA:AA:AA:01": {"mac": "AA:AA:AA:AA:AA:01", "ip": "192.168.1.10"},
+                },
+                "last_scan": "2026-04-25T00:00:00",
+            },
+        )
+        mocker.patch("homenet._tplink_get_data", return_value={"mac_table": []})
+        resp = client.get("/api/homenet/topology")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        for k in ("router", "switches", "aps", "devices", "unmapped", "stats"):
+            assert k in data, f"topology payload missing {k}"
+
+    def test_route_handles_inventory_load_failure_gracefully(self, client, mocker):
+        """Even if switch query throws, the topology endpoint must still
+        return a usable structure -- not a 500."""
+        mocker.patch(
+            "homenet._load_homenet_inventory",
+            return_value={"devices": {}, "last_scan": ""},
+        )
+        mocker.patch("homenet._tplink_get_data", side_effect=RuntimeError("boom"))
+        resp = client.get("/api/homenet/topology")
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
