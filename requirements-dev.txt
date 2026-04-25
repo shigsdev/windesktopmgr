@@ -5,6 +5,14 @@ pytest>=8.0.0
 pytest-flask>=1.3.0
 pytest-mock>=3.12.0
 pytest-cov>=7.0.0
+# Parallel test runner (backlog #30) — `pytest -n auto` distributes the 1,800+
+# unit tests across CPU cores. Drops a 3m37s serial run to ~48s on a 10-core
+# box. Each xdist worker is its own Python process so module-level globals
+# (the autouse `reset_globals` fixture) and tmp_path-scoped files don't
+# interfere across workers. Integration tests (`-m integration`) and
+# Playwright tests (`-m playwright`) stay serial — they hit real subprocesses
+# / the live tray and can't be parallelised.
+pytest-xdist>=3.5.0
 ruff>=0.15.0
 pre-commit>=4.0.0
 

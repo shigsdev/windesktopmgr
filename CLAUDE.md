@@ -8,7 +8,7 @@ No step may be skipped. No exceptions.
 ```
 1. Code the change
 2. ruff check + format       →  python -m ruff check . && python -m ruff format .
-3. pytest                    →  python -m pytest tests/ -v
+3. pytest                    →  python -m pytest tests/ -n auto   (parallel, ~48s)
 4. Update architecture.html  →  REQUIRED if any of the triggers below apply
 5. git commit + push         →  (pre-commit hooks re-run ruff + pytest)
 6. python dev.py verify      →  POST /api/restart + /api/health + /api/selftest
@@ -135,7 +135,8 @@ gates before committing. No exceptions.
 
 ```bash
 # Run tests with coverage (configured in pyproject.toml)
-pytest tests/ -v
+pytest tests/ -v               # serial, clearer output (~3m37s)
+pytest tests/ -n auto          # parallel via xdist (~48s; pytest-cov merges per-worker)
 
 # Coverage floor is 80% — builds fail below this
 # Coverage report shows uncovered lines so you know what to test
@@ -343,8 +344,15 @@ PLAYWRIGHT_SMOKE=1 python dev.py verify
 ## Running tests
 
 ```bash
-# All tests
+# All tests (serial — cleanest output, ~3m37s for 1,800+ tests)
 pytest tests/ -v
+
+# All tests in parallel (backlog #30, recommended for fast iteration)
+# Distributes across CPU cores via pytest-xdist. ~48s on a 10-core box.
+# Each worker is its own Python process so module globals + tmp_path
+# files are per-worker isolated. Used by `python dev.py test` and the
+# pre-commit pytest hook.
+pytest tests/ -n auto
 
 # Single file
 pytest tests/test_powershell.py -v
@@ -361,6 +369,17 @@ pytest tests/ -x
 # Show print output (useful for debugging PS mock output)
 pytest tests/ -v -s
 ```
+
+**When `-n auto` is and isn't safe:**
+- ✅ Default unit suite — every shared resource (history files, cache files,
+  alert rules, baseline snapshots) is monkey-patched to `tmp_path`, which
+  pytest-xdist isolates per worker. Module-level globals reset by the
+  autouse `reset_globals` fixture are also per-process so workers don't
+  step on each other.
+- ❌ `-m integration` — real PowerShell / WMI / nvidia-smi / network probes.
+  Rate limits, exclusive Windows resources, output ordering. Stays serial.
+- ❌ `-m playwright` — drives a single live tray on `localhost:5000`. One
+  browser, one server, can't fan out.
 
 ---
 
