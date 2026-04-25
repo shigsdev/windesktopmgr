@@ -4627,8 +4627,20 @@ async function hnTopoRefresh() {
     ];
     if (s.via_verizon_or_moca) parts.push(`${s.via_verizon_or_moca} Verizon-direct/MoCA`);
     if (s.moca_bridges) parts.push(`${s.moca_bridges} MoCA bridge${s.moca_bridges !== 1 ? "s" : ""}`);
+    if (s.orbi_mesh_unknown_ap) parts.push(`${s.orbi_mesh_unknown_ap} Orbi mesh (AP unknown)`);
     if (s.unmapped) parts.push(`${s.unmapped} unmapped`);
     if (!s.switch_available) parts.push("⚠ switch unreachable — see Network Settings");
+    // Hint: surface a one-line nudge if any satellite is still showing as
+    // the "Orbi satellite (XXXX)" fallback. The RBRE960 firmware doesn't
+    // expose satellite names via SOAP (every action returns ResponseCode
+    // 404 -- not implemented on this firmware), so the user has to set
+    // them manually via the inventory edit modal. The auto-synthesised
+    // satellite entries land in the device table below with vendor=Netgear
+    // + notes="Orbi satellite -- auto-added".
+    const fallbackSats = (data.aps || []).filter(ap => /^Orbi satellite \([0-9A-F]{4}\)$/.test(ap.name));
+    if (fallbackSats.length) {
+      parts.push(`💡 ${fallbackSats.length} satellite${fallbackSats.length !== 1 ? "s" : ""} still using fallback name -- set "friendly_name" via the device table below`);
+    }
     stats.textContent = parts.join(" · ");
   }
 
