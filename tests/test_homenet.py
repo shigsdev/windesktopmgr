@@ -2558,6 +2558,61 @@ class TestBuildTopology:
         assert t["stats"]["wired_mapped"] == 1
         assert t["stats"]["via_verizon_or_moca"] == 0
 
+    def test_router_mac_excluded_from_via_verizon_or_moca(self):
+        """The Verizon router itself (192.168.1.1) must NOT appear in any
+        device-tier bucket -- it's the tier-1 router node. Caught live on
+        2026-04-25 when the WNC Corporation MAC at 192.168.1.1 was leaking
+        into the Verizon-direct/MoCA list."""
+        from homenet import build_topology
+
+        inv = self._inventory(
+            {"mac": "78:67:0E:BD:A4:3F", "ip": "192.168.1.1", "vendor": "WNC Corporation", "network": "wired"},
+        )
+        t = build_topology(inv, switch_data={})
+        assert "78:67:0E:BD:A4:3F" not in t["via_verizon_or_moca"]
+        assert "78:67:0E:BD:A4:3F" not in t["unmapped"]
+        # And the router node itself picked up the MAC
+        assert t["router"]["mac"] == "78:67:0E:BD:A4:3F"
+
+    def test_orbi_wan_mac_excluded_via_hostname_pattern(self):
+        """An Orbi base has separate WAN-side and LAN-side MACs -- the wired
+        ARP scan picks up the WAN-side MAC at a 192.x address with hostname
+        like RBRE960.mynetworksettings.com. That MAC must be recognised as
+        infrastructure (not a tier-3 device) via the hostname pattern."""
+        from homenet import build_topology
+
+        inv = self._inventory(
+            {
+                "mac": "28:94:01:3F:73:E2",
+                "ip": "192.168.1.152",
+                "vendor": "Netgear",
+                "hostname": "RBRE960.mynetworksettings.com",
+                "network": "wired",
+            },
+        )
+        t = build_topology(inv, switch_data={})
+        assert "28:94:01:3F:73:E2" not in t["via_verizon_or_moca"]
+        assert "28:94:01:3F:73:E2" not in t["unmapped"]
+
+    def test_commscope_fios_set_top_box_recognised_as_moca(self):
+        """The Verizon FiOS VMS4100 / VMS1100 Set-Top Boxes are MoCA
+        endpoints -- they bridge the coax network into video. Vendor name
+        is Commscope (or pre-acquisition Arris). Must land in moca_bridges."""
+        from homenet import build_topology
+
+        inv = self._inventory(
+            {
+                "mac": "B0:5D:D4:76:2A:C0",
+                "ip": "192.168.1.102",
+                "vendor": "Commscope",
+                "hostname": "VMS4100ATV.mynetworksettings.com",
+                "network": "wired",
+            },
+        )
+        t = build_topology(inv, switch_data={})
+        assert "B0:5D:D4:76:2A:C0" in t["moca_bridges"]
+        assert "B0:5D:D4:76:2A:C0" not in t["via_verizon_or_moca"]
+
     def test_wireless_devices_without_ap_stay_in_unmapped(self):
         """Wireless devices without a conn_ap_mac (e.g. inventory captured
         before the ConnAPMAC field was added) are TRULY unmapped -- not
