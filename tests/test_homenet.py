@@ -2952,6 +2952,63 @@ class TestUserTaggedMocaBridge:
         assert "AA:BB:CC:DD:EE:01" not in t["verizon_lan"]
         assert t["stats"]["moca_bridges"] >= 1
 
+    def test_askey_vendor_auto_detected_as_moca_bridge(self):
+        """OUI 88:DE:7C resolves to Askey Computer Corp -- the Taiwanese
+        ODM that builds Verizon-branded transparent MoCA bridges. Added
+        2026-04-25 after a user reported their Verizon FiOS Network
+        Extender wasn't auto-detected."""
+        from homenet import _is_moca_bridge
+
+        assert _is_moca_bridge({"vendor": "ASKEY COMPUTER CORP"}) is True
+        assert _is_moca_bridge({"vendor": "Askey Computer Corp"}) is True
+
+    def test_add_manual_route_creates_inventory_entry(self, client, mocker):
+        """Transparent MoCA bridges have no IP and never appear in ARP, so
+        the normal scan flow can't surface them. The new
+        /api/homenet/device/add-manual route lets the user inject an entry
+        from MAC alone, so the diagram can render the device."""
+        mocker.patch(
+            "homenet._load_homenet_inventory",
+            return_value={"devices": {}, "last_scan": ""},
+        )
+        save_mock = mocker.patch("homenet._save_homenet_inventory")
+        mocker.patch("homenet._mac_vendor", return_value="ASKEY COMPUTER CORP")
+
+        resp = client.post(
+            "/api/homenet/device/add-manual",
+            json={"mac": "88:DE:7C:C2:57:36", "friendly_name": "Living Room MoCA"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        # Inventory was persisted
+        saved = save_mock.call_args[0][0]
+        added = saved["devices"]["88:DE:7C:C2:57:36"]
+        assert added["mac"] == "88:DE:7C:C2:57:36"
+        assert added["friendly_name"] == "Living Room MoCA"
+        assert added["wired_via"] == "moca_bridge"  # default for manual-add
+        assert added["source"] == "manual"
+        assert added["vendor"] == "ASKEY COMPUTER CORP"
+
+    def test_add_manual_route_rejects_invalid_mac(self, client, mocker):
+        mocker.patch("homenet._load_homenet_inventory", return_value={"devices": {}, "last_scan": ""})
+        mocker.patch("homenet._save_homenet_inventory")
+        for bad in ("", "not-a-mac", "GG:GG:GG:GG:GG:GG", "11:22:33", "11:22:33:44:55:66:77"):
+            resp = client.post("/api/homenet/device/add-manual", json={"mac": bad})
+            assert resp.status_code == 400, f"expected 400 for {bad!r}, got {resp.status_code}"
+
+    def test_add_manual_route_409_on_duplicate_mac(self, client, mocker):
+        mocker.patch(
+            "homenet._load_homenet_inventory",
+            return_value={
+                "devices": {"88:DE:7C:C2:57:36": {"mac": "88:DE:7C:C2:57:36"}},
+                "last_scan": "",
+            },
+        )
+        mocker.patch("homenet._save_homenet_inventory")
+        resp = client.post("/api/homenet/device/add-manual", json={"mac": "88:DE:7C:C2:57:36"})
+        assert resp.status_code == 409
+
     def test_device_update_route_accepts_moca_bridge_value(self, client, mocker):
         """The whitelist must include 'moca_bridge'. Otherwise the user
         could pick it in the dropdown but the value would be silently
