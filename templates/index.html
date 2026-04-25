@@ -4620,8 +4620,16 @@ async function hnTopoRefresh() {
   // Update the small stats line above the diagram
   const s = data.stats || {};
   if (stats) {
-    const switchNote = s.switch_available ? "" : " · switch unreachable (port mapping unavailable)";
-    stats.textContent = `${s.total || 0} devices · ${s.wired_mapped || 0} wired-mapped · ${s.wireless_mapped || 0} wireless-mapped · ${s.unmapped || 0} unmapped${switchNote}`;
+    const parts = [
+      `${s.total || 0} devices`,
+      `${s.wired_mapped || 0} on switch`,
+      `${s.wireless_mapped || 0} wireless-mapped`,
+    ];
+    if (s.via_verizon_or_moca) parts.push(`${s.via_verizon_or_moca} Verizon-direct/MoCA`);
+    if (s.moca_bridges) parts.push(`${s.moca_bridges} MoCA bridge${s.moca_bridges !== 1 ? "s" : ""}`);
+    if (s.unmapped) parts.push(`${s.unmapped} unmapped`);
+    if (!s.switch_available) parts.push("⚠ switch unreachable — see Network Settings");
+    stats.textContent = parts.join(" · ");
   }
 
   wrap.style.display = "";
@@ -4689,9 +4697,40 @@ function hnTopoBuildSvg(t) {
     });
   }
 
-  // Unmapped column on the right -- devices that didn't land under any AP
-  // or switch port. Common case: ARP-discovered devices that are offline,
-  // or wireless devices we saw before the Orbi mapping was available.
+  // Verizon-direct / MoCA column -- wired devices that aren't on the TP-Link's
+  // MAC table. Either plugged directly into the Verizon's LAN ports OR
+  // downstream of a MoCA bridge (since MoCA traffic skips the TP-Link entirely).
+  // Heads up: when SNMP isn't configured AT ALL, this bucket gets EVERY wired
+  // device since the switch MAC table is empty -- that's the right behaviour,
+  // it nudges the user to set up SNMP.
+  if ((t.via_verizon_or_moca || []).length) {
+    columns.push({
+      kind: "verizon_or_moca",
+      id: "via-verizon-or-moca",
+      name: "Verizon-direct / MoCA",
+      sub: `${t.via_verizon_or_moca.length} wired device${t.via_verizon_or_moca.length !== 1 ? "s" : ""} not on switch`,
+      rows: t.via_verizon_or_moca.map(m => ({ mac: m, label: "wired", dev: devices[m] || { mac: m } })),
+    });
+  }
+
+  // MoCA bridges as their own column -- when the user has Actiontec / GoCoax
+  // / etc. boxes in the inventory, surfacing them helps explain why the
+  // Verizon-direct/MoCA column is full of devices: those bridges are the
+  // entry/exit points for the coax LAN.
+  if ((t.moca_bridges || []).length) {
+    columns.push({
+      kind: "moca",
+      id: "moca-bridges",
+      name: "MoCA Bridges",
+      sub: `${t.moca_bridges.length} coax-to-Ethernet bridge${t.moca_bridges.length !== 1 ? "s" : ""}`,
+      rows: t.moca_bridges.map(m => ({ mac: m, label: "MoCA bridge", dev: devices[m] || { mac: m } })),
+    });
+  }
+
+  // Truly unmapped column on the right -- wireless devices we haven't yet
+  // associated with an AP (no conn_ap_mac after migration) plus anything else
+  // that fell through every classification above. Hidden when empty so the
+  // common case (everything categorised) doesn't show a stray empty column.
   if ((t.unmapped || []).length) {
     columns.push({
       kind: "unmapped",
@@ -4725,13 +4764,17 @@ function hnTopoBuildSvg(t) {
       switch: "var(--orange)",
       ap_base: "var(--purple)",
       ap_satellite: "var(--purple)",
+      moca: "var(--cyan)",
+      verizon_or_moca: "var(--yellow)",
       unmapped: "var(--border)",
     };
-    const iconByKind = { switch: "🔀", ap_base: "📡", ap_satellite: "📡", unmapped: "❓" };
+    const iconByKind = { switch: "🔀", ap_base: "📡", ap_satellite: "📡", moca: "📻", verizon_or_moca: "🔌", unmapped: "❓" };
     const label = `${iconByKind[col.kind] || "•"} ${col.name}`;
     svg += _hnSvgNode(x, INFRA_Y, NODE_W, label, col.sub || "", colorByKind[col.kind] || "var(--muted)");
 
-    // Connector router → infra (skip for unmapped column -- it's not really wired)
+    // Connector router → infra. Skip for "unmapped" only -- everything
+    // else (switch, APs, MoCA bridges, Verizon-direct/MoCA bucket) does
+    // ultimately route through the Verizon, so a line is correct.
     if (col.kind !== "unmapped") {
       svg += `<line x1="${routerX + NODE_W / 2}" y1="${ROUTER_Y + 50}" x2="${x + NODE_W / 2}" y2="${INFRA_Y}" stroke="var(--border)" stroke-width="1.2"/>`;
     }
@@ -4863,6 +4906,9 @@ function openCredModal(key, label) {
   const passLabel = document.querySelector('label[for="hn-cred-pass"]') || document.getElementById("hn-cred-pass").previousElementSibling;
   // Show/hide Orbi SSID field
   const ssidRow = document.getElementById("hn-cred-ssid-row");
+  // Toggle the TP-Link SNMP help block: visible only for tplink_switch.
+  const tplinkHelp = document.getElementById("hn-cred-tplink-help");
+  if (tplinkHelp) tplinkHelp.style.display = (key === "tplink_switch") ? "" : "none";
   if (key === "tplink_switch") {
     // For SNMP: username = switch IP, password = community string
     document.getElementById("hn-cred-user").value = "auto";
@@ -6926,8 +6972,10 @@ function renderSystemInfo(d) {
           <span><span style="display:inline-block;width:10px;height:10px;background:var(--cyan);border-radius:50%;vertical-align:middle;margin-right:4px"></span>Router</span>
           <span><span style="display:inline-block;width:10px;height:10px;background:var(--orange);border-radius:50%;vertical-align:middle;margin-right:4px"></span>Switch</span>
           <span><span style="display:inline-block;width:10px;height:10px;background:var(--purple);border-radius:50%;vertical-align:middle;margin-right:4px"></span>Access Point</span>
+          <span title="Coax-to-Ethernet bridges (Actiontec, GoCoax, etc.)"><span style="display:inline-block;width:10px;height:10px;background:var(--cyan);border-radius:50%;vertical-align:middle;margin-right:4px"></span>📻 MoCA Bridge</span>
+          <span title="Wired devices not on the TP-Link MAC table — either plugged direct into the Verizon router OR downstream of a MoCA bridge."><span style="display:inline-block;width:10px;height:10px;background:var(--yellow);border-radius:50%;vertical-align:middle;margin-right:4px"></span>🔌 Verizon-direct / MoCA</span>
           <span><span style="display:inline-block;width:10px;height:10px;background:var(--green);border-radius:50%;vertical-align:middle;margin-right:4px"></span>Online device</span>
-          <span><span style="display:inline-block;width:10px;height:10px;background:var(--border);border-radius:50%;vertical-align:middle;margin-right:4px"></span>Offline / unmapped</span>
+          <span title="If you see many devices here, configure SNMP on the TP-Link switch (see Network Settings → TP-Link)."><span style="display:inline-block;width:10px;height:10px;background:var(--border);border-radius:50%;vertical-align:middle;margin-right:4px"></span>Offline / unmapped</span>
         </div>
       </div>
     </div>
@@ -7061,6 +7109,32 @@ function renderSystemInfo(d) {
           <input type="text" id="hn-cred-ssid" placeholder="e.g. fitch" style="width:100%;padding:6px 10px;border:1px solid var(--border);
                  border-radius:6px;background:var(--surface);color:var(--text);font-family:var(--font-mono);font-size:12px">
           <span style="font-size:10px;color:var(--muted)">The primary Orbi SSID that assigns 10.x addresses</span>
+        </div>
+        <!-- TP-Link SNMP help — visible only when editing the tplink_switch credential.
+             Shipped 2026-04-25 in response to "how do I get the credentials". The
+             values aren't stored in any vault; they live on the switch itself, so
+             walk the user through enabling SNMP rather than handing them a magic string. -->
+        <div id="hn-cred-tplink-help" style="display:none;margin-bottom:16px;padding:10px 12px;background:var(--surface);border:1px dashed var(--cyan);border-radius:6px;font-size:11px;color:var(--text);line-height:1.5">
+          <div style="font-weight:700;color:var(--cyan);margin-bottom:4px">📘 How to get these values</div>
+          <div style="margin-bottom:6px">
+            The TP-Link TL-SG2218 doesn't have a "username/password" for monitoring — it speaks
+            <strong>SNMP</strong>. You need to enable SNMP on the switch and pick a <strong>community string</strong>.
+          </div>
+          <ol style="margin:4px 0 4px 18px;padding:0">
+            <li><strong>Find the switch IP</strong>: open a PowerShell window and run <code style="background:var(--card);padding:1px 4px;border-radius:3px">arp -a | findstr /i "dc-62-79"</code> (the switch MAC starts with <code style="background:var(--card);padding:1px 4px;border-radius:3px">DC:62:79</code>). Or check the Verizon router's Connected Devices page at 192.168.1.1.</li>
+            <li><strong>Log into the switch web UI</strong> at <code style="background:var(--card);padding:1px 4px;border-radius:3px">http://&lt;switch-ip&gt;</code> — factory default is <code style="background:var(--card);padding:1px 4px;border-radius:3px">admin</code> / <code style="background:var(--card);padding:1px 4px;border-radius:3px">admin</code>. If you forgot it, hold the reset pinhole 10 seconds to factory-reset.</li>
+            <li><strong>Enable SNMP</strong>: navigate to <strong>SNMP</strong> in the sidebar (older firmware: <em>System → SNMP → Global Config</em>). Set SNMP to <strong>Enable</strong> and click Apply.</li>
+            <li><strong>Add a community</strong>: go to <strong>SNMP → Community</strong>. Add or edit one with name <code style="background:var(--card);padding:1px 4px;border-radius:3px">public</code> (or any alphanumeric string), Access <strong>read-only</strong>.</li>
+            <li><strong>SAVE THE CONFIG</strong>: TP-Link gotcha — runtime changes vanish on reboot. Click <em>Save Config</em> (or System → System Tools → Config Backup → Save).</li>
+            <li>Come back here and fill in:
+              <ul style="margin:2px 0 0 16px;padding:0">
+                <li><strong>Switch IP Address</strong>: the IP from step 1 (or <code style="background:var(--card);padding:1px 4px;border-radius:3px">auto</code> to auto-discover by MAC)</li>
+                <li><strong>SNMP Community String</strong>: whatever name you set in step 4</li>
+              </ul>
+            </li>
+            <li>Click <strong>Test</strong> to verify — success looks like "Connected! N/M ports up, X MACs learned."</li>
+          </ol>
+          <div style="margin-top:6px;color:var(--muted);font-size:10px">SNMP v2c with a community string is read-only and fine on a home LAN behind your edge router. Don't expose port 161 to the internet.</div>
         </div>
         <div id="hn-cred-status" style="display:none;padding:8px;border-radius:6px;margin-bottom:12px;font-size:12px"></div>
         <div style="display:flex;gap:8px;justify-content:flex-end">

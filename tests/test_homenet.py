@@ -2501,6 +2501,105 @@ class TestBuildTopology:
         t = build_topology(inv, switch_data={})
         assert "DC:62:79:F3:52:5C" not in t["unmapped"]
 
+    def test_moca_bridges_detected_by_vendor(self):
+        """Devices made by known MoCA-bridge vendors (Actiontec, GoCoax, etc.)
+        get bucketed into ``moca_bridges`` so the diagram can render them as
+        their own infrastructure tier."""
+        from homenet import build_topology
+
+        inv = self._inventory(
+            {
+                "mac": "00:0F:B3:11:22:33",
+                "ip": "192.168.1.50",
+                "vendor": "Actiontec Electronics, Inc.",
+                "network": "wired",
+            },
+            {"mac": "AA:BB:CC:00:00:99", "ip": "192.168.1.51", "vendor": "GoCoax", "network": "wired"},
+            # Not a MoCA bridge -- should NOT land in moca_bridges
+            {"mac": "11:22:33:44:55:66", "ip": "192.168.1.52", "vendor": "Apple, Inc.", "network": "wired"},
+        )
+        t = build_topology(inv, switch_data={})
+        assert "00:0F:B3:11:22:33" in t["moca_bridges"]
+        assert "AA:BB:CC:00:00:99" in t["moca_bridges"]
+        assert "11:22:33:44:55:66" not in t["moca_bridges"]
+        assert t["stats"]["moca_bridges"] == 2
+
+    def test_via_verizon_or_moca_catches_wired_devices_off_switch(self):
+        """A wired device that's NOT on the switch MAC table AND isn't itself
+        a MoCA bridge ends up in ``via_verizon_or_moca`` -- the catch-all
+        explaining 'wired but not seen by the switch'. This is the bucket that
+        shows EVERY wired device when SNMP isn't configured."""
+        from homenet import build_topology
+
+        inv = self._inventory(
+            {"mac": "AA:00:00:00:00:01", "ip": "192.168.1.20", "vendor": "Apple, Inc.", "network": "wired"},
+            {"mac": "AA:00:00:00:00:02", "ip": "192.168.1.21", "vendor": "QNAP Systems", "network": "wired"},
+        )
+        # Empty switch MAC table = SNMP not configured / switch unreachable
+        t = build_topology(inv, switch_data={})
+        assert "AA:00:00:00:00:01" in t["via_verizon_or_moca"]
+        assert "AA:00:00:00:00:02" in t["via_verizon_or_moca"]
+        # NOT in unmapped -- wired devices shouldn't appear there anymore
+        assert "AA:00:00:00:00:01" not in t["unmapped"]
+        assert t["stats"]["via_verizon_or_moca"] == 2
+
+    def test_wired_on_switch_not_double_counted_in_via_verizon(self):
+        """A wired device that DID land on the switch must NOT also appear
+        in via_verizon_or_moca -- it has a precise port, not a fallback."""
+        from homenet import build_topology
+
+        inv = self._inventory(
+            {"mac": "AA:00:00:00:00:01", "ip": "192.168.1.20", "vendor": "Apple, Inc.", "network": "wired"},
+        )
+        switch = {"mac_table": [{"mac": "AA:00:00:00:00:01", "port_index": 3}]}
+        t = build_topology(inv, switch_data=switch)
+        assert "AA:00:00:00:00:01" not in t["via_verizon_or_moca"]
+        assert "AA:00:00:00:00:01" not in t["unmapped"]
+        assert t["stats"]["wired_mapped"] == 1
+        assert t["stats"]["via_verizon_or_moca"] == 0
+
+    def test_wireless_devices_without_ap_stay_in_unmapped(self):
+        """Wireless devices without a conn_ap_mac (e.g. inventory captured
+        before the ConnAPMAC field was added) are TRULY unmapped -- not
+        Verizon-direct, since they're not wired."""
+        from homenet import build_topology
+
+        inv = self._inventory(
+            {"mac": "WI:RE:FF:00:00:01", "ip": "10.0.0.50", "network": "wireless", "vendor": "Apple"},
+        )
+        t = build_topology(inv, switch_data={})
+        assert "WI:RE:FF:00:00:01" in t["unmapped"]
+        assert "WI:RE:FF:00:00:01" not in t["via_verizon_or_moca"]
+
+
+class TestMocaVendorDetection:
+    """The vendor-name pattern list is the single source of truth for what
+    counts as a MoCA bridge. Each test pins one matching pattern and one
+    near-miss to guard against accidental over-matching."""
+
+    @pytest.mark.parametrize(
+        "vendor, expected",
+        [
+            ("Actiontec Electronics, Inc.", True),
+            ("ACTIONTEC ELECTRONICS", True),  # case-insensitive
+            ("GoCoax", True),
+            ("Hitron Technologies", True),
+            ("Westell Technologies", True),
+            ("Motorola Mobility LLC", True),
+            ("ScreenBeam Inc.", True),
+            # Near-misses
+            ("Apple, Inc.", False),
+            ("Cisco Systems", False),
+            ("", False),
+            (None, False),
+        ],
+    )
+    def test_is_moca_bridge_pattern_matching(self, vendor, expected):
+        from homenet import _is_moca_bridge
+
+        dev = {"vendor": vendor} if vendor is not None else {}
+        assert _is_moca_bridge(dev) is expected
+
 
 class TestTopologyRoute:
     def test_route_returns_topology_shape(self, client, mocker):
