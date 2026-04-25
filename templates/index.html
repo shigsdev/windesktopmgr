@@ -5176,6 +5176,17 @@ async function saveDeviceEdit() {
     closeEditModal();
     _tabLoaded["homenet"] = false;
     loadHomeNet();
+    // Auto-refresh the topology if it's currently visible. User feedback
+    // 2026-04-25: "if i manually move a device to the TP-link switch it
+    // should automatically appear under that and not wait for a refresh."
+    // Same for satellite naming, wired_via=moca, friendly_name changes,
+    // etc. -- any inventory edit can affect the topology so we
+    // unconditionally re-render when the user has the diagram open.
+    const topoBody = document.getElementById("hn-topo-body");
+    if (topoBody && topoBody.style.display !== "none") {
+      _hnTopoLoaded = false;
+      hnTopoRefresh().then(() => { _hnTopoLoaded = true; });
+    }
   } else {
     alert("Save failed: " + data.message);
   }
