@@ -1847,13 +1847,33 @@ def _is_moca_bridge(device: dict) -> bool:
     return any(p in vendor for p in _MOCA_VENDOR_PATTERNS)
 
 
-def _label_orbi_node(mac: str) -> str:
-    """Friendly label for an Orbi node MAC. Satellites aren't pre-labelled
-    so we fall back to a short suffix-based name."""
+def _label_orbi_node(mac: str, devices_by_mac: dict | None = None) -> str:
+    """Friendly label for an Orbi node MAC.
+
+    Resolution order:
+      1. Hard-pinned _INFRA_LABELS entry (e.g. the Orbi base IP)
+      2. ``friendly_name`` set by the user via the device-edit modal
+         (lets the user name "Living Room Orbi" / "Kitchen Orbi" / etc.)
+      3. ``hostname`` if the inventory captured one
+      4. Fallback: "Orbi satellite (XXXX)" using last 4 hex of MAC
+
+    Bug 2026-04-25: previously satellites were stuck at the (XXXX) fallback
+    forever because they're never in devices_by_mac (Orbi SOAP returns clients,
+    not satellites). Now build_topology synthesises an inventory entry per
+    satellite so the user can name them via the existing edit flow, and this
+    function picks up that friendly_name on the next render.
+    """
     upper = mac.upper()
     if upper in _INFRA_LABELS:
         return _INFRA_LABELS[upper]["name"]
-    # Satellite -- use last 4 hex chars of MAC for a stable short name
+    if devices_by_mac:
+        dev = devices_by_mac.get(upper) or {}
+        friendly = (dev.get("friendly_name") or "").strip()
+        if friendly:
+            return friendly
+        hostname = (dev.get("hostname") or "").strip()
+        if hostname:
+            return hostname.replace(".mynetworksettings.com", "")
     suffix = upper.replace(":", "")[-4:]
     return f"Orbi satellite ({suffix})"
 
@@ -1936,7 +1956,7 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
             {
                 "id": f"ap-{ap_mac}",
                 "mac": ap_mac,
-                "name": _label_orbi_node(ap_mac),
+                "name": _label_orbi_node(ap_mac, devices_by_mac),
                 "is_base": ap_mac == orbi_base_mac,
                 "clients": sorted(clients),
             }
@@ -1949,11 +1969,51 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
             {
                 "id": f"ap-{orbi_base_mac}",
                 "mac": orbi_base_mac,
-                "name": _label_orbi_node(orbi_base_mac),
+                "name": _label_orbi_node(orbi_base_mac, devices_by_mac),
                 "is_base": True,
                 "clients": [],
             },
         )
+
+    # ── Satellite-name plumbing (#9) ──────────────────────────────────
+    # Synthesise a placeholder inventory entry for every satellite MAC that
+    # isn't already in the inventory. The Orbi SOAP endpoint returns clients
+    # only -- it never returns the satellites themselves -- so without this
+    # step the user has nothing to point the device-edit modal at when they
+    # want to name "Living Room Orbi" / "Kitchen Orbi" / etc. Once the entry
+    # exists the existing /api/homenet/device/update flow handles the rest.
+    inventory_dirty = False
+    for ap in aps_out:
+        ap_mac = ap["mac"]
+        if ap_mac and ap_mac not in devices_by_mac and not ap.get("is_base"):
+            devices_by_mac[ap_mac] = {
+                "mac": ap_mac,
+                "ip": "",
+                "hostname": "",
+                "vendor": "Netgear",
+                "network": "wireless",
+                "source": "topology_synthesised",
+                "last_seen": datetime.now(timezone.utc).isoformat(),
+                "friendly_name": "",
+                "category": "Network",
+                "location": "",
+                "notes": "Orbi satellite — auto-added by topology builder. Open this row to set a friendly name (e.g. 'Living Room Orbi').",
+                "active": True,
+            }
+            inventory_dirty = True
+    if inventory_dirty and inventory is not None and isinstance(inventory.get("devices"), dict):
+        # Mirror the synthesised entries into the live inventory dict so the
+        # next /api/homenet/inventory call surfaces them in the device table
+        # too. Best-effort: if persistence fails (write lock contention etc.)
+        # the topology still renders, just without the satellite entries
+        # showing up in the table until the next scan.
+        for ap_mac, entry in devices_by_mac.items():
+            if entry.get("source") == "topology_synthesised":
+                inventory["devices"].setdefault(ap_mac, entry)
+        try:
+            _save_homenet_inventory(inventory)
+        except Exception:  # noqa: BLE001 -- save failure is non-fatal
+            pass
 
     # ── Switch wrapper ────────────────────────────────────────────────
     switch_mac = "DC:62:79:F3:52:5C"

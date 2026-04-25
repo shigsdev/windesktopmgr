@@ -2594,6 +2594,52 @@ class TestBuildTopology:
         assert "28:94:01:3F:73:E2" not in t["via_verizon_or_moca"]
         assert "28:94:01:3F:73:E2" not in t["unmapped"]
 
+    def test_satellite_friendly_name_from_inventory(self):
+        """Bug 2026-04-25: Orbi satellites were stuck at the 'Orbi satellite
+        (XXXX)' fallback forever because they never appeared in
+        devices_by_mac (Orbi SOAP returns clients only). Fix: build_topology
+        synthesises a placeholder inventory entry per satellite + the labeller
+        accepts a devices_by_mac arg and reads friendly_name from it."""
+        from homenet import _label_orbi_node
+
+        sat_mac = "28:94:01:40:5A:63"
+        # No inventory => MAC-suffix fallback
+        assert _label_orbi_node(sat_mac) == "Orbi satellite (5A63)"
+        # Inventory with friendly_name => that wins
+        inv = {sat_mac: {"friendly_name": "Living Room Orbi"}}
+        assert _label_orbi_node(sat_mac, inv) == "Living Room Orbi"
+        # Inventory with hostname only => hostname (sans .mynetworksettings.com)
+        inv2 = {sat_mac: {"hostname": "Kitchen-Orbi.mynetworksettings.com"}}
+        assert _label_orbi_node(sat_mac, inv2) == "Kitchen-Orbi"
+        # Inventory entry with NEITHER => still falls back
+        inv3 = {sat_mac: {"friendly_name": "", "hostname": ""}}
+        assert _label_orbi_node(sat_mac, inv3) == "Orbi satellite (5A63)"
+
+    def test_satellite_synthesised_into_inventory(self, mocker):
+        """When a satellite MAC isn't yet in inventory, build_topology
+        synthesises a placeholder so the user can name it via the existing
+        device-edit modal. Without this the satellite has no inventory row
+        to edit, and the friendly_name path is unreachable."""
+        from homenet import build_topology
+
+        mocker.patch("homenet._save_homenet_inventory")  # avoid disk write in test
+        sat_mac = "28:94:01:40:5A:63"
+        inv = self._inventory(
+            # Orbi base in inventory
+            {"mac": "BA:5E:00:00:00:01", "ip": "10.0.0.1"},
+            # One wireless client connected to a satellite that's NOT in inventory
+            {"mac": "CC:CC:CC:00:00:01", "ip": "10.0.0.10", "conn_ap_mac": sat_mac, "network": "wireless"},
+        )
+        t = build_topology(inv, switch_data={})
+        # Satellite MAC must now exist in t["devices"] with a synthesised entry
+        assert sat_mac in t["devices"]
+        sat_entry = t["devices"][sat_mac]
+        assert sat_entry["source"] == "topology_synthesised"
+        # And it MUST have empty friendly_name initially -- user fills it in via
+        # the edit modal. Test that subsequent build_topology runs would pick
+        # up the friendly_name if it were set.
+        assert sat_entry["friendly_name"] == ""
+
     def test_commscope_fios_set_top_box_recognised_as_moca(self):
         """The Verizon FiOS VMS4100 / VMS1100 Set-Top Boxes are MoCA
         endpoints -- they bridge the coax network into video. Vendor name
