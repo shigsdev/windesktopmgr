@@ -1789,6 +1789,34 @@ def _is_infrastructure_mac(mac: str) -> bool:
     return mac.upper() in _INFRA_LABELS
 
 
+# Vendors that ship MoCA-over-coax Ethernet bridges. When a device with one
+# of these vendor-name substrings is in the inventory, it's almost certainly
+# a MoCA endpoint -- one of the boxes the user has wired into a coax run to
+# turn it into Ethernet. We render those as their own "MoCA / Verizon-direct"
+# column so users immediately understand why their devices aren't on the
+# TP-Link MAC table (they never traverse the switch -- they go device → MoCA
+# bridge → coax → Verizon's built-in MoCA bridge → Verizon LAN).
+#
+# Lowercase substring match against the IEEE / curated vendor name. Order
+# doesn't matter -- any match counts.
+_MOCA_VENDOR_PATTERNS: tuple[str, ...] = (
+    "actiontec",  # Actiontec ECB6200, MoCA Network Adapter MM1000
+    "gocoax",  # GoCoax MA2500D
+    "motorola mobility",  # MM1000 OEM
+    "screenbeam",  # ScreenBeam (Actiontec spinoff) MoCA adapters
+    "hitron",  # Hitron Coda MoCA bridges
+    "westell",  # Verizon-branded older MoCA extenders
+)
+
+
+def _is_moca_bridge(device: dict) -> bool:
+    """True if the device's vendor name matches a known MoCA-bridge maker."""
+    vendor = (device.get("vendor") or "").lower()
+    if not vendor:
+        return False
+    return any(p in vendor for p in _MOCA_VENDOR_PATTERNS)
+
+
 def _label_orbi_node(mac: str) -> str:
     """Friendly label for an Orbi node MAC. Satellites aren't pre-labelled
     so we fall back to a short suffix-based name."""
@@ -1925,7 +1953,35 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
     all_macs = set(devices_by_mac.keys())
     # Don't count infrastructure as "unmapped" -- we render it explicitly.
     candidate = {m for m in all_macs if not _is_infrastructure_mac(m)}
-    unmapped = sorted(candidate - mapped_wired - mapped_wireless)
+    leftover = candidate - mapped_wired - mapped_wireless
+
+    # ── MoCA bridges ──────────────────────────────────────────────────
+    # Devices we recognise as MoCA endpoints (Actiontec ECB6200 etc.) get
+    # their own bucket. They're "wired" but not on the switch's MAC table
+    # because they sit on the coax → Verizon path. The remaining wired
+    # devices that are leftover AND not MoCA bridges go into "Verizon-
+    # direct or via MoCA" -- the catch-all explanation for "wired but not
+    # seen by the switch".
+    moca_bridges: list[str] = []
+    leftover_after_moca: set[str] = set()
+    for m in leftover:
+        dev = devices_by_mac.get(m, {})
+        if _is_moca_bridge(dev):
+            moca_bridges.append(m)
+        else:
+            leftover_after_moca.add(m)
+    moca_bridges.sort()
+
+    # Devices that are wired but not on the switch (excluding the MoCA
+    # bridges themselves) -- these are either plugged direct into the
+    # Verizon's LAN ports OR sit downstream of a MoCA bridge. Without
+    # active Verizon-side topology data we can't tell which is which,
+    # so they go into a single "via Verizon / MoCA" bucket. Wireless
+    # leftovers (no conn_ap_mac yet) stay in the unmapped list.
+    via_verizon_or_moca: list[str] = sorted(
+        m for m in leftover_after_moca if (devices_by_mac.get(m, {}).get("network") == "wired")
+    )
+    unmapped = sorted(leftover_after_moca - set(via_verizon_or_moca))
 
     # ── Identify the router ───────────────────────────────────────────
     router = {"id": "router", "name": "Verizon CR1000A", "ip": "192.168.1.1", "mac": ""}
@@ -1939,12 +1995,23 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
         "router": router,
         "switches": switches_out,
         "aps": aps_out,
+        # MoCA-over-coax bridges detected by vendor name (Actiontec etc.).
+        # Rendered as their own infrastructure tier in the diagram so the
+        # user can see which devices are "going through MoCA" at a glance.
+        "moca_bridges": moca_bridges,
+        # Wired devices that aren't on the switch MAC table AND aren't a
+        # MoCA bridge themselves. Common causes: (a) plugged direct into
+        # the Verizon LAN ports, (b) downstream of a MoCA bridge, (c) the
+        # TP-Link SNMP credential isn't configured so no MAC table at all.
+        "via_verizon_or_moca": via_verizon_or_moca,
         "devices": devices_by_mac,
         "unmapped": unmapped,
         "stats": {
             "total": len(devices_by_mac),
             "wired_mapped": len(mapped_wired),
             "wireless_mapped": len(mapped_wireless),
+            "moca_bridges": len(moca_bridges),
+            "via_verizon_or_moca": len(via_verizon_or_moca),
             "unmapped": len(unmapped),
             "switch_available": switches_out[0]["available"] if switches_out else False,
         },
