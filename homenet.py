@@ -1847,21 +1847,154 @@ def _is_moca_bridge(device: dict) -> bool:
     return any(p in vendor for p in _MOCA_VENDOR_PATTERNS)
 
 
-def _label_orbi_node(mac: str, devices_by_mac: dict | None = None) -> str:
+def _orbi_get_satellites() -> dict:
+    """Query the Orbi for its satellite list with user-set device names.
+
+    The user labels each satellite in the Orbi web UI ("Upstairs",
+    "Downstairs", etc.) and the router stores those labels. The SOAP
+    action ``GetAllNewSatellites`` (NETGEAR-ROUTER:service:DeviceInfo:1)
+    returns them via the ``DeviceName`` element per satellite. Some
+    Orbi firmware versions also surface this via ``GetCurrentSetting``;
+    we try the documented SOAP action first.
+
+    Returns ``{"ok": True, "satellites": [{"mac": "...", "name": "...",
+    "ip": "...", "model": "..."}, ...]}`` on success, or
+    ``{"error": "..."}`` on failure. Failure is non-fatal -- callers
+    fall back to the existing per-MAC labelling pipeline.
+    """
+    import urllib3
+
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    user, pw = _get_homenet_cred("orbi")
+    if not user or not pw:
+        return {"error": "No Orbi credentials configured."}
+
+    url = "https://10.0.0.1/soap/server_sa/"
+    headers = {
+        "SOAPAction": "urn:NETGEAR-ROUTER:service:DeviceInfo:1#GetAllNewSatellites",
+        "Content-Type": "text/xml; charset=utf-8",
+    }
+    soap_body = """<?xml version="1.0" encoding="UTF-8"?>
+<v:Envelope xmlns:v="http://schemas.xmlsoap.org/soap/envelope/">
+  <v:Header><SessionID>DEF456</SessionID></v:Header>
+  <v:Body>
+    <M1:GetAllNewSatellites xmlns:M1="urn:NETGEAR-ROUTER:service:DeviceInfo:1"/>
+  </v:Body>
+</v:Envelope>"""
+
+    session = None
+    try:
+        session = requests.Session()
+        session.verify = False
+        r = session.post(url, data=soap_body, headers=headers, timeout=10, auth=(user, pw))
+        if r.status_code != 200:
+            return {"error": f"Orbi SOAP GetAllNewSatellites returned HTTP {r.status_code}"}
+        return {"ok": True, "satellites": _parse_orbi_satellites(r.text)}
+    except (requests.exceptions.RequestException, OSError) as e:
+        return {"error": f"Orbi satellite query failed: {e}"}
+    finally:
+        if session is not None:
+            session.close()
+
+
+def _parse_orbi_satellites(xml_text: str) -> list:
+    """Parse the SOAP response for GetAllNewSatellites into a list.
+
+    Per-satellite XML shape varies by firmware; we read every common tag
+    (DeviceName / Name, MAC, IP, ModelName / DeviceModel) and emit a
+    uniform dict so the caller doesn't have to care which firmware
+    revision shipped which fieldset.
+    """
+    out: list[dict] = []
+    blocks = re.findall(r"<NewSatellite>(.*?)</NewSatellite>", xml_text, re.DOTALL)
+    if not blocks:
+        # Some firmware uses a different wrapper -- catch the common variants
+        blocks = re.findall(r"<Satellite>(.*?)</Satellite>", xml_text, re.DOTALL)
+    for block in blocks:
+
+        def _tag(name, _block=block):
+            m = re.search(rf"<{name}>(.*?)</{name}>", _block)
+            return m.group(1).strip() if m else ""
+
+        mac = (_tag("MAC") or _tag("Mac")).upper().replace("-", ":")
+        if not mac:
+            continue
+        name = _tag("DeviceName") or _tag("Name") or _tag("FriendlyName")
+        out.append(
+            {
+                "mac": mac,
+                "name": name,
+                "ip": _tag("IP") or _tag("Ip"),
+                "model": _tag("ModelName") or _tag("DeviceModel") or "",
+            }
+        )
+    return out
+
+
+# Process-level cache for satellite names. The Orbi SOAP call is ~1-3s
+# and the satellite list rarely changes (only when a user adds/renames
+# a satellite via the Orbi web UI), so a 5-minute TTL is plenty. Stops
+# every topology refresh from hitting the router.
+_orbi_sat_cache: dict = {"ts": 0.0, "data": []}
+_ORBI_SAT_TTL_S = 300.0
+
+
+def _get_orbi_satellite_names_cached() -> dict[str, str]:
+    """Return ``{mac_upper: friendly_name}`` for satellites the Orbi knows
+    about. Cached for _ORBI_SAT_TTL_S seconds. Returns {} on any failure
+    so callers can treat it as "no extra info available" without special-
+    casing errors.
+    """
+    import time as _time
+
+    now = _time.time()
+    if (now - _orbi_sat_cache["ts"]) < _ORBI_SAT_TTL_S and _orbi_sat_cache["data"]:
+        return dict(_orbi_sat_cache["data"])
+    try:
+        result = _orbi_get_satellites()
+    except Exception:  # noqa: BLE001 -- best effort; never let this break topology
+        return {}
+    out: dict[str, str] = {}
+    if isinstance(result, dict) and result.get("ok"):
+        for s in result.get("satellites") or []:
+            mac = (s.get("mac") or "").upper()
+            name = (s.get("name") or "").strip()
+            if mac and name:
+                out[mac] = name
+    # Cache even an empty result -- avoid hammering the router when the
+    # SOAP action isn't supported on this firmware.
+    _orbi_sat_cache["ts"] = now
+    _orbi_sat_cache["data"] = list(out.items())
+    return out
+
+
+def _label_orbi_node(
+    mac: str,
+    devices_by_mac: dict | None = None,
+    is_base: bool = False,
+    sat_names_from_orbi: dict[str, str] | None = None,
+) -> str:
     """Friendly label for an Orbi node MAC.
 
-    Resolution order:
-      1. Hard-pinned _INFRA_LABELS entry (e.g. the Orbi base IP)
-      2. ``friendly_name`` set by the user via the device-edit modal
-         (lets the user name "Living Room Orbi" / "Kitchen Orbi" / etc.)
+    Resolution order (first match wins):
+      1. Hard-pinned _INFRA_LABELS entry (e.g. the Orbi base by IP)
+      2. ``friendly_name`` set by the user via WinDesktopMgr's edit modal
       3. ``hostname`` if the inventory captured one
-      4. Fallback: "Orbi satellite (XXXX)" using last 4 hex of MAC
+      4. ``sat_names_from_orbi[mac]`` -- the name the user set on the Orbi
+         router itself ("Upstairs Orbi" / "Downstairs Orbi"). This is the
+         "I already named this in the Orbi UI" path; we read it via SOAP
+         so the topology automatically reflects what the user already set.
+      5. ``is_base=True`` -> "Orbi RBRE960 (Base)" -- distinct from satellites
+      6. Fallback: "Orbi satellite (XXXX)" using last 4 hex of MAC
 
-    Bug 2026-04-25: previously satellites were stuck at the (XXXX) fallback
-    forever because they're never in devices_by_mac (Orbi SOAP returns clients,
-    not satellites). Now build_topology synthesises an inventory entry per
-    satellite so the user can name them via the existing edit flow, and this
-    function picks up that friendly_name on the next render.
+    Bugs fixed 2026-04-25:
+      - Base was rendered as "Orbi satellite (73E1)" because its MAC isn't
+        in _INFRA_LABELS (only the IP is) and the fallback didn't know it
+        was the base. Added ``is_base`` parameter.
+      - Satellites the user already named in the Orbi UI weren't picked
+        up because we never asked the Orbi for those names. Added a
+        cached SOAP query (5 min TTL).
     """
     upper = mac.upper()
     if upper in _INFRA_LABELS:
@@ -1874,6 +2007,12 @@ def _label_orbi_node(mac: str, devices_by_mac: dict | None = None) -> str:
         hostname = (dev.get("hostname") or "").strip()
         if hostname:
             return hostname.replace(".mynetworksettings.com", "")
+    if sat_names_from_orbi:
+        orbi_name = (sat_names_from_orbi.get(upper) or "").strip()
+        if orbi_name:
+            return orbi_name
+    if is_base:
+        return "Orbi RBRE960 (Base)"
     suffix = upper.replace(":", "")[-4:]
     return f"Orbi satellite ({suffix})"
 
@@ -1950,14 +2089,19 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
             orbi_base_mac = mac.upper()
             break
 
+    # Pull cached satellite names from the Orbi (if reachable). 5-min TTL
+    # means at most one extra SOAP call per topology refresh in practice.
+    sat_names_from_orbi = _get_orbi_satellite_names_cached()
+
     aps_out = []
     for ap_mac, clients in sorted(aps_by_mac.items()):
+        ap_is_base = ap_mac == orbi_base_mac
         aps_out.append(
             {
                 "id": f"ap-{ap_mac}",
                 "mac": ap_mac,
-                "name": _label_orbi_node(ap_mac, devices_by_mac),
-                "is_base": ap_mac == orbi_base_mac,
+                "name": _label_orbi_node(ap_mac, devices_by_mac, ap_is_base, sat_names_from_orbi),
+                "is_base": ap_is_base,
                 "clients": sorted(clients),
             }
         )
@@ -1969,7 +2113,7 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
             {
                 "id": f"ap-{orbi_base_mac}",
                 "mac": orbi_base_mac,
-                "name": _label_orbi_node(orbi_base_mac, devices_by_mac),
+                "name": _label_orbi_node(orbi_base_mac, devices_by_mac, True, sat_names_from_orbi),
                 "is_base": True,
                 "clients": [],
             },
@@ -1985,7 +2129,12 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
     inventory_dirty = False
     for ap in aps_out:
         ap_mac = ap["mac"]
-        if ap_mac and ap_mac not in devices_by_mac and not ap.get("is_base"):
+        # Synthesise an entry for any AP that's not in inventory -- this
+        # includes BOTH satellites AND the base when the inventory hasn't
+        # captured the base via ARP yet. Without the base entry, the user
+        # can't rename "Orbi RBRE960 (Base)" to e.g. "Living Room Orbi" via
+        # the existing edit modal.
+        if ap_mac and ap_mac not in devices_by_mac:
             devices_by_mac[ap_mac] = {
                 "mac": ap_mac,
                 "ip": "",
@@ -2091,12 +2240,25 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
     # bridges themselves) -- these are either plugged direct into the
     # Verizon's LAN ports OR sit downstream of a MoCA bridge. Without
     # active Verizon-side topology data we can't tell which is which,
-    # so they go into a single "via Verizon / MoCA" bucket. Wireless
-    # leftovers (no conn_ap_mac yet) stay in the unmapped list.
+    # so they go into a single "via Verizon / MoCA" bucket.
     via_verizon_or_moca: list[str] = sorted(
         m for m in leftover_after_moca if (devices_by_mac.get(m, {}).get("network") == "wired")
     )
-    unmapped = sorted(leftover_after_moca - set(via_verizon_or_moca))
+
+    # Wireless leftovers split by source. Bug 2026-04-25: dumping every
+    # wireless device with empty ``conn_ap_mac`` into "Unmapped" was
+    # misleading -- those devices ARE on the Orbi mesh, we just don't know
+    # which node, because Orbi's GetAttachDevice2 SOAP response only fills
+    # ConnAPMAC for some clients (firmware-dependent + roaming-state-
+    # dependent). Now we route Orbi-discovered wireless leftovers to
+    # ``orbi_mesh_unknown_ap`` so the user understands "I see them, just
+    # not their AP". ARP-only wireless ghosts (no Orbi entry) stay in
+    # ``unmapped`` -- those are usually offline / stale.
+    wireless_leftover = leftover_after_moca - set(via_verizon_or_moca)
+    orbi_mesh_unknown_ap: list[str] = sorted(
+        m for m in wireless_leftover if devices_by_mac.get(m, {}).get("source") == "orbi"
+    )
+    unmapped = sorted(wireless_leftover - set(orbi_mesh_unknown_ap))
 
     return {
         "ok": True,
@@ -2112,7 +2274,15 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
         # the Verizon LAN ports, (b) downstream of a MoCA bridge, (c) the
         # TP-Link SNMP credential isn't configured so no MAC table at all.
         "via_verizon_or_moca": via_verizon_or_moca,
+        # Wireless devices the Orbi reports but doesn't tell us which AP
+        # they're attached to. Known firmware behaviour -- the SOAP
+        # GetAttachDevice2 response leaves ConnAPMAC empty for some
+        # clients. They're on the mesh somewhere; we just can't say where.
+        "orbi_mesh_unknown_ap": orbi_mesh_unknown_ap,
         "devices": devices_by_mac,
+        # Truly unmapped: not wired, not on switch, not in any AP's client
+        # list, AND the Orbi never reported them either -- probably
+        # offline ARP ghosts from a previous scan.
         "unmapped": unmapped,
         "stats": {
             "total": len(devices_by_mac),
@@ -2120,6 +2290,7 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
             "wireless_mapped": len(mapped_wireless),
             "moca_bridges": len(moca_bridges),
             "via_verizon_or_moca": len(via_verizon_or_moca),
+            "orbi_mesh_unknown_ap": len(orbi_mesh_unknown_ap),
             "unmapped": len(unmapped),
             "switch_available": switches_out[0]["available"] if switches_out else False,
         },
