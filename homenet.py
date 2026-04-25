@@ -1766,7 +1766,12 @@ def homenet_device_update():
     # leaking into the topology classifier and creating ghost columns.
     if "wired_via" in body:
         val = str(body["wired_via"]).lower().strip()
-        if val in ("moca", "verizon_lan", "switch", ""):
+        # "moca_bridge" = the device IS a MoCA bridge (override vendor
+        # detection -- e.g. when the vendor name doesn't match _MOCA_
+        # VENDOR_PATTERNS but the user knows it's a coax-to-Ethernet
+        # bridge, like a Verizon-branded extender or a third-party box
+        # whose OUI hasn't been catalogued yet).
+        if val in ("moca", "moca_bridge", "verizon_lan", "switch", ""):
             inventory["devices"][mac]["wired_via"] = val
 
     _save_homenet_inventory(inventory)
@@ -1855,7 +1860,20 @@ def _is_infra_by_hostname(device: dict) -> bool:
 
 
 def _is_moca_bridge(device: dict) -> bool:
-    """True if the device's vendor name matches a known MoCA-bridge maker."""
+    """True if this device is a MoCA-over-coax Ethernet bridge.
+
+    Two paths:
+      1. **User attestation** -- ``wired_via == "moca_bridge"`` set via the
+         device-edit modal. Always wins. Use this when your bridge's vendor
+         name doesn't match the well-known patterns (Verizon-branded
+         extenders, off-brand boxes, anything with a generic OUI lookup).
+      2. **Vendor-name pattern match** against _MOCA_VENDOR_PATTERNS --
+         covers the common OEMs (Actiontec, Commscope/Arris STBs, GoCoax,
+         etc.). Auto-detection so the user doesn't have to tag every
+         well-known device manually.
+    """
+    if (device.get("wired_via") or "").lower() == "moca_bridge":
+        return True
     vendor = (device.get("vendor") or "").lower()
     if not vendor:
         return False

@@ -4627,7 +4627,7 @@ async function hnTopoRefresh() {
     ];
     if (s.via_verizon_or_moca) parts.push(`${s.via_verizon_or_moca} Verizon-direct/MoCA`);
     if (s.moca_bridges) parts.push(`${s.moca_bridges} MoCA bridge${s.moca_bridges !== 1 ? "s" : ""}`);
-    if (s.orbi_mesh_unknown_ap) parts.push(`${s.orbi_mesh_unknown_ap} Orbi mesh (AP unknown)`);
+    if (s.orbi_mesh_unknown_ap) parts.push(`${s.orbi_mesh_unknown_ap} unknown (Orbi didn't pin AP)`);
     if (s.unmapped) parts.push(`${s.unmapped} unmapped`);
     if (!s.switch_available) parts.push("⚠ switch unreachable — see Network Settings");
     // Hint: surface a one-line nudge if any satellite is still showing as
@@ -4752,15 +4752,17 @@ function hnTopoBuildSvg(t) {
     });
   }
 
-  // Orbi mesh (AP unknown) -- wireless devices the Orbi knows about but
-  // didn't tell us which node they're on. Honest UI for the SOAP-API
-  // limitation: they're on the mesh, just not pinpointed to base/satellite.
+  // "Unknown" column -- wireless devices the Orbi knows about but didn't
+  // tell us which node they're on. Renamed from "Orbi mesh (AP unknown)"
+  // to just "Unknown" per user request 2026-04-25 (the longer name was
+  // confusing). Still honest UI for the Orbi SOAP-API limitation: they're
+  // on the mesh somewhere, just not pinpointed to base/satellite.
   if ((t.orbi_mesh_unknown_ap || []).length) {
     columns.push({
       kind: "orbi_mesh_unknown",
       id: "orbi-mesh-unknown",
-      name: "Orbi mesh (AP unknown)",
-      sub: `${t.orbi_mesh_unknown_ap.length} client${t.orbi_mesh_unknown_ap.length !== 1 ? "s" : ""} — Orbi didn't report AP`,
+      name: "Unknown",
+      sub: `${t.orbi_mesh_unknown_ap.length} wireless client${t.orbi_mesh_unknown_ap.length !== 1 ? "s" : ""} — Orbi didn't say which AP`,
       rows: t.orbi_mesh_unknown_ap.map(m => ({ mac: m, label: "wireless", dev: devices[m] || { mac: m } })),
     });
   }
@@ -7175,7 +7177,8 @@ function renderSystemInfo(d) {
                   border-radius:6px;background:var(--surface);color:var(--text);font-family:var(--font-mono);font-size:12px">
             <option value="">Unknown — default to Verizon LAN</option>
             <option value="verizon_lan">🔌 Verizon LAN port (plugged into Verizon)</option>
-            <option value="moca">🌀 via MoCA (coax bridge)</option>
+            <option value="moca">🌀 via MoCA (downstream of bridge)</option>
+            <option value="moca_bridge">📻 IS a MoCA bridge (coax-to-Ethernet)</option>
             <option value="switch">🔀 On TP-Link switch (force)</option>
           </select>
         </div>
