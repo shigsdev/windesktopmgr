@@ -4727,6 +4727,19 @@ function hnTopoBuildSvg(t) {
     });
   }
 
+  // Orbi mesh (AP unknown) -- wireless devices the Orbi knows about but
+  // didn't tell us which node they're on. Honest UI for the SOAP-API
+  // limitation: they're on the mesh, just not pinpointed to base/satellite.
+  if ((t.orbi_mesh_unknown_ap || []).length) {
+    columns.push({
+      kind: "orbi_mesh_unknown",
+      id: "orbi-mesh-unknown",
+      name: "Orbi mesh (AP unknown)",
+      sub: `${t.orbi_mesh_unknown_ap.length} client${t.orbi_mesh_unknown_ap.length !== 1 ? "s" : ""} — Orbi didn't report AP`,
+      rows: t.orbi_mesh_unknown_ap.map(m => ({ mac: m, label: "wireless", dev: devices[m] || { mac: m } })),
+    });
+  }
+
   // Truly unmapped column on the right -- wireless devices we haven't yet
   // associated with an AP (no conn_ap_mac after migration) plus anything else
   // that fell through every classification above. Hidden when empty so the
@@ -4766,9 +4779,10 @@ function hnTopoBuildSvg(t) {
       ap_satellite: "var(--purple)",
       moca: "var(--cyan)",
       verizon_or_moca: "var(--yellow)",
+      orbi_mesh_unknown: "var(--purple)",
       unmapped: "var(--border)",
     };
-    const iconByKind = { switch: "🔀", ap_base: "📡", ap_satellite: "📡", moca: "📻", verizon_or_moca: "🔌", unmapped: "❓" };
+    const iconByKind = { switch: "🔀", ap_base: "📡", ap_satellite: "📡", moca: "📻", verizon_or_moca: "🔌", orbi_mesh_unknown: "📶", unmapped: "❓" };
     const label = `${iconByKind[col.kind] || "•"} ${col.name}`;
     svg += _hnSvgNode(x, INFRA_Y, NODE_W, label, col.sub || "", colorByKind[col.kind] || "var(--muted)");
 

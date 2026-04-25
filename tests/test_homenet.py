@@ -2594,6 +2594,105 @@ class TestBuildTopology:
         assert "28:94:01:3F:73:E2" not in t["via_verizon_or_moca"]
         assert "28:94:01:3F:73:E2" not in t["unmapped"]
 
+    def test_base_labelled_as_base_not_satellite(self):
+        """Bug 2026-04-25: The Orbi base (10.0.0.1) was being labelled
+        'Orbi satellite (73E1)' instead of 'Orbi RBRE960 (Base)' because
+        its MAC isn't in _INFRA_LABELS (only the IP is) and the labeller
+        couldn't tell base from satellite. Adding an is_base parameter
+        fixes the label without losing other resolution paths."""
+        from homenet import _label_orbi_node
+
+        base_mac = "28:94:01:3F:73:E1"
+        # Without is_base flag => satellite fallback
+        assert _label_orbi_node(base_mac) == "Orbi satellite (73E1)"
+        # With is_base flag => base label
+        assert _label_orbi_node(base_mac, is_base=True) == "Orbi RBRE960 (Base)"
+        # friendly_name still wins over is_base label
+        inv = {base_mac: {"friendly_name": "Living Room Orbi"}}
+        assert _label_orbi_node(base_mac, inv, is_base=True) == "Living Room Orbi"
+
+    def test_orbi_satellite_names_from_soap_used_as_label(self):
+        """When the user has already named satellites in the Orbi web UI,
+        we pull those names via the GetAllNewSatellites SOAP action and
+        use them as the topology label. Falls between hostname/friendly
+        (which beat it) and is_base/MAC-suffix (which it beats)."""
+        from homenet import _label_orbi_node
+
+        sat_mac = "28:94:01:40:5A:63"
+        sat_names = {sat_mac: "Upstairs Orbi"}
+        # SOAP-fetched name beats the (XXXX) fallback
+        assert _label_orbi_node(sat_mac, sat_names_from_orbi=sat_names) == "Upstairs Orbi"
+        # User-set friendly_name in WDM still beats the Orbi-side name
+        # (the user explicitly chose to override it locally)
+        inv = {sat_mac: {"friendly_name": "My Custom Name"}}
+        assert _label_orbi_node(sat_mac, inv, sat_names_from_orbi=sat_names) == "My Custom Name"
+        # No SOAP, no friendly, no hostname => MAC-suffix fallback
+        assert _label_orbi_node(sat_mac) == "Orbi satellite (5A63)"
+
+    def test_orbi_satellite_soap_failure_does_not_break_topology(self, mocker):
+        """If the Orbi GetAllNewSatellites SOAP call fails (auth error,
+        firmware doesn't support the action, network drop), the satellite
+        labeller must still produce a usable label via the existing
+        fallback chain."""
+        from homenet import _get_orbi_satellite_names_cached
+
+        # Force a fresh fetch then make the SOAP call blow up.
+        mocker.patch("homenet._orbi_sat_cache", {"ts": 0.0, "data": []})
+        mocker.patch("homenet._orbi_get_satellites", side_effect=Exception("firmware doesn't support this action"))
+        # Should swallow the exception and return an empty mapping
+        assert _get_orbi_satellite_names_cached() == {}
+
+    def test_orbi_satellite_soap_parses_devicename(self):
+        """Parse a realistic GetAllNewSatellites response into MAC+name pairs."""
+        from homenet import _parse_orbi_satellites
+
+        xml = """<?xml version="1.0"?><Response>
+        <NewSatellite>
+          <DeviceName>Upstairs Orbi</DeviceName>
+          <MAC>28:94:01:40:5A:63</MAC>
+          <IP>10.0.0.5</IP>
+          <ModelName>RBS50Y</ModelName>
+        </NewSatellite>
+        <NewSatellite>
+          <DeviceName>Downstairs Orbi</DeviceName>
+          <MAC>28:94:01:40:58:F6</MAC>
+          <IP>10.0.0.6</IP>
+          <ModelName>RBS50Y</ModelName>
+        </NewSatellite>
+        </Response>"""
+        sats = _parse_orbi_satellites(xml)
+        assert len(sats) == 2
+        names = {s["mac"]: s["name"] for s in sats}
+        assert names["28:94:01:40:5A:63"] == "Upstairs Orbi"
+        assert names["28:94:01:40:58:F6"] == "Downstairs Orbi"
+
+    def test_orbi_unknown_ap_bucket_separates_from_unmapped(self, mocker):
+        """Wireless devices the Orbi reported (source='orbi') but with empty
+        conn_ap_mac get their own ``orbi_mesh_unknown_ap`` bucket -- not
+        dumped into ``unmapped`` where they look lost. Truly unmapped (not
+        seen by Orbi) stay in ``unmapped``."""
+        from homenet import build_topology
+
+        mocker.patch("homenet._save_homenet_inventory")
+        inv = self._inventory(
+            # Orbi-reported wireless without conn_ap_mac
+            {"mac": "AA:BB:CC:00:00:01", "ip": "10.0.0.50", "network": "wireless", "source": "orbi", "vendor": "Apple"},
+            # Stale ARP-only wireless ghost (probably offline)
+            {
+                "mac": "AA:BB:CC:00:00:02",
+                "ip": "10.0.0.99",
+                "network": "wireless",
+                "source": "arp",
+                "vendor": "Unknown",
+            },
+        )
+        t = build_topology(inv, switch_data={})
+        assert "AA:BB:CC:00:00:01" in t["orbi_mesh_unknown_ap"]
+        assert "AA:BB:CC:00:00:02" in t["unmapped"]
+        # The truly unmapped one is NOT in orbi_mesh_unknown_ap
+        assert "AA:BB:CC:00:00:02" not in t["orbi_mesh_unknown_ap"]
+        assert t["stats"]["orbi_mesh_unknown_ap"] == 1
+
     def test_satellite_friendly_name_from_inventory(self):
         """Bug 2026-04-25: Orbi satellites were stuck at the 'Orbi satellite
         (XXXX)' fallback forever because they never appeared in
