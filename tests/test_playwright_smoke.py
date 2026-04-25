@@ -518,6 +518,97 @@ class TestNetworkTopologyDiagram:
             f"the openEditModal onclick is missing on those rows."
         )
 
+    def test_save_device_edit_auto_refreshes_topology(self, loaded_page):
+        """User feedback 2026-04-25: "if i manually move a device to the
+        TP-link switch it should automatically appear under that and not
+        wait for a refresh." After saveDeviceEdit() POSTs successfully,
+        the topology must re-fetch and re-render automatically while
+        it's visible -- the user shouldn't have to click ↻ themselves.
+
+        Test approach: pick a real device from the live inventory, change
+        its wired_via via saveDeviceEdit() through the JS path, then
+        immediately read back the rendered SVG row count and assert the
+        diagram reflects the new bucketing without an explicit refresh
+        call. We restore the original wired_via at the end so the test
+        leaves the live inventory clean.
+        """
+        page, _ = loaded_page
+        topology = page.evaluate("fetch('/api/homenet/topology').then(r => r.json())")
+        # Pick a wired device that's in verizon_lan (the default bucket)
+        # and that we can safely flip to wired_via=switch then back.
+        candidate_mac = next(
+            (m for m in topology.get("verizon_lan") or [] if topology["devices"].get(m, {}).get("network") == "wired"),
+            None,
+        )
+        if not candidate_mac:
+            pytest.skip("no wired-LAN device available to flip in this test")
+        original = topology["devices"][candidate_mac].get("wired_via", "") or ""
+
+        self._goto_homenet_and_show_topology(page)
+
+        # Confirm initial state: device IS in verizon-lan column
+        initial_in_verizon = page.evaluate(
+            f"""
+            (() => {{
+                const verizonCol = document.querySelector('#hn-topo-svg-wrap');
+                const rows = Array.from(verizonCol.querySelectorAll('g[data-device-mac]'));
+                return rows.some(r => r.dataset.deviceMac === '{candidate_mac}');
+            }})()
+            """
+        )
+        assert initial_in_verizon, f"sanity: {candidate_mac} should be rendered in the diagram pre-flip"
+
+        # Flip via the SAME JS path the user takes (saveDeviceEdit), then
+        # wait for the auto-refresh to land. Direct fetch + manual call to
+        # saveDeviceEdit through the modal is brittle; instead simulate by
+        # POSTing directly to the route then calling the auto-refresh hook
+        # exactly as saveDeviceEdit does. If the wiring is correct, the
+        # diagram updates without an explicit hnTopoRefresh() call from
+        # the test.
+        try:
+            # Pre-load the modal state (mirrors openEditModal -> saveDeviceEdit)
+            page.evaluate(
+                f"""
+                async () => {{
+                    document.getElementById('hn-edit-mac').value = '{candidate_mac}';
+                    document.getElementById('hn-edit-name').value = '';
+                    document.getElementById('hn-edit-category').value = '';
+                    document.getElementById('hn-edit-location').value = '';
+                    document.getElementById('hn-edit-notes').value = '';
+                    document.getElementById('hn-edit-wired-via').value = 'switch';
+                    await saveDeviceEdit();
+                }}
+                """
+            )
+            # Wait for the topology to re-render with the new bucketing.
+            # The switch-forced device should leave verizon_lan and appear
+            # under the TP-Link switch column instead.
+            page.wait_for_function(
+                f"""
+                () => {{
+                    const wrap = document.getElementById('hn-topo-svg-wrap');
+                    if (!wrap) return false;
+                    const rows = Array.from(wrap.querySelectorAll('g[data-device-mac]'));
+                    const row = rows.find(r => r.dataset.deviceMac === '{candidate_mac}');
+                    if (!row) return false;
+                    // Confirm it's now under the switch (label contains 'port')
+                    return row.textContent.toLowerCase().includes('port');
+                }}
+                """,
+                timeout=10_000,
+            )
+        finally:
+            # Restore original wired_via so we don't leave the inventory dirty
+            page.evaluate(
+                f"""
+                fetch('/api/homenet/device/update', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{mac: '{candidate_mac}', wired_via: '{original}'}})
+                }})
+                """
+            )
+
 
 # ── Baseline tab coverage regression (backlog #14) ─────────────────
 
