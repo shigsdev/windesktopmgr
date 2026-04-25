@@ -4709,19 +4709,32 @@ function hnTopoBuildSvg(t) {
     });
   }
 
-  // Verizon-direct / MoCA column -- wired devices that aren't on the TP-Link's
-  // MAC table. Either plugged directly into the Verizon's LAN ports OR
-  // downstream of a MoCA bridge (since MoCA traffic skips the TP-Link entirely).
-  // Heads up: when SNMP isn't configured AT ALL, this bucket gets EVERY wired
-  // device since the switch MAC table is empty -- that's the right behaviour,
-  // it nudges the user to set up SNMP.
-  if ((t.via_verizon_or_moca || []).length) {
+  // Two SEPARATE columns now (was one combined "Verizon-direct / MoCA"):
+  //   - "Verizon LAN port"  → wired devices physically plugged into the
+  //     Verizon CR1000A's 4 LAN ports
+  //   - "via MoCA"           → wired devices reaching the LAN over coax,
+  //     downstream of a MoCA bridge
+  // These are distinct paths and the user (correctly) wanted them split.
+  // Until per-device topology data from the Verizon API is wired up,
+  // assignment is per-device user-set via the edit modal's Wired-via
+  // dropdown. Devices with no wired_via set default to verizon_lan
+  // (most common in typical home setups).
+  if ((t.verizon_lan || []).length) {
     columns.push({
-      kind: "verizon_or_moca",
-      id: "via-verizon-or-moca",
-      name: "Verizon-direct / MoCA",
-      sub: `${t.via_verizon_or_moca.length} wired device${t.via_verizon_or_moca.length !== 1 ? "s" : ""} not on switch`,
-      rows: t.via_verizon_or_moca.map(m => ({ mac: m, label: "wired", dev: devices[m] || { mac: m } })),
+      kind: "verizon_lan",
+      id: "verizon-lan",
+      name: "Verizon LAN port",
+      sub: `${t.verizon_lan.length} device${t.verizon_lan.length !== 1 ? "s" : ""} on Verizon LAN ports`,
+      rows: t.verizon_lan.map(m => ({ mac: m, label: "Verizon LAN", dev: devices[m] || { mac: m } })),
+    });
+  }
+  if ((t.via_moca || []).length) {
+    columns.push({
+      kind: "via_moca",
+      id: "via-moca",
+      name: "via MoCA (coax)",
+      sub: `${t.via_moca.length} device${t.via_moca.length !== 1 ? "s" : ""} downstream of MoCA bridge`,
+      rows: t.via_moca.map(m => ({ mac: m, label: "via MoCA", dev: devices[m] || { mac: m } })),
     });
   }
 
@@ -4790,11 +4803,13 @@ function hnTopoBuildSvg(t) {
       ap_base: "var(--purple)",
       ap_satellite: "var(--purple)",
       moca: "var(--cyan)",
-      verizon_or_moca: "var(--yellow)",
+      via_moca: "var(--cyan)",
+      verizon_lan: "var(--yellow)",
+      verizon_or_moca: "var(--yellow)",  // legacy kind, kept for safety
       orbi_mesh_unknown: "var(--purple)",
       unmapped: "var(--border)",
     };
-    const iconByKind = { switch: "🔀", ap_base: "📡", ap_satellite: "📡", moca: "📻", verizon_or_moca: "🔌", orbi_mesh_unknown: "📶", unmapped: "❓" };
+    const iconByKind = { switch: "🔀", ap_base: "📡", ap_satellite: "📡", moca: "📻", via_moca: "🌀", verizon_lan: "🔌", verizon_or_moca: "🔌", orbi_mesh_unknown: "📶", unmapped: "❓" };
     const label = `${iconByKind[col.kind] || "•"} ${col.name}`;
     svg += _hnSvgNode(x, INFRA_Y, NODE_W, label, col.sub || "", colorByKind[col.kind] || "var(--muted)");
 
@@ -5096,6 +5111,11 @@ function openEditModal(mac) {
   document.getElementById("hn-edit-category").value = dev.category || "";
   document.getElementById("hn-edit-location").value = dev.location || "";
   document.getElementById("hn-edit-notes").value = dev.notes || "";
+  // wired_via: only meaningful for wired devices. The dropdown is always
+  // visible to keep modal layout stable, but for wireless devices the
+  // value is ignored by the topology classifier.
+  const viaEl = document.getElementById("hn-edit-wired-via");
+  if (viaEl) viaEl.value = dev.wired_via || "";
   document.getElementById("hn-edit-modal").style.display = "flex";
 }
 
@@ -5113,7 +5133,8 @@ async function saveDeviceEdit() {
       friendly_name: document.getElementById("hn-edit-name").value,
       category: document.getElementById("hn-edit-category").value,
       location: document.getElementById("hn-edit-location").value,
-      notes: document.getElementById("hn-edit-notes").value
+      notes: document.getElementById("hn-edit-notes").value,
+      wired_via: document.getElementById("hn-edit-wired-via").value
     })
   });
   const data = await r.json();
@@ -7142,6 +7163,21 @@ function renderSystemInfo(d) {
           <input type="text" id="hn-edit-location" style="width:100%;padding:6px 10px;border:1px solid var(--border);
                  border-radius:6px;background:var(--surface);color:var(--text);font-family:var(--font-mono);font-size:12px"
                  placeholder="e.g. Living Room, Office, Basement">
+        </div>
+        <div style="margin-bottom:10px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">
+            Wired path
+            <span style="color:var(--muted);font-weight:400" title="Topology diagram (#9): pick where this wired device physically connects. 'Verizon LAN' = plugged into the Verizon router's LAN ports. 'via MoCA' = comes in over coax via a MoCA bridge. 'On TP-Link switch' = force into the switch column even when SNMP isn't capturing it. 'Unknown' = defaults to Verizon LAN. Has no effect on wireless devices.">
+              ⓘ
+            </span>
+          </label>
+          <select id="hn-edit-wired-via" style="width:100%;padding:6px 10px;border:1px solid var(--border);
+                  border-radius:6px;background:var(--surface);color:var(--text);font-family:var(--font-mono);font-size:12px">
+            <option value="">Unknown — default to Verizon LAN</option>
+            <option value="verizon_lan">🔌 Verizon LAN port (plugged into Verizon)</option>
+            <option value="moca">🌀 via MoCA (coax bridge)</option>
+            <option value="switch">🔀 On TP-Link switch (force)</option>
+          </select>
         </div>
         <div style="margin-bottom:16px">
           <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Notes</label>

@@ -1291,6 +1291,15 @@ def _merge_device_data(inventory: dict, source: str, devices: list) -> dict:
             # client is associated with. Used by /api/homenet/topology (#9)
             # to draw the device under the right satellite. Empty for wired.
             "conn_ap_mac": dev.get("conn_ap_mac", existing.get("conn_ap_mac", "")),
+            # User-set classification for wired devices that aren't on the
+            # TP-Link MAC table. Values: "moca" (downstream of a MoCA bridge,
+            # comes in via coax), "verizon_lan" (plugged direct into the
+            # Verizon's LAN ports), "switch" (force into the switch column
+            # even without SNMP confirmation), or "" (unknown -- defaults to
+            # Verizon LAN bucket in the topology). Preserves existing user
+            # choice across scans -- the merge never overwrites it from a
+            # discovery source.
+            "wired_via": existing.get("wired_via", ""),
             "active": dev.get("activity", 1) == 1 if "activity" in dev else True,
         }
 
@@ -1753,6 +1762,12 @@ def homenet_device_update():
     for field in ("friendly_name", "category", "location", "notes"):
         if field in body:
             inventory["devices"][mac][field] = str(body[field])
+    # wired_via is a constrained value -- whitelist to prevent garbage values
+    # leaking into the topology classifier and creating ghost columns.
+    if "wired_via" in body:
+        val = str(body["wired_via"]).lower().strip()
+        if val in ("moca", "verizon_lan", "switch", ""):
+            inventory["devices"][mac]["wired_via"] = val
 
     _save_homenet_inventory(inventory)
     return jsonify({"ok": True, "message": "Device updated"})
@@ -2236,14 +2251,51 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
             leftover_after_moca.add(m)
     moca_bridges.sort()
 
-    # Devices that are wired but not on the switch (excluding the MoCA
-    # bridges themselves) -- these are either plugged direct into the
-    # Verizon's LAN ports OR sit downstream of a MoCA bridge. Without
-    # active Verizon-side topology data we can't tell which is which,
-    # so they go into a single "via Verizon / MoCA" bucket.
-    via_verizon_or_moca: list[str] = sorted(
-        m for m in leftover_after_moca if (devices_by_mac.get(m, {}).get("network") == "wired")
-    )
+    # Wired devices that aren't on the switch AND aren't a MoCA bridge.
+    # The user explicitly asked for these to be split into two columns
+    # (2026-04-25) -- "Verizon LAN" and "via MoCA" are physically distinct
+    # paths (the MoCA traffic never traverses the Verizon's LAN ports;
+    # it rides the coax from a downstream MoCA bridge into the Verizon's
+    # built-in MoCA bridge). Without TP-Link SNMP OR Verizon API topology
+    # data we can't auto-classify, so we honour the per-device user-set
+    # ``wired_via`` field set via the device-edit modal:
+    #   - "moca"        -> via_moca bucket
+    #   - "verizon_lan" -> verizon_lan bucket
+    #   - "switch"      -> stays out of these buckets (force into switch
+    #                      column; useful when SNMP works but the MAC
+    #                      table is stale and missed this device)
+    #   - "" (unknown)  -> verizon_lan by default. Most home setups have
+    #                      far more Verizon-LAN-attached devices than
+    #                      MoCA-attached ones (MoCA is usually 1-2 STBs),
+    #                      so this default minimises the user's tagging
+    #                      burden -- they only have to mark the MoCA
+    #                      devices, not all the Verizon ones.
+    wired_leftover = [m for m in leftover_after_moca if devices_by_mac.get(m, {}).get("network") == "wired"]
+    via_moca: list[str] = []
+    verizon_lan: list[str] = []
+    switch_forced: set[str] = set()
+    for m in wired_leftover:
+        wired_via = (devices_by_mac.get(m, {}).get("wired_via") or "").lower()
+        if wired_via == "moca":
+            via_moca.append(m)
+        elif wired_via == "switch":
+            # User force-mapped to switch -- treat as if SNMP had reported
+            # them. Add to a synthetic port-0 bucket on the switch so they
+            # render in the switch column AND get excluded from the wireless
+            # -leftover -> unmapped path computed below.
+            switch_forced.add(m)
+            switches_out[0]["ports"].setdefault(0, []).append(m)
+            mapped_wired.add(m)
+        else:
+            verizon_lan.append(m)
+    via_moca.sort()
+    verizon_lan.sort()
+    if switch_forced:
+        switches_out[0]["available"] = True
+    # Backwards-compatible alias retained so callers/tests that still
+    # reference the combined list don't break. New code should use the
+    # split buckets above.
+    via_verizon_or_moca: list[str] = sorted(via_moca + verizon_lan)
 
     # Wireless leftovers split by source. Bug 2026-04-25: dumping every
     # wireless device with empty ``conn_ap_mac`` into "Unmapped" was
@@ -2254,7 +2306,7 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
     # ``orbi_mesh_unknown_ap`` so the user understands "I see them, just
     # not their AP". ARP-only wireless ghosts (no Orbi entry) stay in
     # ``unmapped`` -- those are usually offline / stale.
-    wireless_leftover = leftover_after_moca - set(via_verizon_or_moca)
+    wireless_leftover = leftover_after_moca - set(via_verizon_or_moca) - switch_forced
     orbi_mesh_unknown_ap: list[str] = sorted(
         m for m in wireless_leftover if devices_by_mac.get(m, {}).get("source") == "orbi"
     )
@@ -2273,7 +2325,11 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
         # MoCA bridge themselves. Common causes: (a) plugged direct into
         # the Verizon LAN ports, (b) downstream of a MoCA bridge, (c) the
         # TP-Link SNMP credential isn't configured so no MAC table at all.
+        # Kept for backwards compatibility; UI prefers the split buckets.
         "via_verizon_or_moca": via_verizon_or_moca,
+        # Split buckets (per-device user-set ``wired_via`` field):
+        "verizon_lan": verizon_lan,  # plugged into the Verizon's LAN ports
+        "via_moca": via_moca,  # downstream of a MoCA bridge (coax)
         # Wireless devices the Orbi reports but doesn't tell us which AP
         # they're attached to. Known firmware behaviour -- the SOAP
         # GetAttachDevice2 response leaves ConnAPMAC empty for some
@@ -2290,6 +2346,8 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
             "wireless_mapped": len(mapped_wireless),
             "moca_bridges": len(moca_bridges),
             "via_verizon_or_moca": len(via_verizon_or_moca),
+            "verizon_lan": len(verizon_lan),
+            "via_moca": len(via_moca),
             "orbi_mesh_unknown_ap": len(orbi_mesh_unknown_ap),
             "unmapped": len(unmapped),
             "switch_available": switches_out[0]["available"] if switches_out else False,
