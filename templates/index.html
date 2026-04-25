@@ -4550,6 +4550,249 @@ function renderHomeNet() {
   }).join("");
 }
 
+// ── Network Topology Diagram (#9) ──────────────────────────────────────
+//
+// Renders a 3-tier hierarchical SVG: router (top) → infrastructure
+// (switch + Orbi APs, middle) → devices (bottom, grouped under their
+// uplink). Inline SVG -- no chart library, no canvas, just primitive
+// <line> / <rect> / <circle> / <text> elements. Reads the cached
+// inventory; doesn't trigger a fresh scan (the existing Scan button
+// does that and the user clicks Refresh after to re-render).
+//
+// Category icon mapping mirrors the inventory table so a Phone in the
+// list is also a Phone (📱) in the diagram.
+
+const _HN_CAT_ICON = {
+  "Computer": "💻", "Phone": "📱", "TV": "📺", "IoT": "💡",
+  "Printer": "🖨", "Network": "🛜", "Storage": "💾", "Other": "📦",
+};
+
+let _hnTopoLoaded = false;
+
+async function hnTopoToggle() {
+  const body = document.getElementById("hn-topo-body");
+  const btn = document.getElementById("hn-topo-toggle");
+  if (!body || !btn) return;
+  const isHidden = body.style.display === "none";
+  if (isHidden) {
+    body.style.display = "";
+    btn.textContent = "📐 Hide diagram";
+    if (!_hnTopoLoaded) {
+      await hnTopoRefresh();
+      _hnTopoLoaded = true;
+    }
+  } else {
+    body.style.display = "none";
+    btn.textContent = "📐 Show diagram";
+  }
+}
+
+async function hnTopoRefresh() {
+  const loading = document.getElementById("hn-topo-loading");
+  const errorEl = document.getElementById("hn-topo-error");
+  const wrap = document.getElementById("hn-topo-svg-wrap");
+  const legend = document.getElementById("hn-topo-legend");
+  const stats = document.getElementById("hn-topo-stats");
+  if (!loading) return;
+
+  loading.style.display = "";
+  errorEl.style.display = "none";
+  wrap.style.display = "none";
+  if (legend) legend.style.display = "none";
+
+  let data;
+  try {
+    const r = await fetch("/api/homenet/topology");
+    data = await r.json();
+  } catch (e) {
+    loading.style.display = "none";
+    errorEl.style.display = "";
+    errorEl.textContent = "Failed to fetch topology: " + e.message;
+    return;
+  }
+  loading.style.display = "none";
+  if (!data.ok) {
+    errorEl.style.display = "";
+    errorEl.textContent = "Topology API returned ok=false";
+    return;
+  }
+
+  // Update the small stats line above the diagram
+  const s = data.stats || {};
+  if (stats) {
+    const switchNote = s.switch_available ? "" : " · switch unreachable (port mapping unavailable)";
+    stats.textContent = `${s.total || 0} devices · ${s.wired_mapped || 0} wired-mapped · ${s.wireless_mapped || 0} wireless-mapped · ${s.unmapped || 0} unmapped${switchNote}`;
+  }
+
+  wrap.style.display = "";
+  if (legend) legend.style.display = "flex";
+  wrap.innerHTML = hnTopoBuildSvg(data);
+}
+
+// Build the SVG from a topology payload. Layout is hand-rolled because we
+// only need three tiers and the math is trivial:
+//   y=40   router
+//   y=140  infra row (switch + each AP)
+//   y=260+ device rows under each infra node
+function hnTopoBuildSvg(t) {
+  const PAD = 20;
+  const ROW_H = 26;
+  const NODE_W = 220;
+  const ROUTER_Y = 40;
+  const INFRA_Y = 130;
+  const DEVICE_Y = 230;
+
+  const devices = t.devices || {};
+
+  // Build the infra columns: switch + every AP. Each column hosts a stack
+  // of device boxes underneath. The column width adapts to the tallest
+  // stack so the SVG never overflows the viewport.
+  const columns = [];
+  for (const sw of (t.switches || [])) {
+    // For wired we group devices by port. A port may carry multiple MACs
+    // (the Orbi base on its uplink port carries every wireless client) --
+    // we collapse those into a "(N more)" pill rather than render them
+    // here, since they show up under their AP elsewhere.
+    const portRows = [];
+    const ports = sw.ports || {};
+    const sortedPorts = Object.keys(ports).map(Number).sort((a, b) => a - b);
+    for (const p of sortedPorts) {
+      const macs = ports[p] || [];
+      const realDevs = macs.filter(m => devices[m] && !_hnIsInfra(devices[m]));
+      const apsOnPort = macs.filter(m => devices[m] && _hnIsAp(devices[m]));
+      if (!realDevs.length && !apsOnPort.length) continue;
+      // Pick the most informative one to show; collapse the rest.
+      for (const m of realDevs) {
+        portRows.push({ mac: m, label: `port ${p}`, dev: devices[m] });
+      }
+      for (const m of apsOnPort) {
+        portRows.push({ mac: m, label: `port ${p} (uplink)`, dev: devices[m], is_ap: true });
+      }
+    }
+    columns.push({
+      kind: "switch",
+      id: sw.id,
+      name: sw.name,
+      sub: sw.available ? "" : (sw.error ? "switch unreachable" : "no MAC table"),
+      rows: portRows,
+    });
+  }
+
+  for (const ap of (t.aps || [])) {
+    const rows = ap.clients.map(m => ({ mac: m, label: ap.is_base ? "via Orbi base" : "via satellite", dev: devices[m] || { mac: m } }));
+    columns.push({
+      kind: ap.is_base ? "ap_base" : "ap_satellite",
+      id: ap.id,
+      name: ap.name,
+      sub: `${ap.clients.length} client${ap.clients.length !== 1 ? "s" : ""}`,
+      rows: rows,
+    });
+  }
+
+  // Unmapped column on the right -- devices that didn't land under any AP
+  // or switch port. Common case: ARP-discovered devices that are offline,
+  // or wireless devices we saw before the Orbi mapping was available.
+  if ((t.unmapped || []).length) {
+    columns.push({
+      kind: "unmapped",
+      id: "unmapped",
+      name: "Unmapped",
+      sub: `${t.unmapped.length} device${t.unmapped.length !== 1 ? "s" : ""}`,
+      rows: t.unmapped.map(m => ({ mac: m, label: devices[m]?.network || "?", dev: devices[m] || { mac: m } })),
+    });
+  }
+
+  // Per-column width is fixed; SVG width grows with column count.
+  const COL_W = NODE_W + 30;
+  const totalW = Math.max(800, PAD * 2 + COL_W * columns.length);
+  const maxRows = Math.max(0, ...columns.map(c => c.rows.length));
+  const totalH = DEVICE_Y + maxRows * ROW_H + 40;
+
+  // Router box centered horizontally at the top
+  const routerX = (totalW - NODE_W) / 2;
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${totalW} ${totalH}" style="width:${totalW}px;max-width:none;height:${totalH}px;font-family:var(--font-mono);font-size:11px">`;
+
+  // ── Background grid for visual rhythm ─────────────────────────────
+  svg += `<rect x="0" y="0" width="${totalW}" height="${totalH}" fill="none"/>`;
+
+  // ── Tier 1: Router ────────────────────────────────────────────────
+  svg += _hnSvgNode(routerX, ROUTER_Y, NODE_W, "🛜 " + (t.router?.name || "Router"), t.router?.ip || "", "var(--cyan)");
+
+  // ── Tier 2: Infrastructure columns ─────────────────────────────────
+  columns.forEach((col, i) => {
+    const x = PAD + i * COL_W;
+    const colorByKind = {
+      switch: "var(--orange)",
+      ap_base: "var(--purple)",
+      ap_satellite: "var(--purple)",
+      unmapped: "var(--border)",
+    };
+    const iconByKind = { switch: "🔀", ap_base: "📡", ap_satellite: "📡", unmapped: "❓" };
+    const label = `${iconByKind[col.kind] || "•"} ${col.name}`;
+    svg += _hnSvgNode(x, INFRA_Y, NODE_W, label, col.sub || "", colorByKind[col.kind] || "var(--muted)");
+
+    // Connector router → infra (skip for unmapped column -- it's not really wired)
+    if (col.kind !== "unmapped") {
+      svg += `<line x1="${routerX + NODE_W / 2}" y1="${ROUTER_Y + 50}" x2="${x + NODE_W / 2}" y2="${INFRA_Y}" stroke="var(--border)" stroke-width="1.2"/>`;
+    }
+
+    // ── Tier 3: device rows under this column ──────────────────────
+    col.rows.forEach((r, rIdx) => {
+      const y = DEVICE_Y + rIdx * ROW_H;
+      const dev = r.dev || {};
+      const cat = (dev.category || "Other");
+      const icon = _HN_CAT_ICON[cat] || _HN_CAT_ICON.Other;
+      const name = dev.friendly_name || dev.hostname || dev.mac || r.mac;
+      const isOnline = dev.active !== false;
+      const fill = isOnline ? "var(--green)" : "var(--border)";
+      const opacity = isOnline ? "1" : "0.6";
+      // Connector infra → device
+      svg += `<line x1="${x + NODE_W / 2}" y1="${INFRA_Y + 50}" x2="${x + 12}" y2="${y + ROW_H / 2}" stroke="var(--border)" stroke-width="0.8" opacity="0.5"/>`;
+      // Status dot
+      svg += `<circle cx="${x + 8}" cy="${y + ROW_H / 2}" r="4" fill="${fill}"/>`;
+      // Device row
+      const tooltip = `${name} | ${dev.mac || r.mac} | ${dev.ip || "no IP"} | ${r.label}`;
+      svg += `<g opacity="${opacity}"><title>${_esc(tooltip)}</title>`;
+      svg += `<text x="${x + 18}" y="${y + ROW_H / 2 + 4}" fill="var(--text)" font-size="11">${icon} ${_truncate(_esc(name), 24)}</text>`;
+      svg += `<text x="${x + NODE_W - 6}" y="${y + ROW_H / 2 + 4}" fill="var(--muted)" font-size="9" text-anchor="end">${_esc(r.label)}</text>`;
+      svg += `</g>`;
+    });
+  });
+
+  svg += "</svg>";
+  return svg;
+}
+
+function _hnSvgNode(x, y, w, label, sub, color) {
+  return `
+    <g>
+      <rect x="${x}" y="${y}" width="${w}" height="50" rx="6" fill="var(--card)" stroke="${color}" stroke-width="1.5"/>
+      <text x="${x + w / 2}" y="${y + 20}" fill="var(--text-bright)" font-size="12" font-weight="700" text-anchor="middle">${_esc(label)}</text>
+      ${sub ? `<text x="${x + w / 2}" y="${y + 38}" fill="var(--muted)" font-size="10" text-anchor="middle">${_esc(sub)}</text>` : ""}
+    </g>`;
+}
+
+function _hnIsInfra(dev) {
+  if (!dev) return false;
+  const ip = dev.ip || "";
+  if (ip === "192.168.1.1" || ip === "10.0.0.1") return true;
+  return (dev.mac || "").toUpperCase() === "DC:62:79:F3:52:5C";
+}
+
+function _hnIsAp(dev) {
+  if (!dev) return false;
+  return (dev.ip || "") === "10.0.0.1";
+}
+
+function _esc(s) {
+  return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function _truncate(s, n) {
+  if (!s || s.length <= n) return s;
+  return s.slice(0, n - 1) + "…";
+}
+
 function filterHomeNet() {
   const q = (document.getElementById("hn-search").value || "").toLowerCase();
   const net = document.getElementById("hn-filter-network").value;
@@ -6656,6 +6899,35 @@ function renderSystemInfo(d) {
         <div id="hn-poll-status" style="font-size:9px;margin-top:4px;color:var(--green)">
           <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green);margin-right:4px;animation:pulse 2s infinite"></span>
           Live — ARP 60s · Full 5m
+        </div>
+      </div>
+    </div>
+
+    <!-- Network Topology Diagram (#9) -- collapsed by default to keep the
+         tab fast for the common "look at the device list" workflow. Click
+         the toggle to render the SVG; once shown it stays open and the
+         Refresh button on top re-fetches /api/homenet/topology. -->
+    <div style="margin-bottom:24px;padding:16px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:12px;flex-wrap:wrap">
+        <div>
+          <div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)">Network Topology</div>
+          <div id="hn-topo-stats" style="font-size:10px;color:var(--muted);margin-top:2px;font-family:var(--font-mono)">Click "Show diagram" to draw the network map.</div>
+        </div>
+        <div style="display:flex;gap:6px">
+          <button id="hn-topo-toggle" onclick="hnTopoToggle()" class="btn-action" style="padding:5px 12px;font-size:11px">📐 Show diagram</button>
+          <button onclick="hnTopoRefresh()" title="Re-fetch /api/homenet/topology" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:5px 10px;border-radius:6px;cursor:pointer;font-size:11px">↻</button>
+        </div>
+      </div>
+      <div id="hn-topo-body" style="display:none">
+        <div id="hn-topo-loading" style="text-align:center;padding:30px;color:var(--muted);font-size:12px">Loading topology…</div>
+        <div id="hn-topo-error" style="display:none;padding:10px;color:var(--red);font-size:11px;border:1px solid var(--red);border-radius:4px;margin-bottom:8px"></div>
+        <div id="hn-topo-svg-wrap" style="display:none;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px"></div>
+        <div id="hn-topo-legend" style="display:none;margin-top:8px;font-size:10px;color:var(--muted);font-family:var(--font-mono);display:flex;gap:14px;flex-wrap:wrap">
+          <span><span style="display:inline-block;width:10px;height:10px;background:var(--cyan);border-radius:50%;vertical-align:middle;margin-right:4px"></span>Router</span>
+          <span><span style="display:inline-block;width:10px;height:10px;background:var(--orange);border-radius:50%;vertical-align:middle;margin-right:4px"></span>Switch</span>
+          <span><span style="display:inline-block;width:10px;height:10px;background:var(--purple);border-radius:50%;vertical-align:middle;margin-right:4px"></span>Access Point</span>
+          <span><span style="display:inline-block;width:10px;height:10px;background:var(--green);border-radius:50%;vertical-align:middle;margin-right:4px"></span>Online device</span>
+          <span><span style="display:inline-block;width:10px;height:10px;background:var(--border);border-radius:50%;vertical-align:middle;margin-right:4px"></span>Offline / unmapped</span>
         </div>
       </div>
     </div>

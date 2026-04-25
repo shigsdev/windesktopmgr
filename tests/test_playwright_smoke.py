@@ -348,6 +348,71 @@ class TestTrendsCardCoverage:
         assert not dupes, f"duplicate data-metric cards: {dupes}"
 
 
+# ── Network Topology Diagram (#9) ──────────────────────────────────
+
+
+class TestNetworkTopologyDiagram:
+    """Backlog #9. The topology section is collapsed by default; clicking
+    "Show diagram" lazy-fetches /api/homenet/topology and renders an
+    inline SVG. The tests verify (a) the toggle wiring exists, (b) the
+    rendered SVG includes the router + at least one infrastructure box,
+    and (c) the API payload shape stays in sync with what the renderer
+    consumes.
+    """
+
+    def _goto_homenet_and_show_topology(self, page):
+        page.evaluate("switchTab('homenet')")
+        # Wait for the homenet panel to render the topology toggle button.
+        page.wait_for_selector("#hn-topo-toggle", state="attached", timeout=10_000)
+        page.evaluate("hnTopoToggle()")
+        # Wait until the SVG wrap is populated OR an error message appears.
+        page.wait_for_function(
+            """
+            () => {
+                const wrap = document.getElementById('hn-topo-svg-wrap');
+                const err = document.getElementById('hn-topo-error');
+                if (wrap && wrap.style.display !== 'none' && wrap.innerHTML.length) return true;
+                if (err && err.style.display !== 'none') return true;
+                return false;
+            }
+            """,
+            timeout=15_000,
+        )
+
+    def test_topology_section_renders_without_console_errors(self, loaded_page):
+        page, errors = loaded_page
+        self._goto_homenet_and_show_topology(page)
+        page.wait_for_timeout(300)
+        actionable = [e for e in errors if "favicon" not in e.lower()]
+        assert not actionable, f"Topology section console errors: {actionable}"
+
+    def test_topology_payload_has_renderer_required_keys(self, loaded_page):
+        """Drift-detect: the JS renderer reads router/switches/aps/devices
+        /unmapped/stats. If the backend ever changes the shape, fail loud."""
+        page, _ = loaded_page
+        data = page.evaluate("fetch('/api/homenet/topology').then(r => r.json())")
+        assert data.get("ok") is True, f"topology API not ok: {data}"
+        for key in ("router", "switches", "aps", "devices", "unmapped", "stats"):
+            assert key in data, (
+                f"/api/homenet/topology missing '{key}' -- the renderer in "
+                f"templates/index.html (hnTopoBuildSvg) reads this. If the "
+                f"backend dropped it, the diagram silently breaks."
+            )
+        for sub in ("total", "wired_mapped", "wireless_mapped", "unmapped", "switch_available"):
+            assert sub in data["stats"], f"stats payload missing '{sub}' -- breaks the stats line above the SVG"
+
+    def test_topology_svg_contains_router_label(self, loaded_page):
+        """The SVG must always render the router box (top-tier anchor) --
+        even when no devices are in inventory."""
+        page, _ = loaded_page
+        self._goto_homenet_and_show_topology(page)
+        svg_text = page.evaluate("document.getElementById('hn-topo-svg-wrap').textContent || ''")
+        assert "Verizon" in svg_text or "Router" in svg_text, (
+            f"Router label not found in topology SVG -- expected 'Verizon' or 'Router' "
+            f"in the rendered output. SVG content was: {svg_text[:200]!r}"
+        )
+
+
 # ── Baseline tab coverage regression (backlog #14) ─────────────────
 
 

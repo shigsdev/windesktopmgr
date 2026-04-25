@@ -287,7 +287,7 @@
 
   <!-- ── LAYER 2: FLASK BACKEND ───────────────────────────────── -->
   <div class="row row-flask" id="layer-flask">
-    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~10,100 lines + homenet.py Blueprint · ~1,647 lines + disk.py Blueprint · ~1,179 lines + remediation.py Blueprint · ~438 lines + nlq.py Blueprint · ~416 lines + baseline.py · ~380 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · applogging.py RotatingFileHandler · dashboard summary cache (30s TTL + single-flight background refresh) · request-log flood suppressor · SAFE_PROCESSES kill guard + SYSTEM_PROCESSES_GLOSSARY · pynvml GPU metrics collector · psutil+socket network metrics collector · mac-vendor-lookup IEEE OUI (~36k vendors) + zeroconf mDNS for device name resolution · baseline.py drift detection (startup + services + tasks)</div>
+    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~10,100 lines + homenet.py Blueprint · ~1,963 lines + disk.py Blueprint · ~1,179 lines + remediation.py Blueprint · ~438 lines + nlq.py Blueprint · ~416 lines + baseline.py · ~380 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · applogging.py RotatingFileHandler · dashboard summary cache (30s TTL + single-flight background refresh) · request-log flood suppressor · SAFE_PROCESSES kill guard + SYSTEM_PROCESSES_GLOSSARY · pynvml GPU metrics collector · psutil+socket network metrics collector · mac-vendor-lookup IEEE OUI (~36k vendors) + zeroconf mDNS for device name resolution · baseline.py drift detection (startup + services + tasks)</div>
     <div style="margin-bottom:10px">
       <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes (67 endpoints)</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
@@ -378,6 +378,7 @@
         <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">POST</span>/api/homenet/resolve-names</div>
         <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">POST</span>/api/homenet/device/update</div>
         <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">GET</span>/api/homenet/switch</div>
+        <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)" title="Hierarchical topology join (#9): inventory + switch MAC table + Orbi per-AP mapping"><span class="method">GET</span>/api/homenet/topology</div>
       </div>
     </div>
     <div>
@@ -809,7 +810,7 @@
       </div>
       <div class="test-chip">
         <div class="test-title">test_homenet.py</div>
-        <div class="test-sub">152 tests · Verizon · Orbi SOAP · SNMP · ARP · credentials · blueprint routes · IEEE OUI lookup · mDNS · randomized-MAC detection · category substring patterns</div>
+        <div class="test-sub">174 tests · Verizon · Orbi SOAP · SNMP · ARP · credentials · blueprint routes · IEEE OUI lookup · mDNS · randomized-MAC detection · category substring patterns · topology builder (#9)</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_logging.py</div>

@@ -504,6 +504,11 @@ def _parse_orbi_soap(xml_text: str) -> list:
             mac = _tag("MAC").upper().replace("-", ":")
             if not mac:
                 continue
+            # ConnAPMAC tells us which Orbi node (router or satellite) the
+            # client is associated with -- needed by the topology diagram
+            # (#9). Normalised to upper-colon so it joins cleanly against
+            # the satellite MAC list later. Empty when the client is wired.
+            conn_ap_mac = _tag("ConnAPMAC").upper().replace("-", ":")
             devices.append(
                 {
                     "ip": _tag("IP"),
@@ -516,6 +521,7 @@ def _parse_orbi_soap(xml_text: str) -> list:
                     "device_model": _tag("DeviceModel"),
                     "device_brand": _tag("DeviceBrand"),
                     "ssid": _tag("SSID"),
+                    "conn_ap_mac": conn_ap_mac,
                     "device_name_user_set": _tag("NameUserSet") == "true",
                 }
             )
@@ -1281,6 +1287,10 @@ def _merge_device_data(inventory: dict, source: str, devices: list) -> dict:
             "device_model": dev.get("device_model", existing.get("device_model", "")),
             "device_brand": dev.get("device_brand", existing.get("device_brand", "")),
             "ssid": dev.get("ssid", existing.get("ssid", "")),
+            # ConnAPMAC = which Orbi node (router or satellite) the wireless
+            # client is associated with. Used by /api/homenet/topology (#9)
+            # to draw the device under the right satellite. Empty for wired.
+            "conn_ap_mac": dev.get("conn_ap_mac", existing.get("conn_ap_mac", "")),
             "active": dev.get("activity", 1) == 1 if "activity" in dev else True,
         }
 
@@ -1753,3 +1763,201 @@ def homenet_switch_data():
     """Get TP-Link switch port status, traffic stats, and MAC table."""
     result = _tplink_get_data()
     return jsonify(result)
+
+
+# ── Network topology (#9) ───────────────────────────────────────────────────
+
+
+# Well-known infrastructure MACs / IPs for the Williams home network. Centralised
+# here so the topology builder can label them with friendly names instead of raw
+# hex. If the user's Orbi satellite MACs are unknown they'll still appear in the
+# diagram as "Orbi satellite (xx:xx:...)" -- only the labels are missing.
+_INFRA_LABELS: dict[str, dict] = {
+    # Verizon CR1000A is the gateway / DHCP server. The MAC isn't pinned because
+    # the Verizon API returns it dynamically; we identify the router by IP.
+    "192.168.1.1": {"name": "Verizon CR1000A", "type": "router", "icon": "🛜"},
+    # TP-Link TL-SG2218 -- the wired-edge switch. Pinned by MAC since its IP is
+    # whatever the user configured.
+    "DC:62:79:F3:52:5C": {"name": "TP-Link TL-SG2218 (Switch)", "type": "switch", "icon": "🔀"},
+    # Orbi router (RBRE960 base). Pinned by IP because the MAC is per-unit.
+    "10.0.0.1": {"name": "Orbi RBRE960 (Router)", "type": "ap", "icon": "📡"},
+}
+
+
+def _is_infrastructure_mac(mac: str) -> bool:
+    """True if this MAC belongs to a known router / switch / AP."""
+    return mac.upper() in _INFRA_LABELS
+
+
+def _label_orbi_node(mac: str) -> str:
+    """Friendly label for an Orbi node MAC. Satellites aren't pre-labelled
+    so we fall back to a short suffix-based name."""
+    upper = mac.upper()
+    if upper in _INFRA_LABELS:
+        return _INFRA_LABELS[upper]["name"]
+    # Satellite -- use last 4 hex chars of MAC for a stable short name
+    suffix = upper.replace(":", "")[-4:]
+    return f"Orbi satellite ({suffix})"
+
+
+def build_topology(inventory: dict | None = None, switch_data: dict | None = None) -> dict:
+    """Join the device inventory + switch MAC table + Orbi satellite mapping
+    into a hierarchical topology suitable for SVG rendering.
+
+    The shape::
+
+        {
+            "ok": True,
+            "router": {"id": "router", "name": "Verizon CR1000A", "ip": "192.168.1.1"},
+            "switches": [
+                {"id": "switch-DC:62:..", "name": "TP-Link TL-SG2218 (Switch)",
+                 "ports": {1: [<mac>, ...], 2: [...], ...}}
+            ],
+            "aps": [
+                {"id": "ap-OO:RR:..", "name": "Orbi RBRE960 (Router)", "mac": "..",
+                 "is_base": True, "clients": [<mac>, ...]},
+                {"id": "ap-SA:T1:..", "name": "Orbi satellite (XYZW)", "mac": "..",
+                 "is_base": False, "clients": [<mac>, ...]},
+            ],
+            "devices": {<mac>: {<full inventory device dict>}},
+            "unmapped": [<mac>, ...],   # devices we couldn't place under any infra node
+            "stats": {"total": N, "wired_mapped": N, "wireless_mapped": N, "unmapped": N},
+        }
+
+    All inputs are injectable so unit tests don't have to hit the network --
+    the production callers default to live inventory + live switch query.
+    """
+    if inventory is None:
+        inventory = _load_homenet_inventory()
+    devices_by_mac = dict(inventory.get("devices", {}))
+
+    # ── Switch / wired-port mapping ────────────────────────────────────
+    # _tplink_snmp_query returns mac_table = [{mac: "AA:BB:..", port_index: N}].
+    # We invert to {port: [macs_seen_on_that_port]}. A trunk port may carry
+    # many MACs (the Orbi router on its uplink port carries every wireless
+    # client) -- the renderer treats those as "see AP for client list" rather
+    # than draw 80 lines.
+    switch_ports: dict[int, list[str]] = {}
+    if switch_data is None:
+        try:
+            switch_data = _tplink_get_data()
+        except Exception as e:  # noqa: BLE001 -- best-effort; topology still useful without.
+            # Don't crash the route -- the UI surfaces the error string in
+            # the per-switch ``error`` field of the response, which the
+            # diagram renders as "switch unreachable" under the switch box.
+            switch_data = {"error": str(e)}
+    if isinstance(switch_data, dict) and not switch_data.get("error"):
+        for entry in switch_data.get("mac_table") or []:
+            mac = (entry.get("mac") or "").upper()
+            port = entry.get("port_index")
+            if not mac or port is None:
+                continue
+            switch_ports.setdefault(int(port), []).append(mac)
+
+    # ── Orbi satellite mapping ─────────────────────────────────────────
+    # Each wireless device's ``conn_ap_mac`` field tells us which Orbi node
+    # (router or satellite) it's associated with. Bucket clients by AP MAC.
+    aps_by_mac: dict[str, list[str]] = {}
+    for mac, dev in devices_by_mac.items():
+        ap_mac = (dev.get("conn_ap_mac") or "").upper()
+        if not ap_mac:
+            continue
+        aps_by_mac.setdefault(ap_mac, []).append(mac.upper())
+
+    # If the Orbi base router itself appears in the inventory we want its
+    # entry too -- by IP since the MAC isn't pinned.
+    orbi_base_mac = ""
+    for mac, dev in devices_by_mac.items():
+        if dev.get("ip") == "10.0.0.1":
+            orbi_base_mac = mac.upper()
+            break
+
+    aps_out = []
+    for ap_mac, clients in sorted(aps_by_mac.items()):
+        aps_out.append(
+            {
+                "id": f"ap-{ap_mac}",
+                "mac": ap_mac,
+                "name": _label_orbi_node(ap_mac),
+                "is_base": ap_mac == orbi_base_mac,
+                "clients": sorted(clients),
+            }
+        )
+    # Ensure the Orbi base appears even if it has no associated clients
+    # (rare -- but happens on a fresh deploy with no wireless devices yet).
+    if orbi_base_mac and not any(a["mac"] == orbi_base_mac for a in aps_out):
+        aps_out.insert(
+            0,
+            {
+                "id": f"ap-{orbi_base_mac}",
+                "mac": orbi_base_mac,
+                "name": _label_orbi_node(orbi_base_mac),
+                "is_base": True,
+                "clients": [],
+            },
+        )
+
+    # ── Switch wrapper ────────────────────────────────────────────────
+    switch_mac = "DC:62:79:F3:52:5C"
+    switches_out = [
+        {
+            "id": f"switch-{switch_mac}",
+            "mac": switch_mac,
+            "name": _INFRA_LABELS[switch_mac]["name"],
+            "ports": {p: sorted(macs) for p, macs in sorted(switch_ports.items())},
+            "available": bool(switch_ports),
+            "error": (switch_data or {}).get("error", ""),
+        }
+    ]
+
+    # ── Compute mapped / unmapped sets ────────────────────────────────
+    mapped_wired: set[str] = set()
+    for port_macs in switch_ports.values():
+        for m in port_macs:
+            if m in devices_by_mac and not _is_infrastructure_mac(m):
+                mapped_wired.add(m)
+    mapped_wireless: set[str] = set()
+    for ap in aps_out:
+        for m in ap["clients"]:
+            if m in devices_by_mac:
+                mapped_wireless.add(m)
+
+    all_macs = set(devices_by_mac.keys())
+    # Don't count infrastructure as "unmapped" -- we render it explicitly.
+    candidate = {m for m in all_macs if not _is_infrastructure_mac(m)}
+    unmapped = sorted(candidate - mapped_wired - mapped_wireless)
+
+    # ── Identify the router ───────────────────────────────────────────
+    router = {"id": "router", "name": "Verizon CR1000A", "ip": "192.168.1.1", "mac": ""}
+    for mac, dev in devices_by_mac.items():
+        if dev.get("ip") == "192.168.1.1":
+            router["mac"] = mac.upper()
+            break
+
+    return {
+        "ok": True,
+        "router": router,
+        "switches": switches_out,
+        "aps": aps_out,
+        "devices": devices_by_mac,
+        "unmapped": unmapped,
+        "stats": {
+            "total": len(devices_by_mac),
+            "wired_mapped": len(mapped_wired),
+            "wireless_mapped": len(mapped_wireless),
+            "unmapped": len(unmapped),
+            "switch_available": switches_out[0]["available"] if switches_out else False,
+        },
+    }
+
+
+@homenet_bp.route("/api/homenet/topology")
+def homenet_topology():
+    """Hierarchical network topology for the Network Topology Diagram (#9).
+
+    Joins the cached device inventory with the live TP-Link MAC table and
+    the Orbi per-AP client mapping. Read-only -- doesn't trigger a fresh
+    scan; the user clicks "Refresh" in the homenet tab if they want
+    fresher inventory data.
+    """
+    return jsonify(build_topology())
