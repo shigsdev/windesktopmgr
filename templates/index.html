@@ -4587,6 +4587,38 @@ async function hnTopoToggle() {
   }
 }
 
+// Manually add a transparent device by MAC -- for MoCA bridges and other
+// LAN-invisible gear (no IP, never in ARP). Uses two prompt() calls to keep
+// the UX simple; a fancier modal could be added later.
+async function hnTopoAddTransparent() {
+  const mac = (prompt(
+    "Add a transparent device by MAC address.\n\n" +
+    "Use this for MoCA bridges that have no IP and don't show up in network scans " +
+    "(common with Verizon-branded Askey FiOS extenders).\n\n" +
+    "Enter the MAC address (printed on the back of the device, format AA:BB:CC:DD:EE:FF):"
+  ) || "").trim();
+  if (!mac) return;
+  const friendly = (prompt("Friendly name (optional, e.g. 'Living Room MoCA'):") || "").trim();
+  try {
+    const r = await fetch("/api/homenet/device/add-manual", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ mac: mac, friendly_name: friendly, wired_via: "moca_bridge" }),
+    });
+    const data = await r.json();
+    if (data.ok) {
+      alert(`Added: ${data.device.mac} (${data.device.vendor || 'unknown vendor'})`);
+      _hnTopoLoaded = false;
+      await hnTopoRefresh();
+      _hnTopoLoaded = true;
+    } else {
+      alert("Failed: " + (data.message || "unknown error"));
+    }
+  } catch (e) {
+    alert("Failed to add device: " + e.message);
+  }
+}
+
 async function hnTopoRefresh() {
   const loading = document.getElementById("hn-topo-loading");
   const errorEl = document.getElementById("hn-topo-error");
@@ -7053,6 +7085,7 @@ function renderSystemInfo(d) {
         </div>
         <div style="display:flex;gap:6px">
           <button id="hn-topo-toggle" onclick="hnTopoToggle()" class="btn-action" style="padding:5px 12px;font-size:11px">📐 Show diagram</button>
+          <button onclick="hnTopoAddTransparent()" title="Add a transparent MoCA bridge or other LAN-invisible device by MAC" style="background:transparent;border:1px solid var(--border);color:var(--cyan);padding:5px 10px;border-radius:6px;cursor:pointer;font-size:11px">📻 Add transparent</button>
           <button onclick="hnTopoRefresh()" title="Re-fetch /api/homenet/topology" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:5px 10px;border-radius:6px;cursor:pointer;font-size:11px">↻</button>
         </div>
       </div>

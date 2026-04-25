@@ -1778,6 +1778,78 @@ def homenet_device_update():
     return jsonify({"ok": True, "message": "Device updated"})
 
 
+@homenet_bp.route("/api/homenet/device/add-manual", methods=["POST"])
+def homenet_device_add_manual():
+    """Manually add a device by MAC -- for transparent network gear that
+    LAN scans (ARP, mDNS, router APIs) can't see.
+
+    Use case discovered 2026-04-25: Verizon-branded transparent MoCA
+    bridges (Askey OUI 88:DE:7C) have no IP and never appear in ARP, so
+    the normal scan flow misses them entirely. The user knows the bridge
+    exists (it's in their living room) but the diagram can't show it
+    until the inventory has an entry.
+
+    Body shape:
+        {"mac": "AA:BB:CC:DD:EE:FF",
+         "friendly_name": "Living Room MoCA",   (optional)
+         "wired_via": "moca_bridge",            (optional, defaults to "moca_bridge"
+                                                 since manual-add is the use case)
+         "category": "Network",                  (optional, defaults to "Network")
+         "notes": "..."}                         (optional)
+
+    The MAC is sanity-checked, the OUI vendor lookup runs automatically,
+    and the entry is marked source="manual" so future scans never
+    overwrite the user's metadata.
+    """
+    body = request.get_json(silent=True) or {}
+    mac = str(body.get("mac", "")).upper().replace("-", ":").strip()
+
+    # Basic MAC-format validation: 6 hex pairs separated by colons.
+    if not re.match(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$", mac):
+        return jsonify({"ok": False, "message": f"Invalid MAC format: {mac!r}"}), 400
+
+    inventory = _load_homenet_inventory()
+    if mac in inventory["devices"]:
+        return (
+            jsonify(
+                {"ok": False, "message": f"Device {mac} already in inventory -- use /api/homenet/device/update instead"}
+            ),
+            409,
+        )
+
+    wired_via = (body.get("wired_via") or "moca_bridge").lower()
+    if wired_via not in ("moca", "moca_bridge", "verizon_lan", "switch", ""):
+        wired_via = "moca_bridge"  # default for the common manual-add case
+
+    inventory["devices"][mac] = {
+        "mac": mac,
+        "ip": "",
+        "hostname": str(body.get("friendly_name", "")) or "(transparent device)",
+        "vendor": _mac_vendor(mac),
+        "network": "wired",
+        "source": "manual",
+        "last_seen": datetime.now(timezone.utc).isoformat(),
+        "friendly_name": str(body.get("friendly_name", "")),
+        "category": str(body.get("category", "Network")),
+        "location": str(body.get("location", "")),
+        "notes": str(body.get("notes", ""))
+        or "Manually added by user (likely a transparent MoCA bridge or other LAN-invisible device).",
+        "connection_type": "",
+        "signal_strength": "",
+        "link_rate": "",
+        "device_type": "",
+        "device_os": "",
+        "device_model": "",
+        "device_brand": "",
+        "ssid": "",
+        "conn_ap_mac": "",
+        "wired_via": wired_via,
+        "active": True,
+    }
+    _save_homenet_inventory(inventory)
+    return jsonify({"ok": True, "message": "Device added", "device": inventory["devices"][mac]})
+
+
 @homenet_bp.route("/api/homenet/switch")
 def homenet_switch_data():
     """Get TP-Link switch port status, traffic stats, and MAC table."""
@@ -1833,6 +1905,13 @@ _MOCA_VENDOR_PATTERNS: tuple[str, ...] = (
     # Commscope/Arris device on the LAN is going to be a MoCA endpoint.
     "commscope",  # Verizon FiOS STBs (VMS4100ATV etc.) -- MoCA over coax
     "arris",  # pre-Commscope STB OEM
+    # Askey Computer Corp is a Taiwan-based ODM that builds Verizon-branded
+    # MoCA bridges + FiOS Network Extenders. Discovered 2026-04-25 when a
+    # user reported their 2nd Verizon MoCA wasn't auto-detected -- it has
+    # OUI 88:DE:7C which IEEE resolves to "ASKEY COMPUTER CORP". Many
+    # transparent MoCA bridges (no IP of their own, just relay coax<->
+    # Ethernet) ship with Askey hardware.
+    "askey",
 )
 
 
