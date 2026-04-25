@@ -412,6 +412,112 @@ class TestNetworkTopologyDiagram:
             f"in the rendered output. SVG content was: {svg_text[:200]!r}"
         )
 
+    # ── Visual-correctness regressions surfaced 2026-04-25 ────────────
+    # Three bugs the user spotted that the structural tests above missed:
+    #   - active devices rendered with grey dots ("MoCA bridge looks
+    #     greyed out") because the connector line fused visually with
+    #     the dot.
+    #   - 6 devices showed raw MAC addresses because the label fallback
+    #     never tried vendor name + suffix.
+    #   - device rows weren't clickable for editing (no way to name an
+    #     unnamed device from the diagram).
+    # Each new test below would fail loudly if any of these regressed.
+
+    def test_active_devices_render_with_active_dot(self, loaded_page):
+        """Device circles carry data-active="true|false". Every device
+        the API reports as active=True MUST have data-active="true" on
+        its rendered circle. Catches the 2026-04-25 "MoCA bridge looks
+        greyed out" bug class."""
+        page, _ = loaded_page
+        topology = page.evaluate("fetch('/api/homenet/topology').then(r => r.json())")
+        active_macs = {m for m, d in (topology.get("devices") or {}).items() if d.get("active") is not False}
+        if not active_macs:
+            pytest.skip("no active devices in inventory -- nothing to verify")
+
+        self._goto_homenet_and_show_topology(page)
+
+        # Pull every rendered device circle's data-active flag, keyed by MAC.
+        rendered = page.evaluate(
+            """
+            Array.from(document.querySelectorAll('#hn-topo-svg-wrap g[data-device-mac]')).map(g => ({
+                mac: g.dataset.deviceMac,
+                circleActive: g.previousElementSibling && g.previousElementSibling.tagName === 'circle'
+                    ? g.previousElementSibling.dataset.active : null,
+            }))
+            """
+        )
+        rendered_actives = {r["mac"]: r["circleActive"] for r in rendered if r["mac"]}
+        # Pick one active device that's actually rendered and assert its dot is "true"
+        sample = next((m for m in active_macs if m in rendered_actives), None)
+        if sample is None:
+            pytest.skip("no active device made it into the rendered diagram")
+        assert rendered_actives[sample] == "true", (
+            f"Active device {sample} rendered with data-active={rendered_actives[sample]!r}; "
+            f"expected 'true'. The 'greyed out MoCA bridge' regression class."
+        )
+
+    def test_no_device_rows_render_as_raw_macs(self, loaded_page):
+        """Every rendered device row text MUST start with something other
+        than a raw MAC address pattern (XX:XX:XX:...). The label fallback
+        chain (friendly_name -> hostname -> vendor + suffix -> MAC) should
+        only hit raw-MAC for devices with literally zero context. Catches
+        the 2026-04-25 'I see just MAC addresses' bug."""
+        page, _ = loaded_page
+        topology = page.evaluate("fetch('/api/homenet/topology').then(r => r.json())")
+        # Devices that have a vendor but no hostname/friendly are the
+        # exact case that previously fell through to raw MAC.
+        candidates = [
+            m
+            for m, d in (topology.get("devices") or {}).items()
+            if not d.get("friendly_name") and not d.get("hostname") and (d.get("vendor") or "").strip()
+        ]
+        if not candidates:
+            pytest.skip("no candidates for the vendor-fallback path in current inventory")
+
+        self._goto_homenet_and_show_topology(page)
+        names = page.evaluate(
+            """
+            Array.from(document.querySelectorAll('#hn-topo-svg-wrap g[data-device-mac]')).map(g => ({
+                mac: g.dataset.deviceMac,
+                name: g.dataset.deviceName,
+            }))
+            """
+        )
+        rendered = {n["mac"]: n["name"] for n in names if n["mac"]}
+        import re
+
+        raw_mac_re = re.compile(r"^[0-9A-F]{2}([:-][0-9A-F]{2}){5}$", re.I)
+        bad = [m for m in candidates if m in rendered and raw_mac_re.match(rendered[m] or "")]
+        assert not bad, (
+            f"{len(bad)} device(s) with a known vendor still render as raw MAC: {bad[:3]}. "
+            f"The vendor + suffix fallback in _hnTopoLabel() in templates/index.html isn't firing."
+        )
+
+    def test_device_rows_are_click_to_edit(self, loaded_page):
+        """Every device row should carry an onclick that opens the edit
+        modal -- without this the user can't name unnamed devices from
+        the diagram."""
+        page, _ = loaded_page
+        topology = page.evaluate("fetch('/api/homenet/topology').then(r => r.json())")
+        if not topology.get("devices"):
+            pytest.skip("no devices in inventory -- nothing to verify")
+
+        self._goto_homenet_and_show_topology(page)
+        clickable = page.evaluate(
+            """
+            Array.from(document.querySelectorAll('#hn-topo-svg-wrap g[data-device-mac]')).filter(
+                g => (g.getAttribute('onclick') || '').includes('openEditModal')
+            ).length
+            """
+        )
+        rendered_count = page.evaluate("document.querySelectorAll('#hn-topo-svg-wrap g[data-device-mac]').length")
+        assert clickable > 0, "no device rows have openEditModal handler"
+        # Every rendered row should be clickable -- not just some
+        assert clickable == rendered_count, (
+            f"{rendered_count - clickable} of {rendered_count} device rows are NOT click-to-edit; "
+            f"the openEditModal onclick is missing on those rows."
+        )
+
 
 # ── Baseline tab coverage regression (backlog #14) ─────────────────
 

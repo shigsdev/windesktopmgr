@@ -4785,18 +4785,27 @@ function hnTopoBuildSvg(t) {
       const dev = r.dev || {};
       const cat = (dev.category || "Other");
       const icon = _HN_CAT_ICON[cat] || _HN_CAT_ICON.Other;
-      const name = dev.friendly_name || dev.hostname || dev.mac || r.mac;
+      const name = _hnTopoLabel(dev, r.mac);
       const isOnline = dev.active !== false;
-      const fill = isOnline ? "var(--green)" : "var(--border)";
-      const opacity = isOnline ? "1" : "0.6";
-      // Connector infra → device
-      svg += `<line x1="${x + NODE_W / 2}" y1="${INFRA_Y + 50}" x2="${x + 12}" y2="${y + ROW_H / 2}" stroke="var(--border)" stroke-width="0.8" opacity="0.5"/>`;
-      // Status dot
-      svg += `<circle cx="${x + 8}" cy="${y + ROW_H / 2}" r="4" fill="${fill}"/>`;
-      // Device row
-      const tooltip = `${name} | ${dev.mac || r.mac} | ${dev.ip || "no IP"} | ${r.label}`;
-      svg += `<g opacity="${opacity}"><title>${_esc(tooltip)}</title>`;
-      svg += `<text x="${x + 18}" y="${y + ROW_H / 2 + 4}" fill="var(--text)" font-size="11">${icon} ${_truncate(_esc(name), 24)}</text>`;
+      // Connector infra → device. Stops 6 px before the dot's outer edge
+      // so the dot reads as a distinct circle, not as the line's terminus.
+      // Bug 2026-04-25: line ended at the dot's edge, fusing visually with
+      // the dot; user reported "MoCA bridge looks greyed out" because the
+      // green dot blended into the surrounding grey connector.
+      svg += `<line x1="${x + NODE_W / 2}" y1="${INFRA_Y + 50}" x2="${x + 18}" y2="${y + ROW_H / 2}" stroke="var(--border)" stroke-width="0.8" opacity="0.4"/>`;
+      // Status dot -- bigger (r=5 was 4) + a stroke so it pops over the
+      // connector line. Active=green, inactive=hollow grey ring.
+      const dotFill = isOnline ? "var(--green)" : "var(--bg)";
+      const dotStroke = isOnline ? "var(--green)" : "var(--muted)";
+      svg += `<circle cx="${x + 8}" cy="${y + ROW_H / 2}" r="5" fill="${dotFill}" stroke="${dotStroke}" stroke-width="1.5" data-active="${isOnline}"/>`;
+      // Device row -- now interactive: clicking the row fires the edit
+      // modal so the user can name unnamed devices without leaving the
+      // diagram. Cursor:pointer hint via the SVG cursor attribute.
+      const safeMac = (dev.mac || r.mac || "").replace(/'/g, "");
+      const opacity = isOnline ? "1" : "0.55";
+      const tooltip = `${name}\n${dev.mac || r.mac}\n${dev.ip || "no IP"}\n${r.label}\n(click to edit)`;
+      svg += `<g opacity="${opacity}" style="cursor:pointer" onclick="openEditModal('${safeMac}')" data-device-mac="${_esc(dev.mac || r.mac || "")}" data-device-name="${_esc(name)}"><title>${_esc(tooltip)}</title>`;
+      svg += `<text x="${x + 20}" y="${y + ROW_H / 2 + 4}" fill="var(--text)" font-size="11">${icon} ${_truncate(_esc(name), 24)}</text>`;
       svg += `<text x="${x + NODE_W - 6}" y="${y + ROW_H / 2 + 4}" fill="var(--muted)" font-size="9" text-anchor="end">${_esc(r.label)}</text>`;
       svg += `</g>`;
     });
@@ -4804,6 +4813,40 @@ function hnTopoBuildSvg(t) {
 
   svg += "</svg>";
   return svg;
+}
+
+// Pick the most-informative human-readable label for a device row.
+//
+// Fallback chain:
+//   1. friendly_name set by the user (always wins -- it's their explicit choice)
+//   2. hostname from DNS / mDNS / router-side label
+//   3. vendor from IEEE OUI lookup + last 4 hex of MAC
+//      ("Microsoft 4100" beats "00:15:5D:62:A8:93" for skim-readability)
+//   4. raw MAC -- last resort, only if literally nothing else is available
+//
+// Bug 2026-04-25: prior chain dropped to raw MAC for 6 of 76 devices in
+// the user's inventory because both friendly_name AND hostname were empty
+// (Hyper-V vNICs, randomized phone MACs, mDNS-shy IoT). Now the vendor +
+// suffix step gives them readable identities.
+function _hnTopoLabel(dev, fallbackMac) {
+  const friendly = (dev.friendly_name || "").trim();
+  if (friendly) return friendly;
+  const hostname = (dev.hostname || "").trim();
+  if (hostname) {
+    // Strip the boring ".mynetworksettings.com" suffix that shows on every
+    // Verizon-DHCP'd device -- it adds noise and truncates real names.
+    return hostname.replace(/\.mynetworksettings\.com$/i, "");
+  }
+  const mac = (dev.mac || fallbackMac || "").toUpperCase();
+  const vendor = (dev.vendor || "").trim();
+  if (vendor && mac) {
+    // Take the first word of the vendor (e.g. "Microsoft Corporation" -> "Microsoft")
+    // and append the last 4 hex chars for uniqueness.
+    const shortVendor = vendor.split(/[\s,]/)[0];
+    const suffix = mac.replace(/:/g, "").slice(-4);
+    return `${shortVendor} ${suffix}`;
+  }
+  return mac || "(unknown)";
 }
 
 function _hnSvgNode(x, y, w, label, sub, color) {
