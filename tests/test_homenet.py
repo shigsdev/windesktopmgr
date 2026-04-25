@@ -2904,6 +2904,74 @@ class TestMocaVendorDetection:
         dev = {"vendor": vendor} if vendor is not None else {}
         assert _is_moca_bridge(dev) is expected
 
+    def test_is_moca_bridge_user_attestation_overrides_vendor(self):
+        """Bug 2026-04-25: user reported "I have two MoCA's, only see one"
+        because their second bridge had a vendor name not in the auto-
+        detection patterns. New ``wired_via='moca_bridge'`` option lets
+        them tag any device as a bridge regardless of vendor."""
+        from homenet import _is_moca_bridge
+
+        # Vendor doesn't match any pattern, but user attested -> True
+        dev = {"vendor": "NoNameBrand", "wired_via": "moca_bridge"}
+        assert _is_moca_bridge(dev) is True
+        # No vendor at all + user attested -> True
+        assert _is_moca_bridge({"wired_via": "moca_bridge"}) is True
+        # Pattern matches but user-attested anyway -> still True (idempotent)
+        assert _is_moca_bridge({"vendor": "Actiontec", "wired_via": "moca_bridge"}) is True
+
+
+class TestUserTaggedMocaBridge:
+    """End-to-end coverage for the manual MoCA-bridge tagging flow added
+    when the user reported their 2nd MoCA bridge wasn't auto-detected."""
+
+    def _inventory(self, *device_dicts):
+        return {
+            "devices": {d["mac"]: d for d in device_dicts},
+            "last_scan": "2026-04-25T00:00:00",
+        }
+
+    def test_user_tagged_moca_bridge_lands_in_moca_bridges_bucket(self, mocker):
+        """A device the user tagged via the edit modal as wired_via=
+        moca_bridge must show up in the topology's moca_bridges list,
+        not in via_moca/verizon_lan."""
+        from homenet import build_topology
+
+        mocker.patch("homenet._save_homenet_inventory")
+        inv = self._inventory(
+            {
+                "mac": "AA:BB:CC:DD:EE:01",
+                "ip": "192.168.1.105",
+                "network": "wired",
+                "vendor": "Generic Networks Inc.",
+                "wired_via": "moca_bridge",
+            },
+        )
+        t = build_topology(inv, switch_data={})
+        assert "AA:BB:CC:DD:EE:01" in t["moca_bridges"]
+        assert "AA:BB:CC:DD:EE:01" not in t["via_moca"]
+        assert "AA:BB:CC:DD:EE:01" not in t["verizon_lan"]
+        assert t["stats"]["moca_bridges"] >= 1
+
+    def test_device_update_route_accepts_moca_bridge_value(self, client, mocker):
+        """The whitelist must include 'moca_bridge'. Otherwise the user
+        could pick it in the dropdown but the value would be silently
+        dropped by the route handler."""
+        mocker.patch(
+            "homenet._load_homenet_inventory",
+            return_value={
+                "devices": {"AA:BB:CC:DD:EE:01": {"mac": "AA:BB:CC:DD:EE:01", "wired_via": ""}},
+                "last_scan": "",
+            },
+        )
+        save_mock = mocker.patch("homenet._save_homenet_inventory")
+        resp = client.post(
+            "/api/homenet/device/update",
+            json={"mac": "AA:BB:CC:DD:EE:01", "wired_via": "moca_bridge"},
+        )
+        assert resp.status_code == 200
+        saved = save_mock.call_args[0][0]
+        assert saved["devices"]["AA:BB:CC:DD:EE:01"]["wired_via"] == "moca_bridge"
+
 
 class TestTopologyRoute:
     def test_route_returns_topology_shape(self, client, mocker):
