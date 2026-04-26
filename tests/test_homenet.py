@@ -3009,6 +3009,134 @@ class TestUserTaggedMocaBridge:
         resp = client.post("/api/homenet/device/add-manual", json={"mac": "88:DE:7C:C2:57:36"})
         assert resp.status_code == 409
 
+    def test_behind_moca_bridge_groups_devices_under_parent(self, client, mocker):
+        """User feedback 2026-04-25: "i would expect to see what devices are
+        connected to what moca." Build_topology now exposes a
+        moca_children dict mapping each bridge MAC to the device MACs the
+        user has marked as downstream of it. Children are excluded from
+        via_moca/verizon_lan to avoid double-rendering."""
+        from homenet import build_topology
+
+        mocker.patch("homenet._save_homenet_inventory")
+        bridge_mac = "08:33:ED:7B:34:34"  # the user's TV Room MoCA
+        child_mac = "B0:5D:D4:76:2A:C0"  # VMS4100ATV (sits behind it per user)
+        inv = {
+            "devices": {
+                bridge_mac: {
+                    "mac": bridge_mac,
+                    "vendor": "ASKEY COMPUTER CORP",
+                    "wired_via": "moca_bridge",
+                    "network": "wired",
+                },
+                child_mac: {
+                    "mac": child_mac,
+                    "vendor": "Apple",  # not a bridge itself
+                    "behind_moca_bridge": bridge_mac,
+                    "network": "wired",
+                    "wired_via": "moca",
+                },
+            },
+            "last_scan": "2026-04-25",
+        }
+        t = build_topology(inv, switch_data={})
+        # The bridge appears in moca_bridges
+        assert bridge_mac in t["moca_bridges"]
+        # The child appears under the bridge in moca_children
+        assert child_mac in t["moca_children"][bridge_mac]
+        # And NOT in via_moca / verizon_lan (avoids double-render)
+        assert child_mac not in t["via_moca"]
+        assert child_mac not in t["verizon_lan"]
+
+    def test_behind_moca_bridge_dangling_pointer_drops_child(self, client, mocker):
+        """If the user removes a bridge from inventory, children pointing to
+        it shouldn't disappear -- they should fall back to via_moca /
+        verizon_lan via the existing leftover bucketing."""
+        from homenet import build_topology
+
+        mocker.patch("homenet._save_homenet_inventory")
+        # Child points to a bridge MAC that doesn't exist
+        inv = {
+            "devices": {
+                "AA:BB:CC:00:00:01": {
+                    "mac": "AA:BB:CC:00:00:01",
+                    "behind_moca_bridge": "DE:AD:BE:EF:00:00",
+                    "wired_via": "moca",
+                    "network": "wired",
+                    "vendor": "Apple",
+                },
+            },
+            "last_scan": "",
+        }
+        t = build_topology(inv, switch_data={})
+        # Child is NOT in moca_children (no bridge to nest under)
+        assert "AA:BB:CC:00:00:01" not in (t["moca_children"].get("DE:AD:BE:EF:00:00") or [])
+        # Falls back to via_moca because wired_via=moca
+        assert "AA:BB:CC:00:00:01" in t["via_moca"]
+
+    def test_device_update_route_accepts_behind_moca_bridge(self, client, mocker):
+        """The route's whitelist must include behind_moca_bridge with a
+        format check (or empty to clear)."""
+        mocker.patch(
+            "homenet._load_homenet_inventory",
+            return_value={
+                "devices": {
+                    "AA:BB:CC:00:00:01": {"mac": "AA:BB:CC:00:00:01", "behind_moca_bridge": ""},
+                },
+                "last_scan": "",
+            },
+        )
+        save_mock = mocker.patch("homenet._save_homenet_inventory")
+        # Valid MAC -> persisted
+        resp = client.post(
+            "/api/homenet/device/update",
+            json={"mac": "AA:BB:CC:00:00:01", "behind_moca_bridge": "08:33:ED:7B:34:34"},
+        )
+        assert resp.status_code == 200
+        saved = save_mock.call_args[0][0]
+        assert saved["devices"]["AA:BB:CC:00:00:01"]["behind_moca_bridge"] == "08:33:ED:7B:34:34"
+
+    def test_device_update_route_rejects_bad_behind_moca_bridge(self, client, mocker):
+        """Junk values in behind_moca_bridge must NOT land in inventory."""
+        mocker.patch(
+            "homenet._load_homenet_inventory",
+            return_value={
+                "devices": {
+                    "AA:BB:CC:00:00:01": {"mac": "AA:BB:CC:00:00:01", "behind_moca_bridge": "08:33:ED:7B:34:34"}
+                },
+                "last_scan": "",
+            },
+        )
+        save_mock = mocker.patch("homenet._save_homenet_inventory")
+        resp = client.post(
+            "/api/homenet/device/update",
+            json={"mac": "AA:BB:CC:00:00:01", "behind_moca_bridge": "DROP TABLE devices"},
+        )
+        assert resp.status_code == 200
+        # The previous valid value persists -- garbage was rejected
+        saved = save_mock.call_args[0][0]
+        assert saved["devices"]["AA:BB:CC:00:00:01"]["behind_moca_bridge"] == "08:33:ED:7B:34:34"
+
+    def test_behind_moca_bridge_clearing_with_empty_string(self, client, mocker):
+        """Sending behind_moca_bridge='' should clear the link, not preserve
+        the old value -- otherwise the user can't undo a wrong assignment."""
+        mocker.patch(
+            "homenet._load_homenet_inventory",
+            return_value={
+                "devices": {
+                    "AA:BB:CC:00:00:01": {"mac": "AA:BB:CC:00:00:01", "behind_moca_bridge": "08:33:ED:7B:34:34"}
+                },
+                "last_scan": "",
+            },
+        )
+        save_mock = mocker.patch("homenet._save_homenet_inventory")
+        resp = client.post(
+            "/api/homenet/device/update",
+            json={"mac": "AA:BB:CC:00:00:01", "behind_moca_bridge": ""},
+        )
+        assert resp.status_code == 200
+        saved = save_mock.call_args[0][0]
+        assert saved["devices"]["AA:BB:CC:00:00:01"]["behind_moca_bridge"] == ""
+
     def test_device_update_route_accepts_moca_bridge_value(self, client, mocker):
         """The whitelist must include 'moca_bridge'. Otherwise the user
         could pick it in the dropdown but the value would be silently

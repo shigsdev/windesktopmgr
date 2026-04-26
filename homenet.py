@@ -1300,6 +1300,15 @@ def _merge_device_data(inventory: dict, source: str, devices: list) -> dict:
             # choice across scans -- the merge never overwrites it from a
             # discovery source.
             "wired_via": existing.get("wired_via", ""),
+            # MAC of the parent MoCA bridge this device sits behind, when
+            # the user has set it via the device-edit modal. Used by the
+            # topology builder to group devices under their bridge in the
+            # MoCA Bridges column (instead of dumping them all into a flat
+            # via_moca list). Empty for devices not behind any bridge.
+            # MoCA bridges are transparent (no IP, no per-port info) so
+            # this can only ever be set by user attestation -- there's no
+            # auto-discovery path that could populate it.
+            "behind_moca_bridge": existing.get("behind_moca_bridge", ""),
             "active": dev.get("activity", 1) == 1 if "activity" in dev else True,
         }
 
@@ -1773,6 +1782,15 @@ def homenet_device_update():
         # whose OUI hasn't been catalogued yet).
         if val in ("moca", "moca_bridge", "verizon_lan", "switch", ""):
             inventory["devices"][mac]["wired_via"] = val
+    # Parent MoCA bridge -- MAC of the bridge this device sits behind.
+    # Validates the format (or accepts empty to clear the link). We
+    # don't enforce that the MAC is actually in the inventory or marked
+    # as a bridge -- that would race against scan-induced inventory
+    # changes; the topology builder skips dangling pointers gracefully.
+    if "behind_moca_bridge" in body:
+        val = str(body["behind_moca_bridge"]).upper().replace("-", ":").strip()
+        if val == "" or re.match(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$", val):
+            inventory["devices"][mac]["behind_moca_bridge"] = val
 
     _save_homenet_inventory(inventory)
     return jsonify({"ok": True, "message": "Device updated"})
@@ -2348,6 +2366,23 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
             leftover_after_moca.add(m)
     moca_bridges.sort()
 
+    # Build the bridge -> [downstream device MACs] mapping. The user marks
+    # each downstream device's parent via behind_moca_bridge in the edit
+    # modal; we just collect by bridge MAC. Devices pointing to a bridge
+    # MAC that's no longer in moca_bridges (e.g. the user removed it from
+    # inventory) are silently dropped from the tree but still show up in
+    # via_moca/verizon_lan via the leftover bucketing below.
+    moca_bridge_set = set(moca_bridges)
+    moca_children: dict[str, list[str]] = {b: [] for b in moca_bridges}
+    devices_behind_a_bridge: set[str] = set()
+    for m, dev in devices_by_mac.items():
+        parent = (dev.get("behind_moca_bridge") or "").upper().strip()
+        if parent and parent in moca_bridge_set and m != parent:
+            moca_children[parent].append(m)
+            devices_behind_a_bridge.add(m)
+    for k in moca_children:
+        moca_children[k].sort()
+
     # Wired devices that aren't on the switch AND aren't a MoCA bridge.
     # The user explicitly asked for these to be split into two columns
     # (2026-04-25) -- "Verizon LAN" and "via MoCA" are physically distinct
@@ -2367,7 +2402,14 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
     #                      so this default minimises the user's tagging
     #                      burden -- they only have to mark the MoCA
     #                      devices, not all the Verizon ones.
-    wired_leftover = [m for m in leftover_after_moca if devices_by_mac.get(m, {}).get("network") == "wired"]
+    # Devices the user has nested under a specific MoCA bridge live in the
+    # MoCA Bridges column tree; exclude them from the flat via_moca /
+    # verizon_lan buckets to avoid double-rendering.
+    wired_leftover = [
+        m
+        for m in leftover_after_moca
+        if devices_by_mac.get(m, {}).get("network") == "wired" and m not in devices_behind_a_bridge
+    ]
     via_moca: list[str] = []
     verizon_lan: list[str] = []
     switch_forced: set[str] = set()
@@ -2418,6 +2460,11 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
         # Rendered as their own infrastructure tier in the diagram so the
         # user can see which devices are "going through MoCA" at a glance.
         "moca_bridges": moca_bridges,
+        # Per-bridge children mapping: {bridge_mac: [child_mac, ...]}.
+        # Populated from each device's behind_moca_bridge field. The UI
+        # renders this as a tree under each bridge in the MoCA Bridges
+        # column. Bridges with no children render as a leaf entry.
+        "moca_children": moca_children,
         # Wired devices that aren't on the switch MAC table AND aren't a
         # MoCA bridge themselves. Common causes: (a) plugged direct into
         # the Verizon LAN ports, (b) downstream of a MoCA bridge, (c) the
