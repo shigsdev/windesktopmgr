@@ -4770,17 +4770,46 @@ function hnTopoBuildSvg(t) {
     });
   }
 
-  // MoCA bridges as their own column -- when the user has Actiontec / GoCoax
-  // / etc. boxes in the inventory, surfacing them helps explain why the
-  // Verizon-direct/MoCA column is full of devices: those bridges are the
-  // entry/exit points for the coax LAN.
+  // MoCA Bridges column -- now a TREE: each bridge is a parent row, with
+  // its downstream devices (set per-device via behind_moca_bridge in the
+  // edit modal) listed as children right under it. Bridges with no
+  // children render as a leaf bridge row. Children are flagged with
+  // ``is_child: true`` so the renderer indents them and uses a subtler
+  // dot style (the user explicitly asked to see what's connected to each
+  // bridge, so the visual hierarchy matters).
   if ((t.moca_bridges || []).length) {
+    const bridges = t.moca_bridges;
+    const childrenMap = t.moca_children || {};
+    const totalChildren = Object.values(childrenMap).reduce((acc, arr) => acc + (arr || []).length, 0);
+    const rows = [];
+    for (const bridgeMac of bridges) {
+      // Bridge row (parent)
+      rows.push({
+        mac: bridgeMac,
+        label: "MoCA bridge",
+        dev: devices[bridgeMac] || { mac: bridgeMac },
+        is_bridge: true,
+      });
+      // Child rows (downstream devices)
+      const kids = childrenMap[bridgeMac] || [];
+      for (const childMac of kids) {
+        rows.push({
+          mac: childMac,
+          label: "behind bridge",
+          dev: devices[childMac] || { mac: childMac },
+          is_child: true,
+        });
+      }
+    }
+    const countSummary = totalChildren
+      ? `${bridges.length} bridge${bridges.length !== 1 ? "s" : ""} · ${totalChildren} downstream device${totalChildren !== 1 ? "s" : ""}`
+      : `${bridges.length} coax-to-Ethernet bridge${bridges.length !== 1 ? "s" : ""}`;
     columns.push({
       kind: "moca",
       id: "moca-bridges",
       name: "MoCA Bridges",
-      sub: `${t.moca_bridges.length} coax-to-Ethernet bridge${t.moca_bridges.length !== 1 ? "s" : ""}`,
-      rows: t.moca_bridges.map(m => ({ mac: m, label: "MoCA bridge", dev: devices[m] || { mac: m } })),
+      sub: countSummary,
+      rows,
     });
   }
 
@@ -4862,25 +4891,27 @@ function hnTopoBuildSvg(t) {
       const icon = _HN_CAT_ICON[cat] || _HN_CAT_ICON.Other;
       const name = _hnTopoLabel(dev, r.mac);
       const isOnline = dev.active !== false;
+      const isChild = !!r.is_child;
+      // Children of MoCA bridges are indented to convey the parent->child
+      // hierarchy. Non-child rows continue at the default x offset.
+      const indentX = isChild ? 16 : 0;
       // Connector infra → device. Stops 6 px before the dot's outer edge
       // so the dot reads as a distinct circle, not as the line's terminus.
-      // Bug 2026-04-25: line ended at the dot's edge, fusing visually with
-      // the dot; user reported "MoCA bridge looks greyed out" because the
-      // green dot blended into the surrounding grey connector.
-      svg += `<line x1="${x + NODE_W / 2}" y1="${INFRA_Y + 50}" x2="${x + 18}" y2="${y + ROW_H / 2}" stroke="var(--border)" stroke-width="0.8" opacity="0.4"/>`;
+      svg += `<line x1="${x + NODE_W / 2}" y1="${INFRA_Y + 50}" x2="${x + 18 + indentX}" y2="${y + ROW_H / 2}" stroke="var(--border)" stroke-width="0.8" opacity="${isChild ? "0.25" : "0.4"}"/>`;
       // Status dot -- bigger (r=5 was 4) + a stroke so it pops over the
-      // connector line. Active=green, inactive=hollow grey ring.
+      // connector line. Active=green, inactive=hollow grey ring. Children
+      // get a smaller dot to convey hierarchy at a glance.
       const dotFill = isOnline ? "var(--green)" : "var(--bg)";
       const dotStroke = isOnline ? "var(--green)" : "var(--muted)";
-      svg += `<circle cx="${x + 8}" cy="${y + ROW_H / 2}" r="5" fill="${dotFill}" stroke="${dotStroke}" stroke-width="1.5" data-active="${isOnline}"/>`;
-      // Device row -- now interactive: clicking the row fires the edit
-      // modal so the user can name unnamed devices without leaving the
-      // diagram. Cursor:pointer hint via the SVG cursor attribute.
+      const dotR = isChild ? 4 : 5;
+      svg += `<circle cx="${x + 8 + indentX}" cy="${y + ROW_H / 2}" r="${dotR}" fill="${dotFill}" stroke="${dotStroke}" stroke-width="1.5" data-active="${isOnline}"/>`;
+      // Device row -- clickable, opens the edit modal.
       const safeMac = (dev.mac || r.mac || "").replace(/'/g, "");
       const opacity = isOnline ? "1" : "0.55";
+      const childTreeMark = isChild ? "└ " : "";
       const tooltip = `${name}\n${dev.mac || r.mac}\n${dev.ip || "no IP"}\n${r.label}\n(click to edit)`;
-      svg += `<g opacity="${opacity}" style="cursor:pointer" onclick="openEditModal('${safeMac}')" data-device-mac="${_esc(dev.mac || r.mac || "")}" data-device-name="${_esc(name)}"><title>${_esc(tooltip)}</title>`;
-      svg += `<text x="${x + 20}" y="${y + ROW_H / 2 + 4}" fill="var(--text)" font-size="11">${icon} ${_truncate(_esc(name), 24)}</text>`;
+      svg += `<g opacity="${opacity}" style="cursor:pointer" onclick="openEditModal('${safeMac}')" data-device-mac="${_esc(dev.mac || r.mac || "")}" data-device-name="${_esc(name)}" data-is-child="${isChild}"><title>${_esc(tooltip)}</title>`;
+      svg += `<text x="${x + 20 + indentX}" y="${y + ROW_H / 2 + 4}" fill="var(--text)" font-size="11">${childTreeMark}${icon} ${_truncate(_esc(name), 22 - (isChild ? 2 : 0))}</text>`;
       svg += `<text x="${x + NODE_W - 6}" y="${y + ROW_H / 2 + 4}" fill="var(--muted)" font-size="9" text-anchor="end">${_esc(r.label)}</text>`;
       svg += `</g>`;
     });
@@ -5150,7 +5181,41 @@ function openEditModal(mac) {
   // value is ignored by the topology classifier.
   const viaEl = document.getElementById("hn-edit-wired-via");
   if (viaEl) viaEl.value = dev.wired_via || "";
+  // behind_moca_bridge dropdown: rebuild every open so newly-added bridges
+  // surface without page reload. Filters out the device being edited (a
+  // bridge can't be its own parent).
+  const behindEl = document.getElementById("hn-edit-behind-moca");
+  if (behindEl) {
+    const bridges = _hnDevices.filter(d => {
+      const isBridge = (d.wired_via || "").toLowerCase() === "moca_bridge"
+        || _isMocaVendor(d.vendor || "");
+      return isBridge && d.mac !== mac;  // exclude self
+    });
+    // Sort by friendly_name/hostname for predictable ordering
+    bridges.sort((a, b) => {
+      const na = (a.friendly_name || a.hostname || a.mac || "").toLowerCase();
+      const nb = (b.friendly_name || b.hostname || b.mac || "").toLowerCase();
+      return na.localeCompare(nb);
+    });
+    behindEl.innerHTML = '<option value="">— Not behind any bridge —</option>'
+      + bridges.map(b => {
+          const label = (b.friendly_name || b.hostname || b.mac);
+          return `<option value="${esc(b.mac)}">📻 ${esc(label)}</option>`;
+        }).join("");
+    behindEl.value = dev.behind_moca_bridge || "";
+  }
   document.getElementById("hn-edit-modal").style.display = "flex";
+}
+
+// Mirror of homenet.py _MOCA_VENDOR_PATTERNS -- kept in sync manually.
+// Used by the edit modal to identify potential MoCA-bridge devices for
+// the parent-bridge dropdown without a round-trip to the server.
+function _isMocaVendor(vendor) {
+  const v = (vendor || "").toLowerCase();
+  if (!v) return false;
+  return ["actiontec", "gocoax", "motorola mobility", "screenbeam",
+          "hitron", "westell", "commscope", "arris", "askey"]
+         .some(p => v.includes(p));
 }
 
 function closeEditModal() {
@@ -5168,7 +5233,8 @@ async function saveDeviceEdit() {
       category: document.getElementById("hn-edit-category").value,
       location: document.getElementById("hn-edit-location").value,
       notes: document.getElementById("hn-edit-notes").value,
-      wired_via: document.getElementById("hn-edit-wired-via").value
+      wired_via: document.getElementById("hn-edit-wired-via").value,
+      behind_moca_bridge: document.getElementById("hn-edit-behind-moca").value
     })
   });
   const data = await r.json();
@@ -7224,6 +7290,19 @@ function renderSystemInfo(d) {
             <option value="moca">🌀 via MoCA (downstream of bridge)</option>
             <option value="moca_bridge">📻 IS a MoCA bridge (coax-to-Ethernet)</option>
             <option value="switch">🔀 On TP-Link switch (force)</option>
+          </select>
+        </div>
+        <div style="margin-bottom:10px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">
+            Behind MoCA bridge (parent)
+            <span style="color:var(--muted);font-weight:400" title="Topology diagram (#9): if this device sits downstream of a MoCA bridge (e.g. a TV behind your TV Room MoCA), pick the bridge here. The diagram nests the device under that bridge in the MoCA Bridges column. MoCA bridges are transparent (no per-port info exposed) so this can only be set manually -- there's no auto-detection path for it. Has no effect on devices not on the MoCA network.">ⓘ</span>
+          </label>
+          <select id="hn-edit-behind-moca" style="width:100%;padding:6px 10px;border:1px solid var(--border);
+                  border-radius:6px;background:var(--surface);color:var(--text);font-family:var(--font-mono);font-size:12px">
+            <!-- Options populated dynamically in openEditModal() from the
+                 current MoCA bridges list. We rebuild on every modal open
+                 so newly-added bridges show up immediately. -->
+            <option value="">— Not behind any bridge —</option>
           </select>
         </div>
         <div style="margin-bottom:16px">
