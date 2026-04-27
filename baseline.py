@@ -636,3 +636,280 @@ def recent_drift(window: timedelta = DRIFT_ALERT_WINDOW) -> list:
         if ts >= cutoff:
             out.append(entry)
     return out
+
+
+# ══════════════════════════════════════════════════════════════════════
+# DRIFT INVESTIGATOR -- "why did this change happen?" decision support
+# ══════════════════════════════════════════════════════════════════════
+#
+# When the user sees a drift entry, the table tells them WHAT changed
+# but not WHY. Without context they're left guessing whether it's safe
+# to accept. The investigator surfaces three signals to help them
+# decide:
+#   1. Path safety classification (System32 = trusted; Temp = suspicious)
+#   2. Recent Windows Updates correlated with the drift
+#   3. Inferred cause + recommended action
+#
+# Each signal is independently useful but combining them is what makes
+# the recommendation actionable. Order in _PATH_CLASSIFICATIONS matters
+# -- more specific patterns must come first (System32 before Windows).
+
+_PATH_CLASSIFICATIONS: tuple[tuple[str, str, str], ...] = (
+    # (substring_to_match, friendly_label, severity)
+    # severity: "trusted" | "standard" | "user-app" | "suspicious" | "unknown"
+    # Patterns use single trailing backslash (\) to anchor "after the
+    # folder name" so e.g. "system32" matches "...\system32\..." but not
+    # "...\system32_old\..."
+    #
+    # ORDER MATTERS: more specific patterns MUST come first. The matcher
+    # returns on first hit. Suspicious + standard patterns are listed
+    # BEFORE the broad "windows folder" / "users folder" catchalls so a
+    # path under \Windows\Temp\ classifies as suspicious, not trusted.
+    # Suspicious overrides user-app for the same reason (Temp under
+    # AppData is suspicious, not user-app).
+    ("\\appdata\\local\\temp\\", "User Temp folder", "suspicious"),
+    ("\\users\\public\\", "Public user folder", "suspicious"),
+    ("\\windows\\temp\\", "Windows Temp folder", "suspicious"),
+    ("\\temp\\", "Temp folder", "suspicious"),
+    ("\\windows\\system32\\", "Windows System32", "trusted"),
+    ("\\windows\\syswow64\\", "Windows SysWOW64 (32-bit)", "trusted"),
+    ("\\windows\\winsxs\\", "Windows side-by-side store", "trusted"),
+    ("\\windows\\servicing\\", "Windows servicing folder", "trusted"),
+    ("\\windows\\", "Windows folder", "trusted"),
+    ("\\program files (x86)\\", "Program Files (x86)", "standard"),
+    ("\\program files\\", "Program Files", "standard"),
+    ("\\programdata\\", "ProgramData", "standard"),
+    ("\\appdata\\local\\", "User AppData (Local)", "user-app"),
+    ("\\appdata\\roaming\\", "User AppData (Roaming)", "user-app"),
+    ("c:\\users\\", "User folder", "user-app"),
+)
+
+
+def _classify_path(path: str) -> dict:
+    """Map an executable path to {label, severity}.
+
+    Severity values inform the recommendation engine:
+      - trusted    -> System-owned location, safe by default
+      - standard   -> Normal install location (Program Files etc.)
+      - user-app   -> Per-user install (legitimate but worth a glance)
+      - suspicious -> Unusual location for a service/task binary
+      - unknown    -> Couldn't classify (UNC paths, COM handlers, etc.)
+
+    The substring match is case-insensitive; paths use double-backslashes
+    to avoid matching mid-segment text (e.g. "Windows System32\\foo" must
+    match "system32\\" not "system32" alone).
+    """
+    if not path or not isinstance(path, str):
+        return {"label": "(empty)", "severity": "unknown"}
+    p = path.lower()
+    for pattern, label, severity in _PATH_CLASSIFICATIONS:
+        if pattern in p:
+            return {"label": label, "severity": severity}
+    # Special case: COM handlers / well-known commands
+    if p.strip() in ("com handler", "{", "}"):
+        return {"label": "COM handler / shell", "severity": "trusted"}
+    return {"label": "Unclassified location", "severity": "unknown"}
+
+
+def _recent_windows_updates(window: timedelta = timedelta(days=7)) -> list:
+    """Return Windows Updates installed within the past `window`.
+
+    Uses Get-HotFix via PowerShell -- it's the simplest cross-version
+    source. Returns an empty list on any failure (best-effort -- the
+    investigator falls back to "no correlation data" rather than blocking
+    the analysis).
+    """
+    cmd = [
+        "powershell",
+        "-NoProfile",
+        "-Command",
+        "Get-HotFix | Select-Object HotFixID,Description,InstalledOn | ConvertTo-Json -Compress",
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    if r.returncode != 0 or not (r.stdout or "").strip():
+        return []
+    try:
+        data = json.loads(r.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        return []
+
+    cutoff = datetime.now() - window
+    out: list[dict] = []
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        installed = entry.get("InstalledOn")
+        # PowerShell's ConvertTo-Json renders DateTime as either a string
+        # or a {"value":"...","DateTime":"..."} object. Handle both.
+        ts_str = ""
+        if isinstance(installed, dict):
+            ts_str = installed.get("DateTime") or installed.get("value") or ""
+        elif isinstance(installed, str):
+            ts_str = installed
+        if not ts_str:
+            continue
+        try:
+            ts = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00").replace("/", "-"))
+            ts = ts.replace(tzinfo=None) if ts.tzinfo else ts
+        except (ValueError, TypeError):
+            continue
+        if ts < cutoff:
+            continue
+        out.append(
+            {
+                "id": entry.get("HotFixID") or "",
+                "description": entry.get("Description") or "",
+                "installed": ts.isoformat(timespec="seconds"),
+            }
+        )
+    # Newest first -- the most recent update is the most likely cause.
+    out.sort(key=lambda e: e["installed"], reverse=True)
+    return out
+
+
+def _infer_drift_cause(path_severity: str, recent_updates: list, kind: str) -> tuple[str, str, str]:
+    """Combine path safety + update timing into a recommendation.
+
+    Returns (inferred_cause, recommendation, explanation).
+      - inferred_cause: "windows_update" | "software_install" | "user_action"
+                       | "scheduled_task_run" | "needs_investigation" | "unknown"
+      - recommendation: "likely_safe" | "review" | "investigate"
+      - explanation: human-readable sentence(s) suitable for the UI
+
+    Decision rules:
+      - Suspicious path (Temp / Public / etc.) -> investigate, regardless
+        of update history. This is the malware-signal path.
+      - Trusted path + recent updates           -> likely_safe (probably WU)
+      - Standard path + recent updates          -> review (probably software update)
+      - Trusted path + no recent updates        -> likely_safe (user action)
+      - User-app path                           -> review (per-user install)
+      - Unknown                                 -> review
+    """
+    has_updates = bool(recent_updates)
+    latest = recent_updates[0] if has_updates else None
+
+    if path_severity == "suspicious":
+        return (
+            "needs_investigation",
+            "investigate",
+            (
+                "The new path is in a location that's unusual for legitimate services or "
+                "scheduled tasks (Temp / Public / similar). Verify the binary's "
+                "digital signature and check what software installed it. If you didn't "
+                "install anything matching this, treat as suspicious."
+            ),
+        )
+    if path_severity == "trusted" and has_updates:
+        return (
+            "windows_update",
+            "likely_safe",
+            (
+                f"Path is in a Windows-system location and Windows Update installed "
+                f"{len(recent_updates)} update(s) in the last 7 days "
+                f"(most recent: {latest['id']} on {latest['installed']}). "
+                "This change is most likely a Windows Update side-effect -- safe to accept."
+            ),
+        )
+    if path_severity == "standard" and has_updates:
+        return (
+            "windows_update",
+            "review",
+            (
+                f"Path is in a normal install location and Windows Update installed "
+                f"{len(recent_updates)} update(s) recently. Could be a driver/component "
+                "update bundled with Windows Update. Quick sanity-check the binary "
+                "(right-click → Properties → Digital Signatures) and accept if signed by a known vendor."
+            ),
+        )
+    if path_severity == "trusted":
+        return (
+            "user_action",
+            "likely_safe",
+            (
+                "Path is in a Windows-system location. No recent Windows Updates in the "
+                "last 7 days, so this is most likely a user-initiated config change "
+                "(toggling a service via services.msc, enabling a scheduled task, etc.)."
+            ),
+        )
+    if path_severity == "user-app":
+        return (
+            "software_install",
+            "review",
+            (
+                "Path is under a user folder -- common for per-user installs (Chrome, "
+                "Discord, OneDrive, etc.). If you installed or updated software in this "
+                "category recently, accept. Otherwise investigate."
+            ),
+        )
+    if kind == "changed" and not has_updates:
+        return (
+            "scheduled_task_run",
+            "likely_safe",
+            (
+                "Only context fields changed (e.g. last_run_time after a scheduled "
+                "task ran). No recent Windows Updates. Most likely a normal task "
+                "execution, not a config change."
+            ),
+        )
+    return (
+        "unknown",
+        "review",
+        "Couldn't infer a likely cause automatically. Verify the change manually.",
+    )
+
+
+def investigate_drift_entry(category: str, entry: dict) -> dict:
+    """Analyze a single drift entry to help the user decide whether to accept.
+
+    ``entry`` is a member of ``drift[category][added|removed|changed]``
+    as returned by ``diff_snapshots`` -- includes ``key``, ``name``,
+    optional ``old`` / ``new`` / ``delta``.
+
+    Returns a dict the UI can render directly:
+        {
+            "kind":            "added" | "removed" | "changed",
+            "key":             "<entry key>",
+            "path_safety":     {"label": "...", "severity": "trusted|..."},
+            "recent_updates":  [{id, description, installed}, ...]  (max 5),
+            "inferred_cause":  "windows_update|software_install|user_action|..."
+            "recommendation":  "likely_safe|review|investigate",
+            "explanation":     "...",
+        }
+    """
+    # Pick the path to classify. For "added" entries the new value is in
+    # the entry itself; for "changed" it's under .new; for "removed" the
+    # interesting path is under .old (we're investigating a removal).
+    new_dict = entry.get("new") or {}
+    if not new_dict and "image_path" in entry:
+        new_dict = entry  # added/removed have flat shape
+    path = (new_dict.get("image_path") or new_dict.get("command") or "").strip()
+
+    # Detect the kind from the entry's shape: "changed" entries carry
+    # both .old and .new; "added"/"removed" don't.
+    if entry.get("old") and entry.get("new"):
+        kind = "changed"
+    elif entry.get("old"):
+        kind = "removed"
+    else:
+        kind = "added"
+
+    path_safety = _classify_path(path)
+    recent_updates = _recent_windows_updates()
+    inferred, recommendation, explanation = _infer_drift_cause(path_safety["severity"], recent_updates, kind)
+
+    return {
+        "kind": kind,
+        "key": entry.get("key", ""),
+        "path_safety": path_safety,
+        "recent_updates": recent_updates[:5],
+        "inferred_cause": inferred,
+        "recommendation": recommendation,
+        "explanation": explanation,
+    }
