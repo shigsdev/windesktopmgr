@@ -5277,14 +5277,27 @@ async function loadBaseline() {
   acceptBtn.style.display  = "none";
   const migBanner = document.getElementById("bl-migration-banner");
   if (migBanner) { migBanner.style.display = "none"; migBanner.removeAttribute("data-migration-fields"); }
-  // Clear inventory cache -- loadBaseline() is called on accept-baseline too,
-  // and stale cache would show the pre-accept state under the fresh drift.
-  _blInventoryCache = null;
-  _blInventoryDrift = null;
+  // Inventory cache invalidation. Two paths:
+  //   - Inventory currently HIDDEN: just null the cache; next "Show inventory"
+  //     click re-fetches lazily (the original behaviour).
+  //   - Inventory currently VISIBLE: keep the cache populated through the
+  //     reload so the user's open rows continue to work. Otherwise their
+  //     click handlers would race against loadBaseline's null-then-refetch
+  //     window and surface the "Item data missing from cache" error
+  //     (reported 2026-04-25 -- happens whenever loadBaseline runs
+  //     between the user opening the inventory and clicking a row, e.g.
+  //     after a tab switch or auto-refresh).
   const invBody = document.getElementById("bl-inv-body");
   const invToggle = document.getElementById("bl-inv-toggle");
-  if (invBody) invBody.style.display = "none";
-  if (invToggle) invToggle.textContent = "Show inventory";
+  const inventoryVisible = invBody && invBody.style.display !== "none";
+  if (!inventoryVisible) {
+    _blInventoryCache = null;
+    _blInventoryDrift = null;
+    if (invBody) invBody.style.display = "none";
+    if (invToggle) invToggle.textContent = "Show inventory";
+  }
+  // If inventoryVisible, we'll refresh cache + re-render after the drift
+  // fetch lands below (so the new banner / drift state can land first).
 
   let data;
   try {
@@ -5368,6 +5381,24 @@ async function loadBaseline() {
   _blRenderCategory("bl-cat-tasks",    "Scheduled Tasks",  "⏱",  drift.tasks,    _BL_CATS.tasks);
 
   content.style.display = "";
+
+  // If the user had the Inventory section open before this reload, refresh
+  // its cache + re-render so their open rows continue to work. Without this
+  // the "Item data missing from cache" error fires on row clicks (the rows
+  // were rendered against a snapshot that just got invalidated).
+  if (inventoryVisible) {
+    try {
+      const [snap, drift2] = await Promise.all([
+        fetch("/api/baseline/snapshot").then(r => r.json()),
+        fetch("/api/baseline/drift").then(r => r.json()),
+      ]);
+      _blInventoryCache = snap.snapshot || snap;
+      _blInventoryDrift = drift2.drift || {};
+      blRenderInventory();
+    } catch (e) {
+      // Non-fatal -- the row click handler will retry the fetch on miss.
+    }
+  }
 }
 
 // Per-category field layout for the Parameter|Previous|Current table.
@@ -5760,7 +5791,7 @@ function _blHashKey(k) {
 // of drift state. For drifted items we include both Previous and Current
 // columns; for clean items Previous == Current so we render a single
 // Value column for clarity.
-function blToggleInventoryRow(detailId, rowEl) {
+async function blToggleInventoryRow(detailId, rowEl) {
   const detail = document.getElementById(detailId);
   if (!detail) return;
   if (detail.style.display !== "none") {
@@ -5772,10 +5803,37 @@ function blToggleInventoryRow(detailId, rowEl) {
   const category = rowContainer.dataset.invCategory;
   const key = rowContainer.dataset.invKey;
   const kind = rowContainer.dataset.invKind;
-  const byKey = (((_blInventoryCache || {})[category] || {}).by_key) || {};
-  const item = byKey[key];
+  let byKey = (((_blInventoryCache || {})[category] || {}).by_key) || {};
+  let item = byKey[key];
+  // Bug 2026-04-25: cache-miss showed "Item data missing from cache" with
+  // no recovery path. Root cause: loadBaseline() unconditionally nulls
+  // _blInventoryCache (e.g. after a tab switch or auto-refresh), but the
+  // rendered DOM rows still reference the now-empty cache. Recover by
+  // re-fetching the snapshot transparently and retrying. The user just
+  // sees a brief delay instead of an unrecoverable error.
   if (!item) {
-    detail.innerHTML = `<div style="color:var(--red);font-size:11px">Item data missing from cache</div>`;
+    try {
+      detail.innerHTML = `<div style="color:var(--muted);font-size:11px">Refreshing inventory…</div>`;
+      detail.style.display = "";
+      const [snap, drift] = await Promise.all([
+        fetch("/api/baseline/snapshot").then(r => r.json()),
+        fetch("/api/baseline/drift").then(r => r.json()),
+      ]);
+      _blInventoryCache = snap.snapshot || snap;
+      _blInventoryDrift = drift.drift || {};
+      byKey = (((_blInventoryCache || {})[category] || {}).by_key) || {};
+      item = byKey[key];
+    } catch (e) {
+      detail.innerHTML = `<div style="color:var(--red);font-size:11px">Failed to refresh inventory: ${escHtml(e.message)}</div>`;
+      return;
+    }
+  }
+  if (!item) {
+    // Even after the re-fetch the item isn't there -- it really was
+    // removed from the system since the last render (e.g. user
+    // uninstalled a service). Tell them so they can re-render the
+    // inventory list to drop the stale row.
+    detail.innerHTML = `<div style="color:var(--orange);font-size:11px">This item is no longer present on the system. Click "Hide inventory" then "Show inventory" to refresh the list.</div>`;
     detail.style.display = "";
     return;
   }

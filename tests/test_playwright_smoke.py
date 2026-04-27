@@ -764,3 +764,89 @@ class TestBaselineTabCoverage:
                 "API reports no migration fields but banner is visible -- "
                 "UI leaked stale banner state across re-renders"
             )
+
+    def test_inventory_row_click_recovers_from_cache_miss(self, loaded_page):
+        """Bug 2026-04-25: clicking an inventory row after loadBaseline()
+        ran would surface "Item data missing from cache" because the cache
+        was nulled out by the reload while the rendered DOM rows still
+        referenced it. Fix: blToggleInventoryRow re-fetches the snapshot
+        on cache miss and retries.
+
+        This test simulates the failure mode by:
+          1. Open the Baseline tab + expand the inventory section
+          2. Forcibly null the inventory cache (mimics what loadBaseline did)
+          3. Click an inventory row
+          4. Assert the detail panel renders the parameter table (not the
+             "Item data missing" error message)
+        """
+        page, _ = loaded_page
+        drift = page.evaluate("fetch('/api/baseline/drift').then(r => r.json())")
+        if not drift.get("has_baseline"):
+            pytest.skip("no baseline captured yet -- can't exercise inventory rows")
+
+        # Switch to Baseline tab and wait for it to settle
+        page.evaluate("switchTab('baseline')")
+        page.wait_for_function(
+            """
+            () => {
+                const loading = document.getElementById('bl-loading');
+                if (!loading || loading.style.display !== 'none') return false;
+                return !!document.getElementById('bl-inv-toggle');
+            }
+            """,
+            timeout=15_000,
+        )
+
+        # Expand inventory + wait for at least one row to render
+        page.evaluate("blToggleInventory()")
+        page.wait_for_function(
+            "() => document.querySelectorAll('#bl-inv-body .bl-inv-row').length > 0",
+            timeout=15_000,
+        )
+
+        # Reproduce the bug: null the cache to simulate what loadBaseline did
+        page.evaluate("_blInventoryCache = null; _blInventoryDrift = null;")
+
+        # Click the first inventory row
+        page.evaluate(
+            """
+            () => {
+                const row = document.querySelector('#bl-inv-body .bl-inv-row > div');
+                if (row) row.click();
+            }
+            """
+        )
+
+        # The detail panel should populate -- either via re-fetch (success
+        # path) or fail gracefully with the "no longer present" message.
+        # The OLD failure mode would leave the "Item data missing from
+        # cache" string in the panel; that's the regression we're guarding
+        # against. Wait up to 8s for the re-fetch to settle.
+        page.wait_for_function(
+            """
+            () => {
+                const detail = document.querySelector('#bl-inv-body .bl-inv-row > div + div[id^="blinv-"]');
+                if (!detail) return false;
+                if (detail.style.display === 'none') return false;
+                const txt = detail.textContent || '';
+                // Settled = anything OTHER than the loading or stuck-cache-miss states
+                return !txt.includes('Refreshing inventory') && !txt.includes('Item data missing from cache');
+            }
+            """,
+            timeout=10_000,
+        )
+
+        # Final assertion: the OLD error string must NOT be present anywhere
+        # in the inventory body
+        bad = page.evaluate(
+            """
+            (() => {
+                const body = document.getElementById('bl-inv-body');
+                return (body && body.textContent || '').includes('Item data missing from cache');
+            })()
+            """
+        )
+        assert not bad, (
+            "Inventory row click after cache miss surfaced 'Item data missing from cache' -- "
+            "the auto-recovery re-fetch in blToggleInventoryRow isn't firing."
+        )
