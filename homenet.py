@@ -1959,18 +1959,28 @@ def _is_infra_by_hostname(device: dict) -> bool:
 def _is_moca_bridge(device: dict) -> bool:
     """True if this device is a MoCA-over-coax Ethernet bridge.
 
-    Two paths:
-      1. **User attestation** -- ``wired_via == "moca_bridge"`` set via the
-         device-edit modal. Always wins. Use this when your bridge's vendor
-         name doesn't match the well-known patterns (Verizon-branded
-         extenders, off-brand boxes, anything with a generic OUI lookup).
-      2. **Vendor-name pattern match** against _MOCA_VENDOR_PATTERNS --
-         covers the common OEMs (Actiontec, Commscope/Arris STBs, GoCoax,
-         etc.). Auto-detection so the user doesn't have to tag every
-         well-known device manually.
+    Resolution order (first match wins):
+      1. **Explicit "is a bridge"** -- ``wired_via == "moca_bridge"``
+         set by the user via the device-edit modal. Always wins.
+      2. **Explicit "NOT a bridge"** -- ``wired_via`` set to anything
+         else specific ("moca", "verizon_lan", "switch"). The user has
+         deliberately classified the device, so vendor-pattern auto-
+         detection MUST NOT override their choice. Bug 2026-04-25:
+         user reported "VMS4100ATV is a Verizon Set-Top Box (endpoint,
+         not a bridge)" but the Commscope vendor pattern kept tagging
+         it as a bridge even after they set wired_via=moca. Fixed
+         here -- any non-empty wired_via value is treated as the
+         user's final word on bridge-vs-endpoint classification.
+      3. **No user attestation** (wired_via empty) -- fall back to
+         vendor-name pattern match against _MOCA_VENDOR_PATTERNS.
+         Auto-detection so the user doesn't have to tag every
+         well-known device manually on a fresh setup.
     """
-    if (device.get("wired_via") or "").lower() == "moca_bridge":
+    wv = (device.get("wired_via") or "").lower()
+    if wv == "moca_bridge":
         return True
+    if wv in ("moca", "verizon_lan", "switch"):
+        return False
     vendor = (device.get("vendor") or "").lower()
     if not vendor:
         return False
