@@ -5596,15 +5596,23 @@ function _blRenderEntry(header, oldObj, newObj, delta, cfg, catKey, kind, accent
     changed: `<strong style="color:var(--orange)">Tracked field(s) changed</strong> on an existing entry. Highlighted rows above show exactly what flipped. Verify the change is legitimate.`,
   }[kind] || "";
   const stepsHtml = (rem.steps || []).map(s => `<li style="margin:2px 0">${escHtml(s)}</li>`).join("");
+  // Investigation panel: hidden until the user clicks "Why did this change?"
+  // The panel id is built from the entry key (hashed for HTML safety) so each
+  // drift entry has its own slot. Click handler fetches /api/baseline/
+  // investigate, then renders path safety + recent updates + recommendation.
+  const entryKey = header.key || header.mac || header.name || "";
+  const investigateId = `bl-invest-${_blHashKey(entryKey + ":" + catKey)}`;
+  const safeKey = entryKey.replace(/'/g, "\\'").replace(/\\/g, "\\\\");
   const remediationHtml = `
     <div style="margin-top:8px;padding:8px 10px;background:var(--card);border:1px dashed var(--border);border-radius:4px;font-size:11px">
       <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:4px">How to fix</div>
       <div style="color:var(--text);margin-bottom:6px">${kindExplainer}</div>
-      ${rem.console_label ? `
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:4px 0 6px">
-          <button onclick="blLaunchConsole('${escHtml(catKey)}', this)" style="background:var(--cyan);border:none;color:#000;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">🔧 ${escHtml(rem.console_label)}</button>
-          ${rem.console_hint ? `<span style="font-size:10px;color:var(--muted)">${escHtml(rem.console_hint)}</span>` : ""}
-        </div>` : ""}
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:4px 0 6px">
+        ${rem.console_label ? `<button onclick="blLaunchConsole('${escHtml(catKey)}', this)" style="background:var(--cyan);border:none;color:#000;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">🔧 ${escHtml(rem.console_label)}</button>` : ""}
+        <button onclick="blInvestigateDrift('${escHtml(catKey)}', '${escHtml(safeKey)}', '${investigateId}', this)" style="background:transparent;border:1px solid var(--cyan);color:var(--cyan);padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">🔍 Why did this change?</button>
+        ${rem.console_hint ? `<span style="font-size:10px;color:var(--muted)">${escHtml(rem.console_hint)}</span>` : ""}
+      </div>
+      <div id="${investigateId}" class="bl-investigation" data-investigation-key="${escHtml(entryKey)}" style="display:none;margin:6px 0;padding:8px 10px;background:var(--surface);border-left:3px solid var(--cyan);border-radius:4px"></div>
       ${stepsHtml ? `<ol style="margin:4px 0 0 18px;padding:0;color:var(--text);font-size:11px;line-height:1.5">${stepsHtml}</ol>` : ""}
     </div>`;
 
@@ -5648,6 +5656,109 @@ async function blLaunchConsole(category, btn) {
   } finally {
     if (btn) { btn.disabled = false; btn.innerHTML = btn.dataset.orig || btn.innerHTML; }
   }
+}
+
+// "Why did this change?" investigator. Fetches /api/baseline/investigate
+// for the given drift entry and renders the result inline in the per-entry
+// `panelId` div. Toggles the panel closed on a second click. Caches the
+// fetch result in a data attribute so re-toggling is instant.
+async function blInvestigateDrift(category, key, panelId, btn) {
+  const panel = document.getElementById(panelId);
+  if (!panel) return;
+  // Toggle closed if already open
+  if (panel.style.display !== "none") {
+    panel.style.display = "none";
+    if (btn) btn.innerHTML = "🔍 Why did this change?";
+    return;
+  }
+
+  // Show panel + loading state
+  panel.style.display = "";
+  panel.innerHTML = `<div style="font-size:11px;color:var(--muted)">🔍 Investigating change…</div>`;
+  if (btn) { btn.disabled = true; const orig = btn.innerHTML; btn.innerHTML = "Investigating..."; btn.dataset.orig = orig; }
+
+  try {
+    const r = await fetch("/api/baseline/investigate", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({category, key}),
+    });
+    const data = await r.json();
+    if (!data.ok) {
+      panel.innerHTML = `<div style="color:var(--red);font-size:11px">${escHtml(data.error || "investigation failed")}</div>`;
+      return;
+    }
+    panel.innerHTML = _blRenderInvestigation(data.investigation);
+  } catch (e) {
+    panel.innerHTML = `<div style="color:var(--red);font-size:11px">Failed to investigate: ${escHtml(e.message)}</div>`;
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = "🔍 Hide investigation";
+    }
+  }
+}
+
+// Render the investigation API response into a compact HTML report.
+// Three sections: path-safety badge, recent Windows Updates table,
+// recommendation + explanation. Color-coded by severity/recommendation
+// so the user can scan-and-decide.
+function _blRenderInvestigation(inv) {
+  if (!inv) return `<div style="color:var(--muted);font-size:11px">no investigation data</div>`;
+
+  // Severity → colour mapping for the path-safety badge.
+  const sevColor = {
+    "trusted": "var(--green)",
+    "standard": "var(--cyan)",
+    "user-app": "var(--yellow)",
+    "suspicious": "var(--red)",
+    "unknown": "var(--muted)",
+  };
+  const recColor = {
+    "likely_safe": "var(--green)",
+    "review": "var(--yellow)",
+    "investigate": "var(--red)",
+  };
+  const recIcon = {
+    "likely_safe": "✓",
+    "review": "?",
+    "investigate": "!",
+  };
+
+  const ps = inv.path_safety || {};
+  const psColor = sevColor[ps.severity] || "var(--muted)";
+  const recCol = recColor[inv.recommendation] || "var(--muted)";
+  const recIc = recIcon[inv.recommendation] || "?";
+
+  let updatesHtml = "";
+  if ((inv.recent_updates || []).length) {
+    updatesHtml = `
+      <div style="margin-top:8px">
+        <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:3px">Recent Windows Updates (last 7d)</div>
+        <ul style="margin:2px 0 0 16px;padding:0;font-size:11px;color:var(--text)">
+          ${inv.recent_updates.map(u => `<li>${escHtml(u.id)} — ${escHtml(u.installed.split("T")[0])}${u.description ? ` <span style="color:var(--muted)">(${escHtml(u.description)})</span>` : ""}</li>`).join("")}
+        </ul>
+      </div>`;
+  } else {
+    updatesHtml = `<div style="margin-top:8px;font-size:11px;color:var(--muted)">No Windows Updates installed in the last 7 days.</div>`;
+  }
+
+  return `
+    <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:6px">Why did this change?</div>
+    <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:8px">
+      <span style="background:${recCol};color:#000;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:700;flex-shrink:0">${recIc} ${escHtml((inv.recommendation || "review").replace("_", " "))}</span>
+      <div style="font-size:11px;color:var(--text);line-height:1.5">${escHtml(inv.explanation || "")}</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;font-size:11px">
+      <span style="font-size:10px;color:var(--muted)">Path classification:</span>
+      <span style="background:${psColor};color:#000;padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600">${escHtml(ps.label || "unknown")}</span>
+      <span style="font-size:10px;color:var(--muted)">(${escHtml(ps.severity || "unknown")})</span>
+    </div>
+    ${updatesHtml}
+    <div style="margin-top:8px;font-size:10px;color:var(--muted)">
+      Inferred cause: <strong>${escHtml((inv.inferred_cause || "unknown").replace(/_/g, " "))}</strong>
+    </div>
+  `;
 }
 
 // ── Full-inventory browser (shows EVERY monitored item) ────────────────

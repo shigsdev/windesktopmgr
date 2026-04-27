@@ -8705,6 +8705,49 @@ def baseline_launch_console_route():
         return jsonify({"ok": False, "error": str(e), "launched": console}), 500
 
 
+@app.route("/api/baseline/investigate", methods=["POST"])
+def baseline_investigate_route():
+    """Analyze a single drift entry to help the user decide whether to accept.
+
+    Body shape:
+        {"category": "services|tasks|startup",
+         "key":      "<entry key from drift.<category>.<kind>[].key>",
+         "kind":     "added|removed|changed"  (optional -- inferred from drift state)}
+
+    Returns:
+        {"ok": True, "investigation": {path_safety, recent_updates, inferred_cause,
+                                       recommendation, explanation, ...}}
+    """
+    import baseline
+
+    body = request.get_json(silent=True) or {}
+    category = (body.get("category") or "").lower().strip()
+    key = (body.get("key") or "").strip()
+    if category not in ("startup", "services", "tasks") or not key:
+        return jsonify({"ok": False, "error": "category (startup|services|tasks) and key required"}), 400
+
+    # Recompute current drift to find the entry by category + key.
+    result = baseline.compute_drift()
+    drift_cat = (result.get("drift") or {}).get(category) or {}
+    entry = None
+    for kind in ("changed", "added", "removed"):
+        for e in drift_cat.get(kind) or []:
+            if e.get("key") == key:
+                entry = e
+                break
+        if entry:
+            break
+
+    if not entry:
+        return (
+            jsonify({"ok": False, "error": f"no current drift entry for category={category} key={key}"}),
+            404,
+        )
+
+    investigation = baseline.investigate_drift_entry(category, entry)
+    return jsonify({"ok": True, "investigation": investigation})
+
+
 @app.route("/api/tasks/health")
 def tasks_health_route():
     """Return health status for every managed scheduled task."""

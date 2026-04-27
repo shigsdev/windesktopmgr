@@ -16,6 +16,7 @@ no real baseline / history on disk is touched.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -848,6 +849,178 @@ class TestRecentDrift:
         assert recent[0]["total_changes"] == 3
 
 
+# ── Drift investigator (decision support: why did this change?) ────
+
+
+class TestPathClassifier:
+    """The path-safety classifier maps an executable path to a severity
+    label that drives the recommendation engine. Trusted = System32,
+    Standard = Program Files, User-app = AppData, Suspicious = Temp/Public,
+    Unknown = anything else (including empty)."""
+
+    @pytest.mark.parametrize(
+        "path, expected_severity",
+        [
+            (r"C:\Windows\System32\spoolsv.exe", "trusted"),
+            (r"C:\Windows\SysWOW64\foo.exe", "trusted"),
+            (r"C:\Windows\WinSxS\amd64_microsoft-windows-foo\bar.exe", "trusted"),
+            (r"C:\Windows\SomeOtherFolder\app.exe", "trusted"),
+            (r"C:\Program Files\Microsoft\foo.exe", "standard"),
+            (r"C:\Program Files (x86)\Adobe\Reader\AcroRd32.exe", "standard"),
+            (r"C:\ProgramData\Vendor\agent.exe", "standard"),
+            (r"C:\Users\bob\AppData\Local\Discord\app.exe", "user-app"),
+            (r"C:\Users\bob\AppData\Roaming\Mozilla\foo.exe", "user-app"),
+            (r"C:\Users\Public\Downloads\sus.exe", "suspicious"),
+            # Suspicious takes priority over user-app (Temp under AppData)
+            (r"C:\Users\bob\AppData\Local\Temp\dropper.exe", "suspicious"),
+            (r"C:\Windows\Temp\stage.exe", "suspicious"),
+            ("", "unknown"),
+            (None, "unknown"),
+        ],
+    )
+    def test_classify_path_severity(self, path, expected_severity):
+        from baseline import _classify_path
+
+        result = _classify_path(path)
+        assert result["severity"] == expected_severity, f"path={path!r} got {result!r}"
+        assert "label" in result
+
+
+class TestRecentWindowsUpdates:
+    """The investigator pulls Windows Update history via Get-HotFix to
+    correlate drift timing with installed patches. Failure-tolerant:
+    any subprocess error returns [] so the investigation still completes."""
+
+    def test_recent_updates_subprocess_failure_returns_empty(self, mocker):
+        from baseline import _recent_windows_updates
+
+        mocker.patch("subprocess.run", side_effect=OSError("powershell missing"))
+        assert _recent_windows_updates() == []
+
+    def test_recent_updates_timeout_returns_empty(self, mocker):
+        import subprocess as sp
+
+        from baseline import _recent_windows_updates
+
+        mocker.patch("subprocess.run", side_effect=sp.TimeoutExpired(cmd="powershell", timeout=30))
+        assert _recent_windows_updates() == []
+
+    def test_recent_updates_parses_get_hotfix_json(self, mocker):
+        """Parse a representative Get-HotFix | ConvertTo-Json payload."""
+        from baseline import _recent_windows_updates
+
+        # Recent (1 day ago) and old (30 days ago) entries -- only the
+        # recent one should land within the default 7-day window.
+        recent = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
+        old = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S")
+        payload = json.dumps(
+            [
+                {"HotFixID": "KB5000001", "Description": "Security Update", "InstalledOn": {"DateTime": recent}},
+                {"HotFixID": "KB4999999", "Description": "Old Update", "InstalledOn": {"DateTime": old}},
+            ]
+        )
+        mocker.patch(
+            "subprocess.run",
+            return_value=SimpleNamespace(returncode=0, stdout=payload, stderr=""),
+        )
+        result = _recent_windows_updates(window=timedelta(days=7))
+        assert len(result) == 1
+        assert result[0]["id"] == "KB5000001"
+
+    def test_recent_updates_handles_single_object_response(self, mocker):
+        """Get-HotFix returns a SINGLE object (not a list) when only one
+        hotfix matches -- ConvertTo-Json's quirk. Must be normalised."""
+        from baseline import _recent_windows_updates
+
+        recent = (datetime.now() - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S")
+        single = json.dumps({"HotFixID": "KB5000001", "InstalledOn": recent})
+        mocker.patch(
+            "subprocess.run",
+            return_value=SimpleNamespace(returncode=0, stdout=single, stderr=""),
+        )
+        result = _recent_windows_updates()
+        assert len(result) == 1
+        assert result[0]["id"] == "KB5000001"
+
+
+class TestInferDriftCause:
+    """The recommendation engine combines path safety + update timing
+    into one of: likely_safe / review / investigate. Test each branch."""
+
+    def test_suspicious_path_always_investigate(self):
+        from baseline import _infer_drift_cause
+
+        # Even WITH recent updates, suspicious path = investigate
+        cause, rec, _ = _infer_drift_cause("suspicious", [{"id": "KB1"}], "changed")
+        assert rec == "investigate"
+        assert cause == "needs_investigation"
+
+    def test_trusted_path_with_updates_likely_safe(self):
+        from baseline import _infer_drift_cause
+
+        updates = [{"id": "KB5000001", "installed": "2026-04-25T10:00:00"}]
+        cause, rec, exp = _infer_drift_cause("trusted", updates, "changed")
+        assert rec == "likely_safe"
+        assert cause == "windows_update"
+        assert "KB5000001" in exp
+
+    def test_trusted_path_no_updates_user_action(self):
+        from baseline import _infer_drift_cause
+
+        cause, rec, _ = _infer_drift_cause("trusted", [], "changed")
+        assert rec == "likely_safe"
+        assert cause == "user_action"
+
+    def test_user_app_path_review(self):
+        from baseline import _infer_drift_cause
+
+        cause, rec, _ = _infer_drift_cause("user-app", [], "changed")
+        assert rec == "review"
+        assert cause == "software_install"
+
+    def test_unknown_falls_back_to_review(self):
+        from baseline import _infer_drift_cause
+
+        cause, rec, _ = _infer_drift_cause("unknown", [], "added")
+        assert rec == "review"
+
+
+class TestInvestigateDriftEntry:
+    """End-to-end: investigate_drift_entry orchestrates the path
+    classifier + update lookup + cause inference into a single dict."""
+
+    def test_changed_entry_returns_recommendation(self, mocker):
+        from baseline import investigate_drift_entry
+
+        mocker.patch("baseline._recent_windows_updates", return_value=[])
+        entry = {
+            "key": "Spooler",
+            "name": "Print Spooler",
+            "delta": ["image_path"],
+            "old": {"image_path": r"C:\Windows\System32\spoolsv.exe"},
+            "new": {"image_path": r"C:\Windows\System32\spoolsv.exe"},  # unchanged for test
+        }
+        result = investigate_drift_entry("services", entry)
+        assert result["kind"] == "changed"
+        assert result["path_safety"]["severity"] == "trusted"
+        assert result["recommendation"] in ("likely_safe", "review")
+
+    def test_added_entry_classifies_path(self, mocker):
+        from baseline import investigate_drift_entry
+
+        mocker.patch("baseline._recent_windows_updates", return_value=[])
+        # "added" entries have flat shape (no .old/.new wrapping)
+        entry = {
+            "key": "MaybeBad",
+            "name": "MaybeBad",
+            "image_path": r"C:\Users\bob\AppData\Local\Temp\dropper.exe",
+        }
+        result = investigate_drift_entry("services", entry)
+        assert result["kind"] == "added"
+        assert result["path_safety"]["severity"] == "suspicious"
+        assert result["recommendation"] == "investigate"
+
+
 # ── Flask routes ───────────────────────────────────────────────────
 
 
@@ -956,6 +1129,61 @@ class TestBaselineRoutes:
         body = resp.get_json()
         assert body["ok"] is False
         assert "shell-execute failed" in body["error"]
+
+    # ── /api/baseline/investigate ────────────────────────────────────
+    def test_investigate_route_400_on_missing_fields(self, client):
+        resp = client.post("/api/baseline/investigate", json={})
+        assert resp.status_code == 400
+
+    def test_investigate_route_400_on_bad_category(self, client):
+        resp = client.post("/api/baseline/investigate", json={"category": "evil", "key": "X"})
+        assert resp.status_code == 400
+
+    def test_investigate_route_404_when_no_drift_match(self, client, mocker):
+        mocker.patch(
+            "baseline.compute_drift",
+            return_value={"drift": {"services": {"added": [], "removed": [], "changed": []}}},
+        )
+        resp = client.post(
+            "/api/baseline/investigate",
+            json={"category": "services", "key": "Spooler"},
+        )
+        assert resp.status_code == 404
+
+    def test_investigate_route_returns_investigation_for_changed(self, client, mocker):
+        mocker.patch(
+            "baseline.compute_drift",
+            return_value={
+                "drift": {
+                    "services": {
+                        "added": [],
+                        "removed": [],
+                        "changed": [
+                            {
+                                "key": "Spooler",
+                                "name": "Print Spooler",
+                                "delta": ["image_path"],
+                                "old": {"image_path": r"C:\Windows\System32\spoolsv.exe"},
+                                "new": {"image_path": r"C:\Windows\System32\spoolsv.exe"},
+                            }
+                        ],
+                    }
+                }
+            },
+        )
+        mocker.patch("baseline._recent_windows_updates", return_value=[])
+        resp = client.post(
+            "/api/baseline/investigate",
+            json={"category": "services", "key": "Spooler"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        inv = body["investigation"]
+        assert inv["kind"] == "changed"
+        assert inv["path_safety"]["severity"] == "trusted"
+        assert "explanation" in inv
+        assert inv["recommendation"] in ("likely_safe", "review", "investigate")
 
 
 # ── Dashboard concern wiring ───────────────────────────────────────
