@@ -2904,6 +2904,27 @@ class TestMocaVendorDetection:
         dev = {"vendor": vendor} if vendor is not None else {}
         assert _is_moca_bridge(dev) is expected
 
+    def test_user_wired_via_overrides_vendor_pattern_to_NOT_bridge(self):
+        """Bug 2026-04-25 (round 2): VMS4100ATV (Commscope) was being
+        auto-detected as a MoCA bridge by vendor pattern, but the user
+        clarified it's actually a Verizon Set-Top Box endpoint -- a
+        MoCA-CAPABLE device, not a bridge. Setting wired_via to anything
+        specific ("moca", "verizon_lan", "switch") must override the
+        vendor pattern."""
+        from homenet import _is_moca_bridge
+
+        # Vendor matches MoCA pattern but user says "moca endpoint" -> NOT bridge
+        assert _is_moca_bridge({"vendor": "Commscope", "wired_via": "moca"}) is False
+        # Same for Askey + verizon_lan (rare but possible -- some Askey
+        # gear is a USB-Ethernet adapter, not a MoCA bridge)
+        assert _is_moca_bridge({"vendor": "Askey", "wired_via": "verizon_lan"}) is False
+        # And for switch override
+        assert _is_moca_bridge({"vendor": "Actiontec", "wired_via": "switch"}) is False
+        # Vendor matches AND no wired_via set -> auto-detect still fires
+        assert _is_moca_bridge({"vendor": "Commscope"}) is True
+        # Vendor matches AND user explicitly says "moca_bridge" -> still bridge
+        assert _is_moca_bridge({"vendor": "Commscope", "wired_via": "moca_bridge"}) is True
+
     def test_is_moca_bridge_user_attestation_overrides_vendor(self):
         """Bug 2026-04-25: user reported "I have two MoCA's, only see one"
         because their second bridge had a vendor name not in the auto-
