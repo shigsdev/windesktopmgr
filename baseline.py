@@ -39,6 +39,7 @@ import csv
 import io
 import json
 import os
+import re
 import subprocess
 import threading
 from datetime import datetime, timedelta
@@ -387,6 +388,103 @@ def accept_current_as_baseline() -> dict:
         if _atomic_write(BASELINE_FILE, snapshot):
             return {"ok": True, "snapshot": snapshot, "error": None}
         return {"ok": False, "snapshot": snapshot, "error": "atomic write failed"}
+
+
+def accept_drift_entry(category: str, key: str) -> dict:
+    """Accept a SINGLE drift entry's current state into the baseline.
+
+    User feedback (2026-04-28): the original "Accept current as baseline"
+    button is all-or-nothing. If three changes are legit and one is
+    suspicious, the user has no way to absorb the three without also
+    absorbing the suspicious one. This function fixes that -- it takes
+    a single (category, key) pair and updates only that entry in the
+    baseline snapshot, leaving everything else untouched.
+
+    Three sub-cases by drift kind:
+      - ADDED   (in current, not in baseline)  -> insert into baseline
+      - REMOVED (in baseline, not in current)  -> delete from baseline
+      - CHANGED (in both, fields differ)       -> overwrite in baseline
+
+    Returns:
+        {"ok": bool, "kind": "added|removed|changed",
+         "error": str|None, "baseline_timestamp": str|None}
+
+    Failures: 404-class (key not in either snapshot), 500-class (write
+    fault, no baseline yet, etc.). Atomic write + lock so concurrent
+    drift checks never observe a half-applied baseline.
+    """
+    if category not in _DIFF_FIELDS:
+        return {
+            "ok": False,
+            "kind": "",
+            "error": f"unknown category {category!r}; expected one of {list(_DIFF_FIELDS)}",
+            "baseline_timestamp": None,
+        }
+    if not key or not isinstance(key, str):
+        return {
+            "ok": False,
+            "kind": "",
+            "error": "key required and must be a non-empty string",
+            "baseline_timestamp": None,
+        }
+
+    with _file_lock:
+        baseline = load_baseline()
+        if not baseline:
+            return {
+                "ok": False,
+                "kind": "",
+                "error": "no baseline exists -- use /api/baseline/accept first",
+                "baseline_timestamp": None,
+            }
+
+        # Re-snapshot so we apply current state at point-of-accept (not a
+        # cached state that might be seconds-stale).
+        current = take_snapshot()
+
+        baseline_cat = baseline.setdefault(category, {}).setdefault("by_key", {})
+        current_cat = (current.get(category) or {}).get("by_key") or {}
+
+        in_baseline = key in baseline_cat
+        in_current = key in current_cat
+
+        if not in_baseline and not in_current:
+            return {
+                "ok": False,
+                "kind": "",
+                "error": f"key {key!r} not found in either baseline or current snapshot",
+                "baseline_timestamp": baseline.get("timestamp"),
+            }
+
+        if not in_baseline and in_current:
+            kind = "added"
+            baseline_cat[key] = current_cat[key]
+        elif in_baseline and not in_current:
+            kind = "removed"
+            del baseline_cat[key]
+        else:
+            # Both sides present -- replace baseline with current.
+            kind = "changed"
+            baseline_cat[key] = current_cat[key]
+
+        # Bump timestamp + recompute counts so the snapshot stays consistent.
+        baseline["timestamp"] = datetime.now().isoformat(timespec="seconds")
+        baseline["counts"] = {cat: len((baseline.get(cat) or {}).get("by_key") or {}) for cat in _DIFF_FIELDS}
+
+        if not _atomic_write(BASELINE_FILE, baseline):
+            return {
+                "ok": False,
+                "kind": kind,
+                "error": "atomic write failed",
+                "baseline_timestamp": baseline["timestamp"],
+            }
+
+    return {
+        "ok": True,
+        "kind": kind,
+        "error": None,
+        "baseline_timestamp": baseline["timestamp"],
+    }
 
 
 def load_history() -> list:
@@ -774,6 +872,329 @@ def _recent_windows_updates(window: timedelta = timedelta(days=7)) -> list:
     return out
 
 
+# Sanitiser shared by every PowerShell-bound name. Strips anything outside
+# a strict whitelist so a malicious / weird service / task name can't
+# escape the single-quoted PS string it's interpolated into. Caller can
+# still abort early if the sanitised result diverges from the input.
+def _safe_ps_name(name: str, max_len: int = 256) -> str:
+    if not isinstance(name, str):
+        return ""
+    cleaned = re.sub(r"[^A-Za-z0-9_\-. \\/]", "", name)
+    return cleaned[:max_len]
+
+
+def _normalise_event_ts(value) -> str:
+    """Best-effort ISO-8601 datetime from a PowerShell ConvertTo-Json TimeCreated."""
+    if not value:
+        return ""
+    if isinstance(value, dict):
+        value = value.get("DateTime") or value.get("value") or ""
+    s = str(value).strip()
+    if not s:
+        return ""
+    try:
+        # PS ConvertTo-Json emits "/Date(1714233600000)/" sometimes too -- best
+        # effort: pull the milliseconds out and format.
+        m = re.match(r"/Date\((\d+)", s)
+        if m:
+            return datetime.fromtimestamp(int(m.group(1)) / 1000).isoformat(timespec="seconds")
+        s2 = s.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s2)
+        if dt.tzinfo:
+            dt = dt.replace(tzinfo=None)
+        return dt.isoformat(timespec="seconds")
+    except (ValueError, TypeError):
+        return s
+
+
+def _get_service_install_event(service_name: str) -> dict | None:
+    """Look up the System log Event 7045 (service installed) for a given
+    service name. Returns the install timestamp + image path + start type
+    + account + installer-user, or None if no event matches.
+
+    Event 7045 is logged by Service Control Manager every time a new
+    service is registered. Properties (in order):
+      [0] ServiceName  [1] ImagePath  [2] ServiceType
+      [3] StartType    [4] AccountName
+
+    The UserId on the event record points at the SID of the account that
+    triggered the install. We resolve that SID to a friendly name when
+    possible -- but we WRAP the resolve in try/catch because some SIDs
+    (e.g. deleted accounts) can't be translated and would otherwise crash
+    the whole pipeline.
+    """
+    safe = _safe_ps_name(service_name)
+    if not safe:
+        return None
+    # PowerShell command: query last 200 events 7045, filter by service
+    # name, take the most recent match. The escape-and-double for ' inside
+    # a single-quoted PS string is `'`->`''`.
+    safe_ps = safe.replace("'", "''")
+    cmd = [
+        "powershell",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        (
+            "$ErrorActionPreference='SilentlyContinue';"
+            "Get-WinEvent -FilterHashtable @{LogName='System';ID=7045} -MaxEvents 200 -ErrorAction SilentlyContinue |"
+            f"Where-Object {{$_.Properties[0].Value -eq '{safe_ps}'}} |"
+            "Sort-Object TimeCreated -Descending |"
+            "Select-Object -First 1 @{N='TimeCreated';E={$_.TimeCreated.ToString('o')}},"
+            "@{N='ServiceName';E={$_.Properties[0].Value}},"
+            "@{N='ImagePath';E={$_.Properties[1].Value}},"
+            "@{N='ServiceType';E={$_.Properties[2].Value}},"
+            "@{N='StartType';E={$_.Properties[3].Value}},"
+            "@{N='AccountName';E={$_.Properties[4].Value}},"
+            "@{N='InstalledBy';E={try{$_.UserId.Translate([System.Security.Principal.NTAccount]).Value}catch{''}}}|"
+            "ConvertTo-Json -Compress"
+        ),
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if r.returncode != 0 or not (r.stdout or "").strip():
+        return None
+    try:
+        data = json.loads(r.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if isinstance(data, list):
+        data = data[0] if data else None
+    if not isinstance(data, dict):
+        return None
+    return {
+        "timestamp": _normalise_event_ts(data.get("TimeCreated")),
+        "service_name": str(data.get("ServiceName", "")),
+        "image_path": str(data.get("ImagePath", "")),
+        "start_type": str(data.get("StartType", "")),
+        "account_name": str(data.get("AccountName", "")),
+        "installed_by": str(data.get("InstalledBy", "")),
+    }
+
+
+def _get_task_registration_event(task_path: str) -> dict | None:
+    """Look up TaskScheduler/Operational Event 106 (task registered) for a
+    given full task path (e.g. ``\\Microsoft\\Windows\\Foo\\Bar``).
+    Returns timestamp + creator user, or None if not found.
+
+    Event 106 is logged when a task is registered/created. The TaskName
+    property holds the path; the registered user is in UserId.
+    """
+    safe = _safe_ps_name(task_path)
+    if not safe:
+        return None
+    safe_ps = safe.replace("'", "''")
+    cmd = [
+        "powershell",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        (
+            "$ErrorActionPreference='SilentlyContinue';"
+            "Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-TaskScheduler/Operational';ID=106} "
+            "-MaxEvents 500 -ErrorAction SilentlyContinue |"
+            f"Where-Object {{$_.Properties[0].Value -eq '{safe_ps}'}} |"
+            "Sort-Object TimeCreated -Descending |"
+            "Select-Object -First 1 @{N='TimeCreated';E={$_.TimeCreated.ToString('o')}},"
+            "@{N='TaskName';E={$_.Properties[0].Value}},"
+            "@{N='UserName';E={$_.Properties[1].Value}}|"
+            "ConvertTo-Json -Compress"
+        ),
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if r.returncode != 0 or not (r.stdout or "").strip():
+        return None
+    try:
+        data = json.loads(r.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if isinstance(data, list):
+        data = data[0] if data else None
+    if not isinstance(data, dict):
+        return None
+    return {
+        "timestamp": _normalise_event_ts(data.get("TimeCreated")),
+        "task_name": str(data.get("TaskName", "")),
+        "registered_by": str(data.get("UserName", "")),
+    }
+
+
+def _check_signature(image_path: str) -> dict:
+    """Run Get-AuthenticodeSignature on a binary path. Returns:
+        {"status": "Valid|NotSigned|HashMismatch|...", "signer": "<CN>",
+         "valid": bool}
+
+    Strips command-line args from image_path before checking (Windows
+    services often store ``"C:\\foo.exe" -k arg``-style paths). Any
+    failure (file missing, PowerShell error, network drive offline)
+    returns {"status": "error", "signer": "", "valid": False} so the
+    caller can treat it as "no signal" without special-casing.
+    """
+    if not isinstance(image_path, str) or not image_path.strip():
+        return {"status": "no_path", "signer": "", "valid": False}
+    p = image_path.strip()
+
+    # Pull out the actual exe path: handle quoted ("C:\foo.exe") and
+    # unquoted (C:\foo.exe -k arg) forms.
+    if p.startswith('"'):
+        end = p.find('"', 1)
+        clean = p[1:end] if end > 0 else p[1:]
+    else:
+        clean = p.split(" ")[0]
+    if not clean or len(clean) > 500 or "\n" in clean:
+        return {"status": "invalid_path", "signer": "", "valid": False}
+    if not (clean.lower().endswith(".exe") or clean.lower().endswith(".dll") or clean.lower().endswith(".sys")):
+        return {"status": "not_pe", "signer": "", "valid": False}
+
+    safe_ps = clean.replace("'", "''")
+    cmd = [
+        "powershell",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        (
+            "$ErrorActionPreference='SilentlyContinue';"
+            f"$s=Get-AuthenticodeSignature -FilePath '{safe_ps}' -ErrorAction SilentlyContinue;"
+            "if(!$s){@{Status='error';Signer=''}|ConvertTo-Json -Compress;exit};"
+            "$signer=if($s.SignerCertificate){($s.SignerCertificate.Subject -replace '^CN=([^,]*).*$','$1')}else{''};"
+            "@{Status=$s.Status.ToString();Signer=$signer}|ConvertTo-Json -Compress"
+        ),
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    except (subprocess.TimeoutExpired, OSError):
+        return {"status": "error", "signer": "", "valid": False}
+    if r.returncode != 0 or not (r.stdout or "").strip():
+        return {"status": "error", "signer": "", "valid": False}
+    try:
+        data = json.loads(r.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return {"status": "error", "signer": "", "valid": False}
+    status = str(data.get("Status", "Unknown")).strip()
+    signer = str(data.get("Signer", "")).strip()
+    return {"status": status, "signer": signer, "valid": status == "Valid"}
+
+
+def _recent_software_installs(window: timedelta = timedelta(days=14)) -> list:
+    """Read the Windows Uninstall registry hives for programs whose
+    InstallDate falls within the window. Returns newest-first list of
+    {name, publisher, install_date, source}.
+
+    Scans three hives:
+      - HKLM\\SOFTWARE\\...\\Uninstall            (64-bit + system)
+      - HKLM\\SOFTWARE\\WOW6432Node\\...\\Uninstall (32-bit on 64-bit OS)
+      - HKCU\\SOFTWARE\\...\\Uninstall            (per-user installs)
+
+    InstallDate is YYYYMMDD format -- absent for some entries (Windows
+    doesn't make it mandatory). We just skip those rather than guess.
+    """
+    try:
+        import winreg
+    except ImportError:
+        return []
+
+    cutoff = datetime.now() - window
+    out: list[dict] = []
+    hives = (
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", "HKLM"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall", "HKLM-WOW64"),
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall", "HKCU"),
+    )
+    for root, sub_path, src in hives:
+        try:
+            parent = winreg.OpenKey(root, sub_path)
+        except OSError:
+            continue
+        try:
+            count = winreg.QueryInfoKey(parent)[0]
+            for i in range(count):
+                try:
+                    sub = winreg.EnumKey(parent, i)
+                except OSError:
+                    continue
+                try:
+                    k = winreg.OpenKey(parent, sub)
+                except OSError:
+                    continue
+                try:
+
+                    def _read(name, _k=k):
+                        try:
+                            return str(winreg.QueryValueEx(_k, name)[0])
+                        except (OSError, FileNotFoundError):
+                            return ""
+
+                    name = _read("DisplayName")
+                    install_date_str = _read("InstallDate")
+                    if not name or not install_date_str:
+                        continue
+                    try:
+                        dt = datetime.strptime(install_date_str.strip(), "%Y%m%d")
+                    except (ValueError, TypeError):
+                        continue
+                    if dt < cutoff:
+                        continue
+                    out.append(
+                        {
+                            "name": name,
+                            "publisher": _read("Publisher"),
+                            "install_date": dt.isoformat(timespec="seconds"),
+                            "source": src,
+                        }
+                    )
+                finally:
+                    winreg.CloseKey(k)
+        finally:
+            winreg.CloseKey(parent)
+
+    out.sort(key=lambda e: e["install_date"], reverse=True)
+    return out
+
+
+def _correlate_install(image_path: str, signer: str, recent_installs: list) -> dict | None:
+    """Pick the most-likely related software install from ``recent_installs``.
+
+    Heuristics (highest priority first):
+      1. Publisher matches the digital signer
+      2. Software name appears in the image_path (e.g. "Adobe" in
+         "C:\\Program Files\\Adobe\\Reader\\acrord.exe")
+      3. Software's name OR publisher appears in the image_path (case-
+         insensitive substring)
+
+    Returns the matched install dict (with ``match_reason`` added) or None.
+    """
+    if not recent_installs:
+        return None
+    path_lc = (image_path or "").lower()
+    signer_lc = (signer or "").lower()
+
+    # Tier 1: publisher matches signer
+    if signer_lc:
+        for entry in recent_installs:
+            pub = (entry.get("publisher") or "").lower()
+            if pub and pub in signer_lc or (signer_lc and signer_lc in pub):
+                return {**entry, "match_reason": "publisher matches binary signer"}
+
+    # Tier 2: software name appears in image_path
+    for entry in recent_installs:
+        name = (entry.get("name") or "").lower()
+        if name and len(name) >= 4 and name in path_lc:
+            return {**entry, "match_reason": "software name appears in binary path"}
+
+    # Tier 3: publisher appears in image_path
+    for entry in recent_installs:
+        pub = (entry.get("publisher") or "").lower()
+        if pub and len(pub) >= 4 and pub in path_lc:
+            return {**entry, "match_reason": "publisher name appears in binary path"}
+
+    return None
+
+
 def _infer_drift_cause(path_severity: str, recent_updates: list, kind: str) -> tuple[str, str, str]:
     """Combine path safety + update timing into a recommendation.
 
@@ -866,33 +1287,33 @@ def _infer_drift_cause(path_severity: str, recent_updates: list, kind: str) -> t
 
 
 def investigate_drift_entry(category: str, entry: dict) -> dict:
-    """Analyze a single drift entry to help the user decide whether to accept.
+    """Analyze a single drift entry with multiple evidence sources.
 
     ``entry`` is a member of ``drift[category][added|removed|changed]``
-    as returned by ``diff_snapshots`` -- includes ``key``, ``name``,
-    optional ``old`` / ``new`` / ``delta``.
-
-    Returns a dict the UI can render directly:
+    as returned by ``diff_snapshots``. Returns a dict the UI can render
+    directly:
         {
             "kind":            "added" | "removed" | "changed",
             "key":             "<entry key>",
             "path_safety":     {"label": "...", "severity": "trusted|..."},
-            "recent_updates":  [{id, description, installed}, ...]  (max 5),
+            "recent_updates":  [...],
+            "install_event":   {timestamp, image_path, account, installed_by} | None,
+            "signature":       {status, signer, valid},
+            "recent_installs": [...],
+            "matched_install": {name, publisher, install_date, match_reason} | None,
             "inferred_cause":  "windows_update|software_install|user_action|..."
             "recommendation":  "likely_safe|review|investigate",
             "explanation":     "...",
         }
-    """
-    # Pick the path to classify. For "added" entries the new value is in
-    # the entry itself; for "changed" it's under .new; for "removed" the
-    # interesting path is under .old (we're investigating a removal).
-    new_dict = entry.get("new") or {}
-    if not new_dict and "image_path" in entry:
-        new_dict = entry  # added/removed have flat shape
-    path = (new_dict.get("image_path") or new_dict.get("command") or "").strip()
 
-    # Detect the kind from the entry's shape: "changed" entries carry
-    # both .old and .new; "added"/"removed" don't.
+    The deeper evidence (install_event, signature, recent_installs,
+    matched_install) is most useful for ADDED entries -- "where did this
+    come from" -- but we gather it for changed/removed too to give a
+    complete picture. Each lookup is failure-tolerant: any subprocess
+    error returns the empty/None state, so the investigation always
+    completes even on a hostile environment.
+    """
+    # Detect the kind from the entry's shape.
     if entry.get("old") and entry.get("new"):
         kind = "changed"
     elif entry.get("old"):
@@ -900,16 +1321,250 @@ def investigate_drift_entry(category: str, entry: dict) -> dict:
     else:
         kind = "added"
 
+    # Pick the most-relevant binary path. For added/changed we want the
+    # NEW value (the thing currently on disk). For removed we want the
+    # OLD value (what was there). Both fall back to the flat-shape entry.
+    source = entry.get("old") or entry if kind == "removed" else entry.get("new") or entry
+    path = (source.get("image_path") or source.get("command") or "").strip()
+    name = entry.get("name") or entry.get("key") or ""
+
+    # ── Gather evidence ──
     path_safety = _classify_path(path)
     recent_updates = _recent_windows_updates()
-    inferred, recommendation, explanation = _infer_drift_cause(path_safety["severity"], recent_updates, kind)
+    recent_installs = _recent_software_installs()
+
+    # Install event: only meaningful for added entries (and useful as
+    # confirmation for changed). Pick the right event source per category.
+    install_event = None
+    if kind in ("added", "changed"):
+        if category == "services":
+            install_event = _get_service_install_event(name)
+        elif category == "tasks":
+            # Tasks key is the full path; pass that to the event lookup.
+            install_event = _get_task_registration_event(entry.get("key") or name)
+
+    # Signature on the new binary -- skip for removed entries (the file
+    # is presumably gone) and for empty paths.
+    signature = (
+        _check_signature(path)
+        if kind != "removed" and path
+        else {
+            "status": "skipped",
+            "signer": "",
+            "valid": False,
+        }
+    )
+
+    # Correlate against recent software installs.
+    matched_install = _correlate_install(path, signature.get("signer", ""), recent_installs)
+
+    # ── Combine into a recommendation ──
+    inferred, recommendation, explanation = _infer_drift_cause_v2(
+        kind=kind,
+        path_safety=path_safety,
+        recent_updates=recent_updates,
+        install_event=install_event,
+        signature=signature,
+        matched_install=matched_install,
+    )
 
     return {
         "kind": kind,
         "key": entry.get("key", ""),
         "path_safety": path_safety,
         "recent_updates": recent_updates[:5],
+        "install_event": install_event,
+        "signature": signature,
+        "recent_installs": recent_installs[:5],
+        "matched_install": matched_install,
         "inferred_cause": inferred,
         "recommendation": recommendation,
         "explanation": explanation,
     }
+
+
+def _infer_drift_cause_v2(
+    kind: str,
+    path_safety: dict,
+    recent_updates: list,
+    install_event: dict | None,
+    signature: dict,
+    matched_install: dict | None,
+) -> tuple[str, str, str]:
+    """Decision engine v2 -- factors in event-log evidence + signature +
+    software-install correlation on top of v1's path-severity check.
+
+    Priority of evidence (strongest first):
+      1. Suspicious path -> investigate (always wins; malware signal)
+      2. Signed by trusted vendor + matched install -> likely_safe
+         (we know who installed it and the publisher matches)
+      3. Service install Event 7045 within last 14d + signed binary
+         -> likely_safe (we have direct evidence + crypto verification)
+      4. Trusted path + signed -> likely_safe
+      5. Standard path + matched install -> likely_safe
+      6. Standard path + signed binary + recent updates -> review
+      7. Unsigned binary in non-trusted path -> investigate
+      8. Path-only signals (v1 fallback)
+    """
+    severity = path_safety.get("severity", "unknown")
+    sig_valid = bool(signature and signature.get("valid"))
+    signer = (signature.get("signer") or "") if signature else ""
+    has_install_event = install_event is not None
+
+    # ── Always-investigate path (hard fail) ──
+    if severity == "suspicious":
+        details = []
+        if sig_valid:
+            details.append(f"binary signed by {signer}")
+        else:
+            details.append("binary unsigned or signature invalid")
+        if matched_install:
+            details.append(f"correlates with recent install of '{matched_install.get('name', '?')}'")
+        if has_install_event:
+            details.append(f"install event found at {install_event.get('timestamp', '?')}")
+        return (
+            "needs_investigation",
+            "investigate",
+            (
+                f"Path is in {path_safety.get('label', 'a suspicious location')} -- unusual for legitimate "
+                "services or scheduled tasks (Temp / Public / etc). "
+                + ("; ".join(details) + ". " if details else "")
+                + "Verify the source before accepting."
+            ),
+        )
+
+    # ── Strong-positive paths ──
+    if matched_install and sig_valid:
+        return (
+            "software_install",
+            "likely_safe",
+            (
+                f"Binary is digitally signed by '{signer}' AND we found a recent install of "
+                f"'{matched_install.get('name', '?')}' on {matched_install.get('install_date', '?')[:10]} "
+                f"({matched_install.get('match_reason', 'matched')}). "
+                "This change is almost certainly a known software install -- safe to accept."
+            ),
+        )
+
+    if has_install_event and sig_valid:
+        ev_ts = (install_event.get("timestamp") or "")[:19]
+        installer = install_event.get("installed_by") or install_event.get("account_name") or "?"
+        return (
+            "software_install",
+            "likely_safe",
+            (
+                f"Service was installed on {ev_ts} by '{installer}' (Windows Event 7045 captured "
+                f"the install) AND the binary is signed by '{signer}'. "
+                "Direct evidence + crypto verification -- safe to accept."
+            ),
+        )
+
+    if has_install_event:
+        ev_ts = (install_event.get("timestamp") or "")[:19]
+        installer = install_event.get("installed_by") or install_event.get("account_name") or "?"
+        return (
+            "software_install",
+            "review",
+            (
+                f"Found a Windows install event for this entry: registered {ev_ts} by '{installer}'. "
+                "Binary is unsigned or signature couldn't be verified -- "
+                "quick sanity-check the publisher before accepting."
+            ),
+        )
+
+    if matched_install:
+        return (
+            "software_install",
+            "review",
+            (
+                f"Recent install of '{matched_install.get('name', '?')}' "
+                f"({matched_install.get('match_reason', 'name match')}) -- likely the source of this change. "
+                "Binary signature couldn't be verified though, so quick sanity-check before accepting."
+            ),
+        )
+
+    if severity == "trusted" and sig_valid:
+        return (
+            "software_install",
+            "likely_safe",
+            (
+                f"Path is in {path_safety.get('label')} and binary is signed by '{signer}'. "
+                "Signed Windows-system binary -- safe to accept."
+            ),
+        )
+
+    # ── Fall back to path-only reasoning (v1 logic) ──
+    has_updates = bool(recent_updates)
+    latest = recent_updates[0] if has_updates else None
+
+    if severity == "trusted" and has_updates:
+        return (
+            "windows_update",
+            "likely_safe",
+            (
+                f"Path is in {path_safety.get('label')} and Windows Update installed "
+                f"{len(recent_updates)} update(s) recently (most recent: {latest['id']}). "
+                "Likely a Windows Update side-effect -- safe to accept."
+            ),
+        )
+
+    if severity == "standard" and has_updates:
+        sig_note = f" Binary signed by '{signer}'." if sig_valid else " Binary unsigned."
+        return (
+            "windows_update",
+            "review",
+            (
+                f"Path is in {path_safety.get('label')} (normal install location) and Windows Update "
+                f"installed {len(recent_updates)} update(s) recently.{sig_note} "
+                "Quick sanity-check and accept if it matches the install."
+            ),
+        )
+
+    if severity == "trusted":
+        return (
+            "user_action",
+            "likely_safe",
+            (
+                f"Path is in {path_safety.get('label')}. No recent Windows Updates and no install "
+                "event matched -- most likely a user-initiated config change."
+            ),
+        )
+
+    if severity == "user-app":
+        sig_note = f" Binary signed by '{signer}'." if sig_valid else ""
+        return (
+            "software_install",
+            "review",
+            (
+                f"Path is in {path_safety.get('label')} -- common for per-user installs.{sig_note} "
+                "If you installed/updated software in this category recently, accept."
+            ),
+        )
+
+    if kind == "changed" and not has_updates:
+        return (
+            "scheduled_task_run",
+            "likely_safe",
+            (
+                "Only context fields changed (e.g. last_run_time after a scheduled task ran). "
+                "No recent Windows Updates and no install events. Most likely a normal task run."
+            ),
+        )
+
+    # Unsigned binary in a non-trusted location with no other signals.
+    if not sig_valid and severity not in ("trusted", "standard"):
+        return (
+            "needs_investigation",
+            "investigate",
+            (
+                f"Binary is in {path_safety.get('label')} and is unsigned (or signature couldn't be "
+                "verified). No recent install event or software install matches. Investigate the "
+                "source before accepting."
+            ),
+        )
+
+    return (
+        "unknown",
+        "review",
+        "Couldn't infer a likely cause from the available evidence. Verify manually before accepting.",
+    )

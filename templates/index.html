@@ -5610,6 +5610,7 @@ function _blRenderEntry(header, oldObj, newObj, delta, cfg, catKey, kind, accent
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:4px 0 6px">
         ${rem.console_label ? `<button onclick="blLaunchConsole('${escHtml(catKey)}', this)" style="background:var(--cyan);border:none;color:#000;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">🔧 ${escHtml(rem.console_label)}</button>` : ""}
         <button onclick="blInvestigateDrift('${escHtml(catKey)}', '${escHtml(safeKey)}', '${investigateId}', this)" style="background:transparent;border:1px solid var(--cyan);color:var(--cyan);padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">🔍 Why did this change?</button>
+        <button onclick="blAcceptThisChange('${escHtml(catKey)}', '${escHtml(safeKey)}', this)" title="Update the baseline for THIS entry only -- leaves all other drift untouched" style="background:var(--green);border:none;color:#000;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">✓ Accept this change</button>
         ${rem.console_hint ? `<span style="font-size:10px;color:var(--muted)">${escHtml(rem.console_hint)}</span>` : ""}
       </div>
       <div id="${investigateId}" class="bl-investigation" data-investigation-key="${escHtml(entryKey)}" style="display:none;margin:6px 0;padding:8px 10px;background:var(--surface);border-left:3px solid var(--cyan);border-radius:4px"></div>
@@ -5658,6 +5659,38 @@ async function blLaunchConsole(category, btn) {
   }
 }
 
+// Per-entry baseline accept (user feedback 2026-04-28). Updates only THIS
+// drift entry in the baseline -- leaves all other drift untouched. Useful
+// when 3 of 5 changes are legit and the user wants to absorb them without
+// also accepting the 2 they're investigating.
+async function blAcceptThisChange(category, key, btn) {
+  if (!confirm(
+    "Update the baseline for THIS entry only?\n\n" +
+    "Other drift entries stay flagged. After this, this specific change " +
+    "will no longer appear as drift."
+  )) return;
+
+  if (btn) { btn.disabled = true; const orig = btn.innerHTML; btn.innerHTML = "Accepting..."; btn.dataset.orig = orig; }
+  try {
+    const r = await fetch("/api/baseline/accept_entry", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({category, key}),
+    });
+    const data = await r.json();
+    if (!data.ok) {
+      alert("Accept failed: " + (data.error || "unknown"));
+      return;
+    }
+    // Reload the Baseline tab so the just-accepted entry leaves the diff.
+    await loadBaseline();
+  } catch (e) {
+    alert("Accept failed: " + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = btn.dataset.orig || btn.innerHTML; }
+  }
+}
+
 // "Why did this change?" investigator. Fetches /api/baseline/investigate
 // for the given drift entry and renders the result inline in the per-entry
 // `panelId` div. Toggles the panel closed on a second click. Caches the
@@ -5700,13 +5733,18 @@ async function blInvestigateDrift(category, key, panelId, btn) {
 }
 
 // Render the investigation API response into a compact HTML report.
-// Three sections: path-safety badge, recent Windows Updates table,
-// recommendation + explanation. Color-coded by severity/recommendation
-// so the user can scan-and-decide.
+// Sections (most-actionable first):
+//   - Recommendation badge + explanation
+//   - Direct evidence: install event (Event 7045 / 106) -- when present,
+//     this is the strongest signal (timestamp + installer-user)
+//   - Digital signature status
+//   - Matched recent software install (correlation)
+//   - Path-safety classification
+//   - Recent Windows Updates context
+//   - Inferred cause label
 function _blRenderInvestigation(inv) {
   if (!inv) return `<div style="color:var(--muted);font-size:11px">no investigation data</div>`;
 
-  // Severity → colour mapping for the path-safety badge.
   const sevColor = {
     "trusted": "var(--green)",
     "standard": "var(--cyan)",
@@ -5719,28 +5757,83 @@ function _blRenderInvestigation(inv) {
     "review": "var(--yellow)",
     "investigate": "var(--red)",
   };
-  const recIcon = {
-    "likely_safe": "✓",
-    "review": "?",
-    "investigate": "!",
-  };
+  const recIcon = { "likely_safe": "✓", "review": "?", "investigate": "!" };
 
   const ps = inv.path_safety || {};
   const psColor = sevColor[ps.severity] || "var(--muted)";
   const recCol = recColor[inv.recommendation] || "var(--muted)";
   const recIc = recIcon[inv.recommendation] || "?";
 
+  // ── Direct evidence: install event ──────────────────────────────
+  let installEventHtml = "";
+  if (inv.install_event) {
+    const ev = inv.install_event;
+    const ts = (ev.timestamp || "").replace("T", " ").slice(0, 19) || "(unknown time)";
+    const installer = ev.installed_by || ev.account_name || "(unknown user)";
+    const evImagePath = ev.image_path ? ` · <code style="font-size:10px">${escHtml(ev.image_path)}</code>` : "";
+    installEventHtml = `
+      <div style="margin-top:8px;padding:6px 8px;background:rgba(0,255,128,0.04);border-left:2px solid var(--green);border-radius:3px">
+        <div style="font-size:9px;color:var(--green);text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:3px">📋 Direct evidence — install event found</div>
+        <div style="font-size:11px;color:var(--text)">Installed <strong>${escHtml(ts)}</strong> by <strong>${escHtml(installer)}</strong>${evImagePath}</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">Source: Windows Event Log (Event ${inv.kind === "added" && inv.key && inv.key.startsWith("\\") ? "106 / TaskScheduler" : "7045 / SCM"})</div>
+      </div>`;
+  }
+
+  // ── Digital signature ──────────────────────────────────────────
+  let sigHtml = "";
+  if (inv.signature && inv.signature.status && inv.signature.status !== "skipped" && inv.signature.status !== "no_path" && inv.signature.status !== "not_pe") {
+    const sig = inv.signature;
+    const sigBg = sig.valid ? "var(--green)" : "var(--yellow)";
+    const sigLabel = sig.valid ? "✓ Signed" : `⚠ ${escHtml(sig.status)}`;
+    const signerLine = sig.signer
+      ? `<span style="color:var(--text)">Signer: <strong>${escHtml(sig.signer)}</strong></span>`
+      : `<span style="color:var(--muted)">No signer info</span>`;
+    sigHtml = `
+      <div style="margin-top:8px;display:flex;align-items:center;gap:8px;font-size:11px">
+        <span style="background:${sigBg};color:#000;padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600">${sigLabel}</span>
+        ${signerLine}
+      </div>`;
+  }
+
+  // ── Matched software install ───────────────────────────────────
+  let installMatchHtml = "";
+  if (inv.matched_install) {
+    const mi = inv.matched_install;
+    installMatchHtml = `
+      <div style="margin-top:8px;padding:6px 8px;background:rgba(0,200,255,0.04);border-left:2px solid var(--cyan);border-radius:3px">
+        <div style="font-size:9px;color:var(--cyan);text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:3px">🔗 Matched recent software install</div>
+        <div style="font-size:11px;color:var(--text)">
+          <strong>${escHtml(mi.name || "?")}</strong>
+          ${mi.publisher ? ` <span style="color:var(--muted)">by ${escHtml(mi.publisher)}</span>` : ""}
+          — installed ${escHtml((mi.install_date || "").slice(0, 10))}
+        </div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">Match reason: ${escHtml(mi.match_reason || "")}</div>
+      </div>`;
+  }
+
+  // ── Recent Windows Updates context ─────────────────────────────
   let updatesHtml = "";
   if ((inv.recent_updates || []).length) {
     updatesHtml = `
       <div style="margin-top:8px">
         <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:3px">Recent Windows Updates (last 7d)</div>
         <ul style="margin:2px 0 0 16px;padding:0;font-size:11px;color:var(--text)">
-          ${inv.recent_updates.map(u => `<li>${escHtml(u.id)} — ${escHtml(u.installed.split("T")[0])}${u.description ? ` <span style="color:var(--muted)">(${escHtml(u.description)})</span>` : ""}</li>`).join("")}
+          ${inv.recent_updates.slice(0, 3).map(u => `<li>${escHtml(u.id)} — ${escHtml((u.installed || "").slice(0, 10))}${u.description ? ` <span style="color:var(--muted)">(${escHtml(u.description)})</span>` : ""}</li>`).join("")}
         </ul>
       </div>`;
-  } else {
-    updatesHtml = `<div style="margin-top:8px;font-size:11px;color:var(--muted)">No Windows Updates installed in the last 7 days.</div>`;
+  }
+
+  // ── Recent software installs (only if NO single match found) ───
+  let recentInstallsHtml = "";
+  if (!inv.matched_install && (inv.recent_installs || []).length) {
+    const li = inv.recent_installs.slice(0, 3);
+    recentInstallsHtml = `
+      <div style="margin-top:8px">
+        <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:3px">Recent software installs (last 14d)</div>
+        <ul style="margin:2px 0 0 16px;padding:0;font-size:11px;color:var(--text)">
+          ${li.map(s => `<li>${escHtml(s.name || "")}${s.publisher ? ` <span style="color:var(--muted)">by ${escHtml(s.publisher)}</span>` : ""} — ${escHtml((s.install_date || "").slice(0, 10))}</li>`).join("")}
+        </ul>
+      </div>`;
   }
 
   return `
@@ -5749,12 +5842,15 @@ function _blRenderInvestigation(inv) {
       <span style="background:${recCol};color:#000;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:700;flex-shrink:0">${recIc} ${escHtml((inv.recommendation || "review").replace("_", " "))}</span>
       <div style="font-size:11px;color:var(--text);line-height:1.5">${escHtml(inv.explanation || "")}</div>
     </div>
-    <div style="display:flex;align-items:center;gap:8px;font-size:11px">
-      <span style="font-size:10px;color:var(--muted)">Path classification:</span>
+    ${installEventHtml}
+    ${sigHtml}
+    ${installMatchHtml}
+    <div style="display:flex;align-items:center;gap:8px;font-size:11px;margin-top:8px">
+      <span style="font-size:10px;color:var(--muted)">Path:</span>
       <span style="background:${psColor};color:#000;padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600">${escHtml(ps.label || "unknown")}</span>
-      <span style="font-size:10px;color:var(--muted)">(${escHtml(ps.severity || "unknown")})</span>
     </div>
     ${updatesHtml}
+    ${recentInstallsHtml}
     <div style="margin-top:8px;font-size:10px;color:var(--muted)">
       Inferred cause: <strong>${escHtml((inv.inferred_cause || "unknown").replace(/_/g, " "))}</strong>
     </div>
