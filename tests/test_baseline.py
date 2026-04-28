@@ -985,31 +985,44 @@ class TestInferDriftCause:
         assert rec == "review"
 
 
+@pytest.fixture
+def mock_evidence_empty(mocker):
+    """Mock all evidence-gathering functions to return empty/None state.
+    Lets each test focus on one signal at a time without flaky real-system
+    PowerShell / registry calls firing during the suite."""
+    mocker.patch("baseline._recent_windows_updates", return_value=[])
+    mocker.patch("baseline._get_service_install_event", return_value=None)
+    mocker.patch("baseline._get_task_registration_event", return_value=None)
+    mocker.patch("baseline._check_signature", return_value={"status": "skipped", "signer": "", "valid": False})
+    mocker.patch("baseline._recent_software_installs", return_value=[])
+
+
 class TestInvestigateDriftEntry:
     """End-to-end: investigate_drift_entry orchestrates the path
-    classifier + update lookup + cause inference into a single dict."""
+    classifier + evidence sources + cause inference into a single dict."""
 
-    def test_changed_entry_returns_recommendation(self, mocker):
+    def test_changed_entry_returns_recommendation(self, mock_evidence_empty):
         from baseline import investigate_drift_entry
 
-        mocker.patch("baseline._recent_windows_updates", return_value=[])
         entry = {
             "key": "Spooler",
             "name": "Print Spooler",
             "delta": ["image_path"],
             "old": {"image_path": r"C:\Windows\System32\spoolsv.exe"},
-            "new": {"image_path": r"C:\Windows\System32\spoolsv.exe"},  # unchanged for test
+            "new": {"image_path": r"C:\Windows\System32\spoolsv.exe"},
         }
         result = investigate_drift_entry("services", entry)
         assert result["kind"] == "changed"
         assert result["path_safety"]["severity"] == "trusted"
         assert result["recommendation"] in ("likely_safe", "review")
+        assert "install_event" in result
+        assert "signature" in result
+        assert "recent_installs" in result
+        assert "matched_install" in result
 
-    def test_added_entry_classifies_path(self, mocker):
+    def test_added_entry_classifies_path(self, mock_evidence_empty):
         from baseline import investigate_drift_entry
 
-        mocker.patch("baseline._recent_windows_updates", return_value=[])
-        # "added" entries have flat shape (no .old/.new wrapping)
         entry = {
             "key": "MaybeBad",
             "name": "MaybeBad",
@@ -1019,6 +1032,315 @@ class TestInvestigateDriftEntry:
         assert result["kind"] == "added"
         assert result["path_safety"]["severity"] == "suspicious"
         assert result["recommendation"] == "investigate"
+
+    def test_added_service_with_install_event_and_signature_likely_safe(self, mocker):
+        """Strongest evidence path: Event 7045 found AND binary is signed
+        by a known vendor. The recommendation MUST be likely_safe."""
+        from baseline import investigate_drift_entry
+
+        mocker.patch("baseline._recent_windows_updates", return_value=[])
+        mocker.patch(
+            "baseline._get_service_install_event",
+            return_value={
+                "timestamp": "2026-04-27T14:23:01",
+                "service_name": "AdobeUpdateSvc",
+                "image_path": r"C:\Program Files\Adobe\AdobeUpdate.exe",
+                "start_type": "Auto",
+                "account_name": "LocalSystem",
+                "installed_by": "MYDOMAIN\\bob",
+            },
+        )
+        mocker.patch(
+            "baseline._check_signature",
+            return_value={"status": "Valid", "signer": "Adobe Systems Incorporated", "valid": True},
+        )
+        mocker.patch("baseline._recent_software_installs", return_value=[])
+        entry = {
+            "key": "AdobeUpdateSvc",
+            "name": "AdobeUpdateSvc",
+            "image_path": r"C:\Program Files\Adobe\AdobeUpdate.exe",
+        }
+        result = investigate_drift_entry("services", entry)
+        assert result["recommendation"] == "likely_safe"
+        assert result["install_event"]["installed_by"] == "MYDOMAIN\\bob"
+        assert result["signature"]["signer"] == "Adobe Systems Incorporated"
+
+    def test_added_service_matched_to_recent_install(self, mocker):
+        """Software-install correlation: signed binary + matching recent
+        Add/Remove Programs entry -> likely_safe with the match named."""
+        from baseline import investigate_drift_entry
+
+        mocker.patch("baseline._recent_windows_updates", return_value=[])
+        mocker.patch("baseline._get_service_install_event", return_value=None)
+        mocker.patch(
+            "baseline._check_signature",
+            return_value={"status": "Valid", "signer": "Adobe Inc", "valid": True},
+        )
+        mocker.patch(
+            "baseline._recent_software_installs",
+            return_value=[
+                {
+                    "name": "Adobe Acrobat Reader",
+                    "publisher": "Adobe Inc",
+                    "install_date": "2026-04-25T00:00:00",
+                    "source": "HKLM",
+                }
+            ],
+        )
+        entry = {
+            "key": "AcroAgent",
+            "name": "Acro Updater",
+            "image_path": r"C:\Program Files\Adobe\Acrobat\agent.exe",
+        }
+        result = investigate_drift_entry("services", entry)
+        assert result["recommendation"] == "likely_safe"
+        assert result["matched_install"] is not None
+        assert "Adobe" in result["matched_install"]["name"]
+
+    def test_unsigned_binary_in_unusual_path_investigate(self, mocker):
+        """Unsigned + non-trusted path + no other signals -> investigate."""
+        from baseline import investigate_drift_entry
+
+        mocker.patch("baseline._recent_windows_updates", return_value=[])
+        mocker.patch("baseline._get_service_install_event", return_value=None)
+        mocker.patch(
+            "baseline._check_signature",
+            return_value={"status": "NotSigned", "signer": "", "valid": False},
+        )
+        mocker.patch("baseline._recent_software_installs", return_value=[])
+        entry = {
+            "key": "MaybeBad",
+            "name": "MaybeBad",
+            "image_path": r"C:\Users\Public\sus.exe",
+        }
+        result = investigate_drift_entry("services", entry)
+        assert result["recommendation"] == "investigate"
+
+
+# ── Per-entry baseline accept ─────────────────────────────────────
+
+
+class TestAcceptDriftEntry:
+    """Per-entry accept: user can absorb a single change into the baseline
+    without committing to the full current state. Tests cover all 3 kinds
+    (added / removed / changed) and the failure modes."""
+
+    def _set_up_baseline(self, baseline_tmp, baseline_data):
+        """Write a baseline snapshot to the test's tmp file."""
+        baseline_tmp["snapshot"].write_text(json.dumps(baseline_data))
+
+    def test_accept_entry_unknown_category(self, baseline_tmp):
+        from baseline import accept_drift_entry
+
+        result = accept_drift_entry("nonsense", "X")
+        assert result["ok"] is False
+        assert "unknown category" in result["error"]
+
+    def test_accept_entry_no_baseline(self, baseline_tmp):
+        from baseline import accept_drift_entry
+
+        # baseline_tmp redirects to a non-existent file; load returns None
+        result = accept_drift_entry("services", "X")
+        assert result["ok"] is False
+        assert "no baseline" in result["error"]
+
+    def test_accept_entry_added_inserts_into_baseline(self, baseline_tmp, mocker):
+        """ADDED kind: key in current but not baseline -> baseline gains it."""
+        from baseline import accept_drift_entry
+
+        self._set_up_baseline(
+            baseline_tmp,
+            {
+                "timestamp": "2026-04-25T00:00:00",
+                "startup": {"by_key": {}},
+                "services": {"by_key": {}},
+                "tasks": {"by_key": {}},
+                "counts": {"startup": 0, "services": 0, "tasks": 0},
+            },
+        )
+        mocker.patch(
+            "baseline.take_snapshot",
+            return_value={
+                "timestamp": "2026-04-28T00:00:00",
+                "startup": {"by_key": {}},
+                "services": {
+                    "by_key": {
+                        "NewSvc": {
+                            "name": "NewSvc",
+                            "start_mode": "Auto",
+                            "image_path": "C:\\Windows\\System32\\new.exe",
+                        }
+                    }
+                },
+                "tasks": {"by_key": {}},
+                "counts": {"startup": 0, "services": 1, "tasks": 0},
+            },
+        )
+        result = accept_drift_entry("services", "NewSvc")
+        assert result["ok"] is True
+        assert result["kind"] == "added"
+        # Verify the baseline file now contains the entry
+        from baseline import load_baseline
+
+        bl = load_baseline()
+        assert "NewSvc" in bl["services"]["by_key"]
+        # Counts updated
+        assert bl["counts"]["services"] == 1
+
+    def test_accept_entry_removed_drops_from_baseline(self, baseline_tmp, mocker):
+        """REMOVED kind: key in baseline but not current -> baseline loses it."""
+        from baseline import accept_drift_entry, load_baseline
+
+        self._set_up_baseline(
+            baseline_tmp,
+            {
+                "timestamp": "2026-04-25T00:00:00",
+                "startup": {"by_key": {}},
+                "services": {
+                    "by_key": {
+                        "OldSvc": {
+                            "name": "OldSvc",
+                            "start_mode": "Auto",
+                            "image_path": "C:\\old.exe",
+                        }
+                    }
+                },
+                "tasks": {"by_key": {}},
+                "counts": {"startup": 0, "services": 1, "tasks": 0},
+            },
+        )
+        mocker.patch(
+            "baseline.take_snapshot",
+            return_value={
+                "timestamp": "2026-04-28T00:00:00",
+                "startup": {"by_key": {}},
+                "services": {"by_key": {}},  # OldSvc gone
+                "tasks": {"by_key": {}},
+                "counts": {"startup": 0, "services": 0, "tasks": 0},
+            },
+        )
+        result = accept_drift_entry("services", "OldSvc")
+        assert result["ok"] is True
+        assert result["kind"] == "removed"
+        bl = load_baseline()
+        assert "OldSvc" not in bl["services"]["by_key"]
+
+    def test_accept_entry_changed_overwrites_baseline(self, baseline_tmp, mocker):
+        """CHANGED kind: in both -> baseline gets the current values."""
+        from baseline import accept_drift_entry, load_baseline
+
+        self._set_up_baseline(
+            baseline_tmp,
+            {
+                "timestamp": "2026-04-25T00:00:00",
+                "startup": {"by_key": {}},
+                "services": {
+                    "by_key": {
+                        "Spooler": {
+                            "name": "Spooler",
+                            "start_mode": "Auto",
+                            "image_path": "C:\\old\\spoolsv.exe",
+                        }
+                    }
+                },
+                "tasks": {"by_key": {}},
+                "counts": {"startup": 0, "services": 1, "tasks": 0},
+            },
+        )
+        mocker.patch(
+            "baseline.take_snapshot",
+            return_value={
+                "timestamp": "2026-04-28T00:00:00",
+                "startup": {"by_key": {}},
+                "services": {
+                    "by_key": {
+                        "Spooler": {
+                            "name": "Spooler",
+                            "start_mode": "Auto",
+                            "image_path": "C:\\new\\spoolsv.exe",  # changed
+                        }
+                    }
+                },
+                "tasks": {"by_key": {}},
+                "counts": {"startup": 0, "services": 1, "tasks": 0},
+            },
+        )
+        result = accept_drift_entry("services", "Spooler")
+        assert result["ok"] is True
+        assert result["kind"] == "changed"
+        bl = load_baseline()
+        assert bl["services"]["by_key"]["Spooler"]["image_path"] == "C:\\new\\spoolsv.exe"
+
+    def test_accept_entry_does_not_touch_other_entries(self, baseline_tmp, mocker):
+        """Per-entry accept must NOT modify other drift entries -- the
+        whole point is selective acceptance."""
+        from baseline import accept_drift_entry, load_baseline
+
+        self._set_up_baseline(
+            baseline_tmp,
+            {
+                "timestamp": "2026-04-25T00:00:00",
+                "startup": {"by_key": {}},
+                "services": {
+                    "by_key": {
+                        "Spooler": {"name": "Spooler", "image_path": "C:\\old\\spool.exe"},
+                        "OtherSvc": {"name": "OtherSvc", "image_path": "C:\\other\\svc.exe"},
+                    }
+                },
+                "tasks": {"by_key": {}},
+                "counts": {"startup": 0, "services": 2, "tasks": 0},
+            },
+        )
+        # Both have drifted, but we only accept Spooler.
+        mocker.patch(
+            "baseline.take_snapshot",
+            return_value={
+                "timestamp": "2026-04-28T00:00:00",
+                "startup": {"by_key": {}},
+                "services": {
+                    "by_key": {
+                        "Spooler": {"name": "Spooler", "image_path": "C:\\new\\spool.exe"},
+                        "OtherSvc": {"name": "OtherSvc", "image_path": "C:\\other\\NEW.exe"},
+                    }
+                },
+                "tasks": {"by_key": {}},
+                "counts": {"startup": 0, "services": 2, "tasks": 0},
+            },
+        )
+        result = accept_drift_entry("services", "Spooler")
+        assert result["ok"] is True
+        bl = load_baseline()
+        # Spooler updated -- new value
+        assert bl["services"]["by_key"]["Spooler"]["image_path"] == "C:\\new\\spool.exe"
+        # OtherSvc UNCHANGED -- still has the OLD baseline value
+        assert bl["services"]["by_key"]["OtherSvc"]["image_path"] == "C:\\other\\svc.exe"
+
+    def test_accept_entry_key_in_neither_returns_404(self, baseline_tmp, mocker):
+        from baseline import accept_drift_entry
+
+        self._set_up_baseline(
+            baseline_tmp,
+            {
+                "timestamp": "2026-04-25T00:00:00",
+                "startup": {"by_key": {}},
+                "services": {"by_key": {}},
+                "tasks": {"by_key": {}},
+                "counts": {"startup": 0, "services": 0, "tasks": 0},
+            },
+        )
+        mocker.patch(
+            "baseline.take_snapshot",
+            return_value={
+                "timestamp": "2026-04-28T00:00:00",
+                "startup": {"by_key": {}},
+                "services": {"by_key": {}},
+                "tasks": {"by_key": {}},
+                "counts": {"startup": 0, "services": 0, "tasks": 0},
+            },
+        )
+        result = accept_drift_entry("services", "Ghost")
+        assert result["ok"] is False
+        assert "not found" in result["error"]
 
 
 # ── Flask routes ───────────────────────────────────────────────────
@@ -1149,6 +1471,57 @@ class TestBaselineRoutes:
             json={"category": "services", "key": "Spooler"},
         )
         assert resp.status_code == 404
+
+    # ── /api/baseline/accept_entry (per-entry accept) ────────────────
+    def test_accept_entry_route_400_on_missing_fields(self, client):
+        resp = client.post("/api/baseline/accept_entry", json={})
+        assert resp.status_code == 400
+
+    def test_accept_entry_route_404_when_key_missing(self, client, mocker):
+        mocker.patch(
+            "baseline.accept_drift_entry",
+            return_value={
+                "ok": False,
+                "kind": "",
+                "error": "key 'X' not found in either baseline or current snapshot",
+                "baseline_timestamp": None,
+            },
+        )
+        resp = client.post(
+            "/api/baseline/accept_entry",
+            json={"category": "services", "key": "X"},
+        )
+        assert resp.status_code == 404
+
+    def test_accept_entry_route_500_on_no_baseline(self, client, mocker):
+        mocker.patch(
+            "baseline.accept_drift_entry",
+            return_value={"ok": False, "kind": "", "error": "no baseline exists", "baseline_timestamp": None},
+        )
+        resp = client.post(
+            "/api/baseline/accept_entry",
+            json={"category": "services", "key": "X"},
+        )
+        assert resp.status_code == 500
+
+    def test_accept_entry_route_200_happy_path(self, client, mocker):
+        mocker.patch(
+            "baseline.accept_drift_entry",
+            return_value={
+                "ok": True,
+                "kind": "changed",
+                "error": None,
+                "baseline_timestamp": "2026-04-28T10:00:00",
+            },
+        )
+        resp = client.post(
+            "/api/baseline/accept_entry",
+            json={"category": "services", "key": "Spooler"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["kind"] == "changed"
 
     def test_investigate_route_returns_investigation_for_changed(self, client, mocker):
         mocker.patch(

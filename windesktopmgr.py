@@ -8705,6 +8705,36 @@ def baseline_launch_console_route():
         return jsonify({"ok": False, "error": str(e), "launched": console}), 500
 
 
+@app.route("/api/baseline/accept_entry", methods=["POST"])
+def baseline_accept_entry_route():
+    """Accept a SINGLE drift entry into the baseline (not the whole snapshot).
+
+    User feedback 2026-04-28: the existing /api/baseline/accept is all-
+    or-nothing. This route takes one (category, key) pair and updates
+    only that entry in the baseline, so the user can absorb individual
+    changes without committing to "everything that's drifted is fine."
+
+    Body shape: ``{"category": "services|tasks|startup", "key": "..."}``
+    Returns: ``{"ok": bool, "kind": "added|removed|changed",
+                "error": str|None, "baseline_timestamp": str|None}``
+    """
+    import baseline
+
+    body = request.get_json(silent=True) or {}
+    category = (body.get("category") or "").lower().strip()
+    key = (body.get("key") or "").strip()
+    if category not in ("startup", "services", "tasks") or not key:
+        return jsonify({"ok": False, "error": "category (startup|services|tasks) and key required"}), 400
+
+    result = baseline.accept_drift_entry(category, key)
+    if result.get("ok"):
+        return jsonify(result), 200
+    err = (result.get("error") or "").lower()
+    if "not found" in err:
+        return jsonify(result), 404
+    return jsonify(result), 500
+
+
 @app.route("/api/baseline/investigate", methods=["POST"])
 def baseline_investigate_route():
     """Analyze a single drift entry to help the user decide whether to accept.
