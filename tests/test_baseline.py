@@ -1315,6 +1315,99 @@ class TestAcceptDriftEntry:
         # OtherSvc UNCHANGED -- still has the OLD baseline value
         assert bl["services"]["by_key"]["OtherSvc"]["image_path"] == "C:\\other\\svc.exe"
 
+    def test_accept_entry_fast_path_skips_snapshot(self, baseline_tmp, mocker):
+        """Performance fix 2026-04-28: when caller supplies kind +
+        current_value, accept_drift_entry must NOT call take_snapshot
+        (~30s). Verify by mocking take_snapshot to fail loudly -- if
+        it gets called the test crashes; if the fast path works, it's
+        never invoked."""
+        from baseline import accept_drift_entry, load_baseline
+
+        self._set_up_baseline(
+            baseline_tmp,
+            {
+                "timestamp": "2026-04-25T00:00:00",
+                "startup": {"by_key": {}},
+                "services": {"by_key": {}},
+                "tasks": {"by_key": {}},
+                "counts": {"startup": 0, "services": 0, "tasks": 0},
+            },
+        )
+        # If the fast path is broken and falls through to take_snapshot,
+        # this mock surfaces it as a test failure with a clear message.
+        snapshot_spy = mocker.patch(
+            "baseline.take_snapshot",
+            side_effect=AssertionError("take_snapshot called -- fast path BROKEN"),
+        )
+        result = accept_drift_entry(
+            "services",
+            "NewSvc",
+            kind="added",
+            current_value={
+                "name": "NewSvc",
+                "start_mode": "Auto",
+                "image_path": r"C:\Windows\System32\new.exe",
+            },
+        )
+        assert result["ok"] is True
+        assert result["fast_path"] is True
+        assert snapshot_spy.call_count == 0  # never called
+        # Verify the data actually landed in baseline
+        bl = load_baseline()
+        assert bl["services"]["by_key"]["NewSvc"]["image_path"] == r"C:\Windows\System32\new.exe"
+
+    def test_accept_entry_fast_path_removed_no_value_needed(self, baseline_tmp, mocker):
+        """For kind=removed the current_value is irrelevant -- the entry's
+        being deleted. Fast path should still skip take_snapshot."""
+        from baseline import accept_drift_entry, load_baseline
+
+        self._set_up_baseline(
+            baseline_tmp,
+            {
+                "timestamp": "2026-04-25T00:00:00",
+                "startup": {"by_key": {}},
+                "services": {"by_key": {"OldSvc": {"name": "OldSvc"}}},
+                "tasks": {"by_key": {}},
+                "counts": {"startup": 0, "services": 1, "tasks": 0},
+            },
+        )
+        snapshot_spy = mocker.patch(
+            "baseline.take_snapshot",
+            side_effect=AssertionError("take_snapshot called for removed kind -- fast path BROKEN"),
+        )
+        result = accept_drift_entry("services", "OldSvc", kind="removed")
+        assert result["ok"] is True
+        assert result["fast_path"] is True
+        assert snapshot_spy.call_count == 0
+        bl = load_baseline()
+        assert "OldSvc" not in bl["services"]["by_key"]
+
+    def test_accept_entry_fast_path_rejects_added_without_value(self, baseline_tmp):
+        """If caller says kind=added/changed but forgets current_value,
+        we must error -- can't write a None to the baseline. Defensive."""
+        from baseline import accept_drift_entry
+
+        self._set_up_baseline(
+            baseline_tmp,
+            {
+                "timestamp": "2026-04-25T00:00:00",
+                "startup": {"by_key": {}},
+                "services": {"by_key": {}},
+                "tasks": {"by_key": {}},
+                "counts": {"startup": 0, "services": 0, "tasks": 0},
+            },
+        )
+        result = accept_drift_entry("services", "NewSvc", kind="added", current_value=None)
+        assert result["ok"] is False
+        assert "current_value" in result["error"]
+
+    def test_accept_entry_invalid_kind_rejected(self, baseline_tmp):
+        from baseline import accept_drift_entry
+
+        result = accept_drift_entry("services", "X", kind="garbage")
+        assert result["ok"] is False
+        assert "kind" in result["error"]
+
     def test_accept_entry_key_in_neither_returns_404(self, baseline_tmp, mocker):
         from baseline import accept_drift_entry
 

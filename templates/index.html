@@ -5364,7 +5364,7 @@ async function loadBaseline() {
   document.getElementById("bl-summary").innerHTML = `
     <div style="display:flex;align-items:baseline;justify-content:space-between;gap:16px;flex-wrap:wrap">
       <div>
-        <div style="font-size:14px;font-weight:700;color:var(--orange)">⚠ ${total} change${total!==1?"s":""} detected vs baseline</div>
+        <div data-bl-total style="font-size:14px;font-weight:700;color:var(--orange)">⚠ ${total} change${total!==1?"s":""} detected vs baseline</div>
         <div style="font-size:10px;color:var(--muted);margin-top:3px">Baseline accepted: ${escHtml(baselineTs)}</div>
       </div>
       <div style="font-size:11px;color:var(--muted)">
@@ -5509,7 +5509,7 @@ function _blRenderCategory(elId, label, icon, catDrift, cfg) {
       <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:10px">
         <div style="font-size:16px">${icon}</div>
         <div style="font-size:13px;font-weight:700;color:var(--text-bright)">${escHtml(label)}</div>
-        <div style="font-size:10px;color:var(--muted);font-family:var(--font-mono)">
+        <div data-bl-cat-counts style="font-size:10px;color:var(--muted);font-family:var(--font-mono)">
           +${added.length} added · -${removed.length} removed · ~${changed.length} changed
         </div>
       </div>`;
@@ -5610,7 +5610,7 @@ function _blRenderEntry(header, oldObj, newObj, delta, cfg, catKey, kind, accent
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:4px 0 6px">
         ${rem.console_label ? `<button onclick="blLaunchConsole('${escHtml(catKey)}', this)" style="background:var(--cyan);border:none;color:#000;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">🔧 ${escHtml(rem.console_label)}</button>` : ""}
         <button onclick="blInvestigateDrift('${escHtml(catKey)}', '${escHtml(safeKey)}', '${investigateId}', this)" style="background:transparent;border:1px solid var(--cyan);color:var(--cyan);padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">🔍 Why did this change?</button>
-        <button onclick="blAcceptThisChange('${escHtml(catKey)}', '${escHtml(safeKey)}', this)" title="Update the baseline for THIS entry only -- leaves all other drift untouched" style="background:var(--green);border:none;color:#000;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">✓ Accept this change</button>
+        <button onclick="blAcceptThisChange(this)" title="Update the baseline for THIS entry only -- leaves all other drift untouched" style="background:var(--green);border:none;color:#000;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">✓ Accept this change</button>
         ${rem.console_hint ? `<span style="font-size:10px;color:var(--muted)">${escHtml(rem.console_hint)}</span>` : ""}
       </div>
       <div id="${investigateId}" class="bl-investigation" data-investigation-key="${escHtml(entryKey)}" style="display:none;margin:6px 0;padding:8px 10px;background:var(--surface);border-left:3px solid var(--cyan);border-radius:4px"></div>
@@ -5621,7 +5621,17 @@ function _blRenderEntry(header, oldObj, newObj, delta, cfg, catKey, kind, accent
   // drift entries without parsing visible text: category = startup/services/
   // tasks, kind = added/removed/changed, row-count = number of parameter
   // rows rendered (should equal _BL_CATS[cat].fields.length).
-  return `<div class="bl-entry" data-drift-category="${escHtml(catKey)}" data-drift-kind="${escHtml(kind)}" data-drift-rows="${cfg.fields.length}" style="padding:8px 10px;margin:4px 0;background:var(--surface);border-left:2px solid ${accent};border-radius:4px">
+  //
+  // data-drift-current-value carries the JSON-encoded "new" snapshot of
+  // the entry so blAcceptThisChange() can fast-path the per-entry accept
+  // without forcing the backend to re-snapshot the whole system. For
+  // "removed" entries there's no current value (it's gone) so we skip it.
+  const currentForAccept = (kind === "removed") ? null
+    : (newObj && Object.keys(newObj).length ? newObj : (header.image_path !== undefined ? header : null));
+  const cvAttr = currentForAccept
+    ? ` data-drift-current-value="${escHtml(JSON.stringify(currentForAccept))}"`
+    : "";
+  return `<div class="bl-entry" data-drift-category="${escHtml(catKey)}" data-drift-kind="${escHtml(kind)}" data-drift-key="${escHtml(entryKey)}" data-drift-rows="${cfg.fields.length}"${cvAttr} style="padding:8px 10px;margin:4px 0;background:var(--surface);border-left:2px solid ${accent};border-radius:4px">
     <div style="font-weight:600;font-size:12px;color:var(--text-bright)">${title}</div>
     ${subtitle ? `<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono);margin-bottom:4px">${escHtml(subtitle)}</div>` : ""}
     <table class="bl-param-table" style="width:100%;border-collapse:collapse;margin-top:4px">
@@ -5660,10 +5670,30 @@ async function blLaunchConsole(category, btn) {
 }
 
 // Per-entry baseline accept (user feedback 2026-04-28). Updates only THIS
-// drift entry in the baseline -- leaves all other drift untouched. Useful
-// when 3 of 5 changes are legit and the user wants to absorb them without
-// also accepting the 2 they're investigating.
-async function blAcceptThisChange(category, key, btn) {
+// drift entry in the baseline -- leaves all other drift untouched.
+//
+// Performance update (2026-04-28 round 2): user reported "feels like a
+// full rescan" because the backend was take_snapshot()-ing AND the UI
+// was loadBaseline()-ing afterwards (two ~30s calls). Now:
+//   - Reads kind + current_value from the entry's data-drift-* attrs
+//     (the UI already has them from the drift response)
+//   - Posts them to the backend, which fast-paths the baseline write
+//     in ~10ms (no take_snapshot)
+//   - Optimistically removes the entry div from the DOM and updates the
+//     category counts INSTEAD of triggering a full loadBaseline reload
+// User now sees the entry vanish in <100ms.
+async function blAcceptThisChange(btn) {
+  const entryEl = btn.closest(".bl-entry");
+  if (!entryEl) return;
+  const category = entryEl.dataset.driftCategory;
+  const key = entryEl.dataset.driftKey;
+  const kind = entryEl.dataset.driftKind;
+  let currentValue = null;
+  if (entryEl.dataset.driftCurrentValue) {
+    try { currentValue = JSON.parse(entryEl.dataset.driftCurrentValue); }
+    catch (e) { currentValue = null; }
+  }
+
   if (!confirm(
     "Update the baseline for THIS entry only?\n\n" +
     "Other drift entries stay flagged. After this, this specific change " +
@@ -5675,20 +5705,75 @@ async function blAcceptThisChange(category, key, btn) {
     const r = await fetch("/api/baseline/accept_entry", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({category, key}),
+      body: JSON.stringify({category, key, kind, current_value: currentValue}),
     });
     const data = await r.json();
     if (!data.ok) {
       alert("Accept failed: " + (data.error || "unknown"));
       return;
     }
-    // Reload the Baseline tab so the just-accepted entry leaves the diff.
-    await loadBaseline();
+    // Optimistic UI: fade + remove the entry without re-fetching everything.
+    _blRemoveAcceptedEntry(entryEl, category);
   } catch (e) {
     alert("Accept failed: " + e.message);
   } finally {
     if (btn) { btn.disabled = false; btn.innerHTML = btn.dataset.orig || btn.innerHTML; }
   }
+}
+
+// Optimistic removal: fade the just-accepted entry out of the DOM and
+// decrement the category's count + the global "N changes detected" badge.
+// Avoids a full loadBaseline() round-trip (~30s with snapshot calls).
+function _blRemoveAcceptedEntry(entryEl, category) {
+  if (!entryEl) return;
+  // CSS fade-out then remove
+  entryEl.style.transition = "opacity 0.25s ease, max-height 0.4s ease, padding 0.25s ease, margin 0.25s ease";
+  entryEl.style.maxHeight = entryEl.offsetHeight + "px";
+  // Force reflow so the transition starts from current height
+  void entryEl.offsetHeight;
+  entryEl.style.opacity = "0";
+  entryEl.style.maxHeight = "0";
+  entryEl.style.paddingTop = "0";
+  entryEl.style.paddingBottom = "0";
+  entryEl.style.marginTop = "0";
+  entryEl.style.marginBottom = "0";
+  entryEl.style.overflow = "hidden";
+  setTimeout(() => {
+    entryEl.remove();
+    // Update the category card's sub-header counts if it's still on screen.
+    // Cheap re-query: count remaining .bl-entry under each section, then
+    // re-emit the "+N added · -N removed · ~N changed" line. If the
+    // category has zero entries after this, hide the entire section.
+    const section = document.getElementById(`bl-cat-${category}`);
+    if (section) {
+      const remaining = section.querySelectorAll(".bl-entry").length;
+      if (remaining === 0) {
+        section.style.display = "none";
+      } else {
+        const subEl = section.querySelector("[data-bl-cat-counts]");
+        if (subEl) {
+          const added = section.querySelectorAll(".bl-entry[data-drift-kind='added']").length;
+          const removed = section.querySelectorAll(".bl-entry[data-drift-kind='removed']").length;
+          const changed = section.querySelectorAll(".bl-entry[data-drift-kind='changed']").length;
+          subEl.textContent = `+${added} added · -${removed} removed · ~${changed} changed`;
+        }
+      }
+    }
+    // Update the top "N change(s) detected vs baseline" badge if all
+    // visible entries are gone.
+    const allRemaining = document.querySelectorAll("#bl-drift-content .bl-entry").length;
+    const summary = document.getElementById("bl-summary");
+    if (allRemaining === 0) {
+      // Switch to the "no drift" state without a full reload
+      const content = document.getElementById("bl-drift-content");
+      const nodrift = document.getElementById("bl-nodrift");
+      if (content) content.style.display = "none";
+      if (nodrift) nodrift.style.display = "";
+    } else if (summary) {
+      const badge = summary.querySelector("[data-bl-total]");
+      if (badge) badge.textContent = `⚠ ${allRemaining} change${allRemaining !== 1 ? "s" : ""} detected vs baseline`;
+    }
+  }, 280);
 }
 
 // "Why did this change?" investigator. Fetches /api/baseline/investigate
