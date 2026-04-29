@@ -390,28 +390,37 @@ def accept_current_as_baseline() -> dict:
         return {"ok": False, "snapshot": snapshot, "error": "atomic write failed"}
 
 
-def accept_drift_entry(category: str, key: str) -> dict:
+def accept_drift_entry(
+    category: str,
+    key: str,
+    kind: str | None = None,
+    current_value: dict | None = None,
+) -> dict:
     """Accept a SINGLE drift entry's current state into the baseline.
 
-    User feedback (2026-04-28): the original "Accept current as baseline"
-    button is all-or-nothing. If three changes are legit and one is
-    suspicious, the user has no way to absorb the three without also
-    absorbing the suspicious one. This function fixes that -- it takes
-    a single (category, key) pair and updates only that entry in the
-    baseline snapshot, leaving everything else untouched.
+    Performance update (2026-04-28 round 2): user reported per-entry
+    accept "feels like a full rescan." Root cause: this function called
+    ``take_snapshot()`` (psutil + WMI + schtasks /v -- 5-30s) just to
+    confirm what the UI already had on screen, AND then the JS reload
+    triggered a SECOND take_snapshot via /api/baseline/drift. Two full
+    rescans for what should be a one-line baseline-file update.
 
-    Three sub-cases by drift kind:
-      - ADDED   (in current, not in baseline)  -> insert into baseline
-      - REMOVED (in baseline, not in current)  -> delete from baseline
-      - CHANGED (in both, fields differ)       -> overwrite in baseline
+    Fast path: caller passes ``kind`` + ``current_value`` directly (the
+    UI already has them from /api/baseline/drift). We skip the snapshot
+    and go straight to the baseline write -- ~10ms instead of 30s.
+
+    Slow path (legacy): if kind is None, fall back to the take_snapshot
+    behaviour for callers that don't pre-supply the data (tests etc).
+
+    Sub-cases by kind:
+      - "added"   -> insert ``current_value`` into baseline
+      - "removed" -> delete the key from baseline (current_value ignored)
+      - "changed" -> overwrite baseline entry with ``current_value``
 
     Returns:
         {"ok": bool, "kind": "added|removed|changed",
-         "error": str|None, "baseline_timestamp": str|None}
-
-    Failures: 404-class (key not in either snapshot), 500-class (write
-    fault, no baseline yet, etc.). Atomic write + lock so concurrent
-    drift checks never observe a half-applied baseline.
+         "error": str|None, "baseline_timestamp": str|None,
+         "fast_path": bool}
     """
     if category not in _DIFF_FIELDS:
         return {
@@ -419,6 +428,7 @@ def accept_drift_entry(category: str, key: str) -> dict:
             "kind": "",
             "error": f"unknown category {category!r}; expected one of {list(_DIFF_FIELDS)}",
             "baseline_timestamp": None,
+            "fast_path": False,
         }
     if not key or not isinstance(key, str):
         return {
@@ -426,6 +436,15 @@ def accept_drift_entry(category: str, key: str) -> dict:
             "kind": "",
             "error": "key required and must be a non-empty string",
             "baseline_timestamp": None,
+            "fast_path": False,
+        }
+    if kind is not None and kind not in ("added", "removed", "changed"):
+        return {
+            "ok": False,
+            "kind": "",
+            "error": f"kind must be one of added/removed/changed, got {kind!r}",
+            "baseline_timestamp": None,
+            "fast_path": False,
         }
 
     with _file_lock:
@@ -436,38 +455,61 @@ def accept_drift_entry(category: str, key: str) -> dict:
                 "kind": "",
                 "error": "no baseline exists -- use /api/baseline/accept first",
                 "baseline_timestamp": None,
+                "fast_path": False,
             }
-
-        # Re-snapshot so we apply current state at point-of-accept (not a
-        # cached state that might be seconds-stale).
-        current = take_snapshot()
 
         baseline_cat = baseline.setdefault(category, {}).setdefault("by_key", {})
-        current_cat = (current.get(category) or {}).get("by_key") or {}
-
         in_baseline = key in baseline_cat
-        in_current = key in current_cat
 
-        if not in_baseline and not in_current:
-            return {
-                "ok": False,
-                "kind": "",
-                "error": f"key {key!r} not found in either baseline or current snapshot",
-                "baseline_timestamp": baseline.get("timestamp"),
-            }
-
-        if not in_baseline and in_current:
-            kind = "added"
-            baseline_cat[key] = current_cat[key]
-        elif in_baseline and not in_current:
-            kind = "removed"
-            del baseline_cat[key]
+        # ── Fast path: caller supplied kind + (for added/changed) the value
+        #              we'd otherwise have to re-snapshot to discover. ──
+        fast_path = False
+        if kind is not None:
+            fast_path = True
+            if kind == "removed":
+                if not in_baseline:
+                    return {
+                        "ok": False,
+                        "kind": "",
+                        "error": f"key {key!r} not in baseline -- can't remove what isn't there",
+                        "baseline_timestamp": baseline.get("timestamp"),
+                        "fast_path": True,
+                    }
+                del baseline_cat[key]
+            else:
+                # added or changed -- both need a current_value to write
+                if not isinstance(current_value, dict) or not current_value:
+                    return {
+                        "ok": False,
+                        "kind": "",
+                        "error": f"current_value (dict) required for kind={kind!r}",
+                        "baseline_timestamp": baseline.get("timestamp"),
+                        "fast_path": True,
+                    }
+                baseline_cat[key] = dict(current_value)
         else:
-            # Both sides present -- replace baseline with current.
-            kind = "changed"
-            baseline_cat[key] = current_cat[key]
+            # ── Slow path: snapshot the system to discover kind + value. ──
+            current = take_snapshot()
+            current_cat = (current.get(category) or {}).get("by_key") or {}
+            in_current = key in current_cat
+            if not in_baseline and not in_current:
+                return {
+                    "ok": False,
+                    "kind": "",
+                    "error": f"key {key!r} not found in either baseline or current snapshot",
+                    "baseline_timestamp": baseline.get("timestamp"),
+                    "fast_path": False,
+                }
+            if not in_baseline and in_current:
+                kind = "added"
+                baseline_cat[key] = current_cat[key]
+            elif in_baseline and not in_current:
+                kind = "removed"
+                del baseline_cat[key]
+            else:
+                kind = "changed"
+                baseline_cat[key] = current_cat[key]
 
-        # Bump timestamp + recompute counts so the snapshot stays consistent.
         baseline["timestamp"] = datetime.now().isoformat(timespec="seconds")
         baseline["counts"] = {cat: len((baseline.get(cat) or {}).get("by_key") or {}) for cat in _DIFF_FIELDS}
 
@@ -477,6 +519,7 @@ def accept_drift_entry(category: str, key: str) -> dict:
                 "kind": kind,
                 "error": "atomic write failed",
                 "baseline_timestamp": baseline["timestamp"],
+                "fast_path": fast_path,
             }
 
     return {
@@ -484,6 +527,7 @@ def accept_drift_entry(category: str, key: str) -> dict:
         "kind": kind,
         "error": None,
         "baseline_timestamp": baseline["timestamp"],
+        "fast_path": fast_path,
     }
 
 

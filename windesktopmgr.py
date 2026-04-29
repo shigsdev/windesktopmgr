@@ -8726,7 +8726,19 @@ def baseline_accept_entry_route():
     if category not in ("startup", "services", "tasks") or not key:
         return jsonify({"ok": False, "error": "category (startup|services|tasks) and key required"}), 400
 
-    result = baseline.accept_drift_entry(category, key)
+    # Optional fast-path inputs from the UI: kind ("added"|"removed"|
+    # "changed") + current_value (the new dict for added/changed). When
+    # provided, baseline.accept_drift_entry skips its expensive
+    # take_snapshot() call and applies the change in a few ms instead
+    # of the 5-30s a full snapshot takes.
+    raw_kind = body.get("kind")
+    kind = raw_kind.lower().strip() if isinstance(raw_kind, str) else None
+    if kind not in (None, "added", "removed", "changed"):
+        kind = None  # fall back to slow path on garbage rather than 400ing
+    raw_value = body.get("current_value")
+    current_value = raw_value if isinstance(raw_value, dict) else None
+
+    result = baseline.accept_drift_entry(category, key, kind=kind, current_value=current_value)
     if result.get("ok"):
         return jsonify(result), 200
     err = (result.get("error") or "").lower()
