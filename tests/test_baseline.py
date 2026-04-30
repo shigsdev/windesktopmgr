@@ -849,6 +849,110 @@ class TestRecentDrift:
         assert recent[0]["total_changes"] == 3
 
 
+# ── Per-entry drift history (powers the drill-down modal) ──────────
+
+
+class TestEntryDriftHistory:
+    """entry_drift_history pulls every historical event that mentions a
+    specific (category, key) pair from baseline_history.json. Used by
+    the drill-down modal (2026-04-28) to show 'this entry has drifted N
+    times before' so the user can spot recurring vs one-off changes.
+    """
+
+    def test_unknown_category_returns_empty(self, baseline_tmp):
+        assert baseline.entry_drift_history("nonsense", "X") == []
+
+    def test_no_history_returns_empty(self, baseline_tmp):
+        assert baseline.entry_drift_history("services", "Spooler") == []
+
+    def test_filters_by_category_and_key(self, baseline_tmp):
+        baseline._append_history(
+            {
+                "timestamp": "2026-04-01T10:00:00",
+                "drift": {
+                    "services": {
+                        "added": [],
+                        "removed": [],
+                        "changed": [
+                            {
+                                "key": "Spooler",
+                                "delta": ["image_path"],
+                                "old": {"image_path": "old"},
+                                "new": {"image_path": "new"},
+                            }
+                        ],
+                    }
+                },
+            }
+        )
+        baseline._append_history(
+            {
+                "timestamp": "2026-04-02T10:00:00",
+                "drift": {"services": {"added": [], "removed": [], "changed": [{"key": "OtherSvc"}]}},
+            }
+        )
+        # Only Spooler events come back
+        events = baseline.entry_drift_history("services", "Spooler")
+        assert len(events) == 1
+        assert events[0]["delta"] == ["image_path"]
+
+    def test_returns_newest_first(self, baseline_tmp):
+        # Three events, ordered chronologically in the file
+        for ts in ("2026-04-01T10:00:00", "2026-04-15T10:00:00", "2026-04-20T10:00:00"):
+            baseline._append_history(
+                {
+                    "timestamp": ts,
+                    "drift": {"services": {"added": [], "removed": [], "changed": [{"key": "Spooler"}]}},
+                }
+            )
+        events = baseline.entry_drift_history("services", "Spooler")
+        assert [e["timestamp"] for e in events] == [
+            "2026-04-20T10:00:00",
+            "2026-04-15T10:00:00",
+            "2026-04-01T10:00:00",
+        ]
+
+    def test_window_clamps_old_events(self, baseline_tmp):
+        now = datetime.now()
+        for offset_h in (1, 48, 168, 720):  # 1h, 2d, 7d, 30d ago
+            baseline._append_history(
+                {
+                    "timestamp": (now - timedelta(hours=offset_h)).isoformat(),
+                    "drift": {"services": {"added": [], "removed": [], "changed": [{"key": "Spooler"}]}},
+                }
+            )
+        # 24h window only captures the 1h-ago event
+        events = baseline.entry_drift_history("services", "Spooler", window=timedelta(hours=24))
+        assert len(events) == 1
+        # No window returns all four
+        all_events = baseline.entry_drift_history("services", "Spooler")
+        assert len(all_events) == 4
+
+    def test_captures_all_three_kinds(self, baseline_tmp):
+        """added/removed/changed are all surfaced if they mention the key."""
+        baseline._append_history(
+            {
+                "timestamp": "2026-04-01T10:00:00",
+                "drift": {"services": {"added": [{"key": "Foo", "name": "Foo"}], "removed": [], "changed": []}},
+            }
+        )
+        baseline._append_history(
+            {
+                "timestamp": "2026-04-02T10:00:00",
+                "drift": {"services": {"added": [], "removed": [{"key": "Foo"}], "changed": []}},
+            }
+        )
+        baseline._append_history(
+            {
+                "timestamp": "2026-04-03T10:00:00",
+                "drift": {"services": {"added": [], "removed": [], "changed": [{"key": "Foo", "delta": ["x"]}]}},
+            }
+        )
+        events = baseline.entry_drift_history("services", "Foo")
+        kinds = sorted({e["kind"] for e in events})
+        assert kinds == ["added", "changed", "removed"]
+
+
 # ── Drift investigator (decision support: why did this change?) ────
 
 
@@ -1500,6 +1604,86 @@ class TestBaselineRoutes:
     def test_history_route_invalid_hours_defaults_to_24(self, client, baseline_tmp):
         resp = client.get("/api/baseline/history?hours=abc")
         assert resp.get_json()["hours"] == 24
+
+    # ── /api/baseline/entry-history ────────────────────────────────
+    def test_entry_history_route_400_on_missing_fields(self, client):
+        resp = client.get("/api/baseline/entry-history")
+        assert resp.status_code == 400
+
+    def test_entry_history_route_400_on_bad_category(self, client):
+        resp = client.get("/api/baseline/entry-history?category=evil&key=X")
+        assert resp.status_code == 400
+
+    def test_entry_history_route_returns_filtered_events(self, client, baseline_tmp):
+        """The route returns only events that mention this specific
+        (category, key) pair, newest-first."""
+        # Seed history with two events: one mentions Spooler in changed,
+        # the other is for an unrelated entry.
+        baseline._append_history(
+            {
+                "timestamp": "2026-04-01T10:00:00",
+                "drift": {
+                    "services": {
+                        "added": [],
+                        "removed": [],
+                        "changed": [
+                            {
+                                "key": "Spooler",
+                                "name": "Print Spooler",
+                                "delta": ["image_path"],
+                                "old": {"image_path": "old.exe"},
+                                "new": {"image_path": "new.exe"},
+                            }
+                        ],
+                    }
+                },
+            }
+        )
+        baseline._append_history(
+            {
+                "timestamp": "2026-04-15T10:00:00",
+                "drift": {"services": {"added": [], "removed": [], "changed": [{"key": "OtherSvc"}]}},
+            }
+        )
+        baseline._append_history(
+            {
+                "timestamp": "2026-04-20T10:00:00",
+                "drift": {
+                    "services": {
+                        "added": [],
+                        "removed": [],
+                        "changed": [
+                            {
+                                "key": "Spooler",
+                                "delta": ["start_mode"],
+                                "old": {"start_mode": "Auto"},
+                                "new": {"start_mode": "Disabled"},
+                            }
+                        ],
+                    }
+                },
+            }
+        )
+        resp = client.get("/api/baseline/entry-history?category=services&key=Spooler")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        events = body["events"]
+        assert len(events) == 2  # only the Spooler events
+        # Newest first
+        assert events[0]["timestamp"] == "2026-04-20T10:00:00"
+        assert events[1]["timestamp"] == "2026-04-01T10:00:00"
+        # Delta carried through
+        assert "start_mode" in events[0]["delta"]
+
+    def test_entry_history_route_no_events_returns_empty_list(self, client, baseline_tmp):
+        """A key with no history returns events=[] (not 404). The UI uses
+        the empty list to render a 'first time drifting' message."""
+        resp = client.get("/api/baseline/entry-history?category=services&key=NeverDrifted")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["events"] == []
 
     # ── launch_console (remediation button) ────────────────────────
     def test_launch_console_unknown_category_400(self, client):

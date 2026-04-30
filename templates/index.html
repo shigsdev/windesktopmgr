@@ -5927,7 +5927,7 @@ function _blRenderEntry(header, oldObj, newObj, delta, cfg, catKey, kind, accent
     ? ` data-drift-current-value="${escHtml(JSON.stringify(currentForAccept))}"`
     : "";
   return `<div class="bl-entry" data-drift-category="${escHtml(catKey)}" data-drift-kind="${escHtml(kind)}" data-drift-key="${escHtml(entryKey)}" data-drift-rows="${cfg.fields.length}"${cvAttr} style="padding:8px 10px;margin:4px 0;background:var(--surface);border-left:2px solid ${accent};border-radius:4px">
-    <div style="font-weight:600;font-size:12px;color:var(--text-bright)">${title}</div>
+    <div onclick="openBaselineEntryDrilldown('${escHtml(catKey)}', '${escHtml(safeKey)}')" title="Click for full-screen detail (parameter table, investigation, history)" style="font-weight:600;font-size:12px;color:var(--text-bright);cursor:pointer;display:inline-flex;align-items:center;gap:6px" onmouseover="this.style.color='var(--cyan)'" onmouseout="this.style.color='var(--text-bright)'">${title} <span style="font-size:10px;color:var(--muted);font-weight:400">🔍</span></div>
     ${subtitle ? `<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono);margin-bottom:4px">${escHtml(subtitle)}</div>` : ""}
     <table class="bl-param-table" style="width:100%;border-collapse:collapse;margin-top:4px">
       <thead>
@@ -6236,6 +6236,222 @@ function _blRenderInvestigation(inv) {
     </div>
   `;
 }
+
+// ── Per-entry drill-down modal (2026-04-28) ───────────────────────
+//
+// User feature request: same pattern as the Trends drill-down --
+// click any drift entry's title to open a full-screen detail modal.
+// Modal auto-loads investigation + historical drift events for the
+// specific entry, so the user has everything they need to decide
+// in one focused view rather than scrolling through cluttered inline
+// renderings.
+
+let _blEntryModalState = null;  // {category, key} for the currently-open entry
+
+async function openBaselineEntryDrilldown(category, key) {
+  _blEntryModalState = {category, key};
+  const modal = document.getElementById("bl-entry-modal");
+  if (!modal) return;
+
+  // Find the source entry in the rendered DOM so we can re-use its data
+  // attributes (category, kind, current_value) without an extra fetch.
+  const sourceEl = document.querySelector(`.bl-entry[data-drift-category="${category}"][data-drift-key="${cssEsc(key)}"]`);
+  const kind = sourceEl?.dataset?.driftKind || "";
+  let currentValue = null;
+  if (sourceEl?.dataset?.driftCurrentValue) {
+    try { currentValue = JSON.parse(sourceEl.dataset.driftCurrentValue); }
+    catch (e) { currentValue = null; }
+  }
+
+  // Title: human-readable name (last path segment for tasks) + category badge
+  const cfg = _BL_CATS[category] || {fields: [], critical: []};
+  const nameDisplay = key.includes("\\") ? key.split("\\").pop() : key;
+  document.getElementById("bl-entry-modal-title").innerHTML =
+    `${escHtml(nameDisplay)} <span style="font-size:11px;color:var(--muted);font-weight:400;margin-left:8px">[${escHtml(category)}/${escHtml(kind || "?")}]</span>`;
+  document.getElementById("bl-entry-modal-sub").textContent = key;
+  // Quick action buttons -- mirror the inline view's How-to-fix block
+  const consoleLabel = (cfg.remediation || {}).console_label || "";
+  const safeKey = key.replace(/'/g, "\\'").replace(/\\/g, "\\\\");
+  document.getElementById("bl-entry-modal-actions").innerHTML = `
+    ${consoleLabel ? `<button onclick="blLaunchConsole('${escHtml(category)}', this)" style="background:var(--cyan);border:none;color:#000;padding:6px 14px;border-radius:5px;cursor:pointer;font-size:12px;font-weight:700">🔧 ${escHtml(consoleLabel)}</button>` : ""}
+    ${kind && kind !== "" ? `<button onclick="blAcceptThisChangeFromModal('${escHtml(category)}', '${escHtml(safeKey)}', '${escHtml(kind)}', this)" title="Update the baseline for THIS entry only" style="background:var(--green);border:none;color:#000;padding:6px 14px;border-radius:5px;cursor:pointer;font-size:12px;font-weight:700">✓ Accept this change</button>` : ""}
+    <button onclick="closeBaselineEntryDrilldown()" style="background:transparent;border:1px solid var(--border);color:var(--text);padding:6px 14px;border-radius:5px;cursor:pointer;font-size:12px">Close</button>`;
+
+  // Parameter table -- larger render than the inline view. Get old/new
+  // dicts by walking the source entry's data again. For added/removed
+  // we have only one side; for changed we have both.
+  let oldDict = null;
+  let newDict = null;
+  if (kind === "changed") {
+    // The source DOM has the table; we re-extract from data-drift-current-value
+    // for "new" and from the matching API drift entry for "old".
+    newDict = currentValue;
+    // Fetch the drift state to get the old side. Cache for the modal session.
+    try {
+      const driftRsp = await fetch("/api/baseline/drift").then(r => r.json());
+      const cat = (driftRsp.drift || {})[category] || {};
+      const found = (cat.changed || []).find(e => e.key === key);
+      if (found) oldDict = found.old || null;
+    } catch (e) { /* non-fatal */ }
+  } else if (kind === "added") {
+    newDict = currentValue;
+  } else if (kind === "removed") {
+    // Similar: pull old from drift
+    try {
+      const driftRsp = await fetch("/api/baseline/drift").then(r => r.json());
+      const cat = (driftRsp.drift || {})[category] || {};
+      const found = (cat.removed || []).find(e => e.key === key);
+      if (found) oldDict = found;
+    } catch (e) { /* non-fatal */ }
+  }
+  document.getElementById("bl-entry-modal-params").innerHTML =
+    _blRenderModalParamTable(cfg, kind, oldDict, newDict);
+
+  // Show modal + register ESC + backdrop-click close
+  modal.style.display = "flex";
+  document.addEventListener("keydown", _blEntryModalEscHandler);
+  modal.onclick = (e) => { if (e.target === modal) closeBaselineEntryDrilldown(); };
+
+  // Auto-load investigation + history (parallel fetches)
+  document.getElementById("bl-entry-modal-investigation").innerHTML =
+    `<div style="color:var(--muted)">🔍 Investigating change…</div>`;
+  document.getElementById("bl-entry-modal-history").innerHTML =
+    `<div style="color:var(--muted)">Loading history…</div>`;
+  Promise.all([
+    fetch("/api/baseline/investigate", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({category, key}),
+    }).then(r => r.json()).catch(e => ({ok: false, error: e.message})),
+    fetch(`/api/baseline/entry-history?category=${encodeURIComponent(category)}&key=${encodeURIComponent(key)}`)
+      .then(r => r.json()).catch(e => ({ok: false, error: e.message})),
+  ]).then(([invRsp, histRsp]) => {
+    // Investigation
+    if (invRsp.ok && invRsp.investigation) {
+      document.getElementById("bl-entry-modal-investigation").innerHTML =
+        _blRenderInvestigation(invRsp.investigation);
+    } else {
+      document.getElementById("bl-entry-modal-investigation").innerHTML =
+        `<div style="color:var(--red)">${escHtml(invRsp.error || "investigation unavailable")}</div>`;
+    }
+    // History
+    document.getElementById("bl-entry-modal-history").innerHTML =
+      _blRenderEntryHistory(histRsp);
+  });
+}
+
+function closeBaselineEntryDrilldown() {
+  const modal = document.getElementById("bl-entry-modal");
+  if (modal) modal.style.display = "none";
+  _blEntryModalState = null;
+  document.removeEventListener("keydown", _blEntryModalEscHandler);
+}
+
+function _blEntryModalEscHandler(e) {
+  if (e.key === "Escape") closeBaselineEntryDrilldown();
+}
+
+// CSS-escape a string for use in a [attr="value"] selector. Doubles
+// backslashes (common in Windows task paths).
+function cssEsc(s) {
+  return String(s || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+// Render a larger Parameter | Previous | Current table for the modal.
+// Same shape as the inline _blRenderEntry table but with bigger font
+// and full-width layout.
+function _blRenderModalParamTable(cfg, kind, oldDict, newDict) {
+  const critSet = new Set(cfg.critical || []);
+  const showBoth = (kind === "changed");
+  const rows = (cfg.fields || []).map(f => {
+    const oldVal = oldDict ? oldDict[f] : (kind === "added" ? null : undefined);
+    const newVal = newDict ? newDict[f] : (kind === "removed" ? null : undefined);
+    const oldDisp = (oldVal === undefined || oldVal === null || oldVal === "") ? "—" : String(oldVal);
+    const newDisp = (newVal === undefined || newVal === null || newVal === "") ? "—" : String(newVal);
+    const isCrit = critSet.has(f);
+    const isDiff = showBoth && oldDisp !== newDisp;
+    const rowBg = isDiff ? "background:rgba(255,165,0,0.10)" : "";
+    const paramColor = isCrit ? "color:var(--cyan)" : "color:var(--muted)";
+    if (showBoth) {
+      const prevColor = isDiff ? "color:var(--muted);text-decoration:line-through" : "color:var(--text)";
+      const curColor  = isDiff ? "color:var(--orange);font-weight:700" : "color:var(--text)";
+      return `<tr style="${rowBg}">
+        <td style="padding:5px 10px;font-family:var(--font-mono);font-size:11px;${paramColor};white-space:nowrap;vertical-align:top">${escHtml(f)}</td>
+        <td style="padding:5px 10px;font-family:var(--font-mono);font-size:12px;${prevColor};word-break:break-all;vertical-align:top">${escHtml(oldDisp)}</td>
+        <td style="padding:5px 10px;font-family:var(--font-mono);font-size:12px;${curColor};word-break:break-all;vertical-align:top">${escHtml(newDisp)}</td>
+      </tr>`;
+    }
+    return `<tr>
+      <td style="padding:5px 10px;font-family:var(--font-mono);font-size:11px;${paramColor};white-space:nowrap;vertical-align:top">${escHtml(f)}</td>
+      <td style="padding:5px 10px;font-family:var(--font-mono);font-size:12px;color:var(--text);word-break:break-all;vertical-align:top">${kind === "removed" ? escHtml(oldDisp) : escHtml(newDisp)}</td>
+    </tr>`;
+  }).join("");
+  const headers = showBoth
+    ? `<tr style="border-bottom:1px solid var(--border)">
+         <th style="text-align:left;padding:5px 10px;font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Parameter</th>
+         <th style="text-align:left;padding:5px 10px;font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Previous</th>
+         <th style="text-align:left;padding:5px 10px;font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Current</th>
+       </tr>`
+    : `<tr style="border-bottom:1px solid var(--border)">
+         <th style="text-align:left;padding:5px 10px;font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.5px">Parameter</th>
+         <th style="text-align:left;padding:5px 10px;font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:0.5px">${kind === "removed" ? "Previous (was in baseline)" : "Current"}</th>
+       </tr>`;
+  return `<table style="width:100%;border-collapse:collapse"><thead>${headers}</thead><tbody>${rows}</tbody></table>`;
+}
+
+// Render the entry-history payload as a compact timeline. Each event
+// shows: timestamp · kind badge · what changed (delta fields).
+function _blRenderEntryHistory(rsp) {
+  if (!rsp || !rsp.ok) {
+    return `<div style="color:var(--red)">${escHtml((rsp && rsp.error) || "history unavailable")}</div>`;
+  }
+  const events = rsp.events || [];
+  if (!events.length) {
+    return `<div style="color:var(--muted);font-size:11px">
+      No previous drift events for this entry. This is the first time it has differed from the baseline.
+    </div>`;
+  }
+  const kindColor = {added: "var(--green)", removed: "var(--red)", changed: "var(--orange)"};
+  const kindIcon = {added: "+", removed: "−", changed: "~"};
+  const items = events.map(ev => {
+    const ts = (ev.timestamp || "").replace("T", " ").slice(0, 19);
+    const col = kindColor[ev.kind] || "var(--muted)";
+    const icn = kindIcon[ev.kind] || "?";
+    const delta = (ev.delta || []).join(", ") || "(no delta)";
+    return `<div style="padding:6px 8px;margin:3px 0;border-left:2px solid ${col};background:rgba(255,255,255,0.02);border-radius:3px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="background:${col};color:#000;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700">${icn} ${escHtml(ev.kind)}</span>
+        <span style="color:var(--muted);font-family:var(--font-mono);font-size:11px">${escHtml(ts)}</span>
+      </div>
+      ${ev.kind === "changed" ? `<div style="font-size:10px;color:var(--text);margin-top:3px;font-family:var(--font-mono)">delta: ${escHtml(delta)}</div>` : ""}
+    </div>`;
+  }).join("");
+  return `<div style="font-size:11px;color:var(--muted);margin-bottom:6px">
+    ${events.length} previous event${events.length !== 1 ? "s" : ""} for this entry:
+  </div>${items}`;
+}
+
+// Wrapper around blAcceptThisChange for the modal -- closes the modal
+// after a successful accept since the entry is now gone from drift.
+async function blAcceptThisChangeFromModal(category, key, kind, btn) {
+  // Find the original entry row to reuse its current_value cache, then
+  // call the same accept path the inline button uses.
+  const sourceEl = document.querySelector(`.bl-entry[data-drift-category="${category}"][data-drift-key="${cssEsc(key)}"]`);
+  if (!sourceEl) {
+    alert("Couldn't find the source entry to accept.");
+    return;
+  }
+  // Find the "✓ Accept this change" button on the source row and click it
+  // to reuse the existing logic (data-attribute reads + optimistic remove).
+  const inlineBtn = sourceEl.querySelector('button[onclick*="blAcceptThisChange"]');
+  if (inlineBtn) {
+    closeBaselineEntryDrilldown();
+    inlineBtn.click();
+  } else {
+    alert("Couldn't find the inline Accept button to delegate to.");
+  }
+}
+
 
 // ── Full-inventory browser (shows EVERY monitored item) ────────────────
 //
@@ -8095,6 +8311,42 @@ function renderSystemInfo(d) {
         <div id="bl-inv-startup"  data-inv-category="startup"  style="margin-bottom:12px"></div>
         <div id="bl-inv-services" data-inv-category="services" style="margin-bottom:12px"></div>
         <div id="bl-inv-tasks"    data-inv-category="tasks"    style="margin-bottom:12px"></div>
+      </div>
+    </div>
+
+    <!-- Per-entry drill-down modal (2026-04-28). Click any drift entry's
+         title to open this with a full-size view: parameter table, auto-
+         loaded investigation, and per-entry historical drift events. -->
+    <div id="bl-entry-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:1000;align-items:center;justify-content:center;padding:24px">
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;width:min(960px,95vw);max-height:90vh;overflow:auto">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px">
+          <div style="flex:1;min-width:0">
+            <div id="bl-entry-modal-title" style="font-size:18px;font-weight:700;color:var(--text-bright);word-break:break-all">—</div>
+            <div id="bl-entry-modal-sub" style="font-size:11px;color:var(--muted);margin-top:4px;font-family:var(--font-mono);word-break:break-all">—</div>
+          </div>
+          <button onclick="closeBaselineEntryDrilldown()" title="Close (Esc)" style="background:transparent;border:1px solid var(--border);color:var(--text);padding:6px 12px;border-radius:4px;cursor:pointer;font-size:13px">✕</button>
+        </div>
+        <!-- Quick-action buttons row -->
+        <div id="bl-entry-modal-actions" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px"></div>
+        <!-- Parameter table (full-width, larger fonts than the inline view) -->
+        <div style="margin-bottom:14px">
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:6px">Parameters · Previous · Current</div>
+          <div id="bl-entry-modal-params" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px"></div>
+        </div>
+        <!-- Auto-loaded investigation (no need to click 🔍 separately) -->
+        <div style="margin-bottom:14px">
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:6px">Why did this change?</div>
+          <div id="bl-entry-modal-investigation" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px;font-size:11px">
+            <div style="color:var(--muted)">🔍 Investigating change…</div>
+          </div>
+        </div>
+        <!-- Historical drift events for THIS specific entry -->
+        <div style="margin-bottom:14px">
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:6px">Drift history for this entry</div>
+          <div id="bl-entry-modal-history" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px;font-size:11px;max-height:280px;overflow-y:auto">
+            <div style="color:var(--muted)">Loading…</div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
