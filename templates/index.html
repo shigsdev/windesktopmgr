@@ -7,6 +7,10 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<!-- Chart.js time-axis date adapter -- needed for the Trends drill-down
+     modal (2026-04-28). date-fns is the standard Chart.js companion;
+     ~50KB gz. Loaded after Chart.js so the adapter can register itself. -->
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <style>
   :root {
     --bg:         #07090f;
@@ -705,6 +709,37 @@
           <button onclick="loadTrends()" style="margin-left:auto;background:transparent;border:1px solid var(--border);color:var(--muted);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:10px">↺</button>
         </div>
         <div id="db-trends-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">Loading…</div>
+      </div>
+
+      <!-- Trends drill-down modal (2026-04-28). Click any sparkline card
+           above to open this with a full-size chart + summary stats. -->
+      <div id="db-trends-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:1000;align-items:center;justify-content:center;padding:24px">
+        <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;width:min(960px,95vw);max-height:90vh;overflow:auto">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px">
+            <div>
+              <div id="db-trends-modal-title" style="font-size:16px;font-weight:700;color:var(--text-bright)">—</div>
+              <div id="db-trends-modal-sub" style="font-size:11px;color:var(--muted);margin-top:2px">—</div>
+            </div>
+            <div style="display:flex;gap:6px">
+              <button data-trends-window="24"  onclick="setTrendsModalWindow(24)"  class="trends-win-btn" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px">24 h</button>
+              <button data-trends-window="72"  onclick="setTrendsModalWindow(72)"  class="trends-win-btn" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px">3 d</button>
+              <button data-trends-window="168" onclick="setTrendsModalWindow(168)" class="trends-win-btn" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px">7 d</button>
+              <button data-trends-window="720" onclick="setTrendsModalWindow(720)" class="trends-win-btn" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px">30 d</button>
+              <button onclick="closeTrendDrilldown()" title="Close (Esc)" style="background:transparent;border:1px solid var(--border);color:var(--text);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:13px;margin-left:8px">✕</button>
+            </div>
+          </div>
+          <!-- Summary stats grid: now / min / max / avg / p50 / p95 / trend -->
+          <div id="db-trends-modal-stats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:14px"></div>
+          <!-- Big chart -->
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:12px;height:380px;position:relative">
+            <canvas id="db-trends-modal-chart"></canvas>
+          </div>
+          <!-- Recent samples table -->
+          <details style="margin-top:14px">
+            <summary style="cursor:pointer;font-size:11px;color:var(--muted);user-select:none">Show recent samples (last 20)</summary>
+            <div id="db-trends-modal-recent" style="margin-top:10px;font-family:var(--font-mono);font-size:11px;max-height:240px;overflow-y:auto"></div>
+          </details>
+        </div>
       </div>
 
       <!-- Alert rules card (backlog #5) -->
@@ -4037,6 +4072,13 @@ function renderDashboard(d) {
 // Trends card: fetch the last 7 days of metric samples and render one
 // inline-SVG sparkline per metric. Backlog #4 — turns point-in-time
 // snapshots into a "is this trending in the wrong direction?" signal.
+// Module-level cache for the Trends drill-down modal. loadTrends populates
+// this when it fetches /api/metrics/history; openTrendDrilldown reads it
+// instead of re-fetching, so clicking a card opens instantly.
+let _trendsRawSeries = {};   // {metric_key: [{ts, value}, ...]}
+let _trendsLabels = {};      // {metric_key: {label, color, unit}}
+let _trendsModalChart = null; // Chart.js instance (destroyed on close)
+
 async function loadTrends() {
   const el = document.getElementById("db-trends-grid");
   if (!el) return;
@@ -4078,6 +4120,10 @@ async function loadTrends() {
     // without an NVIDIA driver, and more generally suppresses "need ≥2
     // samples" ghost cards for metrics the collector never emitted.
     const availableSet = new Set(available);
+    // Cache raw series + labels for the drill-down modal. Click handlers
+    // reach back into these instead of re-fetching.
+    _trendsRawSeries = series;
+    _trendsLabels = labels;
     const cards = Object.entries(labels)
       .filter(([metric]) => availableSet.has(metric))
       .map(([metric, cfg]) => {
@@ -4089,11 +4135,13 @@ async function loadTrends() {
         // able to pair rendered cards with the API's ``available`` list
         // without parsing visible label text. Future additions to the
         // labels dict must preserve this attribute or the test fails.
+        // Click anywhere on the card to open the drill-down modal.
+        const safeMetric = metric.replace(/"/g, '&quot;').replace(/'/g, "\\'");
         return `
-          <div data-metric="${metric.replace(/"/g, '&quot;')}" style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:10px 12px">
+          <div data-metric="${metric.replace(/"/g, '&quot;')}" onclick="openTrendDrilldown('${safeMetric}')" style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:10px 12px;cursor:pointer;transition:border-color 0.15s,transform 0.05s" onmouseover="this.style.borderColor='var(--cyan)'" onmouseout="this.style.borderColor='var(--border)'" title="Click to drill down (full chart, time axis, summary stats)">
             <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px">
               <div style="font-size:11px;color:var(--text-bright);font-weight:600">${cfg.label}</div>
-              <div style="font-size:10px;color:var(--muted);font-family:var(--font-mono)">n=${n}</div>
+              <div style="font-size:10px;color:var(--muted);font-family:var(--font-mono)">n=${n} 🔍</div>
             </div>
             <div style="margin:4px 0">${trendSparkline(points, cfg.color)}</div>
             <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);font-family:var(--font-mono);margin-top:4px">
@@ -4111,6 +4159,222 @@ async function loadTrends() {
   } catch (ex) {
     console.warn("loadTrends failed:", ex);
     el.innerHTML = '<div style="color:var(--red);font-size:12px">Failed to load trend data.</div>';
+  }
+}
+
+// ── Trends drill-down (2026-04-28) ─────────────────────────────────
+//
+// User feedback: "on the dashboard trends, you should be able to click on
+// one of the graphs and then be able to look at a larger one and drill
+// down." This modal opens on card click, renders a full-size Chart.js
+// line chart with proper time-axis, and shows summary statistics
+// (now/min/max/avg/median/p95) + a slope-based trend indicator.
+
+// Currently-open metric. Used by setTrendsModalWindow to know what to
+// re-fetch when the user picks a different time window.
+let _trendsModalMetric = null;
+
+// Compute summary stats over a values array. Returns null if empty.
+function _trendStats(values) {
+  if (!values || !values.length) return null;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const n = sorted.length;
+  const sum = sorted.reduce((a, b) => a + b, 0);
+  const pct = (p) => sorted[Math.min(n - 1, Math.floor(p * n))];
+  // Slope of the simple least-squares fit (positive=rising, negative=falling).
+  // Used only for the directional badge -- magnitude is unitful so we
+  // don't display it directly.
+  const xs = values.map((_, i) => i);
+  const xMean = xs.reduce((a, b) => a + b, 0) / n;
+  const yMean = sum / n;
+  let num = 0, den = 0;
+  for (let i = 0; i < n; i++) {
+    num += (xs[i] - xMean) * (values[i] - yMean);
+    den += (xs[i] - xMean) ** 2;
+  }
+  const slope = den === 0 ? 0 : num / den;
+  return {
+    n: n,
+    now: values[n - 1],
+    min: sorted[0],
+    max: sorted[n - 1],
+    avg: sum / n,
+    median: pct(0.5),
+    p95: pct(0.95),
+    slope: slope,
+  };
+}
+
+// Open the drill-down modal for a given metric. If the global series
+// cache (populated by loadTrends) has the data, use it instantly --
+// otherwise re-fetch.
+async function openTrendDrilldown(metric) {
+  _trendsModalMetric = metric;
+  const cfg = _trendsLabels[metric] || {label: metric, color: "#00d4ff", unit: ""};
+  const modal = document.getElementById("db-trends-modal");
+  if (!modal) return;
+  document.getElementById("db-trends-modal-title").textContent = `${cfg.label} — Trend detail`;
+  document.getElementById("db-trends-modal-sub").textContent = `Metric key: ${metric}`;
+  modal.style.display = "flex";
+  // Default to 7-day window on open
+  _renderTrendModalChart(metric, 168, cfg);
+  _highlightWindowButton(168);
+  // ESC-to-close + click-on-backdrop-to-close
+  document.addEventListener("keydown", _trendModalEscHandler);
+  modal.onclick = (e) => { if (e.target === modal) closeTrendDrilldown(); };
+}
+
+function closeTrendDrilldown() {
+  const modal = document.getElementById("db-trends-modal");
+  if (modal) modal.style.display = "none";
+  if (_trendsModalChart) { _trendsModalChart.destroy(); _trendsModalChart = null; }
+  _trendsModalMetric = null;
+  document.removeEventListener("keydown", _trendModalEscHandler);
+}
+
+function _trendModalEscHandler(e) {
+  if (e.key === "Escape") closeTrendDrilldown();
+}
+
+function _highlightWindowButton(hours) {
+  document.querySelectorAll(".trends-win-btn").forEach(b => {
+    const sel = String(b.dataset.trendsWindow) === String(hours);
+    b.style.background = sel ? "var(--cyan)" : "transparent";
+    b.style.color = sel ? "#000" : "var(--muted)";
+    b.style.fontWeight = sel ? "700" : "400";
+  });
+}
+
+async function setTrendsModalWindow(hours) {
+  if (!_trendsModalMetric) return;
+  const cfg = _trendsLabels[_trendsModalMetric] || {label: _trendsModalMetric, color: "#00d4ff", unit: ""};
+  _highlightWindowButton(hours);
+  await _renderTrendModalChart(_trendsModalMetric, hours, cfg);
+}
+
+// Render Chart.js line chart + stats + recent-samples table. For the
+// 7-day window we use the cached series (loaded by loadTrends);
+// for 24h/3d we slice the cache; for 30d we re-fetch /api/metrics/
+// history with window_h=720 since the cache only holds 168h.
+async function _renderTrendModalChart(metric, hours, cfg) {
+  let series = _trendsRawSeries[metric] || [];
+  const cutoffMs = Date.now() - hours * 3600 * 1000;
+  if (hours > 168 || !series.length) {
+    // Need a wider window than the cache holds -- fetch the metric directly
+    try {
+      const r = await fetch(`/api/metrics/history?metric=${encodeURIComponent(metric)}&window_h=${hours}`);
+      const d = await r.json();
+      series = d.series || [];
+    } catch (e) {
+      console.warn("Trend modal fetch failed:", e);
+    }
+  }
+  // Filter to the requested window + parse values
+  const filtered = series
+    .map(p => ({ts: new Date(p.ts).getTime(), v: Number(p.value)}))
+    .filter(p => Number.isFinite(p.v) && p.ts >= cutoffMs)
+    .sort((a, b) => a.ts - b.ts);
+
+  // Stats panel
+  const values = filtered.map(p => p.v);
+  const stats = _trendStats(values);
+  const fmt = (x) => x == null ? "—" : x.toFixed(1) + (cfg.unit || "");
+  const trendDir = stats == null ? "—"
+                : Math.abs(stats.slope) < 0.001 ? "→ flat"
+                : stats.slope > 0 ? "↑ rising" : "↓ falling";
+  const trendColor = stats == null ? "var(--muted)"
+                   : Math.abs(stats.slope) < 0.001 ? "var(--muted)"
+                   : stats.slope > 0 ? "var(--orange)" : "var(--green)";
+  const statBlock = (label, val, color = "var(--text)") =>
+    `<div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px 10px">
+      <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px">${label}</div>
+      <div style="font-size:14px;font-weight:700;color:${color};font-family:var(--font-mono);margin-top:2px">${val}</div>
+    </div>`;
+  document.getElementById("db-trends-modal-stats").innerHTML = stats == null
+    ? `<div style="color:var(--muted);font-size:11px;grid-column:1/-1">No samples in this window.</div>`
+    : [
+        statBlock("Now",    fmt(stats.now), cfg.color),
+        statBlock("Min",    fmt(stats.min)),
+        statBlock("Max",    fmt(stats.max), "var(--orange)"),
+        statBlock("Avg",    fmt(stats.avg)),
+        statBlock("Median", fmt(stats.median)),
+        statBlock("P95",    fmt(stats.p95)),
+        statBlock("Trend",  trendDir, trendColor),
+        statBlock("Samples", String(stats.n), "var(--muted)"),
+      ].join("");
+
+  // Render Chart.js line chart with time-aware X axis (Chart.js parses
+  // ISO timestamps if we tell it the parser format)
+  if (_trendsModalChart) { _trendsModalChart.destroy(); _trendsModalChart = null; }
+  const canvas = document.getElementById("db-trends-modal-chart");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  _trendsModalChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: filtered.map(p => new Date(p.ts)),
+      datasets: [{
+        label: cfg.label,
+        data: filtered.map(p => p.v),
+        borderColor: cfg.color || "#00d4ff",
+        backgroundColor: (cfg.color || "#00d4ff") + "22",
+        fill: true,
+        tension: 0.2,
+        pointRadius: filtered.length > 200 ? 0 : 2,
+        pointHoverRadius: 4,
+        borderWidth: 1.5,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: {mode: "nearest", intersect: false, axis: "x"},
+      plugins: {
+        legend: {display: false},
+        tooltip: {
+          callbacks: {
+            title: (items) => {
+              const d = new Date(items[0].parsed.x);
+              return d.toLocaleString();
+            },
+            label: (item) => `${cfg.label}: ${item.parsed.y.toFixed(2)}${cfg.unit || ""}`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          type: "time",
+          time: {
+            unit: hours <= 24 ? "hour" : hours <= 72 ? "hour" : "day",
+            displayFormats: {hour: "MMM d HH:mm", day: "MMM d"},
+          },
+          ticks: {color: "#aaa", font: {size: 10}, maxTicksLimit: 10},
+          grid: {color: "rgba(255,255,255,0.05)"},
+        },
+        y: {
+          ticks: {
+            color: "#aaa",
+            font: {size: 10},
+            callback: (v) => v + (cfg.unit || ""),
+          },
+          grid: {color: "rgba(255,255,255,0.05)"},
+        },
+      },
+    },
+  });
+
+  // Recent samples table (last 20)
+  const recentEl = document.getElementById("db-trends-modal-recent");
+  if (recentEl) {
+    const rows = filtered.slice(-20).reverse().map(p => {
+      const dt = new Date(p.ts).toLocaleString();
+      return `<div style="display:flex;justify-content:space-between;padding:3px 8px;border-bottom:1px solid var(--border)">
+        <span style="color:var(--muted)">${dt}</span>
+        <span style="color:var(--text)">${p.v.toFixed(2)}${cfg.unit || ""}</span>
+      </div>`;
+    }).join("");
+    recentEl.innerHTML = rows || `<div style="color:var(--muted);padding:8px">No samples</div>`;
   }
 }
 
