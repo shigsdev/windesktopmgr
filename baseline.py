@@ -780,6 +780,59 @@ def recent_drift(window: timedelta = DRIFT_ALERT_WINDOW) -> list:
     return out
 
 
+def entry_drift_history(category: str, key: str, window: timedelta | None = None) -> list:
+    """Return every historical drift event that mentions ``(category, key)``.
+
+    Used by the per-entry drill-down modal (2026-04-28) to answer: "has
+    this specific service / task / startup item drifted from baseline
+    before?" The answer informs whether the current drift is a recurring
+    pattern (often legit churn -- Windows Update touching the same
+    binary every patch Tuesday) or a one-off worth investigating.
+
+    Returns each event as:
+        {"timestamp": "<iso>",
+         "kind": "added|removed|changed",
+         "delta": ["field1", "field2"]    (only for "changed"),
+         "old": {<old fields>}            (for changed/removed),
+         "new": {<new fields>}            (for added/changed)}
+
+    Newest first. ``window=None`` returns all history entries (capped
+    at MAX_HISTORY by the underlying append-only file).
+    """
+    if category not in _DIFF_FIELDS:
+        return []
+    history = load_history()
+    cutoff = datetime.now() - window if window else None
+    out: list[dict] = []
+    for ev in history:
+        if not isinstance(ev, dict):
+            continue
+        ts_str = ev.get("timestamp") or ""
+        try:
+            ts = datetime.fromisoformat(ts_str)
+        except (ValueError, TypeError):
+            continue
+        if cutoff and ts < cutoff:
+            continue
+        cat_drift = (ev.get("drift") or {}).get(category) or {}
+        for kind in ("added", "removed", "changed"):
+            for entry in cat_drift.get(kind) or []:
+                if entry.get("key") == key:
+                    out.append(
+                        {
+                            "timestamp": ts_str,
+                            "kind": kind,
+                            "delta": entry.get("delta") or [],
+                            "old": entry.get("old") or {},
+                            "new": entry.get("new") or {},
+                            "name": entry.get("name") or key,
+                        }
+                    )
+                    break  # one match per event is enough
+    out.sort(key=lambda e: e["timestamp"], reverse=True)
+    return out
+
+
 # ══════════════════════════════════════════════════════════════════════
 # DRIFT INVESTIGATOR -- "why did this change happen?" decision support
 # ══════════════════════════════════════════════════════════════════════

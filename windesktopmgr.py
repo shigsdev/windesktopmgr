@@ -8665,6 +8665,40 @@ def baseline_history_route():
     return jsonify({"ok": True, "hours": hours, "entries": entries})
 
 
+@app.route("/api/baseline/entry-history")
+def baseline_entry_history_route():
+    """Return every historical drift event for a specific (category, key) pair.
+
+    Used by the per-entry drill-down modal (2026-04-28) to show whether a
+    drifted service / task / startup item has drifted before -- a
+    recurring pattern often signals legit churn (Windows Update touching
+    the same binary every patch Tuesday).
+
+    Query params:
+      - category: services | tasks | startup
+      - key:      the entry key (full task path, service name, etc.)
+      - hours:    optional cutoff (defaults to all history, capped at 30d)
+    """
+    import baseline
+
+    category = (request.args.get("category") or "").lower().strip()
+    key = (request.args.get("key") or "").strip()
+    if category not in ("startup", "services", "tasks") or not key:
+        return jsonify({"ok": False, "error": "category and key required"}), 400
+
+    window: timedelta | None = None
+    raw_hours = request.args.get("hours")
+    if raw_hours is not None:
+        try:
+            hours = max(1, min(int(raw_hours), 720))
+            window = timedelta(hours=hours)
+        except (TypeError, ValueError):
+            window = None
+
+    events = baseline.entry_drift_history(category, key, window=window)
+    return jsonify({"ok": True, "category": category, "key": key, "events": events})
+
+
 # Maps a drift category to the Windows console that edits it. No user
 # input reaches the command line -- the category is validated against
 # this whitelist, so there's no injection surface.
