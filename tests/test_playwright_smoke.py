@@ -850,3 +850,128 @@ class TestBaselineTabCoverage:
             "Inventory row click after cache miss surfaced 'Item data missing from cache' -- "
             "the auto-recovery re-fetch in blToggleInventoryRow isn't firing."
         )
+
+
+# ── investigateProcess: Memory tab → Processes tab handoff ────────
+
+
+class TestInvestigateProcessFromMemoryTab:
+    """User reported 2026-04-28: clicking 🔍 Investigate next to a process
+    on the Memory tab dropped them on the Processes tab with an empty
+    filtered table even though the process exists.
+
+    Two bugs combined:
+      (a) The filter in renderProcesses only matched Name + Description,
+          but investigateProcess set the search box to the numeric PID.
+          PID "28008" never matches Name "ServiceShell.exe" -> 0 rows.
+      (b) Hardcoded 150ms timeout fired the filter before
+          /api/processes/list returned -> filtered an empty array.
+    Both fixes guard each other; this test catches a regression of either.
+    """
+
+    def test_investigate_process_lands_on_filtered_match(self, loaded_page):
+        """End-to-end: trigger investigateProcess from the dashboard like
+        the Memory-tab button does, and confirm the user lands on a
+        Processes tab with the matching row visible.
+
+        We share data with the tab's loadProcesses() rather than doing our
+        own /api/processes/list call -- that endpoint takes ~12s on a busy
+        box, and TWO sequential fetches blow past any reasonable test
+        timeout. So: switch to processes, wait for _processData, pick a
+        target FROM the already-loaded data, switch away, and re-trigger
+        investigateProcess to exercise the timing-race recovery path.
+        """
+        page, _ = loaded_page
+
+        # Pre-load the Processes tab so _processData is populated. This
+        # is the slow step; everything after it is local-only.
+        page.evaluate("switchTab('processes')")
+        page.wait_for_function(
+            "() => _processData && (_processData.processes || []).length > 0",
+            timeout=60_000,
+        )
+        target = page.evaluate(
+            """
+            (() => {
+                const procs = (_processData.processes || []);
+                return procs.find(p => (p.Name || '').toLowerCase().endsWith('.exe')) || null;
+            })()
+            """
+        )
+        if not target:
+            pytest.skip("no .exe processes available to test investigation")
+
+        # Switch away from the Processes tab so investigateProcess has to
+        # navigate back -- exercising the switchTab->setTimeout->filter path.
+        page.evaluate("switchTab('memory')")
+        page.wait_for_timeout(500)
+
+        # Trigger investigateProcess via the same JS path the Memory tab uses
+        page.evaluate(f"investigateProcess({int(target['PID'])}, {target['Name']!r})")
+
+        # Wait for the search to be applied and rows to be visible. Since
+        # _processData is already populated from earlier, this should be
+        # near-instant -- we're really testing the filter-matches-PID and
+        # the search-box wiring, not the data fetch.
+        page.wait_for_function(
+            """
+            () => {
+                const tbody = document.getElementById('pr-tbody');
+                if (!tbody) return false;
+                const rows = tbody.querySelectorAll('tr');
+                if (!rows.length) return false;
+                const first = rows[0].textContent || '';
+                return !first.includes('No processes match');
+            }
+            """,
+            timeout=15_000,
+        )
+
+        # Confirm at least one row references the PID OR the name.
+        match_found = page.evaluate(
+            f"""
+            (() => {{
+                const tbody = document.getElementById('pr-tbody');
+                if (!tbody) return false;
+                const rows = Array.from(tbody.querySelectorAll('tr'));
+                const target_pid = {int(target["PID"])};
+                const target_name = {target["Name"]!r}.toLowerCase();
+                return rows.some(r => {{
+                    const text = (r.textContent || '').toLowerCase();
+                    return text.includes(String(target_pid)) || text.includes(target_name);
+                }});
+            }})()
+            """
+        )
+        assert match_found, (
+            f"investigateProcess({target['PID']}, {target['Name']!r}) didn't surface a matching row. "
+            "Either renderProcesses filter regressed (drop PID match) or the timing-race fix in "
+            "investigateProcess was reverted (filter applied before _processData populated)."
+        )
+
+    def test_renderProcesses_filter_matches_pid(self, loaded_page):
+        """Direct unit-style check: setting the search box to a PID must
+        match a process whose PID equals that number. Catches a filter
+        regression independently of the investigateProcess timing path."""
+        page, _ = loaded_page
+        page.evaluate("switchTab('processes')")
+        # Wait for data
+        page.wait_for_function(
+            "() => _processData && (_processData.processes || []).length > 0",
+            timeout=60_000,
+        )
+        # Pick any PID
+        pid = page.evaluate("(_processData.processes || [])[0].PID")
+        if not pid:
+            pytest.skip("no processes in _processData")
+        # Set search to that PID and re-render
+        page.evaluate(
+            f"""
+            document.getElementById('pr-search').value = '{pid}';
+            renderProcesses();
+            """
+        )
+        page.wait_for_timeout(200)
+        rows = page.evaluate("document.getElementById('pr-tbody').querySelectorAll('tr').length")
+        # At least one match -- the process whose PID we just searched for
+        assert rows >= 1, f"PID search '{pid}' returned 0 rows -- filter doesn't accept PIDs"

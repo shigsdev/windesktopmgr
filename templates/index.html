@@ -2403,8 +2403,18 @@ function renderProcesses() {
   const q     = (document.getElementById("pr-search")?.value||"").toLowerCase();
   const flag  = document.getElementById("pr-filter-flag")?.value||"";
   const procs = (_processData.processes||[]).filter(p => {
-    if (q && !(p.Name||"").toLowerCase().includes(q) &&
-             !(p.Description||"").toLowerCase().includes(q)) return false;
+    // Search across Name, Description, AND PID. Bug 2026-04-28: investigateProcess
+    // dropped the user here with the PID in the search box, but the filter only
+    // checked Name + Description -- so the table appeared empty (e.g. "28008"
+    // doesn't match "ServiceShell.exe"). Adding PID + Path widens the match
+    // to cover both the click-from-Memory-tab flow AND power-user lookups.
+    if (q) {
+      const hit = (p.Name||"").toLowerCase().includes(q)
+               || (p.Description||"").toLowerCase().includes(q)
+               || String(p.PID||"").includes(q)
+               || (p.Path||"").toLowerCase().includes(q);
+      if (!hit) return false;
+    }
     if (flag === "flagged"   && !p.flag)  return false;
     if (flag === "unflagged" &&  p.flag)  return false;
     return true;
@@ -3712,14 +3722,35 @@ async function openLogsFolder() {
 
 function investigateProcess(pid, name) {
   switchTab("processes");
-  setTimeout(() => {
-    const search = document.getElementById("pr-search");
-    if (search) {
-      // Filter by PID when we have one, otherwise fall back to the name
-      search.value = pid ? String(pid) : (name || "");
-      if (typeof renderProcesses === "function") renderProcesses();
+  // Bug 2026-04-28: previous version used a fixed 150ms timeout AND set
+  // the search box to the PID number. Two failure modes:
+  //   (a) /api/processes/list takes >150ms (~1-2s on a busy box) so
+  //       renderProcesses ran against an empty _processData -> blank table
+  //   (b) The filter only matched Name/Description, so a numeric PID
+  //       search like "28008" returned zero rows even after data loaded
+  // Fix (b) is in renderProcesses (filter now also matches PID + Path).
+  // Fix (a) is here: poll _processData up to 30s and apply the search
+  // when it's actually available, so the user always lands on a populated
+  // filtered view.
+  //
+  // The search defaults to the human-readable NAME (sans .exe) so the
+  // search box reads "ServiceShell" not "28008" -- but the filter
+  // accepts either, so power-users can paste a PID and it still works.
+  let tries = 0;
+  const maxTries = 300;  // 30s at 100ms tick
+  const apply = () => {
+    if (_processData && (_processData.processes || []).length) {
+      const search = document.getElementById("pr-search");
+      if (search) {
+        const cleanName = (name || "").replace(/\.exe$/i, "");
+        search.value = cleanName || (pid ? String(pid) : "");
+        if (typeof renderProcesses === "function") renderProcesses();
+      }
+    } else if (++tries < maxTries) {
+      setTimeout(apply, 100);
     }
-  }, 150);
+  };
+  setTimeout(apply, 100);
 }
 
 async function killProcessFromConcern(pid, name) {
