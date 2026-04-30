@@ -5725,12 +5725,12 @@ async function blAcceptThisChange(btn) {
     catch (e) { currentValue = null; }
   }
 
-  if (!confirm(
-    "Update the baseline for THIS entry only?\n\n" +
-    "Other drift entries stay flagged. After this, this specific change " +
-    "will no longer appear as drift."
-  )) return;
-
+  // No confirm() prompt -- the user explicitly clicked ✓ Accept this change
+  // on a specific drift entry, that's enough intent. The button changes
+  // to "Accepting..." for visual feedback during the brief network call,
+  // and the optimistic-removal animation makes the result obvious.
+  // (Removed 2026-04-28: user feedback "no need to add an additional pop
+  // up window" -- the global Accept-all button still has its confirm.)
   if (btn) { btn.disabled = true; const orig = btn.innerHTML; btn.innerHTML = "Accepting..."; btn.dataset.orig = orig; }
   try {
     const r = await fetch("/api/baseline/accept_entry", {
