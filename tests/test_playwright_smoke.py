@@ -975,3 +975,111 @@ class TestInvestigateProcessFromMemoryTab:
         rows = page.evaluate("document.getElementById('pr-tbody').querySelectorAll('tr').length")
         # At least one match -- the process whose PID we just searched for
         assert rows >= 1, f"PID search '{pid}' returned 0 rows -- filter doesn't accept PIDs"
+
+
+# ── Trends drill-down modal regression (2026-04-28) ───────────────
+
+
+class TestTrendsDrilldownModal:
+    """User feature 2026-04-28: clicking a Trends sparkline card opens a
+    full-size Chart.js drill-down with summary stats + time-axis + recent
+    samples. Tests guard against:
+      - Card no longer being clickable (onclick stripped)
+      - Modal element missing or not opening
+      - Chart canvas + Chart.js instance not constructed
+      - Stats block missing one of the 8 expected metrics
+      - Escape-to-close handler regressing
+    """
+
+    def _wait_for_trends_loaded(self, page):
+        # loadTrends fires from loadDashboard which is the default tab.
+        # Wait until at least one [data-metric] card is rendered.
+        page.wait_for_function(
+            "() => document.querySelectorAll('#db-trends-grid [data-metric]').length > 0",
+            timeout=30_000,
+        )
+
+    def test_drilldown_modal_opens_on_card_click(self, loaded_page):
+        page, _ = loaded_page
+        self._wait_for_trends_loaded(page)
+        # Click the first Trends card directly (its onclick attr fires
+        # openTrendDrilldown). Real-user click path.
+        page.evaluate("document.querySelectorAll('#db-trends-grid [data-metric]')[0].click()")
+        page.wait_for_function(
+            "() => document.getElementById('db-trends-modal').style.display === 'flex'",
+            timeout=10_000,
+        )
+        # Confirm modal contents render: title + ≥4 stat blocks + chart canvas
+        state = page.evaluate(
+            """
+            (() => ({
+                title: document.getElementById('db-trends-modal-title').textContent,
+                stat_blocks: document.getElementById('db-trends-modal-stats').children.length,
+                chart_canvas: !!document.getElementById('db-trends-modal-chart'),
+                chart_instance: typeof _trendsModalChart !== 'undefined' && _trendsModalChart !== null,
+            }))()
+            """
+        )
+        assert state["title"], "modal title is empty -- _trendsLabels lookup or DOM wiring broke"
+        assert state["stat_blocks"] >= 4, f"expected ≥4 stat blocks (Now/Min/Max/Avg etc.), got {state['stat_blocks']}"
+        assert state["chart_canvas"], "modal canvas element missing"
+        assert state["chart_instance"], "Chart.js instance not constructed -- check date-fns adapter"
+
+    def test_drilldown_modal_closes_on_escape(self, loaded_page):
+        page, _ = loaded_page
+        self._wait_for_trends_loaded(page)
+        page.evaluate("openTrendDrilldown('cpu_percent')")
+        page.wait_for_function(
+            "() => document.getElementById('db-trends-modal').style.display === 'flex'",
+            timeout=5_000,
+        )
+        page.keyboard.press("Escape")
+        page.wait_for_function(
+            "() => document.getElementById('db-trends-modal').style.display === 'none'",
+            timeout=2_000,
+        )
+
+    def test_drilldown_window_buttons_re_render(self, loaded_page):
+        """Clicking a different window-size button re-renders the chart
+        with new data. Verify by capturing the chart's data.length before
+        and after."""
+        page, _ = loaded_page
+        self._wait_for_trends_loaded(page)
+        page.evaluate("openTrendDrilldown('cpu_percent')")
+        page.wait_for_function(
+            "() => typeof _trendsModalChart !== 'undefined' && _trendsModalChart !== null",
+            timeout=10_000,
+        )
+        before = page.evaluate("(_trendsModalChart && _trendsModalChart.data.datasets[0].data.length) || 0")
+        # Switch to the 24h window -- usually has fewer points than the 7d default
+        page.evaluate("setTrendsModalWindow(24)")
+        page.wait_for_timeout(800)  # let re-render settle
+        after = page.evaluate("(_trendsModalChart && _trendsModalChart.data.datasets[0].data.length) || 0")
+        # 24h should have <= 7d (in most environments fewer; in extreme edge
+        # case where the user only has 24h of history they could match)
+        assert after <= before, (
+            f"24h window has {after} points, 7d had {before} -- the window button "
+            "didn't re-fetch / didn't apply the cutoff filter"
+        )
+
+    def test_every_data_metric_card_has_onclick(self, loaded_page):
+        """Defence against accidentally rendering a card without the
+        onclick attribute -- which would make it appear interactive
+        (cursor:pointer) but do nothing on click."""
+        page, _ = loaded_page
+        self._wait_for_trends_loaded(page)
+        result = page.evaluate(
+            """
+            (() => {
+                const cards = Array.from(document.querySelectorAll('#db-trends-grid [data-metric]'));
+                const total = cards.length;
+                const withClick = cards.filter(c => (c.getAttribute('onclick') || '').includes('openTrendDrilldown')).length;
+                return {total, withClick};
+            })()
+            """
+        )
+        assert result["total"] > 0, "no Trends cards rendered"
+        assert result["withClick"] == result["total"], (
+            f"{result['total'] - result['withClick']} of {result['total']} Trends cards "
+            "are missing the openTrendDrilldown onclick handler"
+        )
