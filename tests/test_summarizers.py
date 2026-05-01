@@ -3,7 +3,23 @@ test_summarizers.py
 Tests for all summarize_* functions — pure Python, no subprocess required.
 """
 
+from datetime import datetime, timedelta, timezone
+
 import windesktopmgr as wdm
+
+
+def _recent_iso(days_ago: int = 10) -> str:
+    """ISO-8601 timestamp ``days_ago`` days before now in UTC.
+
+    Use this in test fixtures whenever the summarizer compares the
+    timestamp against ``datetime.now()``. Hard-coded dates drift past
+    the summarizer's stale-update threshold (60 days) once the wall
+    clock moves far enough; clock-relative fixtures stay valid forever.
+    Caught 2026-05-01 when test_all_succeeded_ok started failing because
+    its 2026-03-01 fixture aged past the 60-day threshold.
+    """
+    return (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+
 
 # ── Helper builders ────────────────────────────────────────────────────────────
 
@@ -475,23 +491,29 @@ class TestSummarizeUpdates:
         assert result["status"] == "warning"
 
     def test_all_succeeded_ok(self):
+        # Use a clock-relative date (10 days ago) so this test stays valid
+        # forever -- hard-coded "2026-03-01" originally trip-wired the
+        # 60-day stale-updates warning once the wall clock moved past
+        # 2026-05-01. See _recent_iso() docstring.
         items = [
-            {"Title": "KB12345", "result": "Succeeded", "Date": "2026-03-01T00:00:00+00:00"},
+            {"Title": "KB12345", "result": "Succeeded", "Date": _recent_iso(days_ago=10)},
         ]
         result = wdm.summarize_updates(items)
         assert result["status"] == "ok"
 
     def test_stale_update_over_60_days_warning(self):
         items = [
-            # Only successful update was >60 days ago
-            {"Title": "KB00001", "result": "Succeeded", "Date": "2025-01-01T00:00:00+00:00"},
+            # Only successful update was >60 days ago -- use clock-relative
+            # so this test still asserts the 60-day threshold even when
+            # the wall clock advances past any hard-coded date.
+            {"Title": "KB00001", "result": "Succeeded", "Date": _recent_iso(days_ago=120)},
         ]
         result = wdm.summarize_updates(items)
         assert result["status"] == "warning"
 
     def test_no_failed_updates_ok_insight(self):
         items = [
-            {"Title": "KB12345", "result": "Succeeded", "Date": "2026-03-01T00:00:00+00:00"},
+            {"Title": "KB12345", "result": "Succeeded", "Date": _recent_iso(days_ago=10)},
         ]
         result = wdm.summarize_updates(items)
         levels = [i["level"] for i in result["insights"]]
