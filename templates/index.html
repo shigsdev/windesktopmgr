@@ -1002,8 +1002,11 @@ function _updateFavicon(criticalCount) {
   }
   // Render: load the SVG into an Image, draw onto a 32x32 canvas,
   // overlay a red circle in the upper-right, swap as data: URI.
+  // No crossOrigin -- the SVG is same-origin (/static/), and setting
+  // crossOrigin="anonymous" forced the browser to insist on CORS
+  // headers it didn't actually need, leaving the image stuck in a
+  // pending state and the favicon never swapping.
   const img = new Image();
-  img.crossOrigin = "anonymous";
   img.onload = () => {
     const canvas = document.createElement("canvas");
     canvas.width = 32;
