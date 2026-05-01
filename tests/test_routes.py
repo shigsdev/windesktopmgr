@@ -3122,3 +3122,87 @@ class TestHeartbeatJsGuards:
         html = self._html()
         assert "keepalive: true" in html
         assert 'cache: "no-store"' in html
+
+
+# ── Browser tab favicon (backlog #41) ─────────────────────────────
+
+
+class TestFavicon:
+    """The dashboard ships a real browser-tab icon (cyan W on dark) so
+    pinned tabs are findable in a crowded tab strip. Test the wiring
+    end-to-end:
+      - <link rel="icon"> tags render in the served HTML (both SVG + ICO)
+      - GET /static/favicon.ico returns 200 + image/x-icon MIME
+      - GET /static/favicon.svg returns 200 + image/svg+xml MIME
+      - Both files are under the 5 KB target from the backlog spec
+      - The dynamic-favicon helper function exists in the served JS
+    """
+
+    def _html(self) -> str:
+        import pathlib
+
+        return (pathlib.Path(__file__).resolve().parents[1] / "templates" / "index.html").read_text(encoding="utf-8")
+
+    def test_link_rel_icon_tags_present(self):
+        html = self._html()
+        assert 'rel="icon" type="image/svg+xml" href="/static/favicon.svg"' in html, (
+            "SVG favicon link missing -- modern browsers prefer SVG for sharp rendering at any zoom"
+        )
+        assert 'rel="icon" type="image/x-icon" href="/static/favicon.ico"' in html, (
+            "ICO favicon link missing -- needed as fallback for older browsers + pinned-tab paths"
+        )
+
+    def test_favicon_ico_route_serves_with_correct_mime(self, client):
+        resp = client.get("/static/favicon.ico")
+        assert resp.status_code == 200
+        assert resp.content_type.startswith("image/"), f"unexpected MIME: {resp.content_type}"
+        # Flask's static serving picks "image/vnd.microsoft.icon" or
+        # "image/x-icon" depending on mimetypes registry; both are correct
+        assert "icon" in resp.content_type.lower() or "x-icon" in resp.content_type.lower()
+
+    def test_favicon_svg_route_serves_with_correct_mime(self, client):
+        resp = client.get("/static/favicon.svg")
+        assert resp.status_code == 200
+        assert "svg" in resp.content_type.lower()
+
+    def test_favicon_ico_under_5kb(self):
+        """Backlog #41 spec: keep the asset small (<5 KB) to avoid
+        bloating first paint. Multi-size ICO with 16/32/48 should fit
+        comfortably under that ceiling."""
+        import pathlib
+
+        path = pathlib.Path(__file__).resolve().parents[1] / "static" / "favicon.ico"
+        size_kb = path.stat().st_size / 1024
+        assert size_kb < 5.0, f"favicon.ico is {size_kb:.1f} KB -- exceeds 5 KB target"
+
+    def test_favicon_svg_under_5kb(self):
+        import pathlib
+
+        path = pathlib.Path(__file__).resolve().parents[1] / "static" / "favicon.svg"
+        size_kb = path.stat().st_size / 1024
+        assert size_kb < 5.0, f"favicon.svg is {size_kb:.1f} KB -- exceeds 5 KB target"
+
+    def test_favicon_ico_has_three_sizes(self):
+        """Multi-size ICO must carry 16/32/48 -- browsers pick whichever
+        fits their context (16 = tab strip, 32 = pinned tab, 48 = task bar)."""
+        import pathlib
+
+        from PIL import Image
+
+        path = pathlib.Path(__file__).resolve().parents[1] / "static" / "favicon.ico"
+        img = Image.open(path)
+        sizes = img.ico.sizes()
+        assert (16, 16) in sizes, f"missing 16x16 -- tab strip render will be blurry. Got {sizes}"
+        assert (32, 32) in sizes, f"missing 32x32. Got {sizes}"
+        assert (48, 48) in sizes, f"missing 48x48 -- pinned/desktop shortcuts will be blurry. Got {sizes}"
+
+    def test_dynamic_favicon_helper_present_in_template(self):
+        """The _updateFavicon helper drives the red-dot overlay when
+        critical concerns are present. Catches a regression where the
+        helper got moved or renamed and renderDashboard's call would
+        silently no-op."""
+        html = self._html()
+        assert "_updateFavicon" in html
+        assert "function _updateFavicon" in html
+        # And renderDashboard must call it
+        assert "_updateFavicon(critical)" in html or "_updateFavicon(d.critical" in html

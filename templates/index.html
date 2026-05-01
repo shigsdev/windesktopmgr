@@ -4,6 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>WinDesktopMgr — Dell XPS 8960</title>
+<!-- Browser tab icon (backlog #41). Two link rels: SVG first for modern
+     browsers (sharp at every zoom), ICO fallback for older ones + the
+     OS-native pinned-tab path. The dynamic JS helper at the bottom of
+     this file overlays a red dot when there are active critical
+     concerns -- like Gmail's unread-count favicon. -->
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/static/favicon.ico">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
@@ -967,6 +974,73 @@ const CAT_ICONS = { Display:"🖥", Audio:"🔊", Network:"🌐", Chipset:"⚙",
 
 function escHtml(s) {
   return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+// ── Dynamic favicon (backlog #41) ────────────────────────────────
+//
+// Tab strip is crowded; users want to spot WinDesktopMgr at a glance
+// AND know whether something needs attention. We do both:
+//   - Static cyan-W favicon ships from /static/favicon.{svg,ico}
+//   - When critical-concern count > 0, _updateFavicon() rebuilds the
+//     icon as a canvas with a red badge in the upper-right corner
+//     and swaps it in via a data: URI. Same trick Gmail uses for
+//     unread-count badges.
+// Cached so we don't redraw on every dashboard refresh -- the canvas
+// only re-renders when the critical-count toggles between 0 and >0.
+let _faviconLastCritical = null;
+const _FAVICON_BASE_URL = "/static/favicon.svg";
+
+function _updateFavicon(criticalCount) {
+  const hasCritical = (criticalCount || 0) > 0;
+  // Skip if state unchanged -- avoids canvas churn on every poll
+  if (_faviconLastCritical === hasCritical) return;
+  _faviconLastCritical = hasCritical;
+  if (!hasCritical) {
+    // No critical concerns -- restore the plain SVG icon
+    _setFaviconHref(_FAVICON_BASE_URL);
+    return;
+  }
+  // Render: load the SVG into an Image, draw onto a 32x32 canvas,
+  // overlay a red circle in the upper-right, swap as data: URI.
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  img.onload = () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 32;
+    canvas.height = 32;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, 0, 0, 32, 32);
+    // Red badge dot, upper-right. Generous radius for visibility at
+    // 16x16 favicon-strip scale.
+    ctx.beginPath();
+    ctx.arc(24, 8, 7, 0, 2 * Math.PI);
+    ctx.fillStyle = "#ff4560";
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = "#0d1117";
+    ctx.stroke();
+    _setFaviconHref(canvas.toDataURL("image/png"));
+  };
+  img.onerror = () => {
+    // SVG load failed -- fall back to the plain ICO so the user at
+    // least sees the brand mark, just without the red overlay.
+    _setFaviconHref("/static/favicon.ico");
+  };
+  img.src = _FAVICON_BASE_URL;
+}
+
+function _setFaviconHref(href) {
+  // Find the SVG link tag; if absent, create one. We always set the
+  // SVG link (browsers prefer it); the .ico link stays as an unchanged
+  // fallback for old browsers. Setting both would force a flash on swap.
+  let link = document.querySelector('link[rel="icon"][type="image/svg+xml"]');
+  if (!link) {
+    link = document.createElement("link");
+    link.rel = "icon";
+    link.type = "image/svg+xml";
+    document.head.appendChild(link);
+  }
+  link.href = href;
 }
 
 function fmtTs(ts) {
@@ -3913,6 +3987,10 @@ function renderDashboard(d) {
   const critical  = d.critical  || 0;
   const warnings  = d.warnings  || 0;
   const overall   = d.overall   || "ok";
+
+  // Dynamic favicon (backlog #41): red dot overlay when critical > 0.
+  // Cached state-toggle in _updateFavicon -- safe to call every render.
+  _updateFavicon(critical);
 
   // ── Banner ────────────────────────────────────────────────────────────────
   const banner = document.getElementById("db-banner");
