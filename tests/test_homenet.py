@@ -378,6 +378,159 @@ class TestHomeNetDeviceUpdate:
         assert resp.status_code == 404
 
 
+class TestHomeNetRescanHostname:
+    """Test the per-device DNS hostname rescan endpoint (backlog #7, Path A).
+
+    The endpoint asks the routers for one device's name without running the
+    full ARP+Wi-Fi+Orbi scan. It's the "🔄 Pull from router" button in the
+    device-edit modal -- after the user renames a device in the router's
+    own admin UI, this is how WinDesktopMgr's inventory catches up.
+    """
+
+    def _inv(self, mac="AA:BB:CC:DD:EE:FF"):
+        return {
+            "devices": {
+                mac: {
+                    "mac": mac,
+                    "ip": "192.168.1.50",
+                    "hostname": "old-name",
+                    "dns_hostname": "old-name",
+                }
+            },
+            "last_scan": None,
+        }
+
+    def test_rescan_invalid_mac_returns_400(self, client):
+        resp = client.post(
+            "/api/homenet/device/rescan-hostname",
+            json={"mac": "not-a-mac"},
+        )
+        assert resp.status_code == 400
+        assert resp.get_json()["ok"] is False
+
+    def test_rescan_unknown_mac_returns_404(self, client, mocker):
+        mocker.patch("homenet._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
+        resp = client.post(
+            "/api/homenet/device/rescan-hostname",
+            json={"mac": "FF:FF:FF:FF:FF:FF"},
+        )
+        assert resp.status_code == 404
+
+    def test_rescan_happy_path_verizon(self, client, mocker):
+        """Verizon returns the device with a fresh name -> persisted to dns_hostname."""
+        inv = self._inv()
+        mocker.patch("homenet._load_homenet_inventory", return_value=inv)
+        save = mocker.patch("homenet._save_homenet_inventory")
+        mocker.patch(
+            "homenet._verizon_get_devices",
+            return_value={
+                "ok": True,
+                "known_devices": [
+                    {"mac": "AA:BB:CC:DD:EE:FF", "hostname": "Living-Room-TV", "ip": "192.168.1.50"},
+                ],
+            },
+        )
+        # Orbi should NOT be called -- Verizon already returned a hit.
+        orbi = mocker.patch("homenet._orbi_get_devices")
+        resp = client.post(
+            "/api/homenet/device/rescan-hostname",
+            json={"mac": "AA:BB:CC:DD:EE:FF"},
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["dns_hostname"] == "Living-Room-TV"
+        assert body["source"] == "verizon"
+        save.assert_called_once()
+        saved_inv = save.call_args[0][0]
+        assert saved_inv["devices"]["AA:BB:CC:DD:EE:FF"]["dns_hostname"] == "Living-Room-TV"
+        assert saved_inv["devices"]["AA:BB:CC:DD:EE:FF"]["hostname"] == "Living-Room-TV"
+        orbi.assert_not_called()
+
+    def test_rescan_falls_through_to_orbi_when_verizon_misses(self, client, mocker):
+        """Wireless device only on Orbi network -- Verizon doesn't see it,
+        Orbi does. Endpoint MUST try Orbi after Verizon comes up empty."""
+        mocker.patch("homenet._load_homenet_inventory", return_value=self._inv())
+        save = mocker.patch("homenet._save_homenet_inventory")
+        mocker.patch(
+            "homenet._verizon_get_devices",
+            return_value={"ok": True, "known_devices": []},  # empty list -- no hit
+        )
+        mocker.patch(
+            "homenet._orbi_get_devices",
+            return_value={
+                "ok": True,
+                "devices": [{"mac": "AA:BB:CC:DD:EE:FF", "name": "iPhone-15", "ip": "10.0.0.5"}],
+            },
+        )
+        resp = client.post(
+            "/api/homenet/device/rescan-hostname",
+            json={"mac": "AA:BB:CC:DD:EE:FF"},
+        )
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["dns_hostname"] == "iPhone-15"
+        assert body["source"] == "orbi"
+        saved_inv = save.call_args[0][0]
+        assert saved_inv["devices"]["AA:BB:CC:DD:EE:FF"]["dns_hostname"] == "iPhone-15"
+
+    def test_rescan_no_router_hit_returns_message(self, client, mocker):
+        """Both routers respond OK but neither has the MAC in its table.
+        Result: not-ok with a useful message, NO save (don't blank the
+        existing dns_hostname just because the device is offline)."""
+        mocker.patch("homenet._load_homenet_inventory", return_value=self._inv())
+        save = mocker.patch("homenet._save_homenet_inventory")
+        mocker.patch("homenet._verizon_get_devices", return_value={"ok": True, "known_devices": []})
+        mocker.patch("homenet._orbi_get_devices", return_value={"ok": True, "devices": []})
+        resp = client.post(
+            "/api/homenet/device/rescan-hostname",
+            json={"mac": "AA:BB:CC:DD:EE:FF"},
+        )
+        body = resp.get_json()
+        assert body["ok"] is False
+        assert "No router-side hostname" in body["message"]
+        save.assert_not_called()  # don't overwrite the previous good name with empty
+
+    def test_rescan_router_errors_propagate_in_errors_list(self, client, mocker):
+        """Verizon down + Orbi down -> errors list populated, ok=False."""
+        mocker.patch("homenet._load_homenet_inventory", return_value=self._inv())
+        mocker.patch(
+            "homenet._verizon_get_devices",
+            return_value={"error": "Verizon router unreachable"},
+        )
+        mocker.patch(
+            "homenet._orbi_get_devices",
+            return_value={"error": "Orbi unreachable"},
+        )
+        resp = client.post(
+            "/api/homenet/device/rescan-hostname",
+            json={"mac": "AA:BB:CC:DD:EE:FF"},
+        )
+        body = resp.get_json()
+        assert body["ok"] is False
+        assert any("Verizon" in e for e in body.get("errors", []))
+        assert any("Orbi" in e for e in body.get("errors", []))
+
+    def test_rescan_normalizes_mac_format(self, client, mocker):
+        """Hyphenated and lowercase MACs should normalise to upper-colon."""
+        mocker.patch("homenet._load_homenet_inventory", return_value=self._inv())
+        mocker.patch("homenet._save_homenet_inventory")
+        mocker.patch(
+            "homenet._verizon_get_devices",
+            return_value={
+                "ok": True,
+                "known_devices": [{"mac": "AA:BB:CC:DD:EE:FF", "hostname": "Foo"}],
+            },
+        )
+        mocker.patch("homenet._orbi_get_devices", return_value={"ok": True, "devices": []})
+        resp = client.post(
+            "/api/homenet/device/rescan-hostname",
+            json={"mac": "aa-bb-cc-dd-ee-ff"},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+
+
 class TestMacVendor:
     """Test MAC vendor lookup."""
 
@@ -969,6 +1122,65 @@ class TestMergeDeviceData:
         devices = [{"mac": "aa-bb-cc-dd-ee-ff", "ip": "192.168.1.50", "name": ""}]
         result = _merge_device_data(inv, "arp", devices)
         assert "AA:BB:CC:DD:EE:FF" in result["devices"]
+
+    def test_merge_captures_dns_hostname_from_verizon(self):
+        """Verizon scan -> dns_hostname populated with the router-reported name.
+
+        Backlog #7 (Path A): we keep dns_hostname distinct from hostname so
+        the UI can show the user what the router thinks the device is called
+        even when local heuristics (mDNS, NetBIOS) gave us a different name.
+        """
+        from homenet import _merge_device_data
+
+        inv = {"devices": {}, "last_scan": None}
+        devices = [{"mac": "AA:BB:CC:DD:EE:FF", "ip": "192.168.1.50", "name": "Living-Room-TV"}]
+        result = _merge_device_data(inv, "verizon", devices)
+        dev = result["devices"]["AA:BB:CC:DD:EE:FF"]
+        assert dev["dns_hostname"] == "Living-Room-TV"
+
+    def test_merge_captures_dns_hostname_from_orbi(self):
+        from homenet import _merge_device_data
+
+        inv = {"devices": {}, "last_scan": None}
+        devices = [{"mac": "AA:BB:CC:DD:EE:FF", "ip": "10.0.0.5", "name": "iPhone-15"}]
+        result = _merge_device_data(inv, "orbi", devices)
+        dev = result["devices"]["AA:BB:CC:DD:EE:FF"]
+        assert dev["dns_hostname"] == "iPhone-15"
+
+    def test_merge_arp_does_not_overwrite_dns_hostname(self):
+        """ARP gives no name -- it must NOT blank out a previously-captured
+        router-sourced dns_hostname. This is the regression most likely to
+        happen if someone "simplifies" the merge logic later."""
+        from homenet import _merge_device_data
+
+        inv = {
+            "devices": {
+                "AA:BB:CC:DD:EE:FF": {
+                    "mac": "AA:BB:CC:DD:EE:FF",
+                    "ip": "192.168.1.50",
+                    "hostname": "Living-Room-TV",
+                    "dns_hostname": "Living-Room-TV",  # already captured from Verizon
+                }
+            },
+            "last_scan": None,
+        }
+        devices = [{"mac": "AA:BB:CC:DD:EE:FF", "ip": "192.168.1.50", "name": ""}]
+        result = _merge_device_data(inv, "arp", devices)
+        dev = result["devices"]["AA:BB:CC:DD:EE:FF"]
+        assert dev["dns_hostname"] == "Living-Room-TV"  # preserved
+
+    def test_merge_arp_initial_seen_dns_hostname_empty(self):
+        """First-ever ARP sighting: no router data yet -> dns_hostname is empty
+        (NOT undefined). The UI's 'pull from router' button needs the field
+        to exist on every device record so the read-only row renders."""
+        from homenet import _merge_device_data
+
+        inv = {"devices": {}, "last_scan": None}
+        devices = [{"mac": "AA:BB:CC:DD:EE:FF", "ip": "192.168.1.50", "name": ""}]
+        result = _merge_device_data(inv, "arp", devices)
+        dev = result["devices"]["AA:BB:CC:DD:EE:FF"]
+        assert "dns_hostname" in dev
+        assert dev["dns_hostname"] == ""
 
 
 class TestCredentialHelpers:

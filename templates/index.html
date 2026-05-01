@@ -5552,6 +5552,14 @@ function openEditModal(mac) {
   document.getElementById("hn-edit-category").value = dev.category || "";
   document.getElementById("hn-edit-location").value = dev.location || "";
   document.getElementById("hn-edit-notes").value = dev.notes || "";
+  // DNS Hostname (#7): always populated from the inventory's router-sourced
+  // value. Falls back to "(none yet)" when no router has reported it -- happens
+  // for ARP-only devices and manually-added entries. Status line clears on
+  // every open so leftover messages from a previous edit don't confuse.
+  const dnsEl = document.getElementById("hn-edit-dns-hostname");
+  if (dnsEl) dnsEl.value = dev.dns_hostname || "(none yet — click 🔄 to pull)";
+  const dnsStatus = document.getElementById("hn-edit-dns-status");
+  if (dnsStatus) dnsStatus.textContent = "";
   // wired_via: only meaningful for wired devices. The dropdown is always
   // visible to keep modal layout stable, but for wireless devices the
   // value is ignored by the topology classifier.
@@ -5596,6 +5604,97 @@ function _isMocaVendor(vendor) {
 
 function closeEditModal() {
   document.getElementById("hn-edit-modal").style.display = "none";
+}
+
+// ── DNS hostname helpers (#7, Path A) ───
+// Pick the right router admin URL for a given device. Wireless devices
+// (10.x IPs) live in the Orbi admin; everything else in the Verizon admin.
+// Both pages list connected devices -- the user can scroll/Ctrl-F for the
+// MAC and rename in-place. We can't deep-link to a specific row because
+// neither admin UI supports MAC-anchored routes.
+function _routerAdminUrlForDevice(dev) {
+  if (!dev) return null;
+  const ip = String(dev.ip || "");
+  // Orbi RBRE960 admin is HTTPS on 10.0.0.1 with a self-signed cert. The
+  // /DEV_devices.htm page is the connected-devices view in stock firmware.
+  if (ip.startsWith("10.")) return "https://10.0.0.1/DEV_devices.htm";
+  // Verizon CR1000A is the default. Hash-route /#/devices opens the
+  // Connected Devices view in the Vue SPA.
+  return "http://192.168.1.1/#/devices";
+}
+
+function openRouterAdminForDevice() {
+  const mac = document.getElementById("hn-edit-mac").value;
+  const dev = _hnDevices.find(d => d.mac === mac);
+  if (!dev) return;
+  const url = _routerAdminUrlForDevice(dev);
+  if (!url) {
+    alert("No router admin URL for this device.");
+    return;
+  }
+  // window.open with no opener so the admin page can't tamper with our tab.
+  // The user is leaving WinDesktopMgr to rename the device in the router,
+  // then returns to click 🔄 to pull the new name back.
+  const w = window.open(url, "_blank", "noopener,noreferrer");
+  const status = document.getElementById("hn-edit-dns-status");
+  if (status) {
+    if (w) {
+      status.textContent = `Opened ${url} -- after renaming, click 🔄 to refresh`;
+      status.style.color = "var(--cyan)";
+    } else {
+      // Pop-up blocked. Hand the user the URL so they can copy-paste.
+      status.textContent = `Pop-up blocked. Open: ${url}`;
+      status.style.color = "var(--warning, #ffc107)";
+    }
+  }
+}
+
+async function pullDnsHostnameFromRouter() {
+  const mac = document.getElementById("hn-edit-mac").value;
+  if (!mac) return;
+  const status = document.getElementById("hn-edit-dns-status");
+  const dnsEl  = document.getElementById("hn-edit-dns-hostname");
+  const btn    = document.getElementById("hn-edit-dns-pull");
+  if (status) {
+    status.textContent = "Pulling from routers…";
+    status.style.color = "var(--muted)";
+  }
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch("/api/homenet/device/rescan-hostname", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({mac: mac})
+    });
+    const data = await r.json();
+    if (data.ok && data.dns_hostname) {
+      if (dnsEl) dnsEl.value = data.dns_hostname;
+      if (status) {
+        const src = data.source ? ` (from ${data.source})` : "";
+        status.textContent = `Pulled "${data.dns_hostname}"${src}`;
+        status.style.color = "var(--success, #28a745)";
+      }
+      // Refresh the inventory cache so the device table reflects the new
+      // name without forcing the user to close and reopen the tab.
+      const idx = _hnDevices.findIndex(d => d.mac === mac);
+      if (idx >= 0) {
+        _hnDevices[idx].dns_hostname = data.dns_hostname;
+        _hnDevices[idx].hostname = data.dns_hostname;
+      }
+    } else {
+      if (status) {
+        status.textContent = data.message || "No router-side hostname found";
+        status.style.color = "var(--warning, #ffc107)";
+      }
+    }
+  } catch (e) {
+    if (status) {
+      status.textContent = "Error: " + (e && e.message || e);
+      status.style.color = "var(--danger, #dc3545)";
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 async function saveDeviceEdit() {
@@ -8196,6 +8295,37 @@ function renderSystemInfo(d) {
           <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Friendly Name</label>
           <input type="text" id="hn-edit-name" style="width:100%;padding:6px 10px;border:1px solid var(--border);
                  border-radius:6px;background:var(--surface);color:var(--text);font-family:var(--font-mono);font-size:12px">
+        </div>
+        <!-- DNS Hostname row (backlog #7, Path A: deep-link to router admin).
+             Read-only because writing back to the routers is a brittle mess
+             (Verizon needs a fully reverse-engineered diffCfg POST, and Orbi
+             RBRE960 firmware returns 404 on every Set/Edit SOAP action).
+             The two buttons:
+               🔗  opens the router's admin UI in a new tab so the user can
+                   rename in-place — this IS the rename workflow.
+               🔄  re-pulls just this device's name from the routers without
+                   running a full ARP/Wi-Fi scan.
+        -->
+        <div style="margin-bottom:10px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">
+            DNS Hostname (router-set)
+            <span style="color:var(--muted);font-weight:400" title="The name the router itself reports for this device. Read-only here -- to rename it, open your router admin (🔗 button), edit it there, then come back and click 🔄 to refresh.">ⓘ</span>
+          </label>
+          <div style="display:flex;gap:6px;align-items:center">
+            <input type="text" id="hn-edit-dns-hostname" readonly
+                   style="flex:1;padding:6px 10px;border:1px solid var(--border);border-radius:6px;
+                          background:var(--bg);color:var(--muted);font-family:var(--font-mono);font-size:12px;
+                          cursor:not-allowed">
+            <button type="button" id="hn-edit-dns-router-link" onclick="openRouterAdminForDevice()"
+                    title="Open the router's admin UI in a new tab so you can rename this device there"
+                    style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;
+                           background:var(--surface);color:var(--cyan);cursor:pointer;font-size:13px;line-height:1">🔗</button>
+            <button type="button" id="hn-edit-dns-pull" onclick="pullDnsHostnameFromRouter()"
+                    title="Pull the latest hostname from the routers (without a full scan)"
+                    style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;
+                           background:var(--surface);color:var(--cyan);cursor:pointer;font-size:13px;line-height:1">🔄</button>
+          </div>
+          <span id="hn-edit-dns-status" style="font-size:10px;color:var(--muted);display:block;margin-top:3px"></span>
         </div>
         <div style="margin-bottom:10px">
           <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Category</label>

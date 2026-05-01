@@ -1263,12 +1263,30 @@ def _merge_device_data(inventory: dict, source: str, devices: list) -> dict:
 
         existing = inventory["devices"].get(mac, {})
         ip = dev.get("ip", dev.get("IP", ""))
-        name = dev.get("name", dev.get("Name", "")) or existing.get("hostname", "")
+        name_from_source = dev.get("name", dev.get("Name", ""))
+        name = name_from_source or existing.get("hostname", "")
+
+        # dns_hostname (backlog #7) -- the most recent NAME the router itself
+        # advertises for this device. Distinct from `hostname` (which falls
+        # back to mDNS / NetBIOS / IP) and from `friendly_name` (user-set in
+        # this app). The Edit modal shows it read-only with a "Rename in
+        # router admin" deep-link, because writing back to the router is a
+        # brittle mess (Verizon's apply_abstract.cgi requires a fully
+        # reverse-engineered diffCfg payload, and Orbi's RBRE960 firmware
+        # returns 404 on every Set/Edit SOAP action). We only update it from
+        # router-authoritative sources -- ARP gives no name, so an ARP-only
+        # rescan must NOT overwrite a router-sourced name with empty. The
+        # field is preserved across scans where the device wasn't seen.
+        if source in ("verizon", "orbi") and name_from_source:
+            dns_hostname = name_from_source
+        else:
+            dns_hostname = existing.get("dns_hostname", "")
 
         inventory["devices"][mac] = {
             "mac": mac,
             "ip": ip,
             "hostname": name,
+            "dns_hostname": dns_hostname,
             "vendor": _mac_vendor(mac),
             "network": "wireless" if ip.startswith("10.") else "wired",
             "source": source,
@@ -1843,6 +1861,12 @@ def homenet_device_add_manual():
         "mac": mac,
         "ip": "",
         "hostname": str(body.get("friendly_name", "")) or "(transparent device)",
+        # dns_hostname (#7) starts empty for manually-added devices -- they
+        # have no router-side name yet (the user added them precisely
+        # because the routers can't see them). The field exists so the UI's
+        # read-only DNS row can render "(none yet -- pull from router)"
+        # uniformly across all device origins.
+        "dns_hostname": "",
         "vendor": _mac_vendor(mac),
         "network": "wired",
         "source": "manual",
@@ -1866,6 +1890,102 @@ def homenet_device_add_manual():
     }
     _save_homenet_inventory(inventory)
     return jsonify({"ok": True, "message": "Device added", "device": inventory["devices"][mac]})
+
+
+@homenet_bp.route("/api/homenet/device/rescan-hostname", methods=["POST"])
+def homenet_device_rescan_hostname():
+    """Re-pull just the DNS hostname for a single device from the routers.
+
+    Backlog #7 (Path A: deep-link to router admin). The rename happens in
+    the router's own admin UI -- we don't write back to the router (Verizon
+    needs a fully reverse-engineered diffCfg payload, and Orbi RBRE960
+    returns 404 on every Set/Edit SOAP action). After the user renames in
+    the admin UI, this endpoint refreshes our copy of the name so the
+    inventory display catches up without forcing a full ARP+MoCA+Wi-Fi
+    cycle.
+
+    Body shape: ``{"mac": "AA:BB:CC:DD:EE:FF"}``
+
+    Touches the router APIs (Verizon ``cgi_basic.js``, Orbi
+    ``GetAttachDevice2``) but NOT the ARP scan or Wi-Fi switching --
+    saves ~10s vs the full scan. Returns ``{"ok": True, "dns_hostname":
+    "<new>"}`` on success or ``{"ok": False, "message": ...}`` if neither
+    router can reach the device.
+    """
+    body = request.get_json(silent=True) or {}
+    mac = str(body.get("mac", "")).upper().replace("-", ":").strip()
+    if not re.match(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$", mac):
+        return jsonify({"ok": False, "message": f"Invalid MAC format: {mac!r}"}), 400
+
+    inventory = _load_homenet_inventory()
+    if mac not in inventory["devices"]:
+        return jsonify({"ok": False, "message": f"Device {mac} not in inventory"}), 404
+
+    new_name = ""
+    source_used = ""
+    errors: list[str] = []
+
+    # 1. Verizon CR1000A -- wired & MoCA devices land here. Try first
+    # because it covers the common case (most home devices are on the
+    # 192.168.1.0/24 LAN) without requiring a Wi-Fi swap.
+    verizon = _verizon_get_devices()
+    if verizon.get("ok"):
+        known = verizon.get("known_devices", {})
+        if isinstance(known, dict):
+            known = known.get("known_devices", [])
+        if isinstance(known, list):
+            for d in known:
+                d_mac = str(d.get("mac", "")).upper().replace("-", ":")
+                if d_mac == mac:
+                    cand = d.get("hostname", d.get("device_name", ""))
+                    if cand:
+                        new_name = cand
+                        source_used = "verizon"
+                    break
+    elif "error" in verizon:
+        errors.append(f"Verizon: {verizon['error']}")
+
+    # 2. Orbi -- only if Verizon didn't have it and we're already on the
+    # 10.x network. Skip the Wi-Fi auto-switch dance for a single-device
+    # rescan -- the user can do a full scan if they need that.
+    if not new_name:
+        orbi = _orbi_get_devices()
+        if orbi.get("ok"):
+            for d in orbi.get("devices", []):
+                d_mac = str(d.get("mac", "")).upper().replace("-", ":")
+                if d_mac == mac:
+                    cand = d.get("name", "")
+                    if cand:
+                        new_name = cand
+                        source_used = "orbi"
+                    break
+        elif "error" in orbi:
+            errors.append(f"Orbi: {orbi['error']}")
+
+    if not new_name:
+        return jsonify(
+            {
+                "ok": False,
+                "message": "No router-side hostname found for this device",
+                "errors": errors,
+            }
+        )
+
+    inventory["devices"][mac]["dns_hostname"] = new_name
+    # Keep the discovery `hostname` in sync too -- if the user just
+    # renamed in the router admin, that's the freshest signal we have for
+    # the display fallback chain (friendly_name > hostname > vendor).
+    if not inventory["devices"][mac].get("hostname") or source_used:
+        inventory["devices"][mac]["hostname"] = new_name
+    _save_homenet_inventory(inventory)
+    return jsonify(
+        {
+            "ok": True,
+            "dns_hostname": new_name,
+            "source": source_used,
+            "errors": errors,
+        }
+    )
 
 
 @homenet_bp.route("/api/homenet/switch")

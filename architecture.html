@@ -193,7 +193,7 @@
       <button type="button" onclick="exportPDF()" title="Open the browser print dialog — choose 'Save as PDF'" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--yellow);border:none;cursor:pointer;border-right:1px solid var(--border)">Export PDF</button>
       <button type="button" onclick="exportHTML()" title="Download a self-contained copy of this diagram" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--blue);border:none;cursor:pointer">Export HTML</button>
     </div>
-    <div class="badge" style="color:var(--green);border-color:#00e67633">1,766 tests · 85% coverage</div>
+    <div class="badge" style="color:var(--green);border-color:#00e67633">1,940 tests · 85% coverage</div>
     <div class="badge">
       <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
     </div>
@@ -282,14 +282,14 @@
       <span style="font-size:9px;color:var(--cyan);font-weight:700;letter-spacing:.08em">FETCH / POST</span>
       <svg width="12" height="20"><polygon points="1,6 6,0 11,6" fill="var(--purple)"/><line x1="6" y1="6" x2="6" y2="20" stroke="var(--purple)" stroke-width="2"/></svg>
     </div>
-    <span style="font-size:9px;color:var(--muted);margin-left:12px">HTTP JSON · 67 API endpoints · localhost:5000</span>
+    <span style="font-size:9px;color:var(--muted);margin-left:12px">HTTP JSON · 68 API endpoints · localhost:5000</span>
   </div>
 
   <!-- ── LAYER 2: FLASK BACKEND ───────────────────────────────── -->
   <div class="row row-flask" id="layer-flask">
-    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~10,100 lines + homenet.py Blueprint · ~2,511 lines + disk.py Blueprint · ~1,179 lines + remediation.py Blueprint · ~438 lines + nlq.py Blueprint · ~416 lines + baseline.py · ~380 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · applogging.py RotatingFileHandler · dashboard summary cache (30s TTL + single-flight background refresh) · request-log flood suppressor · SAFE_PROCESSES kill guard + SYSTEM_PROCESSES_GLOSSARY · pynvml GPU metrics collector · psutil+socket network metrics collector · mac-vendor-lookup IEEE OUI (~36k vendors) + zeroconf mDNS for device name resolution · baseline.py drift detection (startup + services + tasks)</div>
+    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~10,100 lines + homenet.py Blueprint · ~2,641 lines + disk.py Blueprint · ~1,179 lines + remediation.py Blueprint · ~438 lines + nlq.py Blueprint · ~416 lines + baseline.py · ~380 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · applogging.py RotatingFileHandler · dashboard summary cache (30s TTL + single-flight background refresh) · request-log flood suppressor · SAFE_PROCESSES kill guard + SYSTEM_PROCESSES_GLOSSARY · pynvml GPU metrics collector · psutil+socket network metrics collector · mac-vendor-lookup IEEE OUI (~36k vendors) + zeroconf mDNS for device name resolution · baseline.py drift detection (startup + services + tasks)</div>
     <div style="margin-bottom:10px">
-      <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes (67 endpoints)</div>
+      <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes (68 endpoints)</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
         <div class="route-chip" id="rt-index"><span class="method">GET</span>/</div>
         <div class="route-chip" id="rt-scan"><span class="method">POST</span>/api/scan/start</div>
@@ -366,7 +366,7 @@
         <div class="route-chip" style="border-color:#00e67644;background:#00e6760d;color:var(--green)"><span class="method">POST</span>/api/restart</div>
         <div class="route-chip" style="border-color:#00e67644;background:#00e6760d;color:var(--green)"><span class="method">GET</span>/api/logs</div>
         <div class="route-chip" style="border-color:#00e67644;background:#00e6760d;color:var(--green)"><span class="method">GET</span>/api/logs/download</div>
-        <!-- homenet.py Blueprint (10 routes) -->
+        <!-- homenet.py Blueprint (11 routes) -->
         <div style="display:inline-flex;align-items:center;gap:4px;background:#448aff15;border:1px dashed #448aff44;border-radius:5px;padding:2px 8px;font-size:9px;color:var(--blue);font-weight:700;letter-spacing:.06em;text-transform:uppercase" title="Served by homenet.py Flask Blueprint">BLUEPRINT: homenet.py</div>
         <div class="route-chip" id="rt-homenet-creds" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">GET</span>/api/homenet/credentials</div>
         <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">POST</span>/api/homenet/credentials/save</div>
@@ -377,6 +377,7 @@
         <div class="route-chip" id="rt-homenet-inv" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">GET</span>/api/homenet/inventory</div>
         <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">POST</span>/api/homenet/resolve-names</div>
         <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">POST</span>/api/homenet/device/update</div>
+        <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)" title="Per-device DNS hostname rescan (#7, Path A): pulls just one device's name from Verizon/Orbi without a full ARP+Wi-Fi cycle. Pairs with the read-only DNS Hostname row + 🔗 router-admin deep-link button in the device-edit modal."><span class="method">POST</span>/api/homenet/device/rescan-hostname</div>
         <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)"><span class="method">GET</span>/api/homenet/switch</div>
         <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)" title="Hierarchical topology join (#9): inventory + switch MAC table + Orbi per-AP mapping"><span class="method">GET</span>/api/homenet/topology</div>
         <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)" title="Add a transparent device by MAC (#9): for MoCA bridges that have no IP and never appear in ARP"><span class="method">POST</span>/api/homenet/device/add-manual</div>
@@ -763,7 +764,7 @@
 
   <!-- ── LAYER 7: TEST SUITE ──────────────────────────────────── -->
   <div class="row row-tests" id="layer-tests">
-    <div class="row-label">🧪 Test Suite — 1,766 tests · pytest · 85% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
+    <div class="row-label">🧪 Test Suite — 1,940 tests · pytest · 85% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
       <div class="test-chip">
         <div class="test-title">test_routes.py</div>
