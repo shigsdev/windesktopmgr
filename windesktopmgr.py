@@ -9501,22 +9501,191 @@ def summarize_sysinfo(data: dict) -> dict:
     return {"status": status, "headline": headline, "insights": insights, "actions": actions}
 
 
+# ── Upgrade-analyser helpers (#43 follow-up) ──────────────────────────────────
+# Pure helpers used by summarize_upgrades. Pulled out so each piece is
+# independently testable and so the summariser body stays readable as it
+# grows past the original three categories.
+
+
+def _jedec_spec(mem_type: str, speed_mts: int) -> str:
+    """Return the JEDEC marketing string for a DRAM type+speed.
+
+    DDR5-5600 → "DDR5-5600 PC5-44800"  (speed × 8 = bandwidth in MB/s)
+    DDR4-3200 → "DDR4-3200 PC4-25600"
+
+    JEDEC's PCx- designation encodes peak transfer bandwidth in MB/s,
+    which is what most module retailers print on the label. Surfacing
+    both forms lets users match either the speed-MT/s or the PC-bandwidth
+    string, depending on which the seller chose.
+    """
+    if not mem_type or not speed_mts:
+        return ""
+    # PC4 / PC5 generation prefix derived from DDR generation digit.
+    # Anything older than DDR3 is rare enough we don't bother.
+    gen_map = {"DDR3": "PC3", "DDR4": "PC4", "DDR5": "PC5"}
+    prefix = gen_map.get(mem_type)
+    if not prefix:
+        return f"{mem_type}-{speed_mts}"
+    bandwidth_mbs = speed_mts * 8
+    return f"{mem_type}-{speed_mts} {prefix}-{bandwidth_mbs}"
+
+
+def _mem_voltage(mem_type: str) -> str:
+    """Nominal DIMM voltage for a memory generation. Helps users avoid
+    accidentally buying high-voltage XMP/EXPO kits when their board only
+    supports JEDEC voltages (or vice versa).
+    """
+    return {"DDR3": "1.5 V (1.35 V low-voltage variants)", "DDR4": "1.2 V (1.35 V XMP)", "DDR5": "1.1 V"}.get(
+        mem_type, ""
+    )
+
+
+def _oem_support_url(bios: dict, baseboard: dict) -> tuple[str, str] | None:
+    """Build a deep-link to the OEM's support page for this exact machine.
+
+    Dell pattern (verified against live www.dell.com):
+        https://www.dell.com/support/home/en-us/product-support/servicetag/{tag}/drivers
+    Service tag comes from Win32_BIOS.SerialNumber on Dell hardware.
+
+    Other OEMs (HP, Lenovo) use different URL schemes and we don't have
+    a sample machine to validate against right now -- returning None
+    keeps the UI honest ("Verify with your board's manual") rather than
+    handing the user a 404. If we add a Lenovo / HP machine later, this
+    is the one place to extend.
+
+    Returns a (label, url) tuple or None. Label is what the UI shows on
+    the link button.
+    """
+    mfr = ((bios.get("Manufacturer") or "") + " " + (baseboard.get("Manufacturer") or "")).lower()
+    serial = (bios.get("SerialNumber") or "").strip()
+    if "dell" in mfr and serial and serial != "0":
+        return (
+            "Dell support page (this machine)",
+            f"https://www.dell.com/support/home/en-us/product-support/servicetag/{serial}/drivers",
+        )
+    return None
+
+
+def _slot_numeric_index(designation: str) -> int | None:
+    """Extract the trailing numeric suffix from a slot designation.
+
+    SLOT1 → 1   PCIEX16_2 → 2   PCI Express x4-3 → 3
+    Returns None when no recognisable suffix is present (e.g. "M.2 WLAN").
+    Used by _estimate_gpu_blocked_slots to walk slots in physical order.
+    """
+    import re as _re
+
+    m = _re.search(r"(\d+)\s*$", designation or "")
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except (ValueError, TypeError):
+        return None
+
+
+def _estimate_gpu_blocked_slots(slots: list, gpus: list) -> list[str]:
+    """Find PCIe slots likely physically blocked by the GPU's cooler.
+
+    User feedback 2026-05-02: "for the PCIe slots - for the GPU card,
+    I believe it is physically covering one of the slots so we should
+    validate that we have that many." Discrete GPUs are typically
+    dual-slot (sometimes 2.5- or 3-slot) -- the cooler shroud extends
+    below the card and physically blocks the next slot down even though
+    that slot reports CurrentUsage=Available to WMI (no electrical
+    connection ≠ physically usable).
+
+    Heuristic (deliberately conservative):
+      1. We need at least one discrete GPU (gpus list non-empty AND not
+         all entries look like integrated graphics).
+      2. We find the lowest-numbered "In Use" PCIe slot whose designation
+         starts with SLOT or PCIEX (the typical x16 GPU home).
+      3. The next sequential numeric slot, if it exists and is
+         "Available", is flagged as potentially blocked.
+
+    This will under-report on triple-slot GPUs (they block 2 slots, we
+    only flag 1) and may over-report when the GPU is a single-slot
+    workstation card. Both are acceptable failure modes -- the UI
+    surfaces it as a *caveat* ("verify with the side panel off"), not
+    a hard claim, so the user makes the final call.
+
+    Returns the list of slot designations to flag.
+    """
+    if not slots or not gpus:
+        return []
+
+    # Filter out integrated graphics. Any GPU whose name or AdapterCompatibility
+    # mentions "Intel HD/UHD/Iris" or "AMD Radeon Graphics" (no Vega/RX prefix)
+    # is integrated -- doesn't occupy a PCIe slot.
+    discrete = []
+    for g in gpus:
+        name = (g.get("Name") or "").lower()
+        compat = (g.get("AdapterCompatibility") or "").lower()
+        is_integrated = ("intel" in compat and any(t in name for t in ("hd graphics", "uhd graphics", "iris"))) or (
+            compat == "advanced micro devices"
+            and "radeon graphics" in name
+            and not any(t in name for t in ("rx ", "vega"))
+        )
+        if not is_integrated:
+            discrete.append(g)
+    if not discrete:
+        return []
+
+    # Find the GPU's likely home slot: lowest-numbered "In Use" slot whose
+    # designation looks like a PCIe slot (SLOT/PCIEX prefix).
+    pcie_slot_designations = []
+    for s in slots:
+        desg = (s.get("SlotDesignation") or "").upper()
+        if not desg.startswith(("SLOT", "PCIEX", "PCI EXPRESS")):
+            continue
+        idx = _slot_numeric_index(desg)
+        if idx is None:
+            continue
+        pcie_slot_designations.append((idx, s))
+    pcie_slot_designations.sort(key=lambda t: t[0])
+
+    in_use_indices = [idx for idx, s in pcie_slot_designations if (s.get("CurrentUsage") or "").lower() == "in use"]
+    if not in_use_indices:
+        return []
+    gpu_home_idx = min(in_use_indices)
+
+    # Flag the slot directly after the GPU's home if it's Available.
+    blocked = []
+    for idx, s in pcie_slot_designations:
+        if idx == gpu_home_idx + 1 and (s.get("CurrentUsage") or "").lower() == "available":
+            blocked.append(s.get("SlotDesignation") or "")
+    return [b for b in blocked if b]
+
+
 def summarize_upgrades(data: dict) -> dict:
     """Walk the system-info inventory and surface upgrade opportunities.
 
-    Backlog #43 (hardware upgrade analyser). Three categories today:
+    Backlog #43 (hardware upgrade analyser). Six categories:
 
     * **memory** -- compares populated DIMMs against board capacity
       (Win32_PhysicalMemoryArray.MaxCapacity + .MemoryDevices). Reports
       free slots, RAM headroom, and -- when only one DIMM is installed --
       a single-channel-mode warning since dual-channel doubles bandwidth
       and is free if you've already got a second matching stick lying
-      around.
-    * **pcie** -- lists Win32_SystemSlot rows whose CurrentUsage is
-      "Available". Each free slot is a candidate for a GPU / NIC /
-      capture card / NVMe carrier; the slot description usually carries
-      the link width (x1 / x4 / x16) so users can match expansion cards
-      to slot capability.
+      around. Each opportunity carries `compat` (JEDEC spec, voltage,
+      reference PartNumber) and an OEM support `links` entry when the
+      board manufacturer is recognised.
+    * **cpu** -- always emitted when SocketDesignation is non-empty,
+      since "is this CPU upgradeable?" is a question the inventory CAN
+      answer (the socket family is the gate). Carries the socket
+      designation as `compat`; the user / OEM page tells them which
+      specific CPUs are supported (BIOS revision matters).
+    * **gpu** -- when a free PCIe x16 slot exists, flag GPU upgrade
+      capacity. Caveats include PSU wattage (which we can't detect
+      from software) and physical case clearance.
+    * **nic** -- two flavours: (a) Wi-Fi when an M.2 WLAN slot is
+      Available, (b) wired when a free PCIe x1+ slot exists.
+    * **pcie** -- the catch-all for "you have N free slots". Subtracts
+      slots likely physically blocked by the GPU's cooler (heuristic
+      via _estimate_gpu_blocked_slots) and surfaces those as a caveat
+      so the headline count matches reality, not WMI's electrical
+      view. Each slot's `compat` carries the gen + lane width parsed
+      from the WMI Description.
     * **storage** -- counts physical disks by interface type. Doesn't
       attempt to enumerate empty SATA/M.2 ports (Win32 has no clean
       surface for that), but DOES surface "you have N spinning-rust
@@ -9524,11 +9693,17 @@ def summarize_upgrades(data: dict) -> dict:
 
     Each opportunity has a stable shape so the UI can render them
     uniformly:
-        category   -- "memory" | "pcie" | "storage"
+        category   -- "memory" | "cpu" | "gpu" | "nic" | "pcie" | "storage"
         severity   -- "ok" | "info" | "warning"
         headline   -- one-line summary (shown bold on the card)
         detail     -- multi-line context
         action     -- imperative next step (shown as the card's CTA)
+        compat     -- list of {"label","value"} structured spec rows
+                      (optional; UI renders as a definition list)
+        caveats    -- list of strings (optional; UI renders as warning
+                      lines below detail)
+        links      -- list of {"label","url"} pairs (optional; UI renders
+                      as small link buttons next to action)
 
     The function is pure -- no I/O, no globals -- so it's trivially
     testable. Empty/missing data returns ``{"opportunities": []}`` rather
@@ -9536,41 +9711,68 @@ def summarize_upgrades(data: dict) -> dict:
     renders a clean panel instead of a JS error.
     """
     opportunities = []
+    bios = data.get("BIOS", {}) or {}
+    baseboard = data.get("Baseboard", {}) or {}
+    oem_link = _oem_support_url(bios, baseboard)
 
     # ── Memory ────────────────────────────────────────────────────────
     mem_sticks = data.get("Memory", []) or []
     mem_arrays = data.get("MemoryArray", []) or []
-    # Sum capacities across populated DIMMs. Capacity from WMI is in
-    # bytes, so /1024**3 → GB.
     installed_bytes = sum(int(m.get("Capacity") or 0) for m in mem_sticks)
     installed_gb = round(installed_bytes / (1024**3), 1) if installed_bytes else 0
     populated_slots = len([m for m in mem_sticks if int(m.get("Capacity") or 0) > 0])
-    # Aggregate across all memory arrays on the board (servers may have
-    # multiple). Most desktops have exactly one.
     total_slots = sum(int(a.get("MemoryDevices") or 0) for a in mem_arrays)
     max_capacity_gb = sum(float(a.get("MaxCapacityGB") or 0) for a in mem_arrays)
     free_slots = max(0, total_slots - populated_slots) if total_slots else 0
     headroom_gb = round(max_capacity_gb - installed_gb, 1) if max_capacity_gb else 0
 
-    # Memory-type / speed -- needed for the "buy matching" recommendation.
     mem_types = sorted({m.get("MemoryType", "") for m in mem_sticks if m.get("MemoryType")})
     mem_type_str = "/".join(mem_types) if mem_types else "Unknown type"
+    primary_mem_type = mem_types[0] if mem_types else ""
     speeds = [int(m.get("ConfiguredClockSpeed") or 0) for m in mem_sticks if m.get("ConfiguredClockSpeed")]
-    speed_str = f"-{max(speeds)}" if speeds else ""
+    primary_speed = max(speeds) if speeds else 0
+    speed_str = f"-{primary_speed}" if primary_speed else ""
     form_factors = sorted({m.get("FormFactor", "") for m in mem_sticks if m.get("FormFactor")})
     form_str = "/".join(form_factors) if form_factors else ""
+    part_numbers = sorted(
+        {(m.get("PartNumber") or "").strip() for m in mem_sticks if (m.get("PartNumber") or "").strip()}
+    )
+    ec_str = ""
+    if mem_arrays:
+        ec_str = (mem_arrays[0].get("MemoryErrorCorrection") or "").strip()
 
-    # Largest installed stick -- best heuristic for "what size to buy
-    # next" since most boards expect matched capacities per channel.
     largest_stick_gb = 0
     if mem_sticks:
         biggest = max((int(m.get("Capacity") or 0) for m in mem_sticks), default=0)
         largest_stick_gb = round(biggest / (1024**3), 1) if biggest else 0
 
+    # Build the structured `compat` block once -- used by every memory
+    # opportunity so the user gets the same exact-spec guidance whether
+    # the recommendation is "add sticks" or "replace sticks".
+    def _mem_compat() -> list:
+        rows = []
+        if primary_mem_type:
+            jedec = _jedec_spec(primary_mem_type, primary_speed)
+            if jedec:
+                rows.append({"label": "JEDEC spec", "value": jedec})
+        if form_str:
+            rows.append({"label": "Form factor", "value": form_str})
+        if primary_mem_type:
+            v = _mem_voltage(primary_mem_type)
+            if v:
+                rows.append({"label": "Voltage", "value": v})
+        if ec_str:
+            rows.append({"label": "ECC", "value": ec_str})
+        if part_numbers:
+            rows.append({"label": "Reference part #", "value": ", ".join(part_numbers)})
+        if largest_stick_gb:
+            rows.append({"label": "Per-stick capacity (matched)", "value": f"{int(largest_stick_gb)} GB"})
+        return rows
+
+    def _oem_link_list() -> list:
+        return [{"label": oem_link[0], "url": oem_link[1]}] if oem_link else []
+
     if total_slots and free_slots > 0 and headroom_gb > 0:
-        # The headline upgrade case: empty slots AND board capacity to spare.
-        # Concrete recommendation calls out the exact spec to buy so the
-        # user doesn't have to translate "DDR5 @ 5600 MHz SODIMM" themselves.
         spec = f"{mem_type_str}{speed_str} {form_str}".strip()
         suggest_size = f"{int(largest_stick_gb)} GB" if largest_stick_gb else "16 GB"
         opportunities.append(
@@ -9585,17 +9787,19 @@ def summarize_upgrades(data: dict) -> dict:
                     f"You have {installed_gb:g} GB across {populated_slots} of {total_slots} slots. "
                     f"Board reports max capacity {max_capacity_gb:g} GB. "
                     f"Match your existing {spec} sticks "
-                    f"(suggested: {free_slots} × {suggest_size}). "
-                    "Verify the board's chipset max in your motherboard manual -- "
-                    "OEM firmware sometimes reports the originally-shipped config "
-                    "rather than the chipset's true ceiling."
+                    f"(suggested: {free_slots} × {suggest_size})."
                 ),
                 "action": f"Buy {free_slots} × {suggest_size} {spec} matching your existing PartNumber",
+                "compat": _mem_compat(),
+                "caveats": [
+                    "OEM firmware sometimes caps MaxCapacity to the originally-shipped "
+                    "config rather than the chipset's true ceiling -- verify against the "
+                    "board's QVL / motherboard manual before buying.",
+                ],
+                "links": _oem_link_list(),
             }
         )
     elif total_slots and free_slots == 0 and headroom_gb > 0:
-        # All slots full but board would accept higher capacities -- the
-        # only path is to *replace* existing sticks with bigger ones.
         opportunities.append(
             {
                 "category": "memory",
@@ -9603,16 +9807,20 @@ def summarize_upgrades(data: dict) -> dict:
                 "headline": f"Up to {headroom_gb:g} GB more RAM possible (requires replacing existing sticks)",
                 "detail": (
                     f"All {total_slots} DIMM slots are populated with {installed_gb:g} GB. "
-                    f"The board reports max capacity {max_capacity_gb:g} GB, so further "
+                    f"Board reports max capacity {max_capacity_gb:g} GB, so further "
                     "expansion means swapping existing sticks for higher-density modules. "
                     "Check current resale value of your existing sticks before buying replacements."
                 ),
                 "action": f"Replace existing sticks with higher-density {mem_type_str} modules",
+                "compat": _mem_compat(),
+                "caveats": [
+                    "OEM firmware sometimes caps MaxCapacity below the chipset max -- "
+                    "verify the target capacity against your board's QVL before purchasing.",
+                ],
+                "links": _oem_link_list(),
             }
         )
     elif total_slots and populated_slots == total_slots:
-        # All slots full and at max capacity -- nothing to do, but worth
-        # surfacing so the user knows it's not a missed opportunity.
         opportunities.append(
             {
                 "category": "memory",
@@ -9620,13 +9828,10 @@ def summarize_upgrades(data: dict) -> dict:
                 "headline": "Memory fully populated",
                 "detail": f"All {total_slots} DIMM slots populated; {installed_gb:g} GB at the board's reported max.",
                 "action": "",
+                "compat": _mem_compat(),
             }
         )
 
-    # Single-channel-mode warning. Running 1 DIMM in a multi-slot board
-    # halves memory bandwidth vs dual-channel -- a free perf win if you
-    # add a second matching stick. Only fire when the board has at least
-    # 2 slots (otherwise dual-channel isn't possible anyway).
     if populated_slots == 1 and total_slots >= 2:
         opportunities.append(
             {
@@ -9641,51 +9846,208 @@ def summarize_upgrades(data: dict) -> dict:
                     "memory-heavy workloads."
                 ),
                 "action": f"Add 1 matching DIMM to bring the system to dual-channel ({installed_gb:g} GB → {installed_gb * 2:g} GB)",
+                "compat": _mem_compat(),
+                "links": _oem_link_list(),
             }
         )
 
-    # ── PCIe ──────────────────────────────────────────────────────────
+    # ── CPU ───────────────────────────────────────────────────────────
+    # Always emit when SocketDesignation is non-empty: "is this socket
+    # upgradeable" is a question the inventory CAN answer (the socket
+    # family is the gate). The OEM page lists the specific CPUs supported
+    # at each BIOS revision, which is too dynamic to bake in here.
+    cpu = data.get("CPU", {}) or {}
+    socket = (cpu.get("SocketDesignation") or "").strip()
+    if socket:
+        cpu_compat = [{"label": "Socket", "value": socket}]
+        if cpu.get("Architecture"):
+            cpu_compat.append({"label": "Architecture", "value": cpu["Architecture"]})
+        if cpu.get("Cores") and cpu.get("LogicalProcs"):
+            cpu_compat.append(
+                {
+                    "label": "Current",
+                    "value": f"{cpu.get('Name', '').strip()} -- {cpu['Cores']} cores / {cpu['LogicalProcs']} threads",
+                }
+            )
+        opportunities.append(
+            {
+                "category": "cpu",
+                "severity": "info",
+                "headline": f"CPU is socketed ({socket}) -- upgrade possible within socket family",
+                "detail": (
+                    "Desktop CPUs in a standard socket can typically be swapped without "
+                    "replacing the board, as long as the new chip is on the same socket "
+                    "AND your board's chipset/BIOS supports it. The OEM CPU support list "
+                    "is the authoritative source for what your specific board accepts at "
+                    "what BIOS revision -- a BIOS update is sometimes required before a "
+                    "newer CPU will POST."
+                ),
+                "action": f"Pick a CPU in the {socket} family from your board's CPU support list",
+                "compat": cpu_compat,
+                "caveats": [
+                    "BIOS update may be required before a newer-generation CPU will POST.",
+                    "Cooler compatibility -- some sockets use a different mounting pattern across generations.",
+                    "Power delivery -- a high-TDP chip may exceed what your board's VRM can sustain.",
+                ],
+                "links": _oem_link_list(),
+            }
+        )
+
+    # ── PCIe (with GPU-blocked-slot heuristic) ────────────────────────
     pcie_slots = data.get("PCIeSlots", []) or []
+    gpus = data.get("GPU", []) or []
     free_pcie = [s for s in pcie_slots if (s.get("CurrentUsage") or "").lower() == "available"]
-    if pcie_slots and free_pcie:
-        # Build a slot-by-slot description so users can match the right
-        # card form-factor (x1 vs x16) to the right slot.
-        slot_lines = []
-        for s in free_pcie:
+    blocked_designations = _estimate_gpu_blocked_slots(pcie_slots, gpus)
+    truly_free = [s for s in free_pcie if s.get("SlotDesignation") not in blocked_designations]
+
+    if pcie_slots and truly_free:
+        slot_compat = []
+        for s in truly_free:
             desg = s.get("SlotDesignation", "?")
             desc = s.get("Description", "")
-            slot_lines.append(f"  • {desg} ({desc})" if desc else f"  • {desg}")
+            slot_compat.append({"label": desg, "value": desc or "PCIe slot"})
+
+        caveats = []
+        if blocked_designations:
+            caveats.append(
+                f"Slot{'s' if len(blocked_designations) != 1 else ''} "
+                f"{', '.join(blocked_designations)} report{'s' if len(blocked_designations) == 1 else ''} "
+                "Available to WMI but may be physically blocked by the GPU's cooler "
+                "(typical for dual-slot discrete cards). Verify with the side panel off."
+            )
         opportunities.append(
             {
                 "category": "pcie",
                 "severity": "info",
-                "headline": f"{len(free_pcie)} of {len(pcie_slots)} PCIe slot{'s' if len(pcie_slots) != 1 else ''} free",
-                "detail": (
-                    "Available slots:\n" + "\n".join(slot_lines) + "\n\n"
-                    "Capacity for: discrete GPU, 10 GbE NIC, capture card, NVMe carrier card, "
-                    "or HBA / RAID controller. Match the card's lane requirement (x1 / x4 / x16) "
-                    "to a slot of equal or greater width."
+                "headline": (
+                    f"{len(truly_free)} of {len(pcie_slots)} PCIe slot{'s' if len(pcie_slots) != 1 else ''} "
+                    f"physically usable"
+                    + (f" ({len(blocked_designations)} likely blocked by GPU)" if blocked_designations else "")
                 ),
-                "action": "Identify which expansion card the workload needs, then match to slot width",
+                "detail": (
+                    "Match the card's lane requirement (x1 / x4 / x16) to a slot of equal "
+                    "or greater width. Slot generation (PCIe 3.0 / 4.0 / 5.0) caps the "
+                    "card's bandwidth -- a PCIe 5.0 card in a PCIe 3.0 slot still works, "
+                    "just at lower throughput."
+                ),
+                "action": "Pick the right slot for the card's lane width and generation",
+                "compat": slot_compat,
+                "caveats": caveats,
+            }
+        )
+
+    # ── GPU upgrade ───────────────────────────────────────────────────
+    # Surface a GPU-upgrade opportunity when there's at least one truly-
+    # free PCIe slot wide enough for a discrete GPU (x16 designation
+    # match). We don't try to estimate PSU headroom from software --
+    # called out as a caveat instead.
+    x16_free = [s for s in truly_free if "X16" in (s.get("SlotDesignation") or "").upper().replace(" ", "")]
+    # Some boards (especially Dell OEM) use SLOTn instead of PCIEX16_n.
+    # Fall back to "the lowest-numbered truly-free slot whose Description
+    # mentions x16" when no explicit PCIEX16 designation matches.
+    if not x16_free and truly_free:
+        x16_free = [s for s in truly_free if "X16" in (s.get("Description") or "").upper().replace(" ", "")]
+    if x16_free and gpus:
+        current_gpu = next(
+            (g.get("Name", "") for g in gpus if (g.get("AdapterCompatibility") or "").lower() not in ("intel", "")), ""
+        )
+        if not current_gpu:
+            current_gpu = gpus[0].get("Name", "")
+        opportunities.append(
+            {
+                "category": "gpu",
+                "severity": "info",
+                "headline": f"GPU upgrade slot available ({len(x16_free)} free x16-class slot{'s' if len(x16_free) != 1 else ''})",
+                "detail": (
+                    f"Current GPU: {current_gpu or 'unknown'}. A free x16 slot can host a "
+                    "newer discrete card. Two constraints WinDesktopMgr can't measure: "
+                    "PSU wattage and physical case clearance. A modern high-end GPU draws "
+                    "300-450 W and is 300-340 mm long, often 3 slots tall."
+                ),
+                "action": "Pick a card matching your PSU headroom + case length / height clearance",
+                "compat": [
+                    {"label": s.get("SlotDesignation", "?"), "value": s.get("Description") or "x16 slot"}
+                    for s in x16_free
+                ],
+                "caveats": [
+                    "PSU wattage isn't visible to WMI -- check the label on the side of your PSU and add up the new GPU's TGP + ~150 W headroom for CPU/board/drives.",
+                    "Case clearance: measure from the back of the case to the front fan / drive cage to confirm card length fits.",
+                    "Power connectors: 12VHPWR (16-pin) vs 8-pin EPS -- newer cards often need an adapter or a PSU with native 12VHPWR.",
+                ],
+            }
+        )
+
+    # ── NIC upgrades (Wi-Fi via M.2 WLAN, wired via free PCIe) ────────
+    # Wi-Fi: if a slot is designated WLAN/Wi-Fi/WiFi and is Available,
+    # surface a Wi-Fi 7 upgrade opportunity (most M.2 WLAN slots are
+    # E-key 2230 -- fits Wi-Fi 6E and Wi-Fi 7 modules).
+    wlan_slots = [
+        s
+        for s in pcie_slots
+        if any(tok in (s.get("SlotDesignation") or "").upper() for tok in ("WLAN", "WI-FI", "WIFI"))
+    ]
+    free_wlan = [s for s in wlan_slots if (s.get("CurrentUsage") or "").lower() == "available"]
+    if free_wlan:
+        opportunities.append(
+            {
+                "category": "nic",
+                "severity": "info",
+                "headline": "M.2 WLAN slot empty -- Wi-Fi 7 module compatible",
+                "detail": (
+                    "An M.2 E-key 2230 WLAN slot is available. Modern modules "
+                    "(Intel BE200, Qualcomm FastConnect 7800) drop in for Wi-Fi 7 "
+                    "(802.11be) plus Bluetooth 5.4 if your motherboard has CNVio / CNVi "
+                    "support and you can route the antenna cables to external connectors."
+                ),
+                "action": "Buy an M.2 2230 E-key Wi-Fi 7 module + verify antenna routing",
+                "compat": [
+                    {"label": s.get("SlotDesignation", "?"), "value": s.get("Description") or "M.2 WLAN slot"}
+                    for s in free_wlan
+                ],
+                "caveats": [
+                    "Some OEM boards lock the WLAN slot to a vendor whitelist via BIOS.",
+                    "Wi-Fi 7 needs Windows 11 24H2+ for full feature support.",
+                ],
+                "links": _oem_link_list(),
+            }
+        )
+
+    # Wired NIC: 10 GbE / 2.5 GbE upgrade is possible whenever any free
+    # PCIe slot of x1 or wider exists. Don't fire when *only* a x16 slot
+    # is free -- that's covered by the GPU opportunity, no need to
+    # double-recommend the same slot for two different cards.
+    non_x16_free = [s for s in truly_free if "X16" not in (s.get("SlotDesignation") or "").upper().replace(" ", "")]
+    if non_x16_free:
+        opportunities.append(
+            {
+                "category": "nic",
+                "severity": "info",
+                "headline": f"Free PCIe slot{'s' if len(non_x16_free) != 1 else ''} for a 2.5 GbE / 10 GbE NIC",
+                "detail": (
+                    "10 GbE NICs (Intel X550-T2, Aquantia AQC107) fit in any x4+ slot. "
+                    "2.5 GbE NICs are widely available in x1 form factors. Worth doing "
+                    "if you've got 2.5 GbE+ on your switch / NAS and your motherboard's "
+                    "built-in NIC tops out at 1 GbE."
+                ),
+                "action": "Buy a NIC matching your switch's max negotiated speed",
+                "compat": [
+                    {"label": s.get("SlotDesignation", "?"), "value": s.get("Description") or "PCIe slot"}
+                    for s in non_x16_free
+                ],
+                "caveats": [
+                    "Cabling: 10 GbE over copper requires Cat6a or Cat7; Cat5e tops out at ~5 Gbps.",
+                    "10 GbE NICs run hot -- verify case airflow over the slot area.",
+                ],
             }
         )
 
     # ── Storage ───────────────────────────────────────────────────────
     disks = data.get("Disks", []) or []
     if disks:
-        # MediaType in WMI is one of "Fixed hard disk media", "External
-        # hard disk media", or "" / None. SSD vs HDD has to come from
-        # InterfaceType + Model heuristics since WMI doesn't expose
-        # rotation rate uniformly. NVMe drives report InterfaceType=SCSI
-        # on most Windows builds (a long-standing WMI quirk) but their
-        # model string usually contains "NVMe" or "SSD".
         spinning = []
         for d in disks:
             model = (d.get("Model") or "").upper()
             iface = (d.get("InterfaceType") or "").upper()
-            # Best-effort: anything that doesn't say SSD/NVMe and is on
-            # IDE/SATA *might* be spinning rust. We're conservative
-            # because a false-positive here recommends spending money.
             looks_ssd = any(tok in model for tok in ("SSD", "NVME", "M.2"))
             looks_hdd = (iface in ("IDE", "ATAPI") or "WD" in model[:4] or "SEAGATE" in model) and not looks_ssd
             if looks_hdd:
@@ -9705,6 +10067,16 @@ def summarize_upgrades(data: dict) -> dict:
                         "if it holds OS / apps / active project files, migrate."
                     ),
                     "action": "Replace the OS/active-files HDD with an SSD; keep HDDs for bulk storage",
+                    "compat": [
+                        {
+                            "label": "Form factor options",
+                            "value": 'M.2 2280 NVMe (fastest, fewest cables) > 2.5" SATA SSD (drop-in HDD replacement)',
+                        },
+                    ],
+                    "caveats": [
+                        "M.2 NVMe needs an empty M.2 slot on the board (verify in System Info > PCIe Slots).",
+                        "Cloning the OS drive: use Macrium Reflect Free or the SSD vendor's migration tool; full image, then physically swap.",
+                    ],
                 }
             )
 
