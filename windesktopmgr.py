@@ -404,6 +404,29 @@ _ff_map = {8: "DIMM", 12: "SODIMM", 0: "Unknown"}
 _mem_type_map = {20: "DDR", 21: "DDR2", 22: "DDR2 FB-DIMM", 24: "DDR3", 26: "DDR4", 34: "DDR5", 0: "Unknown"}
 _arch_map = {0: "x86", 5: "ARM", 9: "x64", 12: "ARM64"}
 _slot_usage_map = {1: "Other", 2: "Unknown", 3: "Available", 4: "In Use"}
+# Win32_PhysicalMemoryArray.MemoryErrorCorrection codes (DMTF / SMBIOS)
+_mem_ec_map = {
+    1: "Other",
+    2: "Unknown",
+    3: "None",
+    4: "Parity",
+    5: "Single-bit ECC",
+    6: "Multi-bit ECC",
+    7: "CRC",
+}
+# Win32_PhysicalMemoryArray.Location codes (where the array physically sits)
+_mem_loc_map = {
+    1: "Other",
+    2: "Unknown",
+    3: "System Board",
+    4: "ISA Add-on Card",
+    5: "EISA Add-on Card",
+    6: "PCI Add-on Card",
+    7: "MCA Add-on Card",
+    8: "PCMCIA Add-on Card",
+    9: "Proprietary Add-on Card",
+    10: "NuBus",
+}
 
 
 def _wmi_date_to_str(wmi_date: str, fmt: str = "%Y-%m-%d") -> str:
@@ -9191,6 +9214,46 @@ def sysinfo_data():
             )
         data["Memory"] = ram_sticks
 
+        # MemoryArray (backlog #43, hardware upgrade analyser).
+        # Win32_PhysicalMemoryArray exposes the *board's* limits -- max
+        # capacity it can hold and how many DIMM slots it has. Without this,
+        # we can only show "you have N DIMMs" -- with it, we can answer
+        # "you have N of M DIMMs and X GB of headroom". On most modern
+        # systems there's exactly one array (the main memory complex);
+        # rare server boards expose multiple arrays which we list separately
+        # so the upgrade summariser can decide which array a new DIMM goes in.
+        # MaxCapacity caveat: Dell/HP firmware sometimes caps this to the
+        # originally-shipped config rather than the chipset's true max --
+        # we surface the WMI value as-is and let summarize_upgrades flag it
+        # with a "verify against board manual" note.
+        mem_arrays = []
+        for a in c.Win32_PhysicalMemoryArray():
+            # MaxCapacity is in KB on most systems but spec allows it to be
+            # signalled via MaxCapacityEx (uint64) when the value exceeds
+            # 2 TB. Prefer Ex when present and non-zero.
+            max_kb = 0
+            try:
+                ex = int(a.MaxCapacityEx or 0)
+                max_kb = ex if ex > 0 else int(a.MaxCapacity or 0)
+            except (AttributeError, ValueError, TypeError):
+                # MaxCapacityEx isn't on every WMI provider -- swallow and
+                # fall back to MaxCapacity. The .get-style access on a WMI
+                # COM object raises rather than returning None.
+                try:
+                    max_kb = int(a.MaxCapacity or 0)
+                except (ValueError, TypeError):
+                    max_kb = 0
+            ec_code = int(a.MemoryErrorCorrection) if a.MemoryErrorCorrection is not None else 0
+            mem_arrays.append(
+                {
+                    "MaxCapacityGB": round(max_kb / (1024 * 1024), 1) if max_kb else 0,
+                    "MemoryDevices": int(a.MemoryDevices or 0),
+                    "MemoryErrorCorrection": _mem_ec_map.get(ec_code, str(ec_code)),
+                    "Location": _mem_loc_map.get(int(a.Location) if a.Location is not None else 0, "Unknown"),
+                }
+            )
+        data["MemoryArray"] = mem_arrays
+
         # Disks
         disks = []
         for d in c.Win32_DiskDrive():
@@ -9264,6 +9327,18 @@ def sysinfo_data():
         stale = True
         error_detail = str(e)
 
+    # Upgrade opportunities (#43). Computed from the inventory we just
+    # collected so the UI gets one round-trip's worth of data instead of
+    # two. Empty list when sysinfo collection failed -- callers shouldn't
+    # have to special-case that.
+    try:
+        upgrades = summarize_upgrades(data)
+    except Exception:
+        # Defensive: a bug in the synthesiser must NEVER take down the
+        # /api/sysinfo/data route. The hardware inventory is the
+        # primary value here; upgrades is a derived bonus.
+        upgrades = {"opportunities": []}
+
     return jsonify(
         {
             "status": "partial" if stale else "ok",
@@ -9271,6 +9346,7 @@ def sysinfo_data():
             "collected_at": collected_at,
             "stale": stale,
             "error": error_detail,
+            "upgrades": upgrades,
         }
     )
 
@@ -9423,6 +9499,216 @@ def summarize_sysinfo(data: dict) -> dict:
     headline = f"{comp.get('Manufacturer', '')} {comp.get('Model', '')} — {cpu_name}".strip()
 
     return {"status": status, "headline": headline, "insights": insights, "actions": actions}
+
+
+def summarize_upgrades(data: dict) -> dict:
+    """Walk the system-info inventory and surface upgrade opportunities.
+
+    Backlog #43 (hardware upgrade analyser). Three categories today:
+
+    * **memory** -- compares populated DIMMs against board capacity
+      (Win32_PhysicalMemoryArray.MaxCapacity + .MemoryDevices). Reports
+      free slots, RAM headroom, and -- when only one DIMM is installed --
+      a single-channel-mode warning since dual-channel doubles bandwidth
+      and is free if you've already got a second matching stick lying
+      around.
+    * **pcie** -- lists Win32_SystemSlot rows whose CurrentUsage is
+      "Available". Each free slot is a candidate for a GPU / NIC /
+      capture card / NVMe carrier; the slot description usually carries
+      the link width (x1 / x4 / x16) so users can match expansion cards
+      to slot capability.
+    * **storage** -- counts physical disks by interface type. Doesn't
+      attempt to enumerate empty SATA/M.2 ports (Win32 has no clean
+      surface for that), but DOES surface "you have N spinning-rust
+      drives" as a candidate for SSD migration.
+
+    Each opportunity has a stable shape so the UI can render them
+    uniformly:
+        category   -- "memory" | "pcie" | "storage"
+        severity   -- "ok" | "info" | "warning"
+        headline   -- one-line summary (shown bold on the card)
+        detail     -- multi-line context
+        action     -- imperative next step (shown as the card's CTA)
+
+    The function is pure -- no I/O, no globals -- so it's trivially
+    testable. Empty/missing data returns ``{"opportunities": []}`` rather
+    than raising, so a partial sysinfo collection (WMI flake) still
+    renders a clean panel instead of a JS error.
+    """
+    opportunities = []
+
+    # ── Memory ────────────────────────────────────────────────────────
+    mem_sticks = data.get("Memory", []) or []
+    mem_arrays = data.get("MemoryArray", []) or []
+    # Sum capacities across populated DIMMs. Capacity from WMI is in
+    # bytes, so /1024**3 → GB.
+    installed_bytes = sum(int(m.get("Capacity") or 0) for m in mem_sticks)
+    installed_gb = round(installed_bytes / (1024**3), 1) if installed_bytes else 0
+    populated_slots = len([m for m in mem_sticks if int(m.get("Capacity") or 0) > 0])
+    # Aggregate across all memory arrays on the board (servers may have
+    # multiple). Most desktops have exactly one.
+    total_slots = sum(int(a.get("MemoryDevices") or 0) for a in mem_arrays)
+    max_capacity_gb = sum(float(a.get("MaxCapacityGB") or 0) for a in mem_arrays)
+    free_slots = max(0, total_slots - populated_slots) if total_slots else 0
+    headroom_gb = round(max_capacity_gb - installed_gb, 1) if max_capacity_gb else 0
+
+    # Memory-type / speed -- needed for the "buy matching" recommendation.
+    mem_types = sorted({m.get("MemoryType", "") for m in mem_sticks if m.get("MemoryType")})
+    mem_type_str = "/".join(mem_types) if mem_types else "Unknown type"
+    speeds = [int(m.get("ConfiguredClockSpeed") or 0) for m in mem_sticks if m.get("ConfiguredClockSpeed")]
+    speed_str = f"-{max(speeds)}" if speeds else ""
+    form_factors = sorted({m.get("FormFactor", "") for m in mem_sticks if m.get("FormFactor")})
+    form_str = "/".join(form_factors) if form_factors else ""
+
+    # Largest installed stick -- best heuristic for "what size to buy
+    # next" since most boards expect matched capacities per channel.
+    largest_stick_gb = 0
+    if mem_sticks:
+        biggest = max((int(m.get("Capacity") or 0) for m in mem_sticks), default=0)
+        largest_stick_gb = round(biggest / (1024**3), 1) if biggest else 0
+
+    if total_slots and free_slots > 0 and headroom_gb > 0:
+        # The headline upgrade case: empty slots AND board capacity to spare.
+        # Concrete recommendation calls out the exact spec to buy so the
+        # user doesn't have to translate "DDR5 @ 5600 MHz SODIMM" themselves.
+        spec = f"{mem_type_str}{speed_str} {form_str}".strip()
+        suggest_size = f"{int(largest_stick_gb)} GB" if largest_stick_gb else "16 GB"
+        opportunities.append(
+            {
+                "category": "memory",
+                "severity": "info",
+                "headline": (
+                    f"Add up to {headroom_gb:g} GB more RAM "
+                    f"({free_slots} of {total_slots} DIMM slot{'s' if free_slots != 1 else ''} free)"
+                ),
+                "detail": (
+                    f"You have {installed_gb:g} GB across {populated_slots} of {total_slots} slots. "
+                    f"Board reports max capacity {max_capacity_gb:g} GB. "
+                    f"Match your existing {spec} sticks "
+                    f"(suggested: {free_slots} × {suggest_size}). "
+                    "Verify the board's chipset max in your motherboard manual -- "
+                    "OEM firmware sometimes reports the originally-shipped config "
+                    "rather than the chipset's true ceiling."
+                ),
+                "action": f"Buy {free_slots} × {suggest_size} {spec} matching your existing PartNumber",
+            }
+        )
+    elif total_slots and free_slots == 0 and headroom_gb > 0:
+        # All slots full but board would accept higher capacities -- the
+        # only path is to *replace* existing sticks with bigger ones.
+        opportunities.append(
+            {
+                "category": "memory",
+                "severity": "info",
+                "headline": f"Up to {headroom_gb:g} GB more RAM possible (requires replacing existing sticks)",
+                "detail": (
+                    f"All {total_slots} DIMM slots are populated with {installed_gb:g} GB. "
+                    f"The board reports max capacity {max_capacity_gb:g} GB, so further "
+                    "expansion means swapping existing sticks for higher-density modules. "
+                    "Check current resale value of your existing sticks before buying replacements."
+                ),
+                "action": f"Replace existing sticks with higher-density {mem_type_str} modules",
+            }
+        )
+    elif total_slots and populated_slots == total_slots:
+        # All slots full and at max capacity -- nothing to do, but worth
+        # surfacing so the user knows it's not a missed opportunity.
+        opportunities.append(
+            {
+                "category": "memory",
+                "severity": "ok",
+                "headline": "Memory fully populated",
+                "detail": f"All {total_slots} DIMM slots populated; {installed_gb:g} GB at the board's reported max.",
+                "action": "",
+            }
+        )
+
+    # Single-channel-mode warning. Running 1 DIMM in a multi-slot board
+    # halves memory bandwidth vs dual-channel -- a free perf win if you
+    # add a second matching stick. Only fire when the board has at least
+    # 2 slots (otherwise dual-channel isn't possible anyway).
+    if populated_slots == 1 and total_slots >= 2:
+        opportunities.append(
+            {
+                "category": "memory",
+                "severity": "warning",
+                "headline": "Running in single-channel mode",
+                "detail": (
+                    "Only 1 DIMM is populated. Adding a second matching stick "
+                    "(same capacity, speed, and ideally same PartNumber) enables "
+                    "dual-channel mode -- roughly 2× memory bandwidth at zero CPU cost. "
+                    "Most noticeable on integrated graphics, video editing, and "
+                    "memory-heavy workloads."
+                ),
+                "action": f"Add 1 matching DIMM to bring the system to dual-channel ({installed_gb:g} GB → {installed_gb * 2:g} GB)",
+            }
+        )
+
+    # ── PCIe ──────────────────────────────────────────────────────────
+    pcie_slots = data.get("PCIeSlots", []) or []
+    free_pcie = [s for s in pcie_slots if (s.get("CurrentUsage") or "").lower() == "available"]
+    if pcie_slots and free_pcie:
+        # Build a slot-by-slot description so users can match the right
+        # card form-factor (x1 vs x16) to the right slot.
+        slot_lines = []
+        for s in free_pcie:
+            desg = s.get("SlotDesignation", "?")
+            desc = s.get("Description", "")
+            slot_lines.append(f"  • {desg} ({desc})" if desc else f"  • {desg}")
+        opportunities.append(
+            {
+                "category": "pcie",
+                "severity": "info",
+                "headline": f"{len(free_pcie)} of {len(pcie_slots)} PCIe slot{'s' if len(pcie_slots) != 1 else ''} free",
+                "detail": (
+                    "Available slots:\n" + "\n".join(slot_lines) + "\n\n"
+                    "Capacity for: discrete GPU, 10 GbE NIC, capture card, NVMe carrier card, "
+                    "or HBA / RAID controller. Match the card's lane requirement (x1 / x4 / x16) "
+                    "to a slot of equal or greater width."
+                ),
+                "action": "Identify which expansion card the workload needs, then match to slot width",
+            }
+        )
+
+    # ── Storage ───────────────────────────────────────────────────────
+    disks = data.get("Disks", []) or []
+    if disks:
+        # MediaType in WMI is one of "Fixed hard disk media", "External
+        # hard disk media", or "" / None. SSD vs HDD has to come from
+        # InterfaceType + Model heuristics since WMI doesn't expose
+        # rotation rate uniformly. NVMe drives report InterfaceType=SCSI
+        # on most Windows builds (a long-standing WMI quirk) but their
+        # model string usually contains "NVMe" or "SSD".
+        spinning = []
+        for d in disks:
+            model = (d.get("Model") or "").upper()
+            iface = (d.get("InterfaceType") or "").upper()
+            # Best-effort: anything that doesn't say SSD/NVMe and is on
+            # IDE/SATA *might* be spinning rust. We're conservative
+            # because a false-positive here recommends spending money.
+            looks_ssd = any(tok in model for tok in ("SSD", "NVME", "M.2"))
+            looks_hdd = (iface in ("IDE", "ATAPI") or "WD" in model[:4] or "SEAGATE" in model) and not looks_ssd
+            if looks_hdd:
+                spinning.append(d)
+        if spinning:
+            sizes_gb = [round(int(d.get("Size") or 0) / (1024**3)) for d in spinning]
+            opportunities.append(
+                {
+                    "category": "storage",
+                    "severity": "info",
+                    "headline": f"{len(spinning)} spinning-disk drive{'s' if len(spinning) != 1 else ''} could be migrated to SSD",
+                    "detail": (
+                        f"Drives that look like HDDs (sizes: {', '.join(str(s) + ' GB' for s in sizes_gb)}). "
+                        "SSDs are dramatically faster on random I/O (boot, app launch, indexing) "
+                        "and cheaper per GB than they were two years ago. "
+                        "If the HDD holds bulk media you don't read often, leave it; "
+                        "if it holds OS / apps / active project files, migrate."
+                    ),
+                    "action": "Replace the OS/active-files HDD with an SSD; keep HDDs for bulk storage",
+                }
+            )
+
+    return {"opportunities": opportunities}
 
 
 # ── Dashboard summary cache ────────────────────────────────────────

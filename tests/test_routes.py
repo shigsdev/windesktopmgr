@@ -2213,6 +2213,16 @@ class TestSysinfoRoute:
     USB_OBJ = _wmi_obj(Name="Intel USB 3.2 eXtensible Host Controller", Manufacturer="Intel", Status="OK")
     SLOT_OBJ1 = _wmi_obj(SlotDesignation="PCIEX16_1", CurrentUsage=4, Status="OK", Description="x16 PCI Express")
     SLOT_OBJ2 = _wmi_obj(SlotDesignation="PCIEX1_1", CurrentUsage=3, Status="OK", Description="x1 PCI Express")
+    # MemoryArray (#43) -- exposes board limits the per-DIMM list can't.
+    # MaxCapacity is in KB (DMTF spec); 67108864 KB = 64 GB. MemoryDevices=4
+    # = total DIMM slots on the board. ec=3 is "None" per _mem_ec_map.
+    MEM_ARRAY_OBJ = _wmi_obj(
+        MaxCapacity="67108864",
+        MaxCapacityEx=0,
+        MemoryDevices=4,
+        MemoryErrorCorrection=3,
+        Location=3,
+    )
     # NIC without connection (should be excluded from NetworkHardware)
     NIC_DISABLED = _wmi_obj(
         Name="Bluetooth",
@@ -2252,6 +2262,7 @@ class TestSysinfoRoute:
                 "Win32_SoundDevice": [self.SOUND_OBJ1, self.SOUND_OBJ2],
                 "Win32_USBController": [self.USB_OBJ],
                 "Win32_SystemSlot": [self.SLOT_OBJ1, self.SLOT_OBJ2],
+                "Win32_PhysicalMemoryArray": [self.MEM_ARRAY_OBJ],
             },
         )
 
@@ -2400,12 +2411,92 @@ class TestSysinfoRoute:
                 "Win32_SoundDevice": [],
                 "Win32_USBController": [],
                 "Win32_SystemSlot": [],
+                "Win32_PhysicalMemoryArray": [],
             },
         )
         r = client.get("/api/sysinfo/data")
         d = r.get_json()["data"]
-        for k in ("Sound", "USBControllers", "PCIeSlots", "NetworkHardware", "GPU"):
+        for k in ("Sound", "USBControllers", "PCIeSlots", "NetworkHardware", "GPU", "MemoryArray"):
             assert d[k] == []
+
+    # ── Backlog #43: MemoryArray + Upgrade Opportunities ────────────────
+    def test_returns_memory_array_with_board_limits(self, client, mocker):
+        """MemoryArray (#43) exposes the board's max capacity + DIMM slot count.
+        Without it the Memory section can only show what's installed; with it
+        we can compute headroom for the upgrade panel."""
+        self._setup_wmi(mocker)
+        r = client.get("/api/sysinfo/data")
+        d = r.get_json()["data"]
+        assert isinstance(d["MemoryArray"], list)
+        assert len(d["MemoryArray"]) == 1
+        a = d["MemoryArray"][0]
+        # 67108864 KB = 64 GB
+        assert a["MaxCapacityGB"] == 64.0
+        assert a["MemoryDevices"] == 4
+        assert a["MemoryErrorCorrection"] == "None"
+        assert a["Location"] == "System Board"
+
+    def test_response_includes_upgrades_block(self, client, mocker):
+        """The /api/sysinfo/data response wires summarize_upgrades into a
+        top-level 'upgrades' key so the UI gets opportunities in the same
+        round-trip as inventory."""
+        self._setup_wmi(mocker)
+        r = client.get("/api/sysinfo/data")
+        d = r.get_json()
+        assert "upgrades" in d
+        assert "opportunities" in d["upgrades"]
+        # With 1 stick of 16 GB in a 4-slot / 64 GB board: expect both a
+        # memory-expansion opportunity AND a single-channel warning.
+        cats = {o["category"] for o in d["upgrades"]["opportunities"]}
+        assert "memory" in cats
+
+    def test_upgrades_resilient_when_sysinfo_collection_fails(self, client, mocker):
+        """If WMI crashes mid-collection, upgrades must still be present
+        (as an empty list) so the UI's render doesn't choke on undefined."""
+        mocker.patch("windesktopmgr.wmi.WMI", side_effect=Exception("WMI crashed"))
+        r = client.get("/api/sysinfo/data")
+        d = r.get_json()
+        assert d["status"] == "partial"
+        # upgrades key must exist even on partial collection
+        assert "upgrades" in d
+        assert d["upgrades"] == {"opportunities": []}
+
+    def test_max_capacity_ex_takes_precedence_when_set(self, client, mocker):
+        """For boards >2 TB, WMI uses MaxCapacityEx (uint64) instead of
+        MaxCapacity. Verify our collector picks Ex when it's non-zero."""
+        # Big-RAM board: MaxCapacityEx = 4 TB in KB = 4_294_967_296 KB
+        big_array = _wmi_obj(
+            MaxCapacity=2147483647,  # capped at int32 max
+            MaxCapacityEx=4294967296,  # 4 TB in KB
+            MemoryDevices=8,
+            MemoryErrorCorrection=5,
+            Location=3,
+        )
+        _mock_wmi(
+            mocker,
+            {
+                "Win32_OperatingSystem": [self.OS_OBJ],
+                "Win32_ComputerSystem": [self.CS_OBJ],
+                "Win32_Processor": [self.CPU_OBJ],
+                "Win32_BIOS": [self.BIOS_OBJ],
+                "Win32_BaseBoard": [self.BB_OBJ],
+                "Win32_VideoController": [],
+                "Win32_NetworkAdapterConfiguration": [],
+                "Win32_NetworkAdapter": [],
+                "Win32_PhysicalMemory": [],
+                "Win32_DiskDrive": [],
+                "Win32_LogicalDisk": [],
+                "Win32_SoundDevice": [],
+                "Win32_USBController": [],
+                "Win32_SystemSlot": [],
+                "Win32_PhysicalMemoryArray": [big_array],
+            },
+        )
+        r = client.get("/api/sysinfo/data")
+        d = r.get_json()["data"]
+        # 4 TB = 4096 GB
+        assert d["MemoryArray"][0]["MaxCapacityGB"] == 4096.0
+        assert d["MemoryArray"][0]["MemoryErrorCorrection"] == "Single-bit ECC"
 
     def test_summary_route_accepts_sysinfo(self, client, mocker):
         """Verify the summary endpoint handles sysinfo tab."""

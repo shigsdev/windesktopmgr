@@ -1280,3 +1280,204 @@ class TestSummarizeTimeline:
     def test_empty_events_returns_ok(self):
         result = wdm.summarize_timeline([])
         assert result["status"] == "ok"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# summarize_upgrades (backlog #43 -- hardware upgrade analyser)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSummarizeUpgrades:
+    """Tests for the summarize_upgrades function.
+
+    summarize_upgrades is the synthesiser behind the System Info tab's
+    "🚀 Upgrade Opportunities" panel. Given the inventory dict that
+    /api/sysinfo/data returns, it emits a list of categorised
+    recommendations with severity / headline / detail / action.
+    """
+
+    @staticmethod
+    def _stick(capacity_gb=16, speed=5600, mtype="DDR5", form="SODIMM", part="CT16G56C46S5"):
+        """Build one Memory entry mirroring the WMI shape."""
+        return {
+            "BankLabel": "BANK 0",
+            "Capacity": capacity_gb * (1024**3),
+            "Speed": speed,
+            "ConfiguredClockSpeed": speed,
+            "Manufacturer": "Crucial",
+            "PartNumber": part,
+            "FormFactor": form,
+            "MemoryType": mtype,
+            "DataWidth": 64,
+            "DeviceLocator": "DIMM A1",
+        }
+
+    @staticmethod
+    def _array(slots=4, max_gb=64):
+        return {
+            "MaxCapacityGB": max_gb,
+            "MemoryDevices": slots,
+            "MemoryErrorCorrection": "None",
+            "Location": "System Board",
+        }
+
+    def test_returns_opportunities_key(self):
+        result = wdm.summarize_upgrades({})
+        assert "opportunities" in result
+        assert isinstance(result["opportunities"], list)
+
+    def test_empty_data_returns_empty_list(self):
+        """Defensive: a totally-empty data dict (WMI failed entirely)
+        must return an empty list -- never raise. The UI hides the panel
+        on empty so the user just sees the inventory tables below."""
+        result = wdm.summarize_upgrades({})
+        assert result["opportunities"] == []
+
+    def test_partial_slots_filled_recommends_expansion(self):
+        """The headline upgrade case: 2 of 4 DIMMs populated, half the
+        max board capacity used. Should surface a 'memory' opportunity
+        with the right slot/headroom math."""
+        data = {
+            "Memory": [self._stick(16), self._stick(16)],
+            "MemoryArray": [self._array(slots=4, max_gb=64)],
+        }
+        result = wdm.summarize_upgrades(data)
+        mem_ops = [o for o in result["opportunities"] if o["category"] == "memory"]
+        assert len(mem_ops) >= 1
+        op = mem_ops[0]
+        assert op["severity"] == "info"
+        assert "32" in op["headline"]  # +32 GB headroom
+        assert "2 of 4" in op["headline"] or "2 of 4 DIMM" in op["headline"]
+        # Action must mention the form factor + type so user knows what to buy
+        assert "DDR5" in op["action"]
+        assert "SODIMM" in op["action"]
+
+    def test_all_slots_full_with_headroom_suggests_replace(self):
+        """All slots populated but board accepts higher density: only
+        path is to swap existing sticks. Should be 'info' severity, not
+        a free win."""
+        data = {
+            "Memory": [self._stick(8), self._stick(8), self._stick(8), self._stick(8)],
+            "MemoryArray": [self._array(slots=4, max_gb=64)],
+        }
+        result = wdm.summarize_upgrades(data)
+        mem_ops = [o for o in result["opportunities"] if o["category"] == "memory"]
+        assert mem_ops, "expected at least one memory opportunity"
+        op = mem_ops[0]
+        assert "replac" in op["headline"].lower() or "replac" in op["action"].lower()
+
+    def test_all_slots_at_max_returns_ok_status(self):
+        """Fully populated AND at max board capacity -- nothing to
+        upgrade. Surface as 'ok' so the user knows we checked, not as
+        absence of any memory opportunity."""
+        data = {
+            "Memory": [self._stick(16), self._stick(16), self._stick(16), self._stick(16)],
+            "MemoryArray": [self._array(slots=4, max_gb=64)],
+        }
+        result = wdm.summarize_upgrades(data)
+        mem_ops = [o for o in result["opportunities"] if o["category"] == "memory"]
+        assert mem_ops
+        assert mem_ops[0]["severity"] == "ok"
+
+    def test_single_dimm_in_multislot_board_warns_single_channel(self):
+        """1 stick in a 2+ slot board -> running in single-channel mode,
+        which halves bandwidth. Free win to add a matching stick."""
+        data = {
+            "Memory": [self._stick(16)],
+            "MemoryArray": [self._array(slots=4, max_gb=64)],
+        }
+        result = wdm.summarize_upgrades(data)
+        warnings = [o for o in result["opportunities"] if o["severity"] == "warning"]
+        assert any("single-channel" in o["headline"].lower() for o in warnings)
+
+    def test_single_dimm_in_one_slot_board_no_channel_warning(self):
+        """A board with only 1 slot can't be in single-channel mode --
+        don't fire a misleading warning on laptops with soldered RAM
+        plus one socket."""
+        data = {
+            "Memory": [self._stick(16)],
+            "MemoryArray": [self._array(slots=1, max_gb=32)],
+        }
+        result = wdm.summarize_upgrades(data)
+        assert not any("single-channel" in o["headline"].lower() for o in result["opportunities"])
+
+    def test_missing_memory_array_skips_memory_opportunities(self):
+        """No MemoryArray data (some VMs / locked OEM firmware): we
+        can't compute headroom or free slots, so memory opportunities
+        are silently skipped rather than guessed at."""
+        data = {"Memory": [self._stick(16), self._stick(16)]}
+        result = wdm.summarize_upgrades(data)
+        # Single-channel doesn't fire here either since total_slots is unknown
+        mem_ops = [o for o in result["opportunities"] if o["category"] == "memory"]
+        assert mem_ops == []
+
+    def test_free_pcie_slots_surface_opportunity(self):
+        """Board has 3 PCIe slots, 2 free -> a 'pcie' opportunity should
+        surface with the slot designations listed."""
+        data = {
+            "PCIeSlots": [
+                {"SlotDesignation": "PCIEX16_1", "CurrentUsage": "In Use", "Description": "PCIe 4.0 x16"},
+                {"SlotDesignation": "PCIEX16_2", "CurrentUsage": "Available", "Description": "PCIe 4.0 x16"},
+                {"SlotDesignation": "PCIEX1_1", "CurrentUsage": "Available", "Description": "PCIe 3.0 x1"},
+            ]
+        }
+        result = wdm.summarize_upgrades(data)
+        pcie_ops = [o for o in result["opportunities"] if o["category"] == "pcie"]
+        assert len(pcie_ops) == 1
+        op = pcie_ops[0]
+        assert "2 of 3" in op["headline"]
+        # Detail should list the actual free slot designations so user
+        # can match the right card form-factor
+        assert "PCIEX16_2" in op["detail"]
+        assert "PCIEX1_1" in op["detail"]
+
+    def test_all_pcie_slots_in_use_no_opportunity(self):
+        data = {
+            "PCIeSlots": [
+                {"SlotDesignation": "PCIEX16_1", "CurrentUsage": "In Use", "Description": "PCIe 4.0 x16"},
+            ]
+        }
+        result = wdm.summarize_upgrades(data)
+        assert not [o for o in result["opportunities"] if o["category"] == "pcie"]
+
+    def test_spinning_disk_surfaces_ssd_migration(self):
+        """A drive that looks like an HDD (no SSD/NVMe in the model) on
+        IDE/ATAPI interface should surface an SSD-migration opportunity."""
+        data = {
+            "Disks": [
+                {"Model": "WDC WD40EZRZ-00GXCB0", "Size": 4 * (1024**3) * 1000, "InterfaceType": "IDE"},
+                {"Model": "Samsung SSD 980 PRO 2TB", "Size": 2 * (1024**3) * 1000, "InterfaceType": "SCSI"},
+            ]
+        }
+        result = wdm.summarize_upgrades(data)
+        storage = [o for o in result["opportunities"] if o["category"] == "storage"]
+        assert storage, "expected an SSD-migration recommendation"
+        # Only the WD drive should count -- not the Samsung NVMe
+        assert "1" in storage[0]["headline"]
+
+    def test_all_ssd_no_storage_opportunity(self):
+        """All NVMe / SSD drives -- no migration recommendation."""
+        data = {
+            "Disks": [
+                {"Model": "Samsung SSD 980 PRO 2TB", "Size": 2 * (1024**3), "InterfaceType": "SCSI"},
+                {"Model": "Crucial MX500 SSD", "Size": 1 * (1024**3), "InterfaceType": "SATA"},
+            ]
+        }
+        result = wdm.summarize_upgrades(data)
+        assert not [o for o in result["opportunities"] if o["category"] == "storage"]
+
+    def test_opportunity_shape_is_stable(self):
+        """Every opportunity must have category/severity/headline/detail/action --
+        the UI renderer relies on the shape being uniform."""
+        data = {
+            "Memory": [self._stick(16), self._stick(16)],
+            "MemoryArray": [self._array(slots=4, max_gb=64)],
+            "PCIeSlots": [
+                {"SlotDesignation": "PCIEX16_2", "CurrentUsage": "Available", "Description": "x16"},
+            ],
+        }
+        result = wdm.summarize_upgrades(data)
+        for op in result["opportunities"]:
+            assert {"category", "severity", "headline", "detail", "action"} <= set(op.keys())
+            assert op["category"] in ("memory", "pcie", "storage")
+            assert op["severity"] in ("ok", "info", "warning")

@@ -6997,6 +6997,57 @@ function loadArchitecture() {
   };
 }
 
+// ── System Info: Upgrade Opportunities (#43) ───
+// Pure rendering function -- takes a list of opportunity records from
+// summarize_upgrades() and emits cards into #si-upgrade-panel. Empty list
+// hides the whole panel so the section title doesn't sit above an empty
+// container. Severity controls the left-border colour:
+//   ok      -> green   (just informational, no action needed)
+//   info    -> cyan    (an opportunity worth considering)
+//   warning -> orange  (something is suboptimal that you can fix for free,
+//                       e.g. running in single-channel mode)
+function siRenderUpgradePanel(opportunities) {
+  const panel = document.getElementById("si-upgrade-panel");
+  const body  = document.getElementById("si-upgrade-cards");
+  if (!panel || !body) return;
+  if (!opportunities || !opportunities.length) {
+    panel.style.display = "none";
+    return;
+  }
+  panel.style.display = "block";
+  const sevColor = sev =>
+    sev === "warning" ? "var(--orange)" :
+    sev === "ok"      ? "var(--green)"  :
+                        "var(--cyan)";
+  const sevIcon = sev =>
+    sev === "warning" ? "⚠" :
+    sev === "ok"      ? "✓" :
+                        "↑";
+  const catIcon = cat =>
+    cat === "memory"  ? "🧠" :
+    cat === "pcie"    ? "🔧" :
+    cat === "storage" ? "💾" : "🚀";
+  body.innerHTML = opportunities.map(o => {
+    const color = sevColor(o.severity);
+    return `
+      <div class="upgrade-card" data-category="${esc(o.category||'')}" data-severity="${esc(o.severity||'')}"
+           style="background:var(--surface);border:1px solid var(--border);border-left:4px solid ${color};
+                  border-radius:8px;padding:14px 16px;margin-bottom:10px">
+        <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:6px">
+          <span style="font-size:20px">${catIcon(o.category)}</span>
+          <div style="flex:1">
+            <div style="font-weight:700;color:${color};font-size:14px;margin-bottom:2px">
+              <span style="margin-right:6px">${sevIcon(o.severity)}</span>${esc(o.headline||'')}
+            </div>
+            ${o.detail ? `<div style="font-size:12px;color:var(--text);white-space:pre-wrap;line-height:1.5">${esc(o.detail)}</div>` : ''}
+          </div>
+        </div>
+        ${o.action ? `<div style="margin-top:8px;padding:6px 10px;background:var(--bg);border-radius:4px;font-size:11px;color:var(--muted);font-family:var(--font-mono)"><span style="color:var(--cyan);font-weight:600">→ Action:</span> ${esc(o.action)}</div>` : ''}
+      </div>
+    `;
+  }).join("");
+}
+
 async function loadSystemInfo() {
   document.getElementById("si-loading").style.display = "block";
   document.getElementById("si-content").style.display = "none";
@@ -7022,7 +7073,7 @@ async function loadSystemInfo() {
     }
     if (j.status === "ok" || j.status === "partial") {
       if (j.data && Object.keys(j.data).length > 0) {
-        renderSystemInfo(j.data);
+        renderSystemInfo(j.data, j.upgrades);
         fetchSummary("sysinfo", j.data, "summary-sysinfo");
       } else {
         document.getElementById("si-loading").textContent = "No data returned.";
@@ -7040,7 +7091,7 @@ async function loadSystemInfo() {
   document.getElementById("si-content").style.display = "";
 }
 
-function renderSystemInfo(d) {
+function renderSystemInfo(d, upgrades) {
   const comp = d.Computer || {};
   const os = d.OS || {};
   const cpu = d.CPU || {};
@@ -7050,11 +7101,20 @@ function renderSystemInfo(d) {
   const nics = d.Network || [];
   const nicHw = d.NetworkHardware || [];
   const ram = d.Memory || [];
+  const memArrays = d.MemoryArray || [];
   const disks = d.Disks || [];
   const vols = d.Volumes || [];
   const sound = d.Sound || [];
   const usb = d.USBControllers || [];
   const slots = d.PCIeSlots || [];
+
+  // Upgrade Opportunities panel (#43). Computed server-side by
+  // summarize_upgrades() and shipped on the same response. Uses the
+  // shared esc helper and `siRenderUpgradePanel` so the rendering can
+  // be tested independently. Empty opportunities -> hide the panel
+  // entirely so we don't waste vertical space when there's nothing
+  // actionable to surface.
+  siRenderUpgradePanel((upgrades && upgrades.opportunities) || []);
 
   // Stat cards
   document.getElementById("si-hostname").textContent = comp.Name || "\u2014";
@@ -7119,6 +7179,33 @@ function renderSystemInfo(d) {
   }).join("");
   document.getElementById("si-ram-tbody").innerHTML = ramHtml || '<tr><td colspan="8" style="color:var(--muted)">No data</td></tr>';
 
+  // Memory Array board-limits header (#43). Sums slots + max capacity
+  // across arrays (typically 1 on desktops; can be >1 on workstation /
+  // server boards). Renders nothing if WMI didn't return MemoryArray
+  // data -- some VMs and OEM-locked firmware suppress it.
+  const memHdr = document.getElementById("si-ram-board-header");
+  if (memHdr) {
+    if (memArrays.length) {
+      const totalSlots = memArrays.reduce((a, x) => a + (x.MemoryDevices || 0), 0);
+      const maxGB = memArrays.reduce((a, x) => a + (x.MaxCapacityGB || 0), 0);
+      const usedSlots = ram.filter(m => (m.Capacity || 0) > 0).length;
+      const installedGB = ram.reduce((a, m) => a + (m.Capacity || 0), 0) / 1073741824;
+      const headroomGB = Math.max(0, maxGB - installedGB);
+      const ec = memArrays.find(a => a.MemoryErrorCorrection)?.MemoryErrorCorrection || "";
+      memHdr.innerHTML = `
+        <span style="color:var(--cyan)">Slots used:</span> <strong>${usedSlots} of ${totalSlots}</strong>
+        &nbsp;\u00b7&nbsp;
+        <span style="color:var(--cyan)">Max board capacity:</span> <strong>${maxGB.toFixed(0)} GB</strong>
+        &nbsp;\u00b7&nbsp;
+        <span style="color:var(--cyan)">Headroom:</span> <strong style="color:${headroomGB > 0 ? 'var(--green)' : 'var(--muted)'}">+${headroomGB.toFixed(1)} GB</strong>
+        ${ec ? `&nbsp;\u00b7&nbsp;<span style="color:var(--cyan)">ECC:</span> ${ec}` : ''}
+      `;
+      memHdr.style.display = "block";
+    } else {
+      memHdr.style.display = "none";
+    }
+  }
+
   // Network adapters (IP config)
   const nicHtml = nics.map(n => {
     const dns = Array.isArray(n.DNSServerSearchOrder) ? n.DNSServerSearchOrder.join(", ") : (n.DNSServerSearchOrder||"\u2014");
@@ -7153,6 +7240,24 @@ function renderSystemInfo(d) {
     return `<tr><td>${s.SlotDesignation||'\u2014'}</td><td style="color:${usageCol}">${s.CurrentUsage||'\u2014'}</td><td>${s.Status||'\u2014'}</td><td style="font-size:11px">${s.Description||'\u2014'}</td></tr>`;
   }).join("");
   document.getElementById("si-pcie-tbody").innerHTML = slotHtml || '<tr><td colspan="4" style="color:var(--muted)">No slot data</td></tr>';
+
+  // PCIe slot summary header (#43) -- matches the Memory header style
+  // so the upgrade-relevant numbers are visible at a glance without
+  // scanning the row count.
+  const pcieHdr = document.getElementById("si-pcie-summary-header");
+  if (pcieHdr) {
+    if (slots.length) {
+      const free = slots.filter(s => (s.CurrentUsage || "").toLowerCase() === "available").length;
+      pcieHdr.innerHTML = `
+        <span style="color:var(--cyan)">Free slots:</span>
+        <strong style="color:${free > 0 ? 'var(--green)' : 'var(--muted)'}">${free} of ${slots.length}</strong>
+        ${free > 0 ? '&nbsp;\u00b7&nbsp;<span style="color:var(--muted)">Capacity for: GPU, NIC, capture card, NVMe carrier, HBA</span>' : ''}
+      `;
+      pcieHdr.style.display = "block";
+    } else {
+      pcieHdr.style.display = "none";
+    }
+  }
 
   // Disks
   const diskHtml = disks.map(dk => {
@@ -7998,6 +8103,19 @@ function renderSystemInfo(d) {
     <div id="si-loading" style="text-align:center;padding:40px;color:var(--muted)">Collecting system information…</div>
     <div id="si-content" style="display:none">
 
+      <!-- 🚀 Upgrade Opportunities (#43) -- shown above hardware sections so
+           the user lands on actionable items first; scroll down for the full
+           inventory. Hidden entirely when the summariser returns no
+           opportunities (e.g. all slots full and at max capacity).
+      -->
+      <div id="si-upgrade-panel" style="display:none;margin-bottom:24px;padding:14px 16px;background:linear-gradient(180deg,#00d4ff08 0%,transparent 100%);border:1px solid #00d4ff44;border-radius:10px">
+        <h3 style="color:var(--cyan);margin:0 0 10px;font-size:15px;display:flex;align-items:center;gap:8px">
+          🚀 Upgrade Opportunities
+          <span style="font-size:10px;color:var(--muted);font-weight:400;letter-spacing:.04em">(synthesised from hardware inventory below)</span>
+        </h3>
+        <div id="si-upgrade-cards"></div>
+      </div>
+
       <!-- Computer -->
       <div style="margin-bottom:20px">
         <h3 style="color:var(--cyan);margin-bottom:8px">🖥 Computer</h3>
@@ -8030,7 +8148,12 @@ function renderSystemInfo(d) {
 
       <!-- Memory Modules -->
       <div style="margin-bottom:20px">
-        <h3 style="color:var(--cyan);margin-bottom:8px">🧠 Memory Modules</h3>
+        <h3 style="color:var(--cyan);margin-bottom:4px">🧠 Memory Modules</h3>
+        <!-- Board-limit header (#43): "Slots used: 2 of 4 · Max board capacity: 64 GB
+             · Headroom: +32 GB". Populated by renderSystemInfo from MemoryArray data;
+             hidden when WMI didn't return Win32_PhysicalMemoryArray (some VMs / locked
+             OEM firmware suppress it). -->
+        <div id="si-ram-board-header" style="display:none;font-size:12px;margin-bottom:8px;color:var(--text);padding:6px 10px;background:var(--surface);border-radius:6px"></div>
         <table class="styled-table">
           <thead><tr><th>Slot</th><th>Locator</th><th>Size</th><th>Type</th><th>Form</th><th>Clock</th><th>Manufacturer</th><th>Part Number</th></tr></thead>
           <tbody id="si-ram-tbody"></tbody>
@@ -8075,7 +8198,10 @@ function renderSystemInfo(d) {
 
       <!-- PCIe Slots -->
       <div style="margin-bottom:20px">
-        <h3 style="color:var(--cyan);margin-bottom:8px">🔧 PCIe Slots</h3>
+        <h3 style="color:var(--cyan);margin-bottom:4px">🔧 PCIe Slots</h3>
+        <!-- Slot summary header (#43): "Free slots: 2 of 3 · Capacity for: GPU, NIC..."
+             Populated by renderSystemInfo from the PCIeSlots list. -->
+        <div id="si-pcie-summary-header" style="display:none;font-size:12px;margin-bottom:8px;color:var(--text);padding:6px 10px;background:var(--surface);border-radius:6px"></div>
         <table class="styled-table">
           <thead><tr><th>Slot</th><th>Usage</th><th>Status</th><th>Description</th></tr></thead>
           <tbody id="si-pcie-tbody"></tbody>
