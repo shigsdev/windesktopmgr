@@ -1413,7 +1413,11 @@ class TestSummarizeUpgrades:
 
     def test_free_pcie_slots_surface_opportunity(self):
         """Board has 3 PCIe slots, 2 free -> a 'pcie' opportunity should
-        surface with the slot designations listed."""
+        surface with the slot designations listed.
+
+        Updated 2026-05-02 (#43 follow-up): slot designations now live
+        in the `compat` field as structured {label,value} rows so the
+        UI can render them as a definition list -- not in `detail` prose."""
         data = {
             "PCIeSlots": [
                 {"SlotDesignation": "PCIEX16_1", "CurrentUsage": "In Use", "Description": "PCIe 4.0 x16"},
@@ -1426,10 +1430,11 @@ class TestSummarizeUpgrades:
         assert len(pcie_ops) == 1
         op = pcie_ops[0]
         assert "2 of 3" in op["headline"]
-        # Detail should list the actual free slot designations so user
-        # can match the right card form-factor
-        assert "PCIEX16_2" in op["detail"]
-        assert "PCIEX1_1" in op["detail"]
+        # Compat must list the actual free slot designations so user can
+        # match the right card form-factor (no longer required in detail)
+        compat_labels = [c["label"] for c in op.get("compat", [])]
+        assert "PCIEX16_2" in compat_labels
+        assert "PCIEX1_1" in compat_labels
 
     def test_all_pcie_slots_in_use_no_opportunity(self):
         data = {
@@ -1468,7 +1473,11 @@ class TestSummarizeUpgrades:
 
     def test_opportunity_shape_is_stable(self):
         """Every opportunity must have category/severity/headline/detail/action --
-        the UI renderer relies on the shape being uniform."""
+        the UI renderer relies on the shape being uniform.
+
+        Updated 2026-05-02 (#43 follow-up): six categories now
+        (memory/cpu/gpu/nic/pcie/storage), and optional fields compat /
+        caveats / links are allowed but never required."""
         data = {
             "Memory": [self._stick(16), self._stick(16)],
             "MemoryArray": [self._array(slots=4, max_gb=64)],
@@ -1479,5 +1488,285 @@ class TestSummarizeUpgrades:
         result = wdm.summarize_upgrades(data)
         for op in result["opportunities"]:
             assert {"category", "severity", "headline", "detail", "action"} <= set(op.keys())
-            assert op["category"] in ("memory", "pcie", "storage")
+            assert op["category"] in ("memory", "cpu", "gpu", "nic", "pcie", "storage")
             assert op["severity"] in ("ok", "info", "warning")
+            # Optional fields, when present, must be the right shape
+            if "compat" in op:
+                assert isinstance(op["compat"], list)
+                for c in op["compat"]:
+                    assert {"label", "value"} <= set(c.keys())
+            if "caveats" in op:
+                assert isinstance(op["caveats"], list)
+                assert all(isinstance(c, str) for c in op["caveats"])
+            if "links" in op:
+                assert isinstance(op["links"], list)
+                for link in op["links"]:
+                    assert {"label", "url"} <= set(link.keys())
+
+    # ── #43 follow-up: helpers ─────────────────────────────────────────
+
+    def test_jedec_spec_ddr5(self):
+        """DDR5-5600 → 'DDR5-5600 PC5-44800' (5600 × 8 = 44800 MB/s)."""
+        assert wdm._jedec_spec("DDR5", 5600) == "DDR5-5600 PC5-44800"
+
+    def test_jedec_spec_ddr4(self):
+        assert wdm._jedec_spec("DDR4", 3200) == "DDR4-3200 PC4-25600"
+
+    def test_jedec_spec_unknown_type_falls_back(self):
+        """Unknown DDR generation -> just speed, no PC prefix."""
+        assert wdm._jedec_spec("DDR2", 800) == "DDR2-800"
+
+    def test_jedec_spec_empty_inputs_return_empty(self):
+        """Don't synthesise garbage from missing inputs."""
+        assert wdm._jedec_spec("", 5600) == ""
+        assert wdm._jedec_spec("DDR5", 0) == ""
+
+    def test_mem_voltage_ddr5(self):
+        assert "1.1" in wdm._mem_voltage("DDR5")
+
+    def test_mem_voltage_ddr4(self):
+        assert "1.2" in wdm._mem_voltage("DDR4")
+
+    def test_mem_voltage_unknown_returns_empty(self):
+        assert wdm._mem_voltage("XYZ") == ""
+
+    def test_oem_link_dell_uses_service_tag(self):
+        """Dell-branded BIOS + non-empty SerialNumber → support URL with the tag."""
+        link = wdm._oem_support_url(
+            {"Manufacturer": "Dell Inc.", "SerialNumber": "ABC1234"},
+            {"Manufacturer": "Dell Inc."},
+        )
+        assert link is not None
+        label, url = link
+        assert "ABC1234" in url
+        assert "dell.com" in url
+
+    def test_oem_link_unknown_oem_returns_none(self):
+        """Don't fabricate URLs for OEMs we haven't validated against."""
+        link = wdm._oem_support_url(
+            {"Manufacturer": "Acme Computers", "SerialNumber": "X"},
+            {"Manufacturer": "Acme"},
+        )
+        assert link is None
+
+    def test_oem_link_dell_no_serial_returns_none(self):
+        """Empty Service Tag -> no link (would be a bad URL)."""
+        link = wdm._oem_support_url({"Manufacturer": "Dell Inc.", "SerialNumber": ""}, {})
+        assert link is None
+        link2 = wdm._oem_support_url({"Manufacturer": "Dell Inc.", "SerialNumber": "0"}, {})
+        assert link2 is None
+
+    def test_slot_numeric_index_extraction(self):
+        """The GPU-blocking heuristic depends on parsing slot suffixes."""
+        assert wdm._slot_numeric_index("SLOT1") == 1
+        assert wdm._slot_numeric_index("PCIEX16_3") == 3
+        assert wdm._slot_numeric_index("PCI Express x4-2") == 2
+        # Designations with no trailing digit -> None (e.g. M.2 WLAN)
+        assert wdm._slot_numeric_index("M.2 WLAN") is None
+        assert wdm._slot_numeric_index("") is None
+
+    # ── #43 follow-up: GPU-blocking heuristic ──────────────────────────
+
+    def test_gpu_blocks_adjacent_slot(self):
+        """Discrete GPU in SLOT1 + SLOT2 reports Available -> SLOT2 flagged.
+
+        This is the headline use case the user asked for: dual-slot GPU
+        cooler physically blocks the slot directly below the x16 home,
+        even though that slot has no electrical connection."""
+        slots = [
+            {"SlotDesignation": "SLOT1", "CurrentUsage": "In Use", "Description": "x16"},
+            {"SlotDesignation": "SLOT2", "CurrentUsage": "Available", "Description": "x4"},
+            {"SlotDesignation": "SLOT3", "CurrentUsage": "In Use", "Description": "x1"},
+        ]
+        gpus = [{"Name": "NVIDIA GeForce RTX 4060 Ti", "AdapterCompatibility": "NVIDIA"}]
+        blocked = wdm._estimate_gpu_blocked_slots(slots, gpus)
+        assert blocked == ["SLOT2"]
+
+    def test_no_blocked_slot_when_no_discrete_gpu(self):
+        """Integrated-only GPU should NOT trigger blocking."""
+        slots = [
+            {"SlotDesignation": "SLOT1", "CurrentUsage": "In Use", "Description": "x16"},
+            {"SlotDesignation": "SLOT2", "CurrentUsage": "Available", "Description": "x4"},
+        ]
+        gpus = [{"Name": "Intel UHD Graphics 770", "AdapterCompatibility": "Intel"}]
+        assert wdm._estimate_gpu_blocked_slots(slots, gpus) == []
+
+    def test_no_blocked_slot_when_adjacent_slot_already_in_use(self):
+        """If the next slot is already populated, don't flag it -- the user
+        clearly fit something physical there."""
+        slots = [
+            {"SlotDesignation": "SLOT1", "CurrentUsage": "In Use", "Description": "x16"},
+            {"SlotDesignation": "SLOT2", "CurrentUsage": "In Use", "Description": "x4"},
+        ]
+        gpus = [{"Name": "RTX 4060 Ti", "AdapterCompatibility": "NVIDIA"}]
+        assert wdm._estimate_gpu_blocked_slots(slots, gpus) == []
+
+    def test_no_blocked_slot_when_no_pcie_slots_in_use(self):
+        """No GPU home slot identified -> no blocking guess."""
+        slots = [
+            {"SlotDesignation": "SLOT1", "CurrentUsage": "Available", "Description": "x16"},
+            {"SlotDesignation": "SLOT2", "CurrentUsage": "Available", "Description": "x4"},
+        ]
+        gpus = [{"Name": "RTX 4060 Ti", "AdapterCompatibility": "NVIDIA"}]
+        assert wdm._estimate_gpu_blocked_slots(slots, gpus) == []
+
+    # ── #43 follow-up: PCIe count subtracts blocked slots ─────────────
+
+    def test_pcie_headline_subtracts_blocked_slot(self):
+        """User asked: "we should validate that we have that many" --
+        the headline must reflect physically usable, not WMI's
+        electrical view."""
+        data = {
+            "PCIeSlots": [
+                {"SlotDesignation": "SLOT1", "CurrentUsage": "In Use", "Description": "x16"},
+                {"SlotDesignation": "SLOT2", "CurrentUsage": "Available", "Description": "x4"},
+                {"SlotDesignation": "SLOT3", "CurrentUsage": "Available", "Description": "x1"},
+            ],
+            "GPU": [{"Name": "RTX 4060 Ti", "AdapterCompatibility": "NVIDIA"}],
+        }
+        result = wdm.summarize_upgrades(data)
+        pcie = next(o for o in result["opportunities"] if o["category"] == "pcie")
+        # Out of 3 slots, 1 in use + 1 blocked = only SLOT3 truly free
+        assert "1 of 3" in pcie["headline"]
+        # Caveat must call out which slot is blocked so the user can verify
+        assert any("SLOT2" in c for c in pcie.get("caveats", []))
+
+    # ── #43 follow-up: memory compat block ────────────────────────────
+
+    def test_memory_opportunity_includes_compat_with_jedec_voltage_partnumber(self):
+        """The "approved spec" answer to "what RAM can I actually buy?"."""
+        data = {
+            "Memory": [self._stick(16, speed=5600, mtype="DDR5", form="SODIMM", part="CT16G56C46S5")],
+            "MemoryArray": [self._array(slots=4, max_gb=64)],
+        }
+        result = wdm.summarize_upgrades(data)
+        mem = [o for o in result["opportunities"] if o["category"] == "memory"]
+        # Find the expansion opportunity (not the single-channel warning)
+        expansion = next(o for o in mem if "Add up to" in o["headline"])
+        compat_labels = {c["label"] for c in expansion.get("compat", [])}
+        assert "JEDEC spec" in compat_labels
+        assert "Form factor" in compat_labels
+        assert "Voltage" in compat_labels
+        assert "Reference part #" in compat_labels
+        compat_values = " ".join(c["value"] for c in expansion["compat"])
+        assert "DDR5-5600" in compat_values
+        assert "PC5-44800" in compat_values
+        assert "1.1" in compat_values
+        assert "CT16G56C46S5" in compat_values
+
+    def test_memory_opportunity_includes_oem_link_when_dell(self):
+        """Service Tag from BIOS → Dell support deep-link in `links`."""
+        data = {
+            "Memory": [self._stick(16)],
+            "MemoryArray": [self._array(slots=4, max_gb=64)],
+            "BIOS": {"Manufacturer": "Dell Inc.", "SerialNumber": "ABC1234"},
+            "Baseboard": {"Manufacturer": "Dell Inc."},
+        }
+        result = wdm.summarize_upgrades(data)
+        mem = [o for o in result["opportunities"] if o["category"] == "memory"]
+        expansion = next(o for o in mem if "Add up to" in o["headline"])
+        assert any("dell.com" in link["url"] and "ABC1234" in link["url"] for link in expansion.get("links", []))
+
+    def test_memory_opportunity_no_link_for_unknown_oem(self):
+        """Unknown OEM → links list is empty (don't fabricate URLs)."""
+        data = {
+            "Memory": [self._stick(16)],
+            "MemoryArray": [self._array(slots=4, max_gb=64)],
+            "BIOS": {"Manufacturer": "Acme", "SerialNumber": "X"},
+        }
+        result = wdm.summarize_upgrades(data)
+        mem = [o for o in result["opportunities"] if o["category"] == "memory"]
+        expansion = next(o for o in mem if "Add up to" in o["headline"])
+        assert expansion.get("links", []) == []
+
+    # ── #43 follow-up: CPU opportunity ────────────────────────────────
+
+    def test_cpu_opportunity_when_socket_present(self):
+        """SocketDesignation present -> CPU opportunity surfaces."""
+        data = {
+            "CPU": {
+                "Name": "Intel(R) Core(TM) i9-14900K",
+                "SocketDesignation": "LGA1700",
+                "Cores": 24,
+                "LogicalProcs": 32,
+                "Architecture": "x64",
+            }
+        }
+        result = wdm.summarize_upgrades(data)
+        cpu_ops = [o for o in result["opportunities"] if o["category"] == "cpu"]
+        assert len(cpu_ops) == 1
+        assert "LGA1700" in cpu_ops[0]["headline"]
+        # Caveats list must mention BIOS, cooler, and power delivery
+        all_caveats = " ".join(cpu_ops[0].get("caveats", [])).lower()
+        assert "bios" in all_caveats
+        assert "cooler" in all_caveats
+        assert "power" in all_caveats or "vrm" in all_caveats
+
+    def test_cpu_opportunity_skipped_when_no_socket(self):
+        """No socket info → no CPU opportunity (avoid noise on
+        soldered-CPU laptops where SocketDesignation is empty)."""
+        data = {"CPU": {"Name": "Apple M-something", "SocketDesignation": ""}}
+        result = wdm.summarize_upgrades(data)
+        assert not [o for o in result["opportunities"] if o["category"] == "cpu"]
+
+    # ── #43 follow-up: GPU upgrade opportunity ────────────────────────
+
+    def test_gpu_opportunity_when_x16_slot_free(self):
+        data = {
+            "PCIeSlots": [
+                {"SlotDesignation": "PCIEX16_1", "CurrentUsage": "Available", "Description": "PCIe 4.0 x16"},
+            ],
+            "GPU": [{"Name": "Intel UHD Graphics", "AdapterCompatibility": "Intel"}],  # iGPU only
+        }
+        result = wdm.summarize_upgrades(data)
+        gpu_ops = [o for o in result["opportunities"] if o["category"] == "gpu"]
+        assert gpu_ops
+        # Caveats must surface PSU + clearance since we can't measure them
+        caveats = " ".join(gpu_ops[0].get("caveats", [])).lower()
+        assert "psu" in caveats or "wattage" in caveats
+        assert "clearance" in caveats or "length" in caveats
+
+    def test_gpu_opportunity_skipped_when_no_x16_free(self):
+        data = {
+            "PCIeSlots": [
+                {"SlotDesignation": "PCIEX1_1", "CurrentUsage": "Available", "Description": "x1"},
+            ],
+            "GPU": [{"Name": "iGPU"}],
+        }
+        result = wdm.summarize_upgrades(data)
+        assert not [o for o in result["opportunities"] if o["category"] == "gpu"]
+
+    # ── #43 follow-up: NIC opportunities ──────────────────────────────
+
+    def test_nic_wifi_opportunity_when_wlan_slot_free(self):
+        data = {
+            "PCIeSlots": [
+                {"SlotDesignation": "M.2 WLAN", "CurrentUsage": "Available", "Description": "M.2 WLAN slot"},
+            ]
+        }
+        result = wdm.summarize_upgrades(data)
+        nic_ops = [o for o in result["opportunities"] if o["category"] == "nic"]
+        assert any("Wi-Fi" in o["headline"] for o in nic_ops)
+
+    def test_nic_wired_opportunity_when_x1_slot_free(self):
+        data = {
+            "PCIeSlots": [
+                {"SlotDesignation": "PCIEX1_1", "CurrentUsage": "Available", "Description": "x1"},
+            ]
+        }
+        result = wdm.summarize_upgrades(data)
+        nic_ops = [o for o in result["opportunities"] if o["category"] == "nic"]
+        assert any("GbE" in o["headline"] for o in nic_ops)
+
+    def test_nic_wired_skipped_when_only_x16_free(self):
+        """A free x16 slot is the GPU's playground -- don't double-count it
+        as a NIC opportunity. (A 10 GbE NIC technically fits, but the GPU
+        opportunity already covers the same slot.)"""
+        data = {
+            "PCIeSlots": [
+                {"SlotDesignation": "PCIEX16_2", "CurrentUsage": "Available", "Description": "x16"},
+            ]
+        }
+        result = wdm.summarize_upgrades(data)
+        nic_wired = [o for o in result["opportunities"] if o["category"] == "nic" and "GbE" in o["headline"]]
+        assert nic_wired == []

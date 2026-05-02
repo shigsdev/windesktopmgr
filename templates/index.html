@@ -7002,10 +7002,20 @@ function loadArchitecture() {
 // summarize_upgrades() and emits cards into #si-upgrade-panel. Empty list
 // hides the whole panel so the section title doesn't sit above an empty
 // container. Severity controls the left-border colour:
-//   ok      -> green   (just informational, no action needed)
+//   ok      -> green   (informational, no action needed)
 //   info    -> cyan    (an opportunity worth considering)
-//   warning -> orange  (something is suboptimal that you can fix for free,
+//   warning -> orange  (something suboptimal you can fix for free,
 //                       e.g. running in single-channel mode)
+//
+// Optional fields rendered when present:
+//   compat   -- list of {label,value} -- shown as a definition list
+//               under detail. The "approved spec" answer to "what can
+//               I actually buy that fits my board?"
+//   caveats  -- list of strings -- shown as orange-bullet warnings
+//               below detail (the "verify before spending money" notes)
+//   links    -- list of {label,url} -- rendered as small link buttons
+//               next to the action footer (e.g. OEM support page using
+//               the Service Tag we already collected)
 function siRenderUpgradePanel(opportunities) {
   const panel = document.getElementById("si-upgrade-panel");
   const body  = document.getElementById("si-upgrade-cards");
@@ -7025,10 +7035,48 @@ function siRenderUpgradePanel(opportunities) {
                         "↑";
   const catIcon = cat =>
     cat === "memory"  ? "🧠" :
+    cat === "cpu"     ? "⚡" :
+    cat === "gpu"     ? "🎮" :
+    cat === "nic"     ? "🌐" :
     cat === "pcie"    ? "🔧" :
     cat === "storage" ? "💾" : "🚀";
   body.innerHTML = opportunities.map(o => {
     const color = sevColor(o.severity);
+    // Compat block -- definition list of approved specs (#43 follow-up
+    // 2026-05-02). Two columns: cyan label, normal value. Mono font
+    // keeps PartNumbers / JEDEC strings legible.
+    const compatHtml = (o.compat && o.compat.length)
+      ? `<div style="margin-top:8px;padding:8px 10px;background:var(--bg);border-radius:4px;font-size:11px;font-family:var(--font-mono);line-height:1.6">
+          <div style="font-size:10px;color:var(--cyan);font-weight:700;letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px">Approved spec</div>
+          ${o.compat.map(c => `
+            <div style="display:flex;gap:8px;align-items:flex-start">
+              <span style="color:var(--cyan);min-width:120px;flex-shrink:0">${esc(c.label||'')}</span>
+              <span style="color:var(--text)">${esc(c.value||'')}</span>
+            </div>
+          `).join("")}
+        </div>`
+      : '';
+    // Caveats -- orange ⚠ bullets so they read as "things to verify"
+    // not as part of the recommendation. Renders one bullet per caveat.
+    const caveatsHtml = (o.caveats && o.caveats.length)
+      ? `<div style="margin-top:8px;font-size:11px;color:var(--text);line-height:1.5">
+          ${o.caveats.map(c => `
+            <div style="display:flex;gap:6px;align-items:flex-start;margin-top:3px">
+              <span style="color:var(--orange);flex-shrink:0">⚠</span>
+              <span>${esc(c)}</span>
+            </div>
+          `).join("")}
+        </div>`
+      : '';
+    // Links -- shown to the right of the action so the click target is
+    // visually obvious. target=_blank + rel=noopener so the OEM page
+    // can't tamper with our tab.
+    const linksHtml = (o.links && o.links.length)
+      ? o.links.map(l =>
+          `<a href="${esc(l.url||'')}" target="_blank" rel="noopener noreferrer"
+              style="display:inline-block;margin-left:8px;padding:3px 10px;background:var(--cyan);color:#0d1117;border-radius:4px;font-size:11px;font-weight:600;text-decoration:none">🔗 ${esc(l.label||'')}</a>`
+        ).join("")
+      : '';
     return `
       <div class="upgrade-card" data-category="${esc(o.category||'')}" data-severity="${esc(o.severity||'')}"
            style="background:var(--surface);border:1px solid var(--border);border-left:4px solid ${color};
@@ -7040,9 +7088,11 @@ function siRenderUpgradePanel(opportunities) {
               <span style="margin-right:6px">${sevIcon(o.severity)}</span>${esc(o.headline||'')}
             </div>
             ${o.detail ? `<div style="font-size:12px;color:var(--text);white-space:pre-wrap;line-height:1.5">${esc(o.detail)}</div>` : ''}
+            ${compatHtml}
+            ${caveatsHtml}
           </div>
         </div>
-        ${o.action ? `<div style="margin-top:8px;padding:6px 10px;background:var(--bg);border-radius:4px;font-size:11px;color:var(--muted);font-family:var(--font-mono)"><span style="color:var(--cyan);font-weight:600">→ Action:</span> ${esc(o.action)}</div>` : ''}
+        ${(o.action || linksHtml) ? `<div style="margin-top:8px;padding:6px 10px;background:var(--bg);border-radius:4px;font-size:11px;color:var(--muted);font-family:var(--font-mono);display:flex;align-items:center;flex-wrap:wrap;gap:6px"><span style="flex:1"><span style="color:var(--cyan);font-weight:600">→ Action:</span> ${esc(o.action||'')}</span>${linksHtml}</div>` : ''}
       </div>
     `;
   }).join("");
