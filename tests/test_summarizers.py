@@ -1770,3 +1770,212 @@ class TestSummarizeUpgrades:
         result = wdm.summarize_upgrades(data)
         nic_wired = [o for o in result["opportunities"] if o["category"] == "nic" and "GbE" in o["headline"]]
         assert nic_wired == []
+
+    # ── #43 follow-up bug fix (caught in live verify): WLAN + M.2 SSD slots ────
+    # are NOT general-purpose PCIe slots. They have specific form factors
+    # (E-key 2230 for WLAN, M-key 2280 for NVMe) that don't accept NIC cards
+    # or expansion cards. Live verify on the user's actual hardware caught
+    # the regression: a board with all general slots full or GPU-blocked but
+    # M.2 WLAN free was surfacing "1 of 6 PCIe slots physically usable" with
+    # M.2 WLAN as the only candidate -- and the NIC-wired opportunity also
+    # picked it up. Both wrong: WLAN belongs in NIC-Wi-Fi, M.2 SSD in storage.
+
+    def test_pcie_catchall_excludes_wlan_slot(self):
+        """M.2 WLAN free + general slots full → no PCIe catch-all opportunity
+        (WLAN gets its own NIC-Wi-Fi opportunity instead)."""
+        data = {
+            "PCIeSlots": [
+                {"SlotDesignation": "SLOT1", "CurrentUsage": "In Use", "Description": "x16"},
+                {"SlotDesignation": "M.2 WLAN", "CurrentUsage": "Available", "Description": "M.2 WLAN slot"},
+            ]
+        }
+        result = wdm.summarize_upgrades(data)
+        pcie_ops = [o for o in result["opportunities"] if o["category"] == "pcie"]
+        assert pcie_ops == [], f"PCIe catch-all should not surface when only WLAN is free, got: {pcie_ops}"
+        # But the NIC Wi-Fi opportunity SHOULD fire
+        wifi_ops = [o for o in result["opportunities"] if o["category"] == "nic" and "Wi-Fi" in o["headline"]]
+        assert wifi_ops, "Wi-Fi opportunity must still fire for the WLAN slot"
+
+    def test_pcie_catchall_excludes_m2_ssd_slot(self):
+        """M.2 PCIe SSD slots are storage-only -- exclude from general PCIe
+        count even though WMI exposes them as System Slots."""
+        data = {
+            "PCIeSlots": [
+                {"SlotDesignation": "SLOT1", "CurrentUsage": "In Use", "Description": "x16"},
+                {"SlotDesignation": "M.2 PCIe SSD-2", "CurrentUsage": "Available", "Description": "M.2 NVMe slot"},
+            ]
+        }
+        result = wdm.summarize_upgrades(data)
+        pcie_ops = [o for o in result["opportunities"] if o["category"] == "pcie"]
+        assert pcie_ops == [], f"PCIe catch-all should not surface for M.2 SSD slots, got: {pcie_ops}"
+
+    def test_nic_wired_excludes_wlan_slot(self):
+        """A free WLAN slot must NOT trigger the NIC-wired (10 GbE) opportunity --
+        a 10 GbE PCIe card doesn't fit an E-key 2230 socket."""
+        data = {
+            "PCIeSlots": [
+                {"SlotDesignation": "M.2 WLAN", "CurrentUsage": "Available", "Description": "M.2 WLAN slot"},
+            ]
+        }
+        result = wdm.summarize_upgrades(data)
+        nic_wired = [o for o in result["opportunities"] if o["category"] == "nic" and "GbE" in o["headline"]]
+        assert nic_wired == []
+
+    # ── #43 follow-up #2: do the QVL homework so the user doesn't have to ──
+    # User feedback 2026-05-02: "I would expect that the code will check
+    # these things for me instead of me having to go check." The previous
+    # caveat punted to "verify the chipset max in your motherboard manual"
+    # -- now we surface per-slot max math, chipset cross-check, and a
+    # Crucial Memory Advisor link pre-filled with the user's model.
+
+    def test_chipset_inference_intel_14gen_ddr5(self):
+        """Intel Core i9-14900K + DDR5 -> Z790 family."""
+        assert wdm._infer_chipset("Intel(R) Core(TM) i9-14900K", "DDR5") == "Z790"
+
+    def test_chipset_inference_intel_12gen_ddr4(self):
+        """Older 12th-gen on DDR4 -> Z690 family (lower DDR4 ceiling)."""
+        assert wdm._infer_chipset("Intel(R) Core(TM) i7-12700", "DDR4") == "Z690"
+
+    def test_chipset_inference_amd_ryzen_7000_ddr5(self):
+        """AMD Ryzen 7000 series on DDR5 -> X670E family."""
+        assert wdm._infer_chipset("AMD Ryzen 9 7950X", "DDR5") == "X670E"
+
+    def test_chipset_inference_amd_ryzen_5000_ddr4(self):
+        assert wdm._infer_chipset("AMD Ryzen 7 5800X", "DDR4") == "X570"
+
+    def test_chipset_inference_unknown_returns_none(self):
+        """Unrecognised CPU -> None (don't lie about the ceiling)."""
+        assert wdm._infer_chipset("Apple M3 Max", "LPDDR5") is None
+        assert wdm._infer_chipset("", "DDR5") is None
+
+    def test_chipset_max_table_has_known_values(self):
+        """Spot-check the static lookup table -- regression guard if
+        someone edits the dict during a chipset launch."""
+        assert wdm._CHIPSET_MAX_RAM_GB["Z790"] == 192
+        assert wdm._CHIPSET_MAX_RAM_GB["X670E"] == 256
+
+    def test_crucial_link_dell_uses_model_slug(self):
+        link = wdm._crucial_advisor_url({"Manufacturer": "Dell Inc.", "Model": "XPS 8960"})
+        assert link is not None
+        label, url = link
+        assert "crucial.com" in url
+        assert "dell" in url
+        assert "xps-8960" in url
+
+    def test_crucial_link_unknown_oem_returns_none(self):
+        """Don't fabricate Crucial URLs for OEMs we haven't validated."""
+        assert wdm._crucial_advisor_url({"Manufacturer": "Acme", "Model": "X"}) is None
+
+    def test_crucial_link_missing_model_returns_none(self):
+        assert wdm._crucial_advisor_url({"Manufacturer": "Dell", "Model": ""}) is None
+
+    def test_per_slot_max_in_compat(self):
+        """The "what's the biggest stick I can buy?" answer.
+
+        Board with 64 GB max + 2 slots = 32 GB per slot. User feedback
+        explicitly asked for this so they don't have to do the math."""
+        data = {
+            "Memory": [self._stick(16), self._stick(16)],
+            "MemoryArray": [self._array(slots=2, max_gb=64)],
+        }
+        result = wdm.summarize_upgrades(data)
+        mem = next(o for o in result["opportunities"] if o["category"] == "memory")
+        compat_dict = {c["label"]: c["value"] for c in mem.get("compat", [])}
+        assert "Max stick size (per slot)" in compat_dict
+        assert "32" in compat_dict["Max stick size (per slot)"]
+        assert "Board DIMM slots" in compat_dict
+        assert "2 populated" in compat_dict["Board DIMM slots"]
+        assert "2 total" in compat_dict["Board DIMM slots"]
+
+    def test_chipset_ceiling_in_compat_when_inference_works(self):
+        """When CPU + memory type imply a chipset, surface the chipset
+        ceiling as additional compat info -- the user can compare to
+        what the board reports."""
+        data = {
+            "Memory": [self._stick(16, mtype="DDR5")],
+            "MemoryArray": [self._array(slots=2, max_gb=64)],
+            "CPU": {"Name": "Intel(R) Core(TM) i9-14900K", "SocketDesignation": "LGA1700"},
+        }
+        result = wdm.summarize_upgrades(data)
+        mem = next(o for o in result["opportunities"] if o["category"] == "memory")
+        compat_labels = [c["label"] for c in mem.get("compat", [])]
+        assert any("Chipset ceiling" in lbl and "Z790" in lbl for lbl in compat_labels)
+
+    def test_chipset_caveat_explains_when_board_caps_lower(self):
+        """When chipset would allow more than board's MaxCapacity, the
+        caveat explains WHY (slot-count cap, not Dell firmware lockout)."""
+        data = {
+            "Memory": [self._stick(16, mtype="DDR5"), self._stick(16, mtype="DDR5")],
+            "MemoryArray": [self._array(slots=2, max_gb=64)],
+            "CPU": {"Name": "Intel Core i9-14900K", "SocketDesignation": "LGA1700"},
+        }
+        result = wdm.summarize_upgrades(data)
+        mem = next(o for o in result["opportunities"] if o["category"] == "memory")
+        all_caveats = " ".join(mem.get("caveats", []))
+        # Should mention BOTH the chipset (Z790) and the actual cap (64)
+        assert "Z790" in all_caveats
+        assert "192" in all_caveats  # the chipset's true max
+        assert "slot-count" in all_caveats.lower()
+
+    def test_no_chipset_caveat_when_at_chipset_ceiling(self):
+        """If the board already exposes the full chipset capacity, the
+        'chipset supports more' caveat shouldn't fire."""
+        data = {
+            "Memory": [self._stick(16, mtype="DDR5")],
+            "MemoryArray": [self._array(slots=4, max_gb=192)],
+            "CPU": {"Name": "Intel Core i7-13700K", "SocketDesignation": "LGA1700"},
+        }
+        result = wdm.summarize_upgrades(data)
+        mem = next(o for o in result["opportunities"] if o["category"] == "memory")
+        all_caveats = " ".join(mem.get("caveats", []))
+        assert "supports" not in all_caveats or "192" not in all_caveats
+
+    def test_crucial_link_in_memory_links(self):
+        """Memory opportunity must include the Crucial Advisor link
+        when we can synthesise it from the model. This is the most
+        useful 'what RAM can I buy?' answer the code can give."""
+        data = {
+            "Memory": [self._stick(16)],
+            "MemoryArray": [self._array(slots=2, max_gb=64)],
+            "Computer": {"Model": "OptiPlex 7080"},
+            "Baseboard": {"Manufacturer": "Dell Inc."},
+        }
+        result = wdm.summarize_upgrades(data)
+        mem = next(o for o in result["opportunities"] if o["category"] == "memory")
+        crucial_links = [link for link in mem.get("links", []) if "crucial.com" in link.get("url", "")]
+        assert crucial_links, "expected Crucial Advisor link in memory opportunity"
+        assert "optiplex-7080" in crucial_links[0]["url"]
+
+    def test_cpu_does_not_get_crucial_link(self):
+        """Crucial Advisor is RAM-specific -- CPU opportunity should
+        only get the OEM (Dell support) link, not Crucial."""
+        data = {
+            "CPU": {"Name": "Intel Core i9-14900K", "SocketDesignation": "LGA1700"},
+            "BIOS": {"Manufacturer": "Dell Inc.", "SerialNumber": "ABC1234"},
+            "Computer": {"Model": "OptiPlex 7080"},
+            "Baseboard": {"Manufacturer": "Dell Inc."},
+        }
+        result = wdm.summarize_upgrades(data)
+        cpu_op = next(o for o in result["opportunities"] if o["category"] == "cpu")
+        crucial = [link for link in cpu_op.get("links", []) if "crucial.com" in link.get("url", "")]
+        assert crucial == []
+
+    def test_pcie_headline_uses_general_slot_denominator(self):
+        """Live regression: when a board has 6 'PCIeSlots' rows but several
+        are M.2 SSD / WLAN, the headline must read 'X of N general PCIe slots'
+        where N excludes the storage / WLAN slots -- not the raw count."""
+        data = {
+            "PCIeSlots": [
+                {"SlotDesignation": "M.2 PCIe SSD-0", "CurrentUsage": "In Use", "Description": "M.2"},
+                {"SlotDesignation": "M.2 PCIe SSD-1", "CurrentUsage": "In Use", "Description": "M.2"},
+                {"SlotDesignation": "M.2 WLAN", "CurrentUsage": "Available", "Description": "M.2 WLAN"},
+                {"SlotDesignation": "SLOT1", "CurrentUsage": "In Use", "Description": "x16"},
+                {"SlotDesignation": "SLOT2", "CurrentUsage": "Available", "Description": "x4"},
+                {"SlotDesignation": "SLOT3", "CurrentUsage": "In Use", "Description": "x1"},
+            ]
+        }
+        result = wdm.summarize_upgrades(data)
+        pcie_ops = [o for o in result["opportunities"] if o["category"] == "pcie"]
+        assert pcie_ops, "expected a PCIe opportunity for SLOT2"
+        # 3 general slots (SLOT1/2/3), 1 truly free (SLOT2), so "1 of 3"
+        assert "1 of 3 general PCIe slot" in pcie_ops[0]["headline"]

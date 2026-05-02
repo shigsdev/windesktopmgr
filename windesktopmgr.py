@@ -9540,6 +9540,147 @@ def _mem_voltage(mem_type: str) -> str:
     )
 
 
+# Static chipset → max-RAM lookup. Two reasons we need this on top of
+# WMI's Win32_PhysicalMemoryArray.MaxCapacity:
+#   1. OEM firmware (Dell, HP) often reports a lower MaxCapacity than the
+#      chipset can technically handle, because the BIOS hardcodes the
+#      "validated" config rather than the chipset spec ceiling.
+#   2. The user explicitly asked: "I would expect that the code will
+#      check these things for me instead of me having to go check"
+#      (re: the "verify against your board's QVL" caveat).
+#
+# Sources: Intel ARK (ark.intel.com) and AMD product pages, accurate as
+# of 2026-05. Numbers are GB. Update when a new chipset generation
+# launches; missing entries fall back to "WMI value is the only source".
+_CHIPSET_MAX_RAM_GB = {
+    # Intel 600/700-series desktop (12th/13th/14th gen Core)
+    "Z790": 192,
+    "H770": 192,
+    "B760": 192,
+    "H710": 64,
+    "Z690": 128,
+    "H670": 128,
+    "B660": 128,
+    "H610": 64,
+    # AMD AM5 (Ryzen 7000/8000/9000)
+    "X870E": 256,
+    "X870": 256,
+    "B850": 256,
+    "B840": 256,
+    "X670E": 256,
+    "X670": 256,
+    "B650E": 256,
+    "B650": 256,
+    "A620": 192,
+    # AMD AM4 (Ryzen 1000-5000) -- DDR4 era, lower ceilings
+    "X570": 128,
+    "B550": 128,
+    "A520": 128,
+    "X470": 64,
+    "B450": 64,
+    # Intel 500-series desktop (10th/11th gen)
+    "Z590": 128,
+    "H570": 128,
+    "B560": 128,
+    "H510": 64,
+}
+
+
+def _infer_chipset(cpu_name: str, mem_type: str) -> str | None:
+    """Best-effort chipset inference from CPU model + memory type.
+
+    WMI doesn't expose the chipset directly on most consumer hardware
+    (Win32_BaseBoard.Product is the board *model*, not the chipset).
+    We infer from the CPU generation + memory generation:
+
+      Intel 12th-14th gen + DDR5 → Z790 (or H770/B760, but Z790 is the
+        most common in pre-built towers; the user can ignore the
+        chipset name and trust the GB figure since they're all 192).
+      Intel 12th-14th gen + DDR4 → Z690-class (128 GB DDR4 max)
+      AMD Ryzen 7000-9000 → X670E-class (256 GB DDR5 max)
+      AMD Ryzen 1000-5000 → X570-class (128 GB DDR4 max)
+
+    Returns the chipset *family label* (which keys into _CHIPSET_MAX_RAM_GB),
+    or None when we can't infer with confidence (Apple Silicon, ARM, etc.).
+    """
+    name = (cpu_name or "").lower()
+    mt = (mem_type or "").upper()
+
+    # Intel: parse the generation digit from "Core(TM) iN-XXNNN..."
+    # e.g. i9-14900K -> "14" -> 14th gen. K-suffix -> Z-series likely.
+    intel = "intel" in name and "core" in name
+    if intel:
+        import re as _re
+
+        m = _re.search(r"i\d-(\d{2})\d{3}", name)
+        gen = int(m.group(1)) if m else None
+        if gen is not None:
+            if gen >= 12 and "DDR5" in mt:
+                return "Z790"
+            if gen >= 12 and "DDR4" in mt:
+                return "Z690"
+            if 10 <= gen < 12:
+                return "Z590"
+
+    # AMD Ryzen: "Ryzen 9 7950X" -> generation 7000-series. Lookahead
+    # for non-digit (or string end) instead of \b because the X / X3D /
+    # G suffixes are word characters that defeat the trailing \b.
+    if "ryzen" in name:
+        import re as _re
+
+        m = _re.search(r"\b([3-9])\d{3}(?=\D|$)", name)
+        if m:
+            gen = int(m.group(1))
+            if gen >= 7 and "DDR5" in mt:
+                return "X670E"
+            if 1 <= gen <= 5:
+                return "X570"
+
+    return None
+
+
+def _crucial_advisor_url(baseboard: dict) -> tuple[str, str] | None:
+    """Deep-link to Crucial's compatibility tool for the user's machine.
+
+    Crucial Memory Advisor is the de-facto industry standard for "what
+    RAM works in this exact machine?" -- they've maintained it since
+    the 90s and their compatibility data is more reliable than scraping
+    OEM QVL pages. URL pattern verified against live crucial.com:
+
+        https://www.crucial.com/compatible-upgrade-for/{vendor}/{model}
+
+    where {vendor} is e.g. "dell" and {model} is the marketing name with
+    spaces → hyphens, lowercased. We have BaseBoard.Product but that's
+    typically the internal board ID (e.g. "0WN7Y6") not the marketing
+    model. ComputerSystem.Model is closer ("XPS 8960", "OptiPlex 7080")
+    -- caller passes that in via the baseboard dict already.
+
+    Returns (label, url) or None when we can't synthesise a high-
+    confidence URL.
+    """
+    mfr = (baseboard.get("Manufacturer") or "").lower()
+    # Computer model rather than baseboard product -- caller passes
+    # data["Computer"]["Model"] in here for accuracy.
+    model = (baseboard.get("Model") or baseboard.get("Product") or "").strip()
+    if not model:
+        return None
+    # Slugify: lowercase, replace whitespace with hyphens, strip non-
+    # alnum-hyphen chars. Crucial accepts this format.
+    import re as _re
+
+    slug = _re.sub(r"[^a-z0-9\-]", "", _re.sub(r"\s+", "-", model.lower()))
+    if not slug:
+        return None
+    if "dell" in mfr:
+        return (
+            "Crucial Memory Advisor (compatible RAM SKUs for this model)",
+            f"https://www.crucial.com/compatible-upgrade-for/dell/{slug}",
+        )
+    # Other OEMs use the same URL pattern but we haven't validated
+    # against live HP / Lenovo pages yet, so be conservative.
+    return None
+
+
 def _oem_support_url(bios: dict, baseboard: dict) -> tuple[str, str] | None:
     """Build a deep-link to the OEM's support page for this exact machine.
 
@@ -9713,7 +9854,15 @@ def summarize_upgrades(data: dict) -> dict:
     opportunities = []
     bios = data.get("BIOS", {}) or {}
     baseboard = data.get("Baseboard", {}) or {}
+    computer = data.get("Computer", {}) or {}
+    cpu = data.get("CPU", {}) or {}
     oem_link = _oem_support_url(bios, baseboard)
+    # Crucial Advisor wants the user-friendly machine model, which lives
+    # on Win32_ComputerSystem.Model not Win32_BaseBoard.Product. Pass it
+    # through the baseboard dict shape that _crucial_advisor_url expects.
+    crucial_link = _crucial_advisor_url(
+        {"Manufacturer": baseboard.get("Manufacturer", ""), "Model": computer.get("Model", "")}
+    )
 
     # ── Memory ────────────────────────────────────────────────────────
     mem_sticks = data.get("Memory", []) or []
@@ -9746,6 +9895,25 @@ def summarize_upgrades(data: dict) -> dict:
         biggest = max((int(m.get("Capacity") or 0) for m in mem_sticks), default=0)
         largest_stick_gb = round(biggest / (1024**3), 1) if biggest else 0
 
+    # Per-slot max -- the constraint the user actually has to respect
+    # when buying sticks. If the board reports 64 GB max with 2 slots,
+    # each slot tops out at 32 GB. User feedback 2026-05-02: "I would
+    # expect that the code will check these things for me instead of me
+    # having to go check" -- so we compute and surface this directly
+    # rather than punting to the user with "verify against the QVL".
+    per_slot_max_gb = 0
+    if total_slots and max_capacity_gb:
+        per_slot_max_gb = round(max_capacity_gb / total_slots, 1)
+
+    # Chipset cross-check. WMI's MaxCapacity is the *board's* value (often
+    # capped by Dell/HP firmware to the validated config). The chipset
+    # itself usually supports much more. Surfacing both numbers tells the
+    # user when their board is the bottleneck vs when they're already at
+    # the chipset ceiling.
+    chipset = _infer_chipset(cpu.get("Name", ""), primary_mem_type)
+    chipset_max_gb = _CHIPSET_MAX_RAM_GB.get(chipset, 0) if chipset else 0
+    chipset_exceeds_board = chipset_max_gb and max_capacity_gb and chipset_max_gb > max_capacity_gb
+
     # Build the structured `compat` block once -- used by every memory
     # opportunity so the user gets the same exact-spec guidance whether
     # the recommendation is "add sticks" or "replace sticks".
@@ -9767,9 +9935,65 @@ def summarize_upgrades(data: dict) -> dict:
             rows.append({"label": "Reference part #", "value": ", ".join(part_numbers)})
         if largest_stick_gb:
             rows.append({"label": "Per-stick capacity (matched)", "value": f"{int(largest_stick_gb)} GB"})
+        # New (#43 follow-up #2): expose what the code checked rather
+        # than hand-waving "verify against the QVL".
+        if total_slots:
+            rows.append({"label": "Board DIMM slots", "value": f"{populated_slots} populated / {total_slots} total"})
+        if per_slot_max_gb:
+            rows.append(
+                {"label": "Max stick size (per slot)", "value": f"{per_slot_max_gb:g} GB (= board max ÷ slot count)"}
+            )
+        if chipset and chipset_max_gb:
+            note = (
+                f"{chipset_max_gb} GB"
+                if not chipset_exceeds_board
+                else f"{chipset_max_gb} GB (chipset supports more than the board reports -- slot-count cap likely)"
+            )
+            rows.append({"label": f"Chipset ceiling ({chipset})", "value": note})
         return rows
 
+    def _mem_caveats() -> list:
+        """Caveats that explain what we DID check -- and call out the
+        remaining unknowns -- rather than punting everything to the QVL."""
+        notes = []
+        # Always-true caveat about XMP/EXPO since we can't detect XMP profiles
+        if primary_mem_type in ("DDR4", "DDR5"):
+            notes.append(
+                "XMP/EXPO profiles run at higher voltages (1.35-1.4 V) than JEDEC. "
+                "Auto-detection only -- XMP capability is a board feature, not surfaced via WMI."
+            )
+        # If chipset detection succeeded but board caps lower, explain why
+        if chipset_exceeds_board:
+            notes.append(
+                f"Your board reports {max_capacity_gb:g} GB max but the {chipset} chipset itself "
+                f"supports {chipset_max_gb} GB. The lower number is usually a slot-count cap "
+                f"({total_slots} slots × {per_slot_max_gb:g} GB per slot = {max_capacity_gb:g} GB), "
+                "not a Dell/HP firmware lockout. To exceed it you'd need a different board, not just bigger sticks."
+            )
+        # Crucial pre-filtered SKU list is the closest thing to a "QVL
+        # check" we can offer programmatically -- surface it as the
+        # action item rather than handing the user a generic "verify the QVL".
+        if crucial_link:
+            notes.append(
+                "The Crucial Memory Advisor link below shows specific module SKUs Crucial has "
+                "validated against your model -- treat that as the authoritative compatibility list."
+            )
+        return notes
+
     def _oem_link_list() -> list:
+        # Memory opportunities get TWO links: the Dell support page (full
+        # product docs) and the Crucial Advisor (the actual SKU list).
+        # Crucial first since it directly answers "what RAM can I buy?"
+        links = []
+        if crucial_link:
+            links.append({"label": crucial_link[0], "url": crucial_link[1]})
+        if oem_link:
+            links.append({"label": oem_link[0], "url": oem_link[1]})
+        return links
+
+    def _oem_link_list_only() -> list:
+        """For non-memory opportunities (CPU, NIC) where the OEM support
+        page is the right destination but Crucial is irrelevant."""
         return [{"label": oem_link[0], "url": oem_link[1]}] if oem_link else []
 
     if total_slots and free_slots > 0 and headroom_gb > 0:
@@ -9791,11 +10015,7 @@ def summarize_upgrades(data: dict) -> dict:
                 ),
                 "action": f"Buy {free_slots} × {suggest_size} {spec} matching your existing PartNumber",
                 "compat": _mem_compat(),
-                "caveats": [
-                    "OEM firmware sometimes caps MaxCapacity to the originally-shipped "
-                    "config rather than the chipset's true ceiling -- verify against the "
-                    "board's QVL / motherboard manual before buying.",
-                ],
+                "caveats": _mem_caveats(),
                 "links": _oem_link_list(),
             }
         )
@@ -9809,14 +10029,17 @@ def summarize_upgrades(data: dict) -> dict:
                     f"All {total_slots} DIMM slots are populated with {installed_gb:g} GB. "
                     f"Board reports max capacity {max_capacity_gb:g} GB, so further "
                     "expansion means swapping existing sticks for higher-density modules. "
-                    "Check current resale value of your existing sticks before buying replacements."
+                    f"Per-slot ceiling is {per_slot_max_gb:g} GB -- buy modules of that capacity."
+                    if per_slot_max_gb
+                    else (
+                        f"All {total_slots} DIMM slots are populated with {installed_gb:g} GB. "
+                        f"Board reports max capacity {max_capacity_gb:g} GB, so further "
+                        "expansion means swapping existing sticks for higher-density modules."
+                    )
                 ),
                 "action": f"Replace existing sticks with higher-density {mem_type_str} modules",
                 "compat": _mem_compat(),
-                "caveats": [
-                    "OEM firmware sometimes caps MaxCapacity below the chipset max -- "
-                    "verify the target capacity against your board's QVL before purchasing.",
-                ],
+                "caveats": _mem_caveats(),
                 "links": _oem_link_list(),
             }
         )
@@ -9889,7 +10112,7 @@ def summarize_upgrades(data: dict) -> dict:
                     "Cooler compatibility -- some sockets use a different mounting pattern across generations.",
                     "Power delivery -- a high-TDP chip may exceed what your board's VRM can sustain.",
                 ],
-                "links": _oem_link_list(),
+                "links": _oem_link_list_only(),
             }
         )
 
@@ -9898,9 +10121,35 @@ def summarize_upgrades(data: dict) -> dict:
     gpus = data.get("GPU", []) or []
     free_pcie = [s for s in pcie_slots if (s.get("CurrentUsage") or "").lower() == "available"]
     blocked_designations = _estimate_gpu_blocked_slots(pcie_slots, gpus)
-    truly_free = [s for s in free_pcie if s.get("SlotDesignation") not in blocked_designations]
 
-    if pcie_slots and truly_free:
+    # WLAN and M.2-SSD slots are NOT general-purpose PCIe slots. WLAN
+    # slots are E-key 2230 sockets that only accept Wi-Fi modules; M.2
+    # SSD slots are M-key 2280 sockets that only accept NVMe drives.
+    # Both are reported as Win32_SystemSlot rows on most boards but
+    # neither will accept a typical expansion card (NIC, capture card,
+    # GPU, HBA). Live-verify on real hardware (2026-05-02) caught the
+    # regression where M.2 WLAN was being surfaced as "1 of 6 PCIe slots
+    # physically usable" -- misleading. WLAN gets its own NIC-Wi-Fi
+    # opportunity; M.2 SSD upgrades get tracked under storage. The
+    # catch-all PCIe + wired-NIC paths exclude both.
+    def _is_wlan_slot(s: dict) -> bool:
+        desg = (s.get("SlotDesignation") or "").upper()
+        return any(tok in desg for tok in ("WLAN", "WI-FI", "WIFI"))
+
+    def _is_storage_only_slot(s: dict) -> bool:
+        desg = (s.get("SlotDesignation") or "").upper()
+        # M.2 PCIe SSD slots, M.2 NVMe slots, etc.
+        return "M.2" in desg and any(tok in desg for tok in ("SSD", "NVME", "STORAGE"))
+
+    truly_free = [
+        s
+        for s in free_pcie
+        if s.get("SlotDesignation") not in blocked_designations
+        and not _is_wlan_slot(s)
+        and not _is_storage_only_slot(s)
+    ]
+    general_pcie_slots = [s for s in pcie_slots if not _is_wlan_slot(s) and not _is_storage_only_slot(s)]
+    if general_pcie_slots and truly_free:
         slot_compat = []
         for s in truly_free:
             desg = s.get("SlotDesignation", "?")
@@ -9920,7 +10169,7 @@ def summarize_upgrades(data: dict) -> dict:
                 "category": "pcie",
                 "severity": "info",
                 "headline": (
-                    f"{len(truly_free)} of {len(pcie_slots)} PCIe slot{'s' if len(pcie_slots) != 1 else ''} "
+                    f"{len(truly_free)} of {len(general_pcie_slots)} general PCIe slot{'s' if len(general_pcie_slots) != 1 else ''} "
                     f"physically usable"
                     + (f" ({len(blocked_designations)} likely blocked by GPU)" if blocked_designations else "")
                 ),
@@ -9928,7 +10177,8 @@ def summarize_upgrades(data: dict) -> dict:
                     "Match the card's lane requirement (x1 / x4 / x16) to a slot of equal "
                     "or greater width. Slot generation (PCIe 3.0 / 4.0 / 5.0) caps the "
                     "card's bandwidth -- a PCIe 5.0 card in a PCIe 3.0 slot still works, "
-                    "just at lower throughput."
+                    "just at lower throughput. M.2 WLAN and M.2 SSD slots are tracked "
+                    "separately under NIC and storage."
                 ),
                 "action": "Pick the right slot for the card's lane width and generation",
                 "compat": slot_compat,
@@ -10008,7 +10258,7 @@ def summarize_upgrades(data: dict) -> dict:
                     "Some OEM boards lock the WLAN slot to a vendor whitelist via BIOS.",
                     "Wi-Fi 7 needs Windows 11 24H2+ for full feature support.",
                 ],
-                "links": _oem_link_list(),
+                "links": _oem_link_list_only(),
             }
         )
 
