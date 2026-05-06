@@ -61,22 +61,85 @@ def create_icon(status: str = "unknown", size: int = 64) -> Image.Image:
 # ── Toast notifications ───────────────────────────────────────────────────────
 
 
-def send_notification(title: str, message: str, tab: str | None = None):
-    """Send a Windows toast notification without opening console windows."""
+def slugify_concern(title: str) -> str:
+    """Slugify a concern title for use as a stable URL fragment.
+
+    Backlog #40 needs a deterministic round-trip from the concern's
+    title -> URL fragment -> back to a CSS attribute selector on the
+    rendered concern card. The same slug logic lives in JS (in
+    ``index.html``: ``slugifyConcern``) -- if you change one, change the
+    other or the toast deep-link silently won't find its target.
+
+    Lowercase, strip non-alphanumeric, collapse whitespace to single
+    hyphens. ASCII-only output so it survives URL encoding without
+    surprises.
+    """
+    import re as _re
+
+    s = (title or "").lower()
+    # Replace any run of non-alphanumeric chars with a single hyphen,
+    # then trim leading/trailing hyphens.
+    s = _re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    return s
+
+
+def build_concern_url(tab: str | None, concern_title: str | None) -> str:
+    """Build the deep-link URL Windows opens when the toast is clicked.
+
+    Example: ``http://localhost:5000/#tab=thermals&concern=gpu-temp-critical``
+
+    The frontend's ``hashchange`` listener parses these on page load +
+    on hash change, calls ``switchTab(tab)``, then scrolls to the
+    matching ``[data-concern-slug]`` card on the dashboard. Both args
+    are optional -- empty hash falls back to dashboard root, which is
+    the legacy behaviour for toasts that don't carry a tab hint.
+    """
+    parts = []
+    if tab:
+        parts.append(f"tab={tab}")
+    if concern_title:
+        parts.append(f"concern={slugify_concern(concern_title)}")
+    if not parts:
+        return DASHBOARD_URL
+    return f"{DASHBOARD_URL}/#{'&'.join(parts)}"
+
+
+def send_notification(title: str, message: str, tab: str | None = None, concern_title: str | None = None):
+    """Send a Windows toast notification without opening console windows.
+
+    Backlog #40: when ``tab`` (and optionally ``concern_title``) are
+    supplied, the toast XML carries a ``launch=`` attribute with
+    ``activationType="protocol"`` so a click on the toast opens the
+    deep-link URL via the system default browser. Without those args
+    the toast is non-interactive (legacy behaviour for tray-status
+    notifications that don't map to a single concern).
+    """
     try:
-        # Use ctypes to call Windows notification API directly — no subprocess needed
         import subprocess as _sp
 
-        # Build a PowerShell one-liner for toast notification, but run it hidden
-        # Escape single quotes in title/message for PowerShell
         safe_title = str(title).replace("'", "''")[:100]
         safe_msg = str(message).replace("'", "''")[:200]
+
+        # Build the launch URL when we have a tab hint. Even if
+        # concern_title is empty we still get a useful tab-switch.
+        launch_attrs = ""
+        if tab:
+            launch_url = build_concern_url(tab, concern_title)
+            # Single-quoted PS string -> escape ' as ''. URLs shouldn't
+            # contain ' in practice but be defensive.
+            safe_launch = launch_url.replace("'", "''")
+            # activationType="protocol" tells Windows to hand the launch
+            # string to the OS's URL handler (default browser). The
+            # alternative is "foreground" which requires a registered
+            # app and a COM activation handler -- way more setup for
+            # the same end result.
+            launch_attrs = f' launch="{safe_launch}" activationType="protocol"'
 
         ps_script = (
             "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, "
             "ContentType = WindowsRuntime] | Out-Null; "
             "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType = WindowsRuntime] | Out-Null; "
-            f'$xml = \'<toast><visual><binding template="ToastText02">'
+            f'$xml = \'<toast{launch_attrs}><visual><binding template="ToastText02">'
             f'<text id="1">{safe_title}</text>'
             f'<text id="2">{safe_msg}</text>'
             f"</binding></visual></toast>'; "
@@ -160,6 +223,11 @@ class HealthMonitor:
                     title=f"{icon_char} {concern.get('title', 'Issue detected')}",
                     message=concern.get("detail", ""),
                     tab=tab,
+                    # Backlog #40: pass the concern title so the toast's
+                    # launch URL carries a stable concern slug that the
+                    # frontend can scroll-to + flash-highlight after the
+                    # tab switch.
+                    concern_title=concern.get("title", ""),
                 )
 
         # Clear notifications for concerns that are resolved

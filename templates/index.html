@@ -3949,6 +3949,90 @@ function switchTab(page) {
   if (btn) btn.click();
 }
 
+// ── Backlog #40: toast deep-link via URL hash ───────────────────────
+// When the tray fires a Windows toast, the toast XML carries a
+// launch="...#tab=X&concern=Y" attribute. Click -> Windows opens that
+// URL in the default browser. The handlers below parse the fragment,
+// switch to the right tab, and scroll/flash the relevant concern card.
+//
+// Mirror of tray.py's slugify_concern -- if you change one, change the
+// other or the deep-link silently won't find its target.
+function slugifyConcern(title) {
+  return String(title || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+// Parse window.location.hash into {tab, concern}. Tolerates either
+// "?" or "#" prefix and either "&" or ";" separators just in case
+// some browser mangles the URL en route from Windows -> default
+// browser. Returns nulls for missing keys rather than empty strings
+// so callers can use truthy checks.
+function _parseHashFragment() {
+  const raw = (window.location.hash || "").replace(/^#/, "");
+  if (!raw) return {tab: null, concern: null};
+  const out = {tab: null, concern: null};
+  raw.split(/[&;]/).forEach(pair => {
+    const eq = pair.indexOf("=");
+    if (eq < 0) return;
+    const k = pair.slice(0, eq);
+    const v = decodeURIComponent(pair.slice(eq + 1));
+    if (k === "tab") out.tab = v;
+    else if (k === "concern") out.concern = v;
+  });
+  return out;
+}
+
+// Apply deep-link routing on page load and on hashchange. Tab switch
+// happens unconditionally; concern highlight runs after the dashboard
+// concerns finish rendering (the render loop calls applyConcernHashHighlight
+// itself, so this function only needs to fire the tab switch).
+function applyToastDeepLink() {
+  const {tab} = _parseHashFragment();
+  if (tab) {
+    // switchTab is a no-op if the tab name is unknown (the querySelector
+    // returns null); safe to call without validation.
+    switchTab(tab);
+  }
+}
+
+// Concern scroll + flash highlight. Called by applyToastDeepLink AND
+// by the dashboard render loop -- whichever fires last "wins" and the
+// concern gets highlighted. The double-call is intentional: deep-link
+// hash may arrive before concerns are rendered (page load race) OR
+// after (hashchange while dashboard already populated).
+let _concernHighlightTimer = null;
+function applyConcernHashHighlight() {
+  const {concern} = _parseHashFragment();
+  if (!concern) return;
+  // Find the matching card. Selector matches the data-concern-slug
+  // attribute we added to each concern row in the dashboard render.
+  const card = document.querySelector(`.concern-card[data-concern-slug="${CSS.escape(concern)}"]`);
+  if (!card) return;
+  // Scroll into view -- "center" so the user sees context above + below
+  card.scrollIntoView({behavior: "smooth", block: "center"});
+  // Flash highlight via box-shadow + background tween. Clear any
+  // previous flash timer so rapid hash changes don't leave the highlight
+  // stuck on a stale card.
+  if (_concernHighlightTimer) clearTimeout(_concernHighlightTimer);
+  card.style.boxShadow = "0 0 0 3px var(--cyan), 0 0 24px var(--cyan)";
+  _concernHighlightTimer = setTimeout(() => {
+    card.style.boxShadow = "";
+  }, 2500);
+}
+
+// Wire the listeners. DOMContentLoaded covers page load (the toast
+// click typically opens a fresh tab); hashchange covers the case
+// where the dashboard is already open and the user clicks a second
+// toast. setTimeout(0) on load defers until the initial dashboard
+// render has had a chance to populate concerns -- otherwise the
+// concern selector finds nothing and the highlight no-ops silently.
+window.addEventListener("DOMContentLoaded", () => setTimeout(applyToastDeepLink, 0));
+window.addEventListener("hashchange", () => {
+  applyToastDeepLink();
+  // Concerns may already be rendered; try the highlight immediately
+  // and let the next dashboard render pick it up if not.
+  applyConcernHashHighlight();
+});
+
 const ALL_TABS = [
   { page:"drivers",      icon:"⟳", label:"Driver Manager" },
   { page:"bsod",         icon:"⚠", label:"BSOD Dashboard" },
@@ -4055,9 +4139,9 @@ function renderDashboard(d) {
       return `<button data-fn="${i}" style="${btnBase}">${esc(c.action||"View")} →</button>`;
     }
     concernsEl.innerHTML = concerns.map((c, i) => `
-      <div style="display:flex;align-items:center;gap:14px;padding:14px 18px;
+      <div class="concern-card" data-concern-slug="${esc(slugifyConcern(c.title||""))}" style="display:flex;align-items:center;gap:14px;padding:14px 18px;
         background:${levelBg(c.level)};border:1px solid ${levelBorder(c.level)};
-        border-left:4px solid ${levelBorder(c.level)};border-radius:8px">
+        border-left:4px solid ${levelBorder(c.level)};border-radius:8px;transition:box-shadow .3s,background .3s">
         <span style="font-size:22px;flex-shrink:0">${esc(c.icon||"•")}</span>
         <div style="flex:1;min-width:0">
           <div style="font-weight:700;font-size:13px;color:${levelColor(c.level)}">${esc(c.title)}</div>
@@ -4070,6 +4154,13 @@ function renderDashboard(d) {
           ${actionHTML(c, i)}
         </div>
       </div>`).join("");
+
+  // Backlog #40: after concerns render, check the URL hash to see if
+  // a deep-link is asking us to scroll/highlight one. We re-run on
+  // every render because the dashboard refreshes the concerns list
+  // periodically; the highlight should reapply if the targeted
+  // concern is still present.
+  applyConcernHashHighlight();
 
   // Attach click handlers via delegation after innerHTML is set
   // Use window[] lookup instead of eval() to reliably call named functions
