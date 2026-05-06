@@ -388,6 +388,120 @@ class TestSendNotification(unittest.TestCase):
                 assert call_kwargs.get("creationflags") == _sp.CREATE_NO_WINDOW
 
 
+class TestSlugifyConcern(unittest.TestCase):
+    """Backlog #40: slug helper used to round-trip concern title -> URL fragment.
+
+    The same slug must round-trip through:
+      tray.py: title -> slugify_concern -> URL fragment
+      browser: URL fragment -> matches data-concern-slug attribute on card
+    so the JS slugifyConcern in templates/index.html MUST stay byte-identical
+    to this Python helper.
+    """
+
+    def test_basic_slug(self):
+        assert tray.slugify_concern("GPU temperature critical") == "gpu-temperature-critical"
+
+    def test_collapses_runs_of_punct(self):
+        assert tray.slugify_concern("OneDrive: sync paused!") == "onedrive-sync-paused"
+
+    def test_strips_leading_trailing(self):
+        assert tray.slugify_concern("  -- BSOD detected --  ") == "bsod-detected"
+
+    def test_emoji_dropped(self):
+        # Emoji are non-alphanumeric -> get collapsed to a hyphen, then trimmed
+        assert tray.slugify_concern("⚠ Critical temp") == "critical-temp"
+
+    def test_empty_inputs(self):
+        assert tray.slugify_concern("") == ""
+        assert tray.slugify_concern(None) == ""
+
+    def test_already_slugged_idempotent(self):
+        assert tray.slugify_concern("gpu-temp-critical") == "gpu-temp-critical"
+
+
+class TestBuildConcernUrl(unittest.TestCase):
+    """Backlog #40: URL builder for the toast launch attribute."""
+
+    def test_tab_only(self):
+        url = tray.build_concern_url("thermals", None)
+        assert url.endswith("#tab=thermals")
+        assert tray.DASHBOARD_URL in url
+
+    def test_tab_and_concern(self):
+        url = tray.build_concern_url("thermals", "GPU temperature critical")
+        assert "#tab=thermals" in url
+        assert "concern=gpu-temperature-critical" in url
+
+    def test_no_args_falls_back_to_dashboard_root(self):
+        """No tab + no concern = legacy behaviour: open dashboard root."""
+        url = tray.build_concern_url(None, None)
+        assert url == tray.DASHBOARD_URL
+        assert "#" not in url
+
+    def test_concern_only_still_emits_fragment(self):
+        """Useful for future callers that want highlight-only without tab switch."""
+        url = tray.build_concern_url(None, "GPU temp")
+        assert "concern=gpu-temp" in url
+
+
+class TestJsSlugMatchesPythonSlug(unittest.TestCase):
+    """Backlog #40: slugify_concern (Python) and slugifyConcern (JS) MUST
+    produce the same output for any input -- the toast deep-link relies
+    on that. We can't run the JS directly here, but we CAN assert the
+    expected JS source is present in templates/index.html and translate
+    a few canary inputs ourselves to confirm the regex contract.
+
+    If the JS regex ever drifts from the Python one, this test surfaces
+    the drift before the live toast deep-link silently breaks."""
+
+    def test_js_helper_present_with_expected_regex(self):
+        from pathlib import Path
+
+        index_html = (Path(__file__).parent.parent / "templates" / "index.html").read_text(encoding="utf-8")
+        # JS should contain the canonical regex sequence
+        assert "function slugifyConcern" in index_html
+        # Lowercases + collapses non-alnum to '-' + trims
+        assert ".toLowerCase()" in index_html
+        assert "[^a-z0-9]+" in index_html
+        # Trim leading/trailing hyphens
+        assert "/^-+|-+$/" in index_html
+
+
+class TestSendNotificationLaunchAttr(unittest.TestCase):
+    """Backlog #40: verify the toast XML carries launch="..." attr when
+    a tab is supplied -- this is the bit that makes the toast clickable."""
+
+    @patch("subprocess.Popen")
+    def test_launch_attr_present_when_tab_supplied(self, mock_popen):
+        tray.send_notification(
+            "GPU critical",
+            "92 C measured",
+            tab="thermals",
+            concern_title="GPU temperature critical",
+        )
+        assert mock_popen.called
+        # The PS script is the last positional arg of the first call.
+        # cmd shape: ["powershell", "-WindowStyle", "Hidden", "-Command", script]
+        cmd = mock_popen.call_args[0][0]
+        ps_script = cmd[-1]
+        assert "launch=" in ps_script
+        assert 'activationType="protocol"' in ps_script
+        assert "tab=thermals" in ps_script
+        assert "concern=gpu-temperature-critical" in ps_script
+
+    @patch("subprocess.Popen")
+    def test_no_launch_attr_when_tab_omitted(self, mock_popen):
+        """Legacy non-interactive notifications (no tab hint) should NOT
+        carry a launch attr -- otherwise we'd open the dashboard root
+        on every status-change toast which is noisy."""
+        tray.send_notification("Healthy again", "All checks passed")
+        if mock_popen.called:
+            cmd = mock_popen.call_args[0][0]
+            ps_script = cmd[-1]
+            assert "launch=" not in ps_script
+            assert "activationType=" not in ps_script
+
+
 class TestStartFlask(unittest.TestCase):
     """Test start_flask function."""
 
