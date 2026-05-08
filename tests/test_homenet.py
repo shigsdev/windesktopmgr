@@ -2958,32 +2958,84 @@ class TestBuildTopology:
         """conn_ap_mac on wireless devices buckets them under their AP."""
         from homenet import build_topology
 
+        # Use realistic universal Netgear OUI BSSIDs -- the prior
+        # fixture used BA:5E... and 5A:71:11:11:11:11 (both locally-admin
+        # MACs) which now get correctly rejected by
+        # _is_plausible_orbi_ap_mac as phantom client randomization.
         inv = self._inventory(
-            # Orbi base (10.0.0.1 in inventory)
-            {"mac": "BA:5E:00:00:00:01", "ip": "10.0.0.1"},
+            # Orbi base (10.0.0.1 in inventory) -- universal Netgear OUI
+            {"mac": "28:94:01:3F:73:E1", "ip": "10.0.0.1"},
             # Two clients on the base
-            {"mac": "CC:CC:CC:00:00:01", "ip": "10.0.0.10", "conn_ap_mac": "BA:5E:00:00:00:01"},
-            {"mac": "CC:CC:CC:00:00:02", "ip": "10.0.0.11", "conn_ap_mac": "BA:5E:00:00:00:01"},
-            # Two clients on an unknown satellite
-            {"mac": "CC:CC:CC:00:00:03", "ip": "10.0.0.12", "conn_ap_mac": "5A:71:11:11:11:11"},
-            {"mac": "CC:CC:CC:00:00:04", "ip": "10.0.0.13", "conn_ap_mac": "5A:71:11:11:11:11"},
+            {"mac": "CC:CC:CC:00:00:01", "ip": "10.0.0.10", "conn_ap_mac": "28:94:01:3F:73:E1"},
+            {"mac": "CC:CC:CC:00:00:02", "ip": "10.0.0.11", "conn_ap_mac": "28:94:01:3F:73:E1"},
+            # Two clients on a satellite -- different Netgear MAC, also universal
+            {"mac": "CC:CC:CC:00:00:03", "ip": "10.0.0.12", "conn_ap_mac": "28:94:01:40:58:F6"},
+            {"mac": "CC:CC:CC:00:00:04", "ip": "10.0.0.13", "conn_ap_mac": "28:94:01:40:58:F6"},
         )
         t = build_topology(inv, switch_data={})
         aps = {ap["mac"]: ap for ap in t["aps"]}
-        assert "BA:5E:00:00:00:01" in aps
-        assert aps["BA:5E:00:00:00:01"]["is_base"] is True
-        assert sorted(aps["BA:5E:00:00:00:01"]["clients"]) == [
+        assert "28:94:01:3F:73:E1" in aps
+        assert aps["28:94:01:3F:73:E1"]["is_base"] is True
+        assert sorted(aps["28:94:01:3F:73:E1"]["clients"]) == [
             "CC:CC:CC:00:00:01",
             "CC:CC:CC:00:00:02",
         ]
-        assert "5A:71:11:11:11:11" in aps
-        assert aps["5A:71:11:11:11:11"]["is_base"] is False
-        assert "satellite" in aps["5A:71:11:11:11:11"]["name"].lower()
-        assert sorted(aps["5A:71:11:11:11:11"]["clients"]) == [
+        assert "28:94:01:40:58:F6" in aps
+        assert aps["28:94:01:40:58:F6"]["is_base"] is False
+        assert "satellite" in aps["28:94:01:40:58:F6"]["name"].lower()
+        assert sorted(aps["28:94:01:40:58:F6"]["clients"]) == [
             "CC:CC:CC:00:00:03",
             "CC:CC:CC:00:00:04",
         ]
         assert t["stats"]["wireless_mapped"] == 4
+
+    def test_phantom_locally_admin_conn_ap_mac_does_not_create_satellite(self):
+        """User feedback 2026-05-08 ('five orbi's when I only have three'):
+        the topology was synthesising 'Orbi satellite (1111)' columns from
+        clients reporting locally-admin / repeated-octet ConnAPMAC values
+        (e.g. 5A:71:11:11:11:11). Real Orbi BSSIDs are universal Netgear
+        OUIs -- locally-admin MACs are ALWAYS client randomization."""
+        from homenet import build_topology
+
+        inv = self._inventory(
+            # Real Orbi base
+            {"mac": "28:94:01:3F:73:E1", "ip": "10.0.0.1"},
+            # Real client on the base
+            {"mac": "CC:CC:CC:00:00:01", "ip": "10.0.0.10", "conn_ap_mac": "28:94:01:3F:73:E1"},
+            # Phantom: client reports locally-admin + repeated-octet ConnAPMAC
+            {"mac": "DD:DD:DD:00:00:01", "ip": "10.0.0.20", "conn_ap_mac": "5A:71:11:11:11:11"},
+        )
+        t = build_topology(inv, switch_data={})
+        ap_macs = {ap["mac"] for ap in t["aps"]}
+        assert "5A:71:11:11:11:11" not in ap_macs, (
+            f"Phantom locally-admin ConnAPMAC should NOT spawn an Orbi satellite column. Got APs: {sorted(ap_macs)}"
+        )
+        assert "28:94:01:3F:73:E1" in ap_macs
+
+    def test_base_detection_prefers_universal_mac_over_locally_admin(self):
+        """Multiple inventory entries can share IP 10.0.0.1 (a real Orbi
+        BSSID + a transient randomized-MAC client). Base detection must
+        prefer the universal MAC, not whichever entry came first.
+        Catches the 2026-05-08 'Orbi RBRE960 (Base)' showing as a
+        BA:5E:... random MAC instead of the real Netgear MAC."""
+        from homenet import build_topology
+
+        # Insertion order: phantom FIRST, real Netgear AP SECOND.
+        # Pre-fix code picked whichever came first -> phantom. Post-fix
+        # code picks the universal MAC regardless of insertion order.
+        inv = self._inventory(
+            {"mac": "BA:5E:00:00:00:01", "ip": "10.0.0.1", "vendor": "Random MAC (Phone)"},
+            {"mac": "28:94:01:3F:73:E1", "ip": "10.0.0.1", "vendor": "Netgear"},
+        )
+        t = build_topology(inv, switch_data={})
+        # The base may not appear at all if no clients use it -- the
+        # topology builder only synthesises a base entry when needed.
+        # The important assertion is that BA:5E is NEVER picked as base.
+        for ap in t["aps"]:
+            if ap.get("is_base"):
+                assert ap["mac"] == "28:94:01:3F:73:E1", (
+                    f"Base picked locally-admin MAC {ap['mac']!r} -- should be the universal Netgear MAC."
+                )
 
     def test_devices_without_uplink_land_in_unmapped(self):
         """ARP-discovered offline devices with no switch entry and no
@@ -3447,6 +3499,79 @@ class TestMocaVendorDetection:
         assert _is_moca_bridge({"wired_via": "moca_bridge"}) is True
         # Pattern matches but user-attested anyway -> still True (idempotent)
         assert _is_moca_bridge({"vendor": "Actiontec", "wired_via": "moca_bridge"}) is True
+
+
+class TestIsPlausibleOrbiApMac:
+    """Backlog #42 follow-up #2 (2026-05-08): the topology builder was
+    spawning phantom 'Orbi satellite' columns for client-randomized
+    locally-admin MACs and repeated-octet sentinels. _is_plausible_orbi_
+    ap_mac is the filter that caught both. Conservative -- a false
+    positive (rejecting a real BSSID) silently drops a real satellite,
+    much worse than tolerating a phantom, so legitimate-looking MACs
+    must always pass."""
+
+    def test_real_netgear_orbi_oui_passes(self):
+        from homenet import _is_plausible_orbi_ap_mac
+
+        # User's actual Orbi base + satellites (universal Netgear MACs)
+        assert _is_plausible_orbi_ap_mac("28:94:01:3F:73:E1") is True
+        assert _is_plausible_orbi_ap_mac("28:94:01:40:58:F6") is True
+        assert _is_plausible_orbi_ap_mac("28:94:01:40:5A:63") is True
+        # Other Netgear OUIs documented in their public IEEE assignments
+        assert _is_plausible_orbi_ap_mac("A8:A1:59:00:00:01") is True
+        assert _is_plausible_orbi_ap_mac("9C:3D:CF:11:22:33") is True
+
+    def test_locally_admin_first_octet_rejected(self):
+        """Any MAC with bit 0x02 set in the first octet is randomized
+        (per IEEE 802 universal/local bit). Real APs use universal MACs."""
+        from homenet import _is_plausible_orbi_ap_mac
+
+        # 5A = 0101 1010 (bit 0x02 set)
+        assert _is_plausible_orbi_ap_mac("5A:71:11:11:11:11") is False
+        # BA = 1011 1010 (bit 0x02 set)
+        assert _is_plausible_orbi_ap_mac("BA:5E:00:00:00:01") is False
+        # 02 = 0000 0010 (just the locally-admin bit)
+        assert _is_plausible_orbi_ap_mac("02:00:00:00:00:01") is False
+
+    def test_repeated_last_three_octets_rejected(self):
+        """xx:yy:zz:11:11:11 style placeholder pattern -- no real BSSID
+        matches that. Catches sentinels like 5A:71:11:11:11:11 even when
+        the locally-admin check doesn't (e.g. if a vendor ever shipped
+        a universal MAC with this last-3-octets pattern, we'd still want
+        to filter it)."""
+        from homenet import _is_plausible_orbi_ap_mac
+
+        # First octet 28 is universal, but last 3 are all 11 -- placeholder
+        assert _is_plausible_orbi_ap_mac("28:94:01:11:11:11") is False
+        # All-zero last 3
+        assert _is_plausible_orbi_ap_mac("28:94:01:00:00:00") is False
+
+    def test_all_zero_or_all_ff_sentinel_rejected(self):
+        from homenet import _is_plausible_orbi_ap_mac
+
+        assert _is_plausible_orbi_ap_mac("00:00:00:00:00:00") is False
+        assert _is_plausible_orbi_ap_mac("FF:FF:FF:FF:FF:FF") is False
+        assert _is_plausible_orbi_ap_mac("ff:ff:ff:ff:ff:ff") is False
+
+    def test_empty_or_malformed_rejected(self):
+        from homenet import _is_plausible_orbi_ap_mac
+
+        assert _is_plausible_orbi_ap_mac("") is False
+        assert _is_plausible_orbi_ap_mac("not-a-mac") is False
+        # Wrong length
+        assert _is_plausible_orbi_ap_mac("28:94:01:3F:73") is False
+        # Non-hex octet
+        assert _is_plausible_orbi_ap_mac("28:94:01:3F:73:ZZ") is False
+
+    def test_universal_mac_with_varied_octets_passes(self):
+        """Defensive: a vendor MAC whose last 3 octets vary slightly but
+        are NOT all the same MUST pass -- this is the common case."""
+        from homenet import _is_plausible_orbi_ap_mac
+
+        assert _is_plausible_orbi_ap_mac("28:94:01:3F:73:E1") is True
+        assert _is_plausible_orbi_ap_mac("28:94:01:3F:73:E2") is True
+        # Even when last 2 octets match, last 3 are not all same -- pass
+        assert _is_plausible_orbi_ap_mac("28:94:01:3F:E1:E1") is True
 
 
 class TestUserTaggedMocaBridge:

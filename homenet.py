@@ -2302,6 +2302,68 @@ def _is_moca_bridge(device: dict) -> bool:
     return any(p in vendor for p in _MOCA_VENDOR_PATTERNS)
 
 
+def _is_plausible_orbi_ap_mac(mac: str) -> bool:
+    """Reject MACs that obviously aren't real Orbi BSSIDs.
+
+    User feedback 2026-05-08 ("five orbi's when I only have three"):
+    the topology was rendering 5 Orbi-related columns when reality was
+    1 base + 2 satellites = 3. The diff was 2 phantom columns:
+
+      * ``5A:71:11:11:11:11`` -- locally-admin first octet
+        (``5A`` = 0101 1010, bit 0x02 set) + repeated ``11`` octets.
+        Some client misreported this as its ConnAPMAC and the topology
+        builder dutifully synthesised an ``Orbi satellite (1111)`` row.
+      * ``BA:5E:00:00:00:01`` -- locally-admin (``BA`` = 1011 1010,
+        bit 0x02 set), assigned to a randomized-MAC client whose IP
+        cycled through 10.0.0.1. The base-detection logic picked it
+        as the Orbi base instead of the real Netgear OUI MAC at the
+        same IP.
+
+    Real Orbi BSSIDs use universal Netgear OUIs (28:94:01, A8:A1:59,
+    9C:3D:CF, 30:46:9A, 10:DA:43, etc.) -- universal-bit MACs with
+    octets from the assigned vendor range, not all-same patterns.
+
+    Rejected:
+      * Empty / wrong-length input
+      * Locally-administered MACs (first-octet bit 0x02 set) -- these
+        are ALWAYS client randomization, never real APs
+      * All-zero or all-FF sentinel
+      * Last 3 octets all equal (``xx:yy:11:11:11`` style placeholder)
+
+    Accepted: anything else. Conservative on purpose -- false-positive
+    here would silently drop a real satellite, which is much worse
+    than tolerating a phantom.
+    """
+    if not mac or len(mac) != 17:
+        return False
+    octets = mac.split(":")
+    if len(octets) != 6:
+        return False
+    # Validate every octet is two hex chars -- catches "28:94:01:3F:73:ZZ"
+    # and similar partial-corruption patterns.
+    try:
+        parsed = [int(o, 16) for o in octets]
+    except ValueError:
+        return False
+    if not all(0 <= o <= 0xFF and len(octets[i]) == 2 for i, o in enumerate(parsed)):
+        return False
+    first_octet = parsed[0]
+    # Locally-admin bit -- bit 1 (0x02) of the first byte. Set on every
+    # randomized MAC, cleared on every IEEE-assigned vendor MAC.
+    if first_octet & 0x02:
+        return False
+    # All-zero or all-FF sentinel
+    lowered = [o.lower() for o in octets]
+    if all(o == "00" for o in lowered):
+        return False
+    if all(o == "ff" for o in lowered):
+        return False
+    # Last 3 octets all identical -- no real device's BSSID looks like
+    # xx:yy:zz:11:11:11. Catches the 5A:71:11:11:11:11 phantom + similar
+    # placeholder patterns without rejecting legitimate sequential MACs.
+    return len(set(lowered[3:])) != 1
+
+
 def _orbi_get_satellites() -> dict:
     """Query the Orbi for its satellite list with user-set device names.
 
@@ -2529,20 +2591,34 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
     # ── Orbi satellite mapping ─────────────────────────────────────────
     # Each wireless device's ``conn_ap_mac`` field tells us which Orbi node
     # (router or satellite) it's associated with. Bucket clients by AP MAC.
+    # Bogus ConnAPMACs (randomized client MACs misreported as APs, sentinel
+    # values like 5A:71:11:11:11:11 that appeared on this network) are
+    # filtered via _is_plausible_orbi_ap_mac so they don't spawn phantom
+    # satellite columns. User feedback 2026-05-08: "five orbi's when I
+    # only have three" -- the diagram had two phantoms (locally-admin +
+    # repeated-octet-pattern MACs) plus the real base + 2 satellites.
     aps_by_mac: dict[str, list[str]] = {}
     for mac, dev in devices_by_mac.items():
         ap_mac = (dev.get("conn_ap_mac") or "").upper()
         if not ap_mac:
             continue
+        if not _is_plausible_orbi_ap_mac(ap_mac):
+            continue
         aps_by_mac.setdefault(ap_mac, []).append(mac.upper())
 
-    # If the Orbi base router itself appears in the inventory we want its
-    # entry too -- by IP since the MAC isn't pinned.
+    # Orbi base router lookup. Multiple inventory entries may share IP
+    # 10.0.0.1 (a real Orbi BSSID + a transient randomized-MAC client
+    # both observed at that IP across scans), so prefer the entry with a
+    # universal/non-locally-admin MAC over the random one. Falls back to
+    # whichever-came-first if no plausible candidate exists.
     orbi_base_mac = ""
-    for mac, dev in devices_by_mac.items():
-        if dev.get("ip") == "10.0.0.1":
-            orbi_base_mac = mac.upper()
+    candidates_at_orbi_ip = [m.upper() for m, dev in devices_by_mac.items() if dev.get("ip") == "10.0.0.1"]
+    for m in candidates_at_orbi_ip:
+        if _is_plausible_orbi_ap_mac(m):
+            orbi_base_mac = m
             break
+    if not orbi_base_mac and candidates_at_orbi_ip:
+        orbi_base_mac = candidates_at_orbi_ip[0]
 
     # Pull cached satellite names from the Orbi (if reachable). 5-min TTL
     # means at most one extra SOAP call per topology refresh in practice.
