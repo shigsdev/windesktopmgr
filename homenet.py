@@ -396,6 +396,163 @@ def _parse_verizon_js(raw_js: str) -> dict:
     return result
 
 
+def _verizon_get_moca_devices() -> dict:
+    """Fetch MoCA-bridge MACs from the CR1000A's net_connections page.
+
+    Backlog #42. Transparent MoCA bridges (Verizon-branded Askey FiOS
+    extenders, OUI 88:DE:7C, plus other vendors like Hitron / Actiontec)
+    have no IP and never appear in ARP / DHCP / the Verizon
+    known-devices list -- so the existing scan misses them entirely.
+
+    Investigation 2026-05-05 found the data hiding in
+    ``/cgi/cgi_net_connections.js`` under the (sic) addROD key
+    ``get_moca_lan_devcie``. The format:
+
+        addROD("get_moca_lan_devcie", [
+            ['88:de:7c:c2:57:36', '3260', '3327'],   # mac, tx_pyk, rx_pyk
+            ['fc:12:63:04:77:12', '3359', '3374'],
+            ...
+        ]);
+
+    The two trailing values appear to be PHY-rate metrics (Mbps tx/rx
+    or signal-quality counters -- firmware doesn't document the
+    schema). We surface them as ``signal_a`` / ``signal_b`` so the
+    caller can show them in the UI without us pretending we know
+    what they mean.
+
+    Also pulls ``get_moca_lan_coordinator`` (which node coordinates
+    the MoCA network -- typically "gateway" = the CR1000A) and
+    ``get_moca_state`` (CR1000A's own MoCA-LAN MAC + interface state).
+
+    Authenticates using the existing _arc_md5 + _verizon_encode_password
+    helpers. Returns ``{"ok": True, "moca_devices": [...]}`` on success
+    or ``{"error": "..."}`` on auth / network / parse failure -- the
+    scan loop must keep going on failure (don't blow up the whole
+    inventory build because one new endpoint flaked).
+    """
+    import urllib3
+
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    user, pw = _get_homenet_cred("verizon")
+    if not user or not pw:
+        return {"error": "No Verizon credentials configured. Add them in Network Settings."}
+
+    base = "https://192.168.1.1"
+    session = requests.Session()
+    session.verify = False
+    session.headers.update(
+        {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": f"{base}/",
+            "Origin": base,
+        }
+    )
+
+    try:
+        r = session.get(f"{base}/loginStatus.cgi", timeout=10)
+        token = (r.json() or {}).get("loginToken", "")
+        if not token:
+            return {"error": "Could not get login token from Verizon router"}
+
+        payload = {
+            "luci_username": _arc_md5(user),
+            "luci_password": _verizon_encode_password(pw, token),
+            "luci_view": "Desktop",
+            "luci_token": token,
+            "luci_keep_login": "0",
+        }
+        r = session.post(f"{base}/login.cgi", data=payload, timeout=10, allow_redirects=False)
+        if "sysauth" not in session.cookies.get_dict():
+            return {"error": "Verizon login failed -- bad credentials or auth changed"}
+
+        r = session.get(f"{base}/cgi/cgi_net_connections.js", timeout=15)
+        return parse_verizon_moca_devices(r.text)
+
+    except requests.exceptions.ConnectTimeout:
+        return {"error": "Verizon router unreachable (192.168.1.1) -- check wired connection"}
+    except requests.exceptions.ConnectionError:
+        return {"error": "Cannot connect to Verizon router -- check network"}
+    except Exception as e:
+        return {"error": f"Verizon MoCA fetch error: {e}"}
+    finally:
+        session.close()
+
+
+def parse_verizon_moca_devices(raw_js: str) -> dict:
+    """Parse the CR1000A's net_connections page into a list of MoCA-bridge MACs.
+
+    Public (no underscore prefix) so the unit tests can drive it with
+    captured fixtures without monkey-patching the network call.
+
+    Defensive against the firmware's typo ("devcie" rather than "device")
+    -- accepts EITHER spelling so a future firmware fix that corrects
+    the spelling doesn't silently break MoCA discovery. Same applies
+    to additional whitespace / single-vs-double quotes -- we use the
+    existing _parse_verizon_js helper which already normalises those.
+
+    Returns one of:
+        {"ok": True,
+         "moca_devices": [{"mac": "88:DE:7C:C2:57:36",
+                           "signal_a": "3260",
+                           "signal_b": "3327"}, ...],
+         "moca_lan_mac": "78:67:0E:BD:A4:43",   # CR1000A's MoCA-LAN MAC
+         "moca_lan_state": "Up",                  # interface state
+         "coordinator": "gateway"}                # which node runs the MoCA network
+        OR
+        {"error": "..."}                          # parse failure or empty
+    """
+    if not raw_js or len(raw_js) < 50:
+        return {"error": "Empty or truncated net_connections response"}
+
+    parsed = _parse_verizon_js(raw_js)
+    # Either spelling -- firmware ships "devcie" (sic) but be ready for the fix
+    moca_list = parsed.get("get_moca_lan_devcie") or parsed.get("get_moca_lan_device") or []
+
+    devices = []
+    if isinstance(moca_list, list):
+        for row in moca_list:
+            if not isinstance(row, list) or len(row) < 1:
+                continue
+            mac_raw = str(row[0] or "").strip()
+            if not mac_raw:
+                continue
+            # Normalise to upper-colon (matches inventory canonical form)
+            mac_norm = mac_raw.upper().replace("-", ":")
+            if not re.match(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$", mac_norm):
+                continue
+            devices.append(
+                {
+                    "mac": mac_norm,
+                    "signal_a": str(row[1]) if len(row) > 1 else "",
+                    "signal_b": str(row[2]) if len(row) > 2 else "",
+                }
+            )
+
+    # CR1000A's own MoCA-LAN MAC -- nice to have for the topology builder
+    # so it doesn't double-count the gateway as a MoCA bridge.
+    moca_state = parsed.get("get_moca_state") or []
+    moca_lan_mac = ""
+    moca_lan_state = ""
+    if isinstance(moca_state, list):
+        for row in moca_state:
+            if not isinstance(row, list) or len(row) < 3:
+                continue
+            iface = str(row[0] or "").upper()
+            if iface == "MOCALAN":
+                moca_lan_state = str(row[1] or "")
+                moca_lan_mac = str(row[2] or "").upper().replace("-", ":")
+                break
+
+    return {
+        "ok": True,
+        "moca_devices": devices,
+        "moca_lan_mac": moca_lan_mac,
+        "moca_lan_state": moca_lan_state,
+        "coordinator": str(parsed.get("get_moca_lan_coordinator") or ""),
+    }
+
+
 # ── Netgear Orbi SOAP API ────────────────────────────────────────────────────
 
 
@@ -1559,6 +1716,44 @@ def homenet_full_scan() -> dict:
                 inventory = _merge_device_data(inventory, "verizon", vz_devices)
         elif "error" in verizon:
             errors.append(f"Verizon: {verizon['error']}")
+
+        # 2b. Verizon CR1000A MoCA bridges (backlog #42). Transparent
+        # bridges have no IP and never appear in steps 1-2 above; they
+        # only show up in the CR1000A's net_connections page under
+        # `get_moca_lan_devcie`. We synthesise device records with
+        # mac + wired_via=moca_bridge so the topology builder draws
+        # them in the MoCA Bridges column. IP / hostname stay empty
+        # (the bridges don't have either) -- the user adds the
+        # friendly_name via the device-edit modal.
+        moca = _verizon_get_moca_devices()
+        if moca.get("ok"):
+            cr1000a_moca_lan_mac = (moca.get("moca_lan_mac") or "").upper()
+            moca_inventory_devices = []
+            for m in moca.get("moca_devices", []):
+                mac = m.get("mac", "")
+                # Skip the CR1000A's own MoCA-LAN MAC -- it's the gateway,
+                # not a bridge. Including it would double-count.
+                if mac == cr1000a_moca_lan_mac:
+                    continue
+                moca_inventory_devices.append(
+                    {
+                        "mac": mac,
+                        "ip": "",
+                        "name": "",  # bridges don't advertise hostnames
+                    }
+                )
+            if moca_inventory_devices:
+                inventory = _merge_device_data(inventory, "verizon-moca-page", moca_inventory_devices)
+                # Force wired_via=moca_bridge for these so the topology
+                # builder groups them correctly. The merge preserves
+                # user-set wired_via on existing entries (won't clobber
+                # an existing manual classification).
+                for m in moca_inventory_devices:
+                    mac = m["mac"]
+                    if mac in inventory["devices"] and not inventory["devices"][mac].get("wired_via"):
+                        inventory["devices"][mac]["wired_via"] = "moca_bridge"
+        elif "error" in moca:
+            errors.append(f"Verizon MoCA: {moca['error']}")
 
         # 3. Orbi (needs Wi-Fi connected to 10.x network)
         if wifi_connected:

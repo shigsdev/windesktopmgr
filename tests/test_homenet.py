@@ -144,6 +144,19 @@ class TestHomeNetCredentialRoutes:
 class TestHomeNetScanRoute:
     """Test network scanning endpoints."""
 
+    @pytest.fixture(autouse=True)
+    def _stub_moca_fetch(self, mocker):
+        """Backlog #42 added a real Verizon-MoCA HTTP call into the scan
+        loop. Without this autouse stub, parallel test runs would hit the
+        live router via real keyring credentials -- non-deterministic and
+        fragile. Stub to "no creds" by default; tests that care about the
+        MoCA path live in TestVerizonMocaIntegration where they override
+        this with their own explicit mock."""
+        mocker.patch(
+            "homenet._verizon_get_moca_devices",
+            return_value={"error": "No creds"},
+        )
+
     def test_scan_returns_200(self, client, mocker):
         mocker.patch("homenet._arp_scan", return_value=[])
         mocker.patch("homenet._verizon_get_devices", return_value={"error": "No creds"})
@@ -181,9 +194,11 @@ class TestHomeNetScanRoute:
         mocker.patch("homenet._save_homenet_inventory")
         resp = client.post("/api/homenet/scan")
         data = resp.get_json()
-        assert len(data["errors"]) == 2
-        assert "Verizon" in data["errors"][0]
-        assert "Orbi" in data["errors"][1]
+        # Now 3 errors: Verizon devices, Verizon MoCA (#42), Orbi.
+        assert len(data["errors"]) == 3
+        assert any("Verizon" in e and "Connection refused" in e for e in data["errors"])
+        assert any("Verizon MoCA" in e for e in data["errors"])
+        assert any("Orbi" in e for e in data["errors"])
 
     def test_scan_merges_verizon_devices(self, client, mocker):
         mocker.patch("homenet._arp_scan", return_value=[])
@@ -1302,6 +1317,268 @@ class TestVerizonApi:
         assert "unreachable" in result["error"].lower()
 
 
+class TestVerizonMocaParsing:
+    """Backlog #42: parse_verizon_moca_devices() unpacks the CR1000A's
+    /cgi/cgi_net_connections.js into a list of MoCA-bridge MACs.
+
+    Captured fixture below is structurally identical to the live data
+    seen on 2026-05-05 against firmware 3.6.0.3_BD; MAC addresses have
+    been anonymised to documentation-prefix-safe values so the fixture
+    can live in the repo. The parser is tolerant of minor format drift
+    (the firmware's typo "devcie" / a future fix to "device", whitespace,
+    quote style) -- those tolerances are exercised by separate tests.
+    """
+
+    # Realistic but anonymised: 4 MoCA bridges + 1 set-top-box style entry,
+    # plus the gateway's own MoCA-LAN MAC in get_moca_state. The "devcie"
+    # typo is preserved verbatim because that's what live firmware emits.
+    FIXTURE_NET_CONNECTIONS = """
+addROD("wan_phy_status", [['ETHWAN','Up','fe80::dead:beef'],['MOCAWAN','Up','fe80::dead:beef']]);
+addROD("get_moca_state", [['MOCALAN','Up','02:00:00:AA:00:43','956374202','1259957627'],['MOCAWAN','Down','','956374202','1259957627']]);
+addROD("get_moca_lan_coordinator", "gateway");
+addROD("get_moca_lan_devcie", [['02:00:00:11:11:01','3260','3327'],['02:00:00:11:11:02','3359','3374'],['02:00:00:11:11:03','604','654'],['02:00:00:11:11:04','3210','3222'],['02:00:00:11:11:05','3326','3316'],]);
+addROD("get_ipv6_link_local_addr", [['lan1','fe80::dead:beef/64']]);
+"""
+
+    def test_parses_all_moca_bridges_from_devcie_typo_key(self):
+        from homenet import parse_verizon_moca_devices
+
+        result = parse_verizon_moca_devices(self.FIXTURE_NET_CONNECTIONS)
+        assert result["ok"] is True
+        assert len(result["moca_devices"]) == 5
+        macs = {d["mac"] for d in result["moca_devices"]}
+        assert "02:00:00:11:11:01" in macs
+        assert "02:00:00:11:11:05" in macs
+        # MACs come out canonical upper-colon
+        assert all(":" in d["mac"] and d["mac"] == d["mac"].upper() for d in result["moca_devices"])
+
+    def test_parses_signal_metrics_per_bridge(self):
+        """The two PHY-rate values per row -- exposed as signal_a / signal_b
+        because the firmware doesn't document the schema."""
+        from homenet import parse_verizon_moca_devices
+
+        result = parse_verizon_moca_devices(self.FIXTURE_NET_CONNECTIONS)
+        bridge0 = next(d for d in result["moca_devices"] if d["mac"] == "02:00:00:11:11:01")
+        assert bridge0["signal_a"] == "3260"
+        assert bridge0["signal_b"] == "3327"
+
+    def test_parses_gateway_moca_lan_state(self):
+        """get_moca_state row tagged MOCALAN gives us the CR1000A's own
+        MoCA-LAN MAC + interface state. The scan loop uses this to skip
+        the gateway from being double-counted as a bridge."""
+        from homenet import parse_verizon_moca_devices
+
+        result = parse_verizon_moca_devices(self.FIXTURE_NET_CONNECTIONS)
+        assert result["moca_lan_mac"] == "02:00:00:AA:00:43"
+        assert result["moca_lan_state"] == "Up"
+
+    def test_coordinator_value_passes_through(self):
+        from homenet import parse_verizon_moca_devices
+
+        result = parse_verizon_moca_devices(self.FIXTURE_NET_CONNECTIONS)
+        assert result["coordinator"] == "gateway"
+
+    def test_handles_corrected_devcie_to_device_spelling(self):
+        """Defensive: if Verizon ever fixes the 'devcie' typo to 'device'
+        in a future firmware release, the parser must keep working without
+        any code change. This is the most likely format drift."""
+        from homenet import parse_verizon_moca_devices
+
+        fixed_spelling = self.FIXTURE_NET_CONNECTIONS.replace("get_moca_lan_devcie", "get_moca_lan_device")
+        result = parse_verizon_moca_devices(fixed_spelling)
+        assert result["ok"] is True
+        assert len(result["moca_devices"]) == 5
+
+    def test_empty_response_returns_error(self):
+        from homenet import parse_verizon_moca_devices
+
+        result = parse_verizon_moca_devices("")
+        assert "error" in result
+
+    def test_response_without_moca_data_returns_empty_list(self):
+        """Response that's valid JS but contains no MoCA keys -- still
+        ok=True with an empty list, not an error. Different from a
+        truncated response (which can't be distinguished from auth-rejection
+        by the parser)."""
+        from homenet import parse_verizon_moca_devices
+
+        # Some non-MoCA cgi page -- valid format, irrelevant content
+        no_moca = """addROD("hardware_model", 'CR1000A');
+addROD("router_version", '3.6.0.3_BD');"""
+        result = parse_verizon_moca_devices(no_moca)
+        assert result["ok"] is True
+        assert result["moca_devices"] == []
+
+    def test_skips_malformed_mac_rows(self):
+        """Rows whose first element isn't a valid MAC -- skip silently
+        rather than raising. Defensive against firmware adding header rows
+        or future schema changes that break the simple [[mac, ...]] shape."""
+        from homenet import parse_verizon_moca_devices
+
+        malformed = """addROD("get_moca_lan_devcie", [['not-a-mac','x','y'],['02:00:00:11:11:01','3260','3327'],['','',''],]);"""
+        result = parse_verizon_moca_devices(malformed)
+        assert result["ok"] is True
+        assert len(result["moca_devices"]) == 1
+        assert result["moca_devices"][0]["mac"] == "02:00:00:11:11:01"
+
+    def test_normalises_hyphenated_macs_to_colons(self):
+        """Some firmware versions emit hyphen-separated MACs. Normalise
+        to upper-colon to match the inventory canonical form."""
+        from homenet import parse_verizon_moca_devices
+
+        hyphenated = """addROD("get_moca_lan_devcie", [['02-00-00-11-11-01','3260','3327'],]);"""
+        result = parse_verizon_moca_devices(hyphenated)
+        assert result["moca_devices"][0]["mac"] == "02:00:00:11:11:01"
+
+
+class TestVerizonMocaIntegration:
+    """Backlog #42: scan-loop integration -- _verizon_get_moca_devices()
+    fetches + parses, and homenet_full_scan() merges the result into
+    inventory tagged source=verizon-moca-page + wired_via=moca_bridge."""
+
+    def test_no_creds_returns_error_without_network_call(self, mocker):
+        mocker.patch("homenet._get_homenet_cred", return_value=(None, None))
+        # The function must NOT attempt a Session() call when creds missing
+        session_mock = mocker.patch("homenet.requests.Session")
+        from homenet import _verizon_get_moca_devices
+
+        result = _verizon_get_moca_devices()
+        assert "error" in result
+        assert "credentials" in result["error"].lower()
+        session_mock.assert_not_called()
+
+    def test_login_failure_returns_error(self, mocker):
+        mocker.patch("homenet._get_homenet_cred", return_value=("admin", "pw"))
+        mock_session = MagicMock()
+        mock_session.cookies.get_dict.return_value = {}  # no sysauth cookie
+        login_status = MagicMock()
+        login_status.json.return_value = {"loginToken": "abc123"}
+        mock_session.get.return_value = login_status
+        login_post = MagicMock()
+        login_post.status_code = 401
+        mock_session.post.return_value = login_post
+        mocker.patch("homenet.requests.Session", return_value=mock_session)
+        from homenet import _verizon_get_moca_devices
+
+        result = _verizon_get_moca_devices()
+        assert "error" in result
+        assert "login" in result["error"].lower() or "credentials" in result["error"].lower()
+
+    def test_happy_path_returns_parsed_devices(self, mocker):
+        """Successful login + valid response -> parsed list of MoCA bridges."""
+        mocker.patch("homenet._get_homenet_cred", return_value=("admin", "pw"))
+        mock_session = MagicMock()
+        # Login: token + sysauth cookie present
+        mock_session.cookies.get_dict.return_value = {"sysauth": "yes"}
+
+        login_resp = MagicMock()
+        login_resp.json.return_value = {"loginToken": "abc"}
+
+        moca_resp = MagicMock()
+        moca_resp.text = TestVerizonMocaParsing.FIXTURE_NET_CONNECTIONS
+
+        # session.get hits 2 URLs in order: /loginStatus.cgi, /cgi/cgi_net_connections.js
+        mock_session.get.side_effect = [login_resp, moca_resp]
+        mock_session.post.return_value = MagicMock(status_code=200)
+        mocker.patch("homenet.requests.Session", return_value=mock_session)
+        from homenet import _verizon_get_moca_devices
+
+        result = _verizon_get_moca_devices()
+        assert result["ok"] is True
+        assert len(result["moca_devices"]) == 5
+
+    def test_scan_loop_merges_moca_bridges_with_correct_source_and_wired_via(self, client, mocker):
+        """End-to-end: full scan calls _verizon_get_moca_devices and merges
+        each bridge into inventory tagged source=verizon-moca-page and
+        wired_via=moca_bridge so the topology builder groups them right."""
+        # Stub everything else the scan touches
+        mocker.patch("homenet._wifi_ensure_orbi_connected", return_value=(False, True, ""))
+        mocker.patch("homenet._wifi_restore")
+        mocker.patch("homenet._arp_scan", return_value=[])
+        mocker.patch("homenet._verizon_get_devices", return_value={"ok": True, "known_devices": []})
+        mocker.patch("homenet._enrich_device_names", side_effect=lambda inv: inv)
+        mocker.patch(
+            "homenet._verizon_get_moca_devices",
+            return_value={
+                "ok": True,
+                "moca_devices": [
+                    {"mac": "02:00:00:11:11:01", "signal_a": "3260", "signal_b": "3327"},
+                    {"mac": "02:00:00:11:11:02", "signal_a": "3359", "signal_b": "3374"},
+                ],
+                "moca_lan_mac": "02:00:00:AA:00:43",
+                "moca_lan_state": "Up",
+                "coordinator": "gateway",
+            },
+        )
+        mocker.patch("homenet._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
+        saved = {}
+        mocker.patch("homenet._save_homenet_inventory", side_effect=lambda inv: saved.update(inv))
+        from homenet import homenet_full_scan
+
+        result = homenet_full_scan()
+        assert result["ok"] is True
+        # Both bridges in inventory
+        assert "02:00:00:11:11:01" in saved["devices"]
+        assert "02:00:00:11:11:02" in saved["devices"]
+        # Tagged correctly
+        b1 = saved["devices"]["02:00:00:11:11:01"]
+        assert b1["source"] == "verizon-moca-page"
+        assert b1["wired_via"] == "moca_bridge"
+
+    def test_scan_loop_skips_gateway_moca_lan_mac(self, client, mocker):
+        """The CR1000A's own MoCA-LAN MAC must NOT be merged as a bridge --
+        it's the gateway. If the moca_lan_mac shows up in moca_devices
+        (firmware quirk) the scan loop skips it."""
+        mocker.patch("homenet._wifi_ensure_orbi_connected", return_value=(False, True, ""))
+        mocker.patch("homenet._wifi_restore")
+        mocker.patch("homenet._arp_scan", return_value=[])
+        mocker.patch("homenet._verizon_get_devices", return_value={"ok": True, "known_devices": []})
+        mocker.patch("homenet._enrich_device_names", side_effect=lambda inv: inv)
+        mocker.patch(
+            "homenet._verizon_get_moca_devices",
+            return_value={
+                "ok": True,
+                "moca_devices": [
+                    {"mac": "02:00:00:AA:00:43", "signal_a": "0", "signal_b": "0"},  # the gateway itself
+                    {"mac": "02:00:00:11:11:01", "signal_a": "3260", "signal_b": "3327"},
+                ],
+                "moca_lan_mac": "02:00:00:AA:00:43",
+                "moca_lan_state": "Up",
+                "coordinator": "gateway",
+            },
+        )
+        mocker.patch("homenet._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
+        saved = {}
+        mocker.patch("homenet._save_homenet_inventory", side_effect=lambda inv: saved.update(inv))
+        from homenet import homenet_full_scan
+
+        homenet_full_scan()
+        # Gateway MoCA-LAN MAC NOT merged as a bridge
+        assert "02:00:00:AA:00:43" not in saved["devices"]
+        # Real bridge IS merged
+        assert "02:00:00:11:11:01" in saved["devices"]
+
+    def test_scan_loop_records_error_on_moca_fetch_failure(self, client, mocker):
+        """If MoCA fetch fails, the rest of the scan must complete and
+        the error is appended to the errors list (not raised)."""
+        mocker.patch("homenet._wifi_ensure_orbi_connected", return_value=(False, True, ""))
+        mocker.patch("homenet._wifi_restore")
+        mocker.patch("homenet._arp_scan", return_value=[])
+        mocker.patch("homenet._verizon_get_devices", return_value={"ok": True, "known_devices": []})
+        mocker.patch("homenet._enrich_device_names", side_effect=lambda inv: inv)
+        mocker.patch(
+            "homenet._verizon_get_moca_devices",
+            return_value={"error": "Verizon router unreachable"},
+        )
+        mocker.patch("homenet._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
+        mocker.patch("homenet._save_homenet_inventory")
+        from homenet import homenet_full_scan
+
+        result = homenet_full_scan()
+        assert result["ok"] is True
+        assert any("Verizon MoCA" in e and "unreachable" in e for e in result.get("errors", []))
+
+
 class TestOrbiApi:
     """Test Orbi SOAP API functions."""
 
@@ -1586,6 +1863,17 @@ class TestHomeNetInventoryPersistence:
 class TestHomenetFullScan:
     """Test full scan orchestration."""
 
+    @pytest.fixture(autouse=True)
+    def _stub_moca_fetch(self, mocker):
+        """Same rationale as TestHomeNetScanRoute._stub_moca_fetch -- the
+        new MoCA fetch from #42 must be stubbed so parallel test workers
+        don't hit the live router via real keyring credentials. Tests
+        that care about MoCA override this with their own mock."""
+        mocker.patch(
+            "homenet._verizon_get_moca_devices",
+            return_value={"ok": True, "moca_devices": [], "moca_lan_mac": "", "moca_lan_state": "", "coordinator": ""},
+        )
+
     def test_full_scan_with_all_sources(self, client, mocker):
         mocker.patch("homenet._wifi_ensure_orbi_connected", return_value=(True, True, "OrbiNet"))
         mocker.patch("homenet._wifi_restore")
@@ -1612,6 +1900,14 @@ class TestHomenetFullScan:
                 "ok": True,
                 "devices": [{"ip": "10.0.0.5", "name": "Phone", "mac": "99:88:77:66:55:44", "connection_type": "5G"}],
             },
+        )
+        # Backlog #42: scan loop also calls _verizon_get_moca_devices.
+        # Stub it with an empty success so this test stays focused on
+        # the existing 3-source happy path. (The MoCA-specific behaviour
+        # has its own coverage in TestVerizonMocaIntegration.)
+        mocker.patch(
+            "homenet._verizon_get_moca_devices",
+            return_value={"ok": True, "moca_devices": [], "moca_lan_mac": "", "moca_lan_state": "", "coordinator": ""},
         )
         mocker.patch("homenet._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
         mocker.patch("homenet._save_homenet_inventory")
