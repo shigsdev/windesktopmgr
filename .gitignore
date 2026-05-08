@@ -81,3 +81,4 @@ desktop.ini
 *.swp
 *.swo
 .claude/
+scripts/_probe_dumps/
