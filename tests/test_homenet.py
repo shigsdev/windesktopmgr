@@ -3717,3 +3717,68 @@ class TestTopologyRoute:
         resp = client.get("/api/homenet/topology")
         assert resp.status_code == 200
         assert resp.get_json()["ok"] is True
+
+
+class TestTopologyDiagramPerBridgeColumns:
+    """Backlog #42 follow-up (2026-05-08): user feedback "shows one moca
+    bridge" -- the topology diagram was rendering all MoCA bridges in a
+    single collapsed column instead of one column per bridge (asymmetric
+    with Orbi satellites which each get their own column).
+
+    The fix lives in templates/index.html (hnTopoBuildSvg). These tests
+    are source-level contract guards: they don't drive the JS, they
+    assert the source contains the right loop structure so a future
+    edit can't silently regress to the single-column layout. Same
+    pattern as the slugifyConcern JS-Python parity guard from #40.
+    """
+
+    @staticmethod
+    def _index_html() -> str:
+        from pathlib import Path
+
+        return (Path(__file__).parent.parent / "templates" / "index.html").read_text(encoding="utf-8")
+
+    def test_topology_renderer_loops_over_bridges_for_columns(self):
+        """Each bridge MUST get its own column entry. Look for the
+        per-bridge column-push, not the old single-column-with-all-bridges
+        push. Anchored by the loop variable `bridgeColumns` and the
+        per-bridge column id pattern."""
+        html = self._index_html()
+        # The new code creates a bridgeColumns array, sorts it, and
+        # iterates `for (const bc of bridgeColumns)` to push one column
+        # per bridge. If someone reverts to the single-collapsed-column
+        # layout, this string disappears and the test fails.
+        assert "bridgeColumns" in html, (
+            "templates/index.html: per-bridge column rendering missing -- "
+            "the topology diagram regressed to a single 'MoCA Bridges' "
+            "column. Restore the bridgeColumns loop in hnTopoBuildSvg."
+        )
+        assert "moca-bridge-${" in html or "`moca-bridge-${" in html, (
+            "Per-bridge column id pattern (moca-bridge-<MAC>) is missing -- "
+            "the column ids are how the SVG distinguishes bridge columns."
+        )
+
+    def test_topology_renderer_does_not_use_old_single_column_kind(self):
+        """The old layout used `id: 'moca-bridges'` (plural) for the
+        single column. Per-bridge layout uses `moca-bridge-<MAC>` ids
+        (singular). If the plural form reappears, someone has rolled
+        back to the single-column collapse."""
+        html = self._index_html()
+        # The plural literal lived inside the old `id: "moca-bridges"`
+        # string. Per-bridge layout never uses it.
+        assert '"moca-bridges"' not in html, (
+            "Found old single-column id 'moca-bridges' -- the per-bridge "
+            "fix has been rolled back. Each bridge should have its own "
+            "column with id moca-bridge-<MAC>."
+        )
+
+    def test_topology_renderer_falls_back_to_vendor_plus_macsuffix_naming(self):
+        """When a bridge has no friendly_name, the column title falls back
+        to '<vendor> <last 4 of MAC>'. Source must contain the slice(-4)
+        pattern that produces that suffix."""
+        html = self._index_html()
+        assert "slice(-4)" in html, (
+            "MAC-suffix fallback (slice(-4) on the unhyphenated MAC) is "
+            "missing -- bridges without friendly_name will render as "
+            "the bare MAC instead of 'Vendor XXXX'."
+        )
