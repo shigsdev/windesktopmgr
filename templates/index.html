@@ -5237,47 +5237,62 @@ function hnTopoBuildSvg(t) {
     });
   }
 
-  // MoCA Bridges column -- now a TREE: each bridge is a parent row, with
-  // its downstream devices (set per-device via behind_moca_bridge in the
-  // edit modal) listed as children right under it. Bridges with no
-  // children render as a leaf bridge row. Children are flagged with
-  // ``is_child: true`` so the renderer indents them and uses a subtler
-  // dot style (the user explicitly asked to see what's connected to each
-  // bridge, so the visual hierarchy matters).
+  // MoCA Bridges -- ONE COLUMN PER BRIDGE (user feedback 2026-05-08:
+  // "shows one moca bridge" -- the previous layout crammed all bridges
+  // into a single collapsed column, asymmetric with Orbi satellites
+  // which each get their own column). Each bridge column:
+  //   - title: friendly_name if set, else "<vendor> <last 4 of MAC>"
+  //     (mirrors how Orbi satellite fallback names look)
+  //   - sub: downstream device count
+  //   - rows: the devices the user has marked behind_moca_bridge=<this>
+  //
+  // Degenerate case (zero bridges with downstream devices, which is
+  // typical right after #42 auto-discovery): emit one column per
+  // bridge anyway -- the empty columns act as a "click here to assign
+  // devices" affordance, and the user can populate them via the
+  // device-edit modal's "Behind MoCA bridge" dropdown. No fallback
+  // to the old single-column layout because the user explicitly
+  // asked for the per-bridge view.
   if ((t.moca_bridges || []).length) {
-    const bridges = t.moca_bridges;
+    const bridges = t.moca_bridges.slice(); // copy so sort doesn't mutate
     const childrenMap = t.moca_children || {};
-    const totalChildren = Object.values(childrenMap).reduce((acc, arr) => acc + (arr || []).length, 0);
-    const rows = [];
-    for (const bridgeMac of bridges) {
-      // Bridge row (parent)
-      rows.push({
-        mac: bridgeMac,
-        label: "MoCA bridge",
-        dev: devices[bridgeMac] || { mac: bridgeMac },
-        is_bridge: true,
-      });
-      // Child rows (downstream devices)
+    // Build per-bridge column metadata, sort alphabetically by display name
+    // so the diagram is stable across scans regardless of MAC ordering.
+    const bridgeColumns = bridges.map(bridgeMac => {
+      const dev = devices[bridgeMac] || { mac: bridgeMac };
+      const friendly = (dev.friendly_name || "").trim();
+      const vendor = (dev.vendor || "Unknown").trim();
+      // Last 4 hex chars of MAC (no colons) -- same compact fingerprint
+      // the Orbi-satellite fallback uses, e.g. "Orbi satellite (73E1)".
+      const macSuffix = bridgeMac.replace(/:/g, "").slice(-4).toUpperCase();
+      const displayName = friendly || `${vendor} ${macSuffix}`;
       const kids = childrenMap[bridgeMac] || [];
-      for (const childMac of kids) {
-        rows.push({
-          mac: childMac,
-          label: "behind bridge",
-          dev: devices[childMac] || { mac: childMac },
-          is_child: true,
-        });
-      }
-    }
-    const countSummary = totalChildren
-      ? `${bridges.length} bridge${bridges.length !== 1 ? "s" : ""} · ${totalChildren} downstream device${totalChildren !== 1 ? "s" : ""}`
-      : `${bridges.length} coax-to-Ethernet bridge${bridges.length !== 1 ? "s" : ""}`;
-    columns.push({
-      kind: "moca",
-      id: "moca-bridges",
-      name: "MoCA Bridges",
-      sub: countSummary,
-      rows,
+      return { bridgeMac, dev, displayName, kids };
     });
+    bridgeColumns.sort((a, b) => a.displayName.localeCompare(b.displayName));
+    for (const bc of bridgeColumns) {
+      const rows = bc.kids.map(childMac => ({
+        mac: childMac,
+        label: "behind bridge",
+        dev: devices[childMac] || { mac: childMac },
+      }));
+      columns.push({
+        kind: "moca",
+        id: `moca-bridge-${bc.bridgeMac.replace(/:/g, "")}`,
+        // Prefix with 📻 to mirror the Orbi 📡 visual hierarchy --
+        // both are infrastructure tiers, so the icon-prefix tells you
+        // "this is a hop, not a leaf device" at a glance.
+        name: `📻 ${bc.displayName}`,
+        sub: bc.kids.length
+          ? `${bc.kids.length} downstream device${bc.kids.length !== 1 ? "s" : ""}`
+          : "no downstream devices yet",
+        rows,
+        // Carry the bridge-MAC through so the empty-state hint can
+        // tell the user which bridge to assign devices to in the
+        // edit modal.
+        bridge_mac: bc.bridgeMac,
+      });
+    }
   }
 
   // "Unknown" column -- wireless devices the Orbi knows about but didn't
@@ -5341,7 +5356,14 @@ function hnTopoBuildSvg(t) {
     };
     const iconByKind = { switch: "🔀", ap_base: "📡", ap_satellite: "📡", moca: "📻", via_moca: "🌀", verizon_lan: "🔌", verizon_or_moca: "🔌", orbi_mesh_unknown: "📶", unmapped: "❓" };
     const label = `${iconByKind[col.kind] || "•"} ${col.name}`;
+    // data-column-kind / data-column-id make the column header
+    // queryable from Playwright so the regression test for #42 follow-up
+    // can assert "API says N MoCA bridges → SVG renders N moca columns"
+    // without parsing visible label text. Mirrors the data-metric pattern
+    // on Trends cards (#39).
+    svg += `<g data-column-kind="${_esc(col.kind || '')}" data-column-id="${_esc(col.id || '')}">`;
     svg += _hnSvgNode(x, INFRA_Y, NODE_W, label, col.sub || "", colorByKind[col.kind] || "var(--muted)");
+    svg += `</g>`;
 
     // Connector router → infra. Skip for "unmapped" only -- everything
     // else (switch, APs, MoCA bridges, Verizon-direct/MoCA bucket) does

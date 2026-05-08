@@ -412,6 +412,97 @@ class TestNetworkTopologyDiagram:
             f"in the rendered output. SVG content was: {svg_text[:200]!r}"
         )
 
+    # ── Structural coverage regressions ────────────────────────────────
+    # User feedback 2026-05-08 ("shows one moca bridge"): the topology
+    # diagram had collapsed all 5 auto-discovered MoCA bridges into a
+    # single column, asymmetric with Orbi satellites which each get
+    # their own column. The bug shipped because data tests asserted
+    # backend correctness (build_topology returned 5 bridges) but no
+    # test asserted the FRONTEND rendered N columns for N bridges.
+    #
+    # The lesson: visual smoke "X exists" tests miss structural bugs
+    # like "wrong column count for the data we have." The test below
+    # is a 1:1 contract guard between every multi-instance API category
+    # and its rendered column set -- same pattern as TestTrendsCardCoverage
+    # (#39) which guards every available metric → rendered card.
+
+    def test_topology_column_count_matches_api_category_counts(self, loaded_page):
+        """For every multi-instance infrastructure category in the API
+        response (aps / switches / moca_bridges), the rendered SVG MUST
+        contain that many columns of the matching kind. Catches the
+        2026-05-08 'shows one moca bridge' bug class -- backend reported
+        5 bridges, frontend rendered 1 column. Generalised so the same
+        regression in any other category (Orbi APs, switches) fires too.
+        """
+        page, _ = loaded_page
+        topology = page.evaluate("fetch('/api/homenet/topology').then(r => r.json())")
+        if not topology.get("ok"):
+            pytest.skip(f"topology API not ok: {topology}")
+
+        # Map: API key -> expected column kinds in the SVG. A category
+        # may map to multiple kinds (e.g. aps splits into base + satellite)
+        # so the assertion is on combined count.
+        # API key (list-of-MACs) -> set of valid SVG column kinds for it
+        category_to_kinds = {
+            "moca_bridges": {"moca"},
+            "switches": {"switch"},
+            "aps": {"ap_base", "ap_satellite"},
+        }
+
+        self._goto_homenet_and_show_topology(page)
+
+        rendered_kinds = page.evaluate(
+            """
+            Array.from(document.querySelectorAll('#hn-topo-svg-wrap g[data-column-kind]'))
+                 .map(g => g.dataset.columnKind)
+            """
+        )
+        rendered_count_by_kind = {}
+        for k in rendered_kinds:
+            rendered_count_by_kind[k] = rendered_count_by_kind.get(k, 0) + 1
+
+        misses = []
+        for api_key, valid_kinds in category_to_kinds.items():
+            api_items = topology.get(api_key) or []
+            api_count = len(api_items)
+            rendered_for_category = sum(rendered_count_by_kind.get(k, 0) for k in valid_kinds)
+            if api_count != rendered_for_category:
+                misses.append(
+                    f"  {api_key}: API has {api_count}, SVG rendered {rendered_for_category} "
+                    f"(kinds {sorted(valid_kinds)})"
+                )
+
+        assert not misses, (
+            "Topology column-count mismatch -- the SVG isn't rendering one column per "
+            "infrastructure item the backend reported.\n"
+            + "\n".join(misses)
+            + "\n\nThis catches the 2026-05-08 'shows one moca bridge' regression class: "
+            "data tests pass because the backend is right, but the renderer in "
+            "templates/index.html (hnTopoBuildSvg) collapses multiple items into one "
+            "column. Each item in the multi-instance API categories should get its own "
+            "<g data-column-kind=...> in the SVG."
+        )
+
+    def test_topology_columns_have_unique_data_column_id(self, loaded_page):
+        """Defence against a copy-paste bug producing two columns with
+        the same id (would hide one in the diagram). Same shape as
+        TestTrendsCardCoverage.test_rendered_cards_have_unique_data_metric."""
+        page, _ = loaded_page
+        topology = page.evaluate("fetch('/api/homenet/topology').then(r => r.json())")
+        if not topology.get("ok"):
+            pytest.skip(f"topology API not ok: {topology}")
+
+        self._goto_homenet_and_show_topology(page)
+        ids = page.evaluate(
+            """
+            Array.from(document.querySelectorAll('#hn-topo-svg-wrap g[data-column-id]'))
+                 .map(g => g.dataset.columnId)
+                 .filter(s => s)
+            """
+        )
+        dupes = sorted({i for i in ids if ids.count(i) > 1})
+        assert not dupes, f"duplicate data-column-id in topology SVG: {dupes}"
+
     # ── Visual-correctness regressions surfaced 2026-04-25 ────────────
     # Three bugs the user spotted that the structural tests above missed:
     #   - active devices rendered with grey dots ("MoCA bridge looks
