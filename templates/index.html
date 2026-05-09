@@ -664,6 +664,9 @@
       </div>
       <div style="display:flex;align-items:center;gap:10px">
         <span id="db-checked-at" style="font-size:11px;color:var(--muted)"></span>
+        <button onclick="openExportModal()" title="Export the dashboard as a Markdown / HTML / JSON document"
+                style="padding:6px 14px;font-size:12px;background:var(--surface);color:var(--cyan);
+                       border:1px solid var(--cyan);border-radius:6px;cursor:pointer;font-family:var(--font-mono)">📤 Export Report</button>
         <button class="btn-action" onclick="loadDashboard()" style="padding:6px 16px;font-size:12px">↺ Refresh All</button>
       </div>
     </div>
@@ -746,6 +749,67 @@
             <summary style="cursor:pointer;font-size:11px;color:var(--muted);user-select:none">Show recent samples (last 20)</summary>
             <div id="db-trends-modal-recent" style="margin-top:10px;font-family:var(--font-mono);font-size:11px;max-height:240px;overflow-y:auto"></div>
           </details>
+        </div>
+      </div>
+
+      <!-- Export Report modal (backlog #15) -->
+      <div id="db-export-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;align-items:center;justify-content:center;padding:24px">
+        <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:22px;width:min(560px,95vw);max-height:90vh;overflow:auto">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+            <div>
+              <div style="font-size:16px;font-weight:700;color:var(--cyan)">📤 Export Report</div>
+              <div style="font-size:11px;color:var(--muted);margin-top:2px">Generate a shareable system health report</div>
+            </div>
+            <button onclick="closeExportModal()" title="Close (Esc)"
+                    style="background:transparent;border:1px solid var(--border);color:var(--text);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:13px">✕</button>
+          </div>
+
+          <!-- Format -->
+          <div style="margin-bottom:12px">
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px;text-transform:uppercase;letter-spacing:.06em">Format</label>
+            <select id="export-format" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-family:var(--font-mono);font-size:12px">
+              <option value="markdown">Markdown — best for support tickets / GitHub issues / chat</option>
+              <option value="html">HTML — styled standalone document, opens in browser</option>
+              <option value="json">JSON — full machine-readable dump</option>
+            </select>
+          </div>
+
+          <!-- Scope -->
+          <div style="margin-bottom:12px">
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px;text-transform:uppercase;letter-spacing:.06em">Scope</label>
+            <select id="export-scope" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-family:var(--font-mono);font-size:12px">
+              <option value="full">Full report — overall + concerns + system + BSODs</option>
+              <option value="dashboard">Dashboard only — overall + concerns (smallest)</option>
+              <option value="bsod">BSODs only — for crash-focused tickets</option>
+              <option value="hardware">Hardware only — for upgrade questions</option>
+              <option value="network">Network only — for connectivity questions</option>
+            </select>
+          </div>
+
+          <!-- Redact PII (default ON) -->
+          <div style="margin-bottom:18px;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:6px;display:flex;align-items:flex-start;gap:10px">
+            <input type="checkbox" id="export-redact-pii" checked style="margin-top:2px;flex-shrink:0">
+            <div>
+              <label for="export-redact-pii" style="font-size:12px;color:var(--text-bright);font-weight:600;cursor:pointer">Redact personal info</label>
+              <div style="font-size:11px;color:var(--muted);margin-top:2px;line-height:1.4">
+                Replaces IP addresses, MAC addresses, hostname, and BIOS service tag with placeholders.
+                Leave checked for posts to forums / vendor support; uncheck only for personal records.
+              </div>
+            </div>
+          </div>
+
+          <!-- Action buttons -->
+          <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
+            <button onclick="exportReportCopy()" id="export-copy-btn"
+                    style="padding:8px 14px;background:var(--surface);color:var(--cyan);border:1px solid var(--cyan);border-radius:6px;cursor:pointer;font-family:var(--font-mono);font-size:12px">📋 Copy to clipboard</button>
+            <button onclick="exportReportDownload()"
+                    style="padding:8px 14px;background:var(--surface);color:var(--cyan);border:1px solid var(--cyan);border-radius:6px;cursor:pointer;font-family:var(--font-mono);font-size:12px">💾 Download file</button>
+            <button onclick="exportReportOpen()" class="btn-action"
+                    style="padding:8px 14px;font-size:12px">🔗 Open in tab</button>
+          </div>
+
+          <!-- Status line -->
+          <div id="export-status" style="margin-top:12px;font-size:11px;color:var(--muted);min-height:16px"></div>
         </div>
       </div>
 
@@ -4406,6 +4470,107 @@ function closeTrendDrilldown() {
 
 function _trendModalEscHandler(e) {
   if (e.key === "Escape") closeTrendDrilldown();
+}
+
+// ── Export Report modal (backlog #15) ────────────────────────────────────
+// Reads the user's format / scope / redact-PII choices and either:
+//   📋 copies the rendered report to the clipboard (markdown only -- the
+//       other formats are too large / not paste-friendly)
+//   💾 downloads the report as a file (uses the route's attachment=1
+//       Content-Disposition header)
+//   🔗 opens the report in a new browser tab (HTML / JSON viewable
+//       inline; markdown gets shown as plain text)
+//
+// Default redact_pii=ON because the cost of leaking a service tag in a
+// public support post is real; the cost of toggling OFF for a personal
+// record is one click.
+
+function openExportModal() {
+  const modal = document.getElementById("db-export-modal");
+  if (!modal) return;
+  modal.style.display = "flex";
+  // Default redact ON every time the modal opens so the user is never
+  // surprised by a previously-toggled-off state on a fresh export.
+  const redactBox = document.getElementById("export-redact-pii");
+  if (redactBox) redactBox.checked = true;
+  const status = document.getElementById("export-status");
+  if (status) status.textContent = "";
+  document.addEventListener("keydown", _exportModalEscHandler);
+}
+
+function closeExportModal() {
+  const modal = document.getElementById("db-export-modal");
+  if (modal) modal.style.display = "none";
+  document.removeEventListener("keydown", _exportModalEscHandler);
+}
+
+function _exportModalEscHandler(e) {
+  if (e.key === "Escape") closeExportModal();
+}
+
+function _exportBuildUrl(forceAttachment) {
+  // Read the current modal values + assemble the query string. Pulled
+  // out so all three buttons (copy / download / open) build the same URL.
+  const fmt = document.getElementById("export-format").value;
+  const scope = document.getElementById("export-scope").value;
+  const redact = document.getElementById("export-redact-pii").checked ? "1" : "0";
+  const params = new URLSearchParams({format: fmt, scope: scope, redact_pii: redact});
+  if (forceAttachment) params.set("attachment", "1");
+  return "/api/report/export?" + params.toString();
+}
+
+function _exportSetStatus(msg, color) {
+  const el = document.getElementById("export-status");
+  if (el) {
+    el.textContent = msg;
+    el.style.color = color || "var(--muted)";
+  }
+}
+
+async function exportReportCopy() {
+  const btn = document.getElementById("export-copy-btn");
+  if (btn) btn.disabled = true;
+  _exportSetStatus("Generating…");
+  try {
+    const r = await fetch(_exportBuildUrl(false));
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({error: r.statusText}));
+      _exportSetStatus("Error: " + (err.error || r.statusText), "var(--red)");
+      return;
+    }
+    const text = await r.text();
+    // Modern Clipboard API requires HTTPS or localhost; localhost dashboard
+    // runs on http://localhost:5000 which IS a secure context per spec.
+    await navigator.clipboard.writeText(text);
+    _exportSetStatus(`Copied ${text.length.toLocaleString()} characters to clipboard.`, "var(--green)");
+  } catch (e) {
+    _exportSetStatus("Copy failed: " + (e && e.message || e), "var(--red)");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function exportReportDownload() {
+  // Use a transient anchor click so the browser handles the
+  // attachment=1 Content-Disposition naturally. Avoids buffering the
+  // whole report through fetch + blob just to trigger a save.
+  const url = _exportBuildUrl(true);
+  const a = document.createElement("a");
+  a.href = url;
+  // The Content-Disposition header drives the actual filename; this
+  // attribute is just a fallback hint for browsers that ignore it.
+  a.download = "windesktopmgr_report";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  _exportSetStatus("Download started.", "var(--green)");
+}
+
+function exportReportOpen() {
+  // Open in a new tab for inline preview. HTML and JSON render
+  // natively; markdown shows as plain text (which is fine for review).
+  window.open(_exportBuildUrl(false), "_blank", "noopener,noreferrer");
+  _exportSetStatus("Opened in new tab.", "var(--green)");
 }
 
 function _highlightWindowButton(hours) {
