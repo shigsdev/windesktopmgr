@@ -5491,6 +5491,127 @@ function filterHomeNet() {
   renderHomeNet();
 }
 
+// ── Remote reboot (backlog #16) ──────────────────────────────────────────
+// Type-to-confirm flow:
+//   1. User clicks one of the Reboot buttons -> hnOpenRebootConfirm()
+//      sets up the modal with the device's display name + key
+//   2. User types the device key in the input -> hnRebootConfirmInputChanged()
+//      enables the Reboot button only when text matches
+//   3. User clicks Reboot -> hnFireReboot() POSTs to /api/homenet/reboot/<device>
+//      with confirm=<key> in the body. Backend has its own type-to-confirm
+//      guard as defense-in-depth.
+//   4. For SOAP (Orbi): backend confirms reboot fired
+//      For deep-link (Verizon, TP-Link): backend returns the URL; UI
+//      opens it in a new tab so user finishes in the device's admin.
+let _hnRebootDevice = null;  // currently-selected device key
+
+function hnOpenRebootConfirm(deviceKey, displayName) {
+  _hnRebootDevice = deviceKey;
+  document.getElementById("hn-reboot-modal-device").textContent = displayName;
+  document.getElementById("hn-reboot-confirm-required").textContent = deviceKey;
+  // Mode-specific copy so the user knows what to expect after confirm.
+  // SOAP (Orbi) is real one-click; deep-link routes through the device's
+  // own admin UI for the actual trigger.
+  const modeNote = document.getElementById("hn-reboot-modal-mode-note");
+  if (modeNote) {
+    modeNote.textContent = deviceKey === "orbi"
+      ? "Reboot fires immediately via SOAP."
+      : "Opens the device's admin UI to its reboot page; you click Reboot there.";
+  }
+  const input = document.getElementById("hn-reboot-confirm-input");
+  if (input) {
+    input.value = "";
+    input.placeholder = `type "${deviceKey}" to enable`;
+    setTimeout(() => input.focus(), 0);
+  }
+  const btn = document.getElementById("hn-reboot-fire-btn");
+  if (btn) {
+    btn.disabled = true;
+    btn.style.opacity = ".4";
+    btn.style.cursor = "not-allowed";
+  }
+  const status = document.getElementById("hn-reboot-status");
+  if (status) status.textContent = "";
+  document.getElementById("hn-reboot-modal").style.display = "flex";
+  document.addEventListener("keydown", _hnRebootEscHandler);
+}
+
+function _hnRebootEscHandler(e) {
+  if (e.key === "Escape") hnCloseRebootConfirm();
+}
+
+function hnCloseRebootConfirm() {
+  document.getElementById("hn-reboot-modal").style.display = "none";
+  document.removeEventListener("keydown", _hnRebootEscHandler);
+  _hnRebootDevice = null;
+}
+
+function hnRebootConfirmInputChanged() {
+  const input = document.getElementById("hn-reboot-confirm-input");
+  const btn = document.getElementById("hn-reboot-fire-btn");
+  if (!input || !btn || !_hnRebootDevice) return;
+  const matches = input.value.trim().toLowerCase() === _hnRebootDevice;
+  btn.disabled = !matches;
+  btn.style.opacity = matches ? "1" : ".4";
+  btn.style.cursor = matches ? "pointer" : "not-allowed";
+}
+
+async function hnFireReboot() {
+  if (!_hnRebootDevice) return;
+  const device = _hnRebootDevice;
+  const status = document.getElementById("hn-reboot-status");
+  const btn = document.getElementById("hn-reboot-fire-btn");
+  if (btn) btn.disabled = true;
+  if (status) {
+    status.textContent = "Sending reboot…";
+    status.style.color = "var(--muted)";
+  }
+  try {
+    const r = await fetch(`/api/homenet/reboot/${encodeURIComponent(device)}`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      // Server-side type-to-confirm guard mirrors the UI guard --
+      // defense-in-depth so a stray POST from elsewhere can't fire reboot.
+      body: JSON.stringify({confirm: device}),
+    });
+    const data = await r.json();
+    if (!r.ok || !data.ok) {
+      if (status) {
+        status.textContent = "Failed: " + (data.error || r.statusText);
+        status.style.color = "var(--red)";
+      }
+      if (btn) btn.disabled = false;
+      return;
+    }
+    if (data.mode === "deep-link" && data.url) {
+      // Open the device's admin UI in a new tab so user can finish.
+      window.open(data.url, "_blank", "noopener,noreferrer");
+      if (status) {
+        status.textContent = "Opened admin UI -- click Reboot there to finish.";
+        status.style.color = "var(--green)";
+      }
+    } else if (data.mode === "reboot-fired") {
+      if (status) {
+        status.textContent = data.message || "Reboot triggered.";
+        status.style.color = "var(--green)";
+      }
+    } else {
+      if (status) {
+        status.textContent = "Unknown response mode: " + (data.mode || "?");
+        status.style.color = "var(--orange)";
+      }
+    }
+    // Auto-close after a short delay so the user sees the success message
+    setTimeout(() => hnCloseRebootConfirm(), 2500);
+  } catch (e) {
+    if (status) {
+      status.textContent = "Error: " + (e && e.message || e);
+      status.style.color = "var(--red)";
+    }
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function homenetScan() {
   const btn = document.getElementById("hn-scan-btn");
   btn.disabled = true;
@@ -8452,6 +8573,36 @@ function renderSystemInfo(d, upgrades) {
       </div>
     </div>
 
+    <!-- Remote reboot panel (backlog #16). Three infra devices. Each
+         button opens a TYPE-TO-CONFIRM modal -- the user has to type
+         the device name to enable the Reboot button. Defense in depth
+         against accidental clicks (rebooting kills network for ~60-90s
+         AND every wireless device drops). -->
+    <details style="margin-bottom:18px;border:1px solid #ff456044;border-radius:8px;background:#ff456008">
+      <summary style="cursor:pointer;padding:10px 14px;font-size:12px;color:var(--red);font-weight:700;letter-spacing:.04em;text-transform:uppercase">
+        ⚠ Remote Reboot — Routers + Switch (click to expand)
+      </summary>
+      <div style="padding:0 14px 14px;display:flex;gap:8px;flex-wrap:wrap">
+        <button onclick="hnOpenRebootConfirm('orbi','Orbi RBRE960')" title="Reboot the Orbi mesh router via SOAP"
+                style="padding:8px 14px;background:var(--surface);color:var(--red);border:1px solid var(--red);border-radius:6px;cursor:pointer;font-family:var(--font-mono);font-size:12px">
+          🔄 Reboot Orbi RBRE960 <span style="font-size:9px;color:var(--muted);margin-left:4px">SOAP</span>
+        </button>
+        <button onclick="hnOpenRebootConfirm('verizon','Verizon CR1000A')" title="Open Verizon admin to its reboot page"
+                style="padding:8px 14px;background:var(--surface);color:var(--red);border:1px solid var(--red);border-radius:6px;cursor:pointer;font-family:var(--font-mono);font-size:12px">
+          🔄 Reboot Verizon CR1000A <span style="font-size:9px;color:var(--muted);margin-left:4px">deep-link</span>
+        </button>
+        <button onclick="hnOpenRebootConfirm('tplink','TP-Link TL-SG2218')" title="Open TP-Link switch admin"
+                style="padding:8px 14px;background:var(--surface);color:var(--red);border:1px solid var(--red);border-radius:6px;cursor:pointer;font-family:var(--font-mono);font-size:12px">
+          🔄 Reboot TP-Link Switch <span style="font-size:9px;color:var(--muted);margin-left:4px">deep-link</span>
+        </button>
+      </div>
+      <div style="padding:0 14px 12px;font-size:11px;color:var(--muted);line-height:1.5">
+        Orbi reboots via SOAP (real one-click — connection drops mid-response, expected).
+        Verizon + TP-Link open the device's own admin UI to its reboot page; you click Reboot there.
+        Either way: network drops for ~60-90s and every wireless device reconnects.
+      </div>
+    </details>
+
     <!-- Stats cards -->
     <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:20px">
       <div class="stat-card s-cyan">
@@ -8574,6 +8725,39 @@ function renderSystemInfo(d, upgrades) {
     </div>
 
     <!-- Edit device modal -->
+    <!-- Reboot type-to-confirm modal (backlog #16). The Reboot button stays
+         disabled until the user types the device key in the input -- prevents
+         accidental clicks. Status line below shows the result. -->
+    <div id="hn-reboot-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:1100;align-items:center;justify-content:center;padding:24px">
+      <div style="background:var(--card);border:2px solid var(--red);border-radius:12px;padding:24px;width:min(520px,95vw)">
+        <h3 style="margin:0 0 8px;font-size:16px;color:var(--red);display:flex;align-items:center;gap:8px">
+          ⚠ Reboot <span id="hn-reboot-modal-device" style="font-family:var(--font-mono)">—</span>?
+        </h3>
+        <div style="font-size:12px;color:var(--text);line-height:1.5;margin-bottom:16px">
+          This will <strong style="color:var(--red)">drop your network for ~60-90 seconds</strong>.
+          Every wireless device will reconnect. <span id="hn-reboot-modal-mode-note" style="color:var(--muted)"></span>
+        </div>
+        <div style="margin-bottom:10px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px;text-transform:uppercase;letter-spacing:.06em">
+            Type <code id="hn-reboot-confirm-required" style="color:var(--red)">device-key</code> below to enable Reboot
+          </label>
+          <input type="text" id="hn-reboot-confirm-input" autocomplete="off"
+                 oninput="hnRebootConfirmInputChanged()"
+                 placeholder="type the device key…"
+                 style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-family:var(--font-mono);font-size:13px">
+        </div>
+        <div id="hn-reboot-status" style="font-size:11px;color:var(--muted);margin-bottom:14px;min-height:16px"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button onclick="hnCloseRebootConfirm()"
+                  style="padding:8px 14px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-family:var(--font-mono);font-size:12px">Cancel</button>
+          <button id="hn-reboot-fire-btn" onclick="hnFireReboot()" disabled
+                  style="padding:8px 14px;background:var(--red);color:#fff;border:1px solid var(--red);border-radius:6px;cursor:pointer;font-family:var(--font-mono);font-size:12px;font-weight:700;opacity:.4">
+            🔄 Reboot
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div id="hn-edit-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;
          display:none;align-items:center;justify-content:center">
       <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;

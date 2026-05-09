@@ -3812,6 +3812,198 @@ class TestUserTaggedMocaBridge:
         assert saved["devices"]["AA:BB:CC:DD:EE:01"]["wired_via"] == "moca_bridge"
 
 
+class TestRebootRoute:
+    """Backlog #16: POST /api/homenet/reboot/<device> with type-to-confirm.
+
+    The route MUST refuse without a matching ``confirm`` field even when
+    the device key is valid. Defense-in-depth so a stray POST (curl from
+    history, malicious browser tab) can't take down the user's network.
+    """
+
+    def test_unknown_device_returns_400(self, client):
+        resp = client.post("/api/homenet/reboot/nope", json={"confirm": "nope"})
+        assert resp.status_code == 400
+        body = resp.get_json()
+        assert body["ok"] is False
+        assert "Unknown device" in body["error"]
+
+    def test_missing_confirm_field_returns_400(self, client):
+        """No body at all -> route MUST refuse."""
+        resp = client.post("/api/homenet/reboot/orbi")
+        assert resp.status_code == 400
+        assert "confirm" in resp.get_json()["error"].lower()
+
+    def test_wrong_confirm_value_returns_400(self, client):
+        """Confirm field present but doesn't match device key -> refuse."""
+        resp = client.post("/api/homenet/reboot/orbi", json={"confirm": "verizon"})
+        assert resp.status_code == 400
+        assert "confirm" in resp.get_json()["error"].lower()
+
+    def test_confirm_match_is_case_insensitive(self, client, mocker):
+        """User typing 'ORBI' should still work -- the comparison
+        normalises both sides to lowercase."""
+        mocker.patch("homenet._orbi_reboot_router", return_value={"ok": True, "mode": "reboot-fired"})
+        resp = client.post("/api/homenet/reboot/orbi", json={"confirm": "ORBI"})
+        assert resp.status_code == 200
+
+    def test_orbi_dispatches_to_soap_helper(self, client, mocker):
+        stub = mocker.patch(
+            "homenet._orbi_reboot_router",
+            return_value={"ok": True, "mode": "reboot-fired", "message": "Sent."},
+        )
+        resp = client.post("/api/homenet/reboot/orbi", json={"confirm": "orbi"})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["mode"] == "reboot-fired"
+        stub.assert_called_once()
+
+    def test_verizon_returns_deep_link_url(self, client):
+        """Verizon path returns the admin UI's reboot route as a URL --
+        no actual reboot fired server-side."""
+        resp = client.post("/api/homenet/reboot/verizon", json={"confirm": "verizon"})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["mode"] == "deep-link"
+        assert "192.168.1.1" in body["url"]
+        assert "system/reboot" in body["url"]
+
+    def test_tplink_returns_deep_link_url_when_ip_known(self, client, mocker):
+        mocker.patch("homenet._get_homenet_cred", return_value=("192.168.1.50", "publiccommunity"))
+        resp = client.post("/api/homenet/reboot/tplink", json={"confirm": "tplink"})
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["mode"] == "deep-link"
+        assert "192.168.1.50" in body["url"]
+
+    def test_tplink_500_when_ip_undiscoverable(self, client, mocker):
+        """Switch IP is 'auto' but ARP doesn't find it -> 500 with a
+        useful error message, not a broken URL."""
+        mocker.patch("homenet._get_homenet_cred", return_value=("auto", "public"))
+        mocker.patch("homenet._resolve_ip_from_mac", return_value="")
+        resp = client.post("/api/homenet/reboot/tplink", json={"confirm": "tplink"})
+        assert resp.status_code == 500
+        assert "switch IP" in resp.get_json()["error"]
+
+
+class TestOrbiRebootHelper:
+    """Direct tests for _orbi_reboot_router() -- network mocked."""
+
+    def test_no_creds_returns_error(self, mocker):
+        from homenet import _orbi_reboot_router
+
+        mocker.patch("homenet._get_homenet_cred", return_value=(None, None))
+        result = _orbi_reboot_router()
+        assert "error" in result
+        assert "credentials" in result["error"].lower()
+
+    def test_happy_path_http_200_returns_ok(self, mocker):
+        """SOAP returns 200 -> ok with mode=reboot-fired."""
+        from homenet import _orbi_reboot_router
+
+        mocker.patch("homenet._get_homenet_cred", return_value=("admin", "pw"))
+        mock_session = MagicMock()
+        ok_resp = MagicMock()
+        ok_resp.status_code = 200
+        mock_session.post.return_value = ok_resp
+        mocker.patch("homenet.requests.Session", return_value=mock_session)
+        result = _orbi_reboot_router()
+        assert result["ok"] is True
+        assert result["mode"] == "reboot-fired"
+
+    def test_connection_error_during_reboot_treated_as_success(self, mocker):
+        """The router killing the response mid-flight is the EXPECTED
+        success indicator for reboot. ConnectionError on the Reboot
+        SOAP call -> ok=True, not an error."""
+        import requests as _req
+
+        from homenet import _orbi_reboot_router
+
+        mocker.patch("homenet._get_homenet_cred", return_value=("admin", "pw"))
+        mock_session = MagicMock()
+        # First call (ConfigurationStarted) succeeds; second call (Reboot)
+        # raises ConnectionError mid-response.
+        ok_resp = MagicMock()
+        ok_resp.status_code = 200
+        mock_session.post.side_effect = [ok_resp, _req.exceptions.ConnectionError("connection closed")]
+        mocker.patch("homenet.requests.Session", return_value=mock_session)
+        result = _orbi_reboot_router()
+        assert result["ok"] is True
+        assert result["mode"] == "reboot-fired"
+        assert "connection closed mid-response" in result["message"]
+
+    def test_chunked_encoding_error_also_success(self, mocker):
+        """Same idea for ChunkedEncodingError -- another way the router
+        can drop the response when it actually starts the reboot."""
+        import requests as _req
+
+        from homenet import _orbi_reboot_router
+
+        mocker.patch("homenet._get_homenet_cred", return_value=("admin", "pw"))
+        mock_session = MagicMock()
+        ok_resp = MagicMock()
+        ok_resp.status_code = 200
+        mock_session.post.side_effect = [ok_resp, _req.exceptions.ChunkedEncodingError("incomplete")]
+        mocker.patch("homenet.requests.Session", return_value=mock_session)
+        result = _orbi_reboot_router()
+        assert result["ok"] is True
+
+    def test_connect_timeout_returns_unreachable_error(self, mocker):
+        """If the FIRST call (ConfigurationStarted) times out before
+        connecting at all, that's a real failure -- the Wi-Fi probably
+        isn't on the Orbi network."""
+        import requests as _req
+
+        from homenet import _orbi_reboot_router
+
+        mocker.patch("homenet._get_homenet_cred", return_value=("admin", "pw"))
+        mock_session = MagicMock()
+        # Both calls fail with ConnectTimeout (not a mid-reboot connection
+        # close, an actual unreachable router)
+        mock_session.post.side_effect = _req.exceptions.ConnectTimeout()
+        mocker.patch("homenet.requests.Session", return_value=mock_session)
+        result = _orbi_reboot_router()
+        assert "error" in result
+        assert "unreachable" in result["error"].lower()
+
+
+class TestVerizonAndTpLinkRebootHelpers:
+    """The non-SOAP helpers just compute deep-link URLs -- no network."""
+
+    def test_verizon_url_uses_known_admin_path(self):
+        from homenet import _verizon_reboot_url
+
+        url = _verizon_reboot_url()
+        assert url.startswith("http://192.168.1.1/")
+        # The hash route is documented in the SPA's Vue Router table
+        assert "system/reboot" in url
+
+    def test_tplink_url_uses_stored_ip(self, mocker):
+        from homenet import _tplink_reboot_url
+
+        mocker.patch("homenet._get_homenet_cred", return_value=("192.168.1.42", "secret"))
+        url = _tplink_reboot_url()
+        assert url == "http://192.168.1.42/"
+
+    def test_tplink_url_auto_resolves_when_user_field_is_auto(self, mocker):
+        from homenet import _tplink_reboot_url
+
+        mocker.patch("homenet._get_homenet_cred", return_value=("auto", "secret"))
+        mocker.patch("homenet._resolve_ip_from_mac", return_value="192.168.1.99")
+        url = _tplink_reboot_url()
+        assert "192.168.1.99" in url
+
+    def test_tplink_url_empty_when_unresolvable(self, mocker):
+        from homenet import _tplink_reboot_url
+
+        mocker.patch("homenet._get_homenet_cred", return_value=("auto", "secret"))
+        mocker.patch("homenet._resolve_ip_from_mac", return_value="")
+        url = _tplink_reboot_url()
+        assert url == ""
+
+
 class TestTopologyRoute:
     def test_route_returns_topology_shape(self, client, mocker):
         mocker.patch(
