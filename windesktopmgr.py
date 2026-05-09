@@ -10968,6 +10968,50 @@ def events_cache_clear():
     return jsonify({"ok": True})
 
 
+@app.route("/api/report/export")
+def report_export():
+    """On-demand system health report (backlog #15).
+
+    Query parameters:
+      scope       -- "full" | "dashboard" | "bsod" | "hardware" | "network"
+                     (default "full")
+      format      -- "markdown" | "html" | "json" (default "markdown")
+      redact_pii  -- "1" / "true" / "yes" enable; anything else disable.
+                     Default: enabled. The cost of leaking a service tag
+                     in a public support post is real -- explicit opt-out.
+      attachment  -- "1" to force Content-Disposition: attachment (browser
+                     downloads instead of rendering inline). Useful for
+                     the "Save to file" button. Default: inline so the
+                     browser can preview HTML / Markdown.
+
+    Returns the rendered report with the correct Content-Type. Errors
+    are 400 (bad params) or 500 (collector blew up); both surface a
+    JSON error body.
+    """
+    from report import generate_report
+
+    scope = (request.args.get("scope") or "full").strip().lower()
+    fmt = (request.args.get("format") or "markdown").strip().lower()
+    # Default redact ON; only OFF when the user explicitly opts out.
+    redact_raw = (request.args.get("redact_pii") or "1").strip().lower()
+    redact = redact_raw in ("1", "true", "yes", "on")
+    as_attachment = (request.args.get("attachment") or "0").strip().lower() in ("1", "true", "yes", "on")
+
+    try:
+        content, mime = generate_report(scope=scope, fmt=fmt, redact_pii=redact)
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:  # noqa: BLE001 -- we want the route to NEVER 500 silently
+        return jsonify({"ok": False, "error": f"Report generation failed: {e}"}), 500
+
+    headers = {"Content-Type": mime}
+    if as_attachment:
+        ext = {"markdown": "md", "html": "html", "json": "json"}[fmt]
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        headers["Content-Disposition"] = f'attachment; filename="windesktopmgr_report_{ts}.{ext}"'
+    return content, 200, headers
+
+
 # ==============================================================================
 # AUTOMATED REMEDIATION ENGINE -- moved to remediation.py (backlog #22 blueprint extraction)
 # ==============================================================================
