@@ -2190,6 +2190,79 @@ def homenet_switch_data():
     return jsonify(result)
 
 
+# Whitelist of devices the reboot route accepts. Defined at module scope
+# so tests can introspect it + the route + UI stay in sync.
+_REBOOT_DEVICES = ("verizon", "orbi", "tplink")
+
+
+@homenet_bp.route("/api/homenet/reboot/<device>", methods=["POST"])
+def homenet_reboot(device: str):
+    """Trigger a reboot on a home-network infrastructure device (#16).
+
+    Body MUST include ``confirm`` matching the device key. Defense in
+    depth -- even a stray POST (curl from history, malicious browser
+    tab, etc.) can't take down the network without explicit intent.
+
+    Response shape varies by device because the implementation varies:
+        * orbi    -> {"ok": True, "mode": "reboot-fired", "message": ...}
+                     The SOAP reboot was sent; router is going down now.
+        * verizon -> {"ok": True, "mode": "deep-link", "url": "..."}
+                     Caller must open the URL in a new tab; user pulls
+                     the actual reboot trigger in the Verizon admin.
+        * tplink  -> same as verizon (deep-link to switch web admin)
+
+    Errors are HTTP 400 (bad device or missing confirm) or HTTP 500
+    (collector raised). Both surface a JSON ``{ok: False, error: ...}``.
+    """
+    device = (device or "").lower().strip()
+    if device not in _REBOOT_DEVICES:
+        return (
+            jsonify({"ok": False, "error": f"Unknown device {device!r}. Must be one of: {list(_REBOOT_DEVICES)}"}),
+            400,
+        )
+
+    body = request.get_json(silent=True) or {}
+    confirm = (body.get("confirm") or "").strip().lower()
+    if confirm != device:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": (
+                        f"Type-to-confirm guard: request body must include 'confirm' field "
+                        f"matching the device key {device!r} (got {confirm!r}). "
+                        "This prevents accidental reboot via stray POSTs."
+                    ),
+                }
+            ),
+            400,
+        )
+
+    try:
+        if device == "orbi":
+            return jsonify(_orbi_reboot_router())
+        if device == "verizon":
+            return jsonify({"ok": True, "mode": "deep-link", "url": _verizon_reboot_url()})
+        # tplink
+        url = _tplink_reboot_url()
+        if not url:
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": (
+                            "Cannot determine TP-Link switch IP. Set the switch IP in Network Settings "
+                            "(or use 'auto' if the switch responds to ARP)."
+                        ),
+                    }
+                ),
+                500,
+            )
+        return jsonify({"ok": True, "mode": "deep-link", "url": url})
+    except Exception as e:  # noqa: BLE001 -- route must never silently 500
+        return jsonify({"ok": False, "error": f"Reboot dispatch failed: {e}"}), 500
+
+
 # ── Network topology (#9) ───────────────────────────────────────────────────
 
 
@@ -2455,6 +2528,184 @@ def _parse_orbi_satellites(xml_text: str) -> list:
 # every topology refresh from hitting the router.
 _orbi_sat_cache: dict = {"ts": 0.0, "data": []}
 _ORBI_SAT_TTL_S = 300.0
+
+
+# ── Remote reboot (backlog #16) ──────────────────────────────────────────────
+# One-click reboot for the three home-network infrastructure devices.
+# Mixed approach because the routers have different write surfaces:
+#
+#   Orbi RBRE960 -- well-documented SOAP `Reboot` action on `DeviceConfig:1`
+#     (the action pynetgear uses). True one-click. Implemented as a real
+#     reboot trigger.
+#
+#   Verizon CR1000A -- the SPA's reboot button is buried in a minified
+#     Vue chunk; reverse-engineering the write payload safely (without
+#     accidentally rebooting during probe) is risky. Ship Path A
+#     instead: deep-link to the admin UI's `#/system/reboot` route and
+#     let the user pull the trigger there. Same pattern as DNS hostname
+#     editing in #7. Honest about the limitation in the dashboard copy.
+#
+#   TP-Link TL-SG2218 -- SNMP write OID for reboot is undocumented for
+#     this model in TP-Link's public MIBs. Ship Path A: deep-link to
+#     the switch's web admin (HTTP, IP discovered via SNMP MAC table or
+#     stored creds).
+#
+# Server-side type-to-confirm guard: the request body MUST carry a
+# `confirm` field that exactly matches the device key. Defense in depth
+# so even a stray POST (curl from history, malicious browser tab, etc.)
+# can't take down the user's network without explicit intent.
+
+
+def _orbi_reboot_router() -> dict:
+    """Trigger a reboot on the Orbi RBRE960 via SOAP.
+
+    Three-step pattern from pynetgear:
+        1. ``DeviceConfig:1#ConfigurationStarted`` -- claim the config lock
+        2. ``DeviceConfig:1#Reboot`` -- the actual reboot
+        3. (no need to call ConfigurationFinished -- the router is
+           rebooting, the session dies anyway)
+
+    Returns ``{"ok": True, "mode": "reboot-fired"}`` on success or
+    ``{"error": "..."}`` on auth/network failure. Caller MUST treat
+    "no response" after the reboot call as success-ish -- the router
+    closes the connection mid-response when it actually starts the
+    reboot, which manifests as a ConnectionError. We catch that and
+    treat it as "reboot likely fired" rather than a failure.
+    """
+    from xml.sax.saxutils import escape as xml_escape
+
+    import urllib3
+
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    user, pw = _get_homenet_cred("orbi")
+    if not user or not pw:
+        return {"error": "No Orbi credentials configured. Add them in Network Settings."}
+
+    url = "https://10.0.0.1/soap/server_sa/"
+    config_started_body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<v:Envelope xmlns:v="http://schemas.xmlsoap.org/soap/envelope/">
+  <v:Header>
+    <SessionID>DEF456</SessionID>
+  </v:Header>
+  <v:Body>
+    <M1:ConfigurationStarted xmlns:M1="urn:NETGEAR-ROUTER:service:DeviceConfig:1">
+      <NewSessionID>{xml_escape(str(int(time.time())))}</NewSessionID>
+    </M1:ConfigurationStarted>
+  </v:Body>
+</v:Envelope>"""
+    reboot_body = """<?xml version="1.0" encoding="UTF-8"?>
+<v:Envelope xmlns:v="http://schemas.xmlsoap.org/soap/envelope/">
+  <v:Header>
+    <SessionID>DEF456</SessionID>
+  </v:Header>
+  <v:Body>
+    <M1:Reboot xmlns:M1="urn:NETGEAR-ROUTER:service:DeviceConfig:1"/>
+  </v:Body>
+</v:Envelope>"""
+
+    session = requests.Session()
+    session.verify = False
+    try:
+        # Step 1: claim the config lock. Some firmware doesn't require
+        # this; we send it anyway because doing so is harmless if not
+        # required, and required if so.
+        try:
+            session.post(
+                url,
+                data=config_started_body,
+                headers={
+                    "SOAPAction": "urn:NETGEAR-ROUTER:service:DeviceConfig:1#ConfigurationStarted",
+                    "Content-Type": "text/xml; charset=utf-8",
+                },
+                timeout=10,
+                auth=(user, pw),
+            )
+        except requests.exceptions.RequestException:
+            # ConfigurationStarted is best-effort; proceed even if it
+            # didn't get through. The Reboot call below is what counts.
+            pass
+
+        # Step 2: actually reboot. The router will close the connection
+        # mid-response when it starts -- treat ConnectionError /
+        # ChunkedEncodingError / ReadTimeout here as "reboot likely fired".
+        # IMPORTANT: ConnectTimeout is a subclass of ConnectionError but
+        # means "couldn't even connect" -- that's a real unreachable
+        # error, NOT a mid-reboot connection drop. Re-raise so the
+        # outer handler returns the right error message.
+        try:
+            r = session.post(
+                url,
+                data=reboot_body,
+                headers={
+                    "SOAPAction": "urn:NETGEAR-ROUTER:service:DeviceConfig:1#Reboot",
+                    "Content-Type": "text/xml; charset=utf-8",
+                },
+                timeout=15,
+                auth=(user, pw),
+            )
+            if r.status_code == 200:
+                return {
+                    "ok": True,
+                    "mode": "reboot-fired",
+                    "message": "Reboot command sent. Orbi will be unreachable for ~60-90s.",
+                }
+            return {"error": f"Orbi reboot returned HTTP {r.status_code}: {r.text[:200]}"}
+        except requests.exceptions.ConnectTimeout:
+            # Couldn't connect at all -- propagate to outer handler so we
+            # surface "unreachable" instead of misclassifying as success.
+            raise
+        except (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.ChunkedEncodingError,
+            requests.exceptions.ReadTimeout,
+        ):
+            # The router killing the response mid-flight is the EXPECTED
+            # success indicator for reboot. If the connection was closed,
+            # the reboot signal almost certainly landed.
+            return {
+                "ok": True,
+                "mode": "reboot-fired",
+                "message": "Reboot triggered (connection closed mid-response, expected). Orbi will be unreachable for ~60-90s.",
+            }
+    except requests.exceptions.ConnectTimeout:
+        return {"error": "Orbi unreachable (10.0.0.1) -- is Wi-Fi connected to the Orbi network?"}
+    except requests.exceptions.SSLError:
+        return {"error": "Orbi SSL error -- router may need firmware update"}
+    except Exception as e:  # noqa: BLE001 -- last-ditch catch so the route never 500s silently
+        return {"error": f"Orbi reboot error: {e}"}
+    finally:
+        session.close()
+
+
+def _verizon_reboot_url() -> str:
+    """Deep-link to the CR1000A admin UI's reboot page.
+
+    Path A (per #7): we don't reverse-engineer the write payload --
+    the user clicks Reboot in the Verizon admin and pulls the actual
+    trigger there. The hash route is documented in the SPA's Vue Router
+    table (probed in #42 / #19 -- name='Reboot' at path 'system/reboot').
+    """
+    return "http://192.168.1.1/#/system/reboot"
+
+
+def _tplink_reboot_url() -> str:
+    """Deep-link to the TP-Link TL-SG2218 admin UI.
+
+    The switch IP is the same one stored as the SNMP user field, OR
+    auto-resolved from its known MAC. SNMP write OID for reboot isn't
+    in TP-Link's published MIB for this model, so the user finishes
+    in the web admin (Maintenance -> System Tools -> Reboot).
+    """
+    user, _ = _get_homenet_cred("tplink_switch")
+    switch_ip = (user or "").strip()
+    if not switch_ip or switch_ip.lower() == "auto":
+        switch_ip = _resolve_ip_from_mac(TPLINK_SWITCH_MAC) or ""
+    if not switch_ip:
+        # No IP discoverable -- return a placeholder URL the UI can
+        # detect (the route handler surfaces a friendly error in this case)
+        return ""
+    return f"http://{switch_ip}/"
 
 
 def _get_orbi_satellite_names_cached() -> dict[str, str]:
