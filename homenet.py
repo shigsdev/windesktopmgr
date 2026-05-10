@@ -2263,6 +2263,50 @@ def homenet_reboot(device: str):
         return jsonify({"ok": False, "error": f"Reboot dispatch failed: {e}"}), 500
 
 
+# Whitelist of vendors the backup routes accept. Defined at module
+# scope so the routes + UI + tests stay in sync.
+_BACKUP_VENDORS = ("orbi", "verizon")
+
+
+@homenet_bp.route("/api/homenet/backup/list")
+def homenet_backup_list():
+    """List saved router config backups, newest first per vendor."""
+    return jsonify(list_router_backups())
+
+
+@homenet_bp.route("/api/homenet/backup/<vendor>", methods=["POST"])
+def homenet_backup_run(vendor: str):
+    """Trigger a router config backup.
+
+    Vendor whitelist: orbi / verizon.
+        * orbi    -> attempt real download via SOAP-bracketed CGI GET.
+                     On success: {ok, mode='downloaded', path, filename, bytes}.
+                     On failure: {ok=False, error, fallback_url} so the
+                     UI can offer a one-click deep-link as a backup plan.
+        * verizon -> deep-link to admin Save/Restore page (Path A).
+                     {ok, mode='deep-link', url}. User downloads via
+                     the Verizon admin themselves.
+    """
+    vendor = (vendor or "").lower().strip()
+    if vendor not in _BACKUP_VENDORS:
+        return (
+            jsonify({"ok": False, "error": f"Unknown vendor {vendor!r}. Must be one of: {list(_BACKUP_VENDORS)}"}),
+            400,
+        )
+    try:
+        if vendor == "orbi":
+            result = _orbi_backup_config()
+            if result.get("ok"):
+                return jsonify({**result, "mode": "downloaded"})
+            # Soft-fail: 200 OK with the error + fallback so the UI
+            # can offer the deep-link instead of dead-ending.
+            return jsonify({"ok": False, "mode": "needs-fallback", **result})
+        # verizon
+        return jsonify({"ok": True, "mode": "deep-link", "url": _verizon_backup_url()})
+    except Exception as e:  # noqa: BLE001 -- route must never silently 500
+        return jsonify({"ok": False, "error": f"Backup dispatch failed: {e}"}), 500
+
+
 # ── Network topology (#9) ───────────────────────────────────────────────────
 
 
@@ -2706,6 +2750,289 @@ def _tplink_reboot_url() -> str:
         # detect (the route handler surfaces a friendly error in this case)
         return ""
     return f"http://{switch_ip}/"
+
+
+# ── Router config backup (new feature 2026-05-09) ────────────────────────────
+# Save snapshots of router configuration to disk. Two-track approach
+# mirroring the reboot pattern (#16):
+#
+#   Orbi RBRE960 -- pynetgear-documented sequence:
+#     1. SOAP DeviceConfig:1#ConfigurationStarted (claim config session)
+#     2. GET /cgi-bin/NETGEAR_Backup_Setting.cfg with HTTP Basic auth
+#     3. SOAP DeviceConfig:1#ConfigurationFinished (release session)
+#   When the GET returns a non-200 (older firmware uses a different
+#   path), the route surfaces the error so the UI can offer a deep-link
+#   fallback.
+#
+#   Verizon CR1000A -- deep-link to admin /#/system/saverestore page
+#   (same Path A pattern as #16 reboot). Reverse-engineering the SPA's
+#   binary download payload would require credentialed write-surface
+#   probing, which the sandbox correctly blocks. User clicks Save in
+#   the Verizon admin; their browser downloads the file; we don't
+#   intermediate.
+#
+# Storage layout:
+#   {APP_DIR}/backups/orbi/orbi_YYYYMMDD_HHMMSS.cfg
+#   {APP_DIR}/backups/verizon/  -- empty by default; user can drop files
+#                                  in here from their Downloads folder
+# Gitignored. The ``list_router_backups()`` helper enumerates with
+# size + mtime + age so the UI can show a rolling history.
+
+BACKUPS_DIR = os.path.join(APP_DIR, "backups")
+# Cap so a runaway loop / accidental cron job can't fill the disk.
+# 50 backups @ ~50 KB each = 2.5 MB max per router. Plenty of history,
+# trivial disk cost.
+_MAX_BACKUPS_PER_ROUTER = 50
+
+
+def _ensure_backup_dir(vendor: str) -> str:
+    """Make sure the per-vendor backup directory exists, return its path.
+
+    ``vendor`` MUST be one of "orbi" / "verizon" -- whitelisted to prevent
+    path-traversal via crafted vendor strings (defensive even though the
+    route's whitelist already validates).
+    """
+    if vendor not in ("orbi", "verizon"):
+        raise ValueError(f"Unknown backup vendor: {vendor!r}")
+    path = os.path.join(BACKUPS_DIR, vendor)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _prune_old_backups(vendor_dir: str, keep: int = _MAX_BACKUPS_PER_ROUTER) -> int:
+    """Delete oldest backup files in ``vendor_dir`` if more than ``keep``
+    exist. Returns the count of files removed.
+
+    Sorted by mtime so the OLDEST go first. Won't touch non-files.
+    """
+    try:
+        files = sorted(
+            (e for e in os.scandir(vendor_dir) if e.is_file()),
+            key=lambda e: e.stat().st_mtime,
+        )
+    except FileNotFoundError:
+        return 0
+    excess = len(files) - keep
+    if excess <= 0:
+        return 0
+    removed = 0
+    for entry in files[:excess]:
+        try:
+            os.remove(entry.path)
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+def _orbi_backup_config() -> dict:
+    """Pull a config backup file from the Orbi RBRE960 via the documented
+    SOAP-bracketed-by-CGI-GET pattern.
+
+    Returns ``{"ok": True, "path": "...", "bytes": N, "filename": "..."}``
+    on success, or ``{"error": "...", "fallback_url": "..."}`` on failure.
+    The fallback_url lets the UI offer a one-click deep-link to the admin
+    backup page when the API path didn't work (older firmware, locked
+    endpoint, etc.) -- rather than just dead-ending with an error.
+
+    Returns the saved file path so the caller can surface "saved to ..." in
+    the UI. The file is a binary NETGEAR config blob; we don't parse it
+    (that's not the point of a backup).
+    """
+    from xml.sax.saxutils import escape as xml_escape
+
+    import urllib3
+
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    user, pw = _get_homenet_cred("orbi")
+    if not user or not pw:
+        return {
+            "error": "No Orbi credentials configured. Add them in Network Settings.",
+            "fallback_url": "https://10.0.0.1/",
+        }
+
+    base = "https://10.0.0.1"
+    soap_url = f"{base}/soap/server_sa/"
+    backup_cgi = f"{base}/cgi-bin/NETGEAR_Backup_Setting.cfg"
+
+    # Step 1: claim config session. ConfigurationStarted needs a
+    # NewSessionID -- pynetgear uses a millisecond timestamp; we do the
+    # same. Best-effort: some firmware doesn't require it, some does.
+    session_id = str(int(time.time() * 1000))
+    config_started = f"""<?xml version="1.0" encoding="UTF-8"?>
+<v:Envelope xmlns:v="http://schemas.xmlsoap.org/soap/envelope/">
+  <v:Header><SessionID>DEF456</SessionID></v:Header>
+  <v:Body>
+    <M1:ConfigurationStarted xmlns:M1="urn:NETGEAR-ROUTER:service:DeviceConfig:1">
+      <NewSessionID>{xml_escape(session_id)}</NewSessionID>
+    </M1:ConfigurationStarted>
+  </v:Body>
+</v:Envelope>"""
+    config_finished = """<?xml version="1.0" encoding="UTF-8"?>
+<v:Envelope xmlns:v="http://schemas.xmlsoap.org/soap/envelope/">
+  <v:Header><SessionID>DEF456</SessionID></v:Header>
+  <v:Body>
+    <M1:ConfigurationFinished xmlns:M1="urn:NETGEAR-ROUTER:service:DeviceConfig:1">
+      <NewStatus>ChangesApplied</NewStatus>
+    </M1:ConfigurationFinished>
+  </v:Body>
+</v:Envelope>"""
+
+    session = requests.Session()
+    session.verify = False
+    session.auth = (user, pw)
+    try:
+        try:
+            session.post(
+                soap_url,
+                data=config_started,
+                headers={
+                    "SOAPAction": "urn:NETGEAR-ROUTER:service:DeviceConfig:1#ConfigurationStarted",
+                    "Content-Type": "text/xml; charset=utf-8",
+                },
+                timeout=10,
+            )
+        except requests.exceptions.RequestException:
+            # Best-effort -- proceed even if the session-claim didn't go
+            # through. The CGI download is what matters.
+            pass
+
+        # Step 2: GET the backup file
+        try:
+            r = session.get(backup_cgi, timeout=30, stream=False)
+        except requests.exceptions.ConnectTimeout:
+            return {
+                "error": "Orbi unreachable (10.0.0.1) -- is Wi-Fi connected to the Orbi network?",
+                "fallback_url": "https://10.0.0.1/",
+            }
+        except requests.exceptions.SSLError:
+            return {
+                "error": "Orbi SSL error -- router may need firmware update",
+                "fallback_url": "https://10.0.0.1/",
+            }
+        except requests.exceptions.ConnectionError as e:
+            return {
+                "error": f"Cannot connect to Orbi: {e}",
+                "fallback_url": "https://10.0.0.1/",
+            }
+
+        # Best-effort release of the config session. Don't care about
+        # the response -- if it fails, the router will time out the
+        # session itself.
+        try:
+            session.post(
+                soap_url,
+                data=config_finished,
+                headers={
+                    "SOAPAction": "urn:NETGEAR-ROUTER:service:DeviceConfig:1#ConfigurationFinished",
+                    "Content-Type": "text/xml; charset=utf-8",
+                },
+                timeout=10,
+            )
+        except requests.exceptions.RequestException:
+            pass
+
+        if r.status_code != 200:
+            return {
+                "error": (
+                    f"Orbi backup endpoint returned HTTP {r.status_code}. "
+                    "Older firmware may use a different path. Use the deep-link "
+                    "fallback to download manually."
+                ),
+                "fallback_url": "https://10.0.0.1/",
+            }
+        if not r.content or len(r.content) < 200:
+            # A real config blob is at least a few KB. If the router
+            # returned 200 with a tiny body, it's almost certainly an
+            # error page or HTML redirect, not a real backup.
+            return {
+                "error": (
+                    f"Orbi backup endpoint returned only {len(r.content)} bytes -- "
+                    "likely an error page, not a real config blob. Use the "
+                    "deep-link fallback to download manually."
+                ),
+                "fallback_url": "https://10.0.0.1/",
+            }
+
+        # Save it
+        vendor_dir = _ensure_backup_dir("orbi")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"orbi_{ts}.cfg"
+        full_path = os.path.join(vendor_dir, filename)
+        with open(full_path, "wb") as f:
+            f.write(r.content)
+        _prune_old_backups(vendor_dir)
+        return {
+            "ok": True,
+            "path": full_path,
+            "filename": filename,
+            "bytes": len(r.content),
+            "vendor": "orbi",
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as e:  # noqa: BLE001 -- last-ditch so route never silently 500s
+        return {"error": f"Orbi backup error: {e}", "fallback_url": "https://10.0.0.1/"}
+    finally:
+        session.close()
+
+
+def _verizon_backup_url() -> str:
+    """Deep-link to the CR1000A admin UI's Save/Restore page.
+
+    Path A: we don't reverse-engineer the binary download endpoint
+    (would require credentialed write-surface probing). User clicks
+    Save in the Verizon admin; their browser downloads the file to
+    Downloads folder. The route name 'SaveRestore' came from the SPA's
+    Vue Router table (probed in #42 / documented in code comments).
+    """
+    return "http://192.168.1.1/#/system/saverestore"
+
+
+def list_router_backups(vendor: str | None = None) -> dict:
+    """Enumerate saved backup files. ``vendor`` filters to one router
+    ('orbi' / 'verizon'); None returns both. Each entry has filename,
+    full path, bytes, mtime ISO string, age in human-readable form.
+
+    Returns ``{"ok": True, "backups": {"orbi": [...], "verizon": [...]}}``.
+    Always succeeds (returns empty lists for missing dirs).
+    """
+    out: dict = {"ok": True, "backups": {}, "max_per_router": _MAX_BACKUPS_PER_ROUTER}
+    vendors = [vendor] if vendor in ("orbi", "verizon") else ("orbi", "verizon")
+    now = datetime.now()
+    for v in vendors:
+        vdir = os.path.join(BACKUPS_DIR, v)
+        entries = []
+        try:
+            for entry in os.scandir(vdir):
+                if not entry.is_file():
+                    continue
+                st = entry.stat()
+                mtime = datetime.fromtimestamp(st.st_mtime)
+                age_s = (now - mtime).total_seconds()
+                if age_s < 60:
+                    age_h = f"{int(age_s)}s ago"
+                elif age_s < 3600:
+                    age_h = f"{int(age_s / 60)}m ago"
+                elif age_s < 86400:
+                    age_h = f"{int(age_s / 3600)}h ago"
+                else:
+                    age_h = f"{int(age_s / 86400)}d ago"
+                entries.append(
+                    {
+                        "filename": entry.name,
+                        "path": entry.path,
+                        "bytes": st.st_size,
+                        "mtime": mtime.isoformat(),
+                        "age_human": age_h,
+                    }
+                )
+        except FileNotFoundError:
+            pass
+        # Newest first -- most-recent backup at the top of the UI list.
+        entries.sort(key=lambda e: e["mtime"], reverse=True)
+        out["backups"][v] = entries
+    return out
 
 
 def _get_orbi_satellite_names_cached() -> dict[str, str]:

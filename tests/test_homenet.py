@@ -1,6 +1,8 @@
 """Tests for Home Network Management feature."""
 
+import os
 import subprocess
+from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest  # noqa: F401 -- used by backlog #10 classes via pytest.skip
@@ -2363,7 +2365,7 @@ class TestEnrichDeviceNames:
         in balance-alb bonding, the scanner recently saw only MAC '...CB'.
         After roll-up, '...CC' and '...CD' must also show active=True
         without their last_seen being rewritten."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import timedelta, timezone
 
         from homenet import _rollup_active_by_ip
 
@@ -2404,7 +2406,7 @@ class TestEnrichDeviceNames:
     def test_rollup_no_fresh_mac_at_ip_leaves_all_inactive(self):
         """If EVERY MAC at an IP is stale (> 15 min), the rollup must NOT
         activate anyone. Genuinely-offline devices stay offline."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import timedelta, timezone
 
         from homenet import _rollup_active_by_ip
 
@@ -2431,7 +2433,7 @@ class TestEnrichDeviceNames:
 
     def test_rollup_different_ips_are_independent(self):
         """Two unrelated devices at two different IPs must not cross-activate."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import timedelta, timezone
 
         from homenet import _rollup_active_by_ip
 
@@ -2475,7 +2477,7 @@ class TestEnrichDeviceNames:
         """Stale entries at 0.0.0.0 or 169.254.x.y must NOT accidentally
         activate a real device at a populated IP. Same-IP grouping must
         skip those 'catch-all' addresses."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import timedelta, timezone
 
         from homenet import _rollup_active_by_ip
 
@@ -2515,7 +2517,7 @@ class TestEnrichDeviceNames:
         sweep sees only the primary bond winner (the classic balance-alb
         per-destination-hash behaviour). After the light scan, all three
         MACs must still show active=True."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import timedelta, timezone
 
         now = datetime.now(timezone.utc)
         fresh = (now - timedelta(seconds=5)).isoformat()
@@ -4002,6 +4004,262 @@ class TestVerizonAndTpLinkRebootHelpers:
         mocker.patch("homenet._resolve_ip_from_mac", return_value="")
         url = _tplink_reboot_url()
         assert url == ""
+
+
+class TestRouterConfigBackup:
+    """New feature 2026-05-09: pull + persist router config snapshots so
+    a factory-reset / silent config drift / replacement is recoverable.
+
+    Two-track approach: real SOAP-based download for Orbi, deep-link
+    Path A for Verizon (write-surface probing was sandbox-blocked).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_backups_dir(self, tmp_path, mocker):
+        """Each test gets its own backups directory under pytest's
+        tmp_path so file writes don't pollute the real backups/ dir."""
+        backups_dir = tmp_path / "backups"
+        mocker.patch("homenet.BACKUPS_DIR", str(backups_dir))
+        return str(backups_dir)
+
+    def test_ensure_backup_dir_creates_per_vendor_subdir(self, _isolate_backups_dir):
+        from homenet import _ensure_backup_dir
+
+        path = _ensure_backup_dir("orbi")
+        assert path.endswith("orbi")
+        assert path.startswith(_isolate_backups_dir)
+        path2 = _ensure_backup_dir("orbi")
+        assert path == path2
+
+    def test_ensure_backup_dir_rejects_unknown_vendor(self):
+        """Defense against path-traversal via crafted vendor strings."""
+        from homenet import _ensure_backup_dir
+
+        with pytest.raises(ValueError, match="Unknown backup vendor"):
+            _ensure_backup_dir("../etc")
+        with pytest.raises(ValueError):
+            _ensure_backup_dir("tplink")  # not in whitelist
+
+    def test_prune_old_backups_removes_oldest_first(self, tmp_path):
+        from homenet import _prune_old_backups
+
+        vdir = tmp_path / "orbi"
+        vdir.mkdir()
+        for i in range(5):
+            f = vdir / f"orbi_{i}.cfg"
+            f.write_bytes(b"x" * 100)
+            os.utime(str(f), (1000 + i, 1000 + i))
+        removed = _prune_old_backups(str(vdir), keep=3)
+        assert removed == 2
+        remaining = sorted(e.name for e in os.scandir(str(vdir)))
+        assert remaining == ["orbi_2.cfg", "orbi_3.cfg", "orbi_4.cfg"]
+
+    def test_prune_no_op_when_under_cap(self, tmp_path):
+        from homenet import _prune_old_backups
+
+        vdir = tmp_path / "orbi"
+        vdir.mkdir()
+        for i in range(3):
+            (vdir / f"orbi_{i}.cfg").write_bytes(b"x")
+        assert _prune_old_backups(str(vdir), keep=10) == 0
+        assert len(list(os.scandir(str(vdir)))) == 3
+
+    def test_prune_returns_zero_when_dir_missing(self, tmp_path):
+        from homenet import _prune_old_backups
+
+        assert _prune_old_backups(str(tmp_path / "ghost")) == 0
+
+    def test_list_backups_returns_empty_when_no_dirs(self):
+        from homenet import list_router_backups
+
+        result = list_router_backups()
+        assert result["ok"] is True
+        assert result["backups"]["orbi"] == []
+        assert result["backups"]["verizon"] == []
+
+    def test_list_backups_orders_newest_first(self, _isolate_backups_dir):
+        from homenet import _ensure_backup_dir, list_router_backups
+
+        vdir = _ensure_backup_dir("orbi")
+        for i, ts in enumerate([1000, 2000, 3000]):
+            p = os.path.join(vdir, f"orbi_{i}.cfg")
+            with open(p, "wb") as f:
+                f.write(b"x" * (100 + i))
+            os.utime(p, (ts, ts))
+        result = list_router_backups("orbi")
+        files = [b["filename"] for b in result["backups"]["orbi"]]
+        assert files == ["orbi_2.cfg", "orbi_1.cfg", "orbi_0.cfg"]
+
+    def test_list_backups_filter_by_vendor(self, _isolate_backups_dir):
+        from homenet import list_router_backups
+
+        result = list_router_backups("orbi")
+        assert "orbi" in result["backups"]
+        assert "verizon" not in result["backups"]
+
+
+class TestOrbiBackupHelper:
+    """_orbi_backup_config tested with the network mocked end-to-end."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_backups_dir(self, tmp_path, mocker):
+        mocker.patch("homenet.BACKUPS_DIR", str(tmp_path / "backups"))
+
+    def test_no_creds_returns_error_with_fallback_url(self, mocker):
+        from homenet import _orbi_backup_config
+
+        mocker.patch("homenet._get_homenet_cred", return_value=(None, None))
+        result = _orbi_backup_config()
+        assert "error" in result
+        assert "credentials" in result["error"].lower()
+        assert "fallback_url" in result
+        assert "10.0.0.1" in result["fallback_url"]
+
+    def test_happy_path_saves_file_and_returns_metadata(self, mocker):
+        from homenet import _orbi_backup_config
+
+        mocker.patch("homenet._get_homenet_cred", return_value=("admin", "pw"))
+        mock_session = MagicMock()
+        ok_resp = MagicMock()
+        ok_resp.status_code = 200
+        mock_session.post.return_value = ok_resp
+        get_resp = MagicMock()
+        get_resp.status_code = 200
+        get_resp.content = b"NETGEAR_CFG_BLOB" * 50  # 800 bytes
+        mock_session.get.return_value = get_resp
+        mocker.patch("homenet.requests.Session", return_value=mock_session)
+        result = _orbi_backup_config()
+        assert result["ok"] is True
+        assert result["vendor"] == "orbi"
+        assert result["bytes"] == 800
+        assert result["filename"].startswith("orbi_") and result["filename"].endswith(".cfg")
+        assert os.path.exists(result["path"])
+
+    def test_endpoint_404_returns_fallback_not_crash(self, mocker):
+        from homenet import _orbi_backup_config
+
+        mocker.patch("homenet._get_homenet_cred", return_value=("admin", "pw"))
+        mock_session = MagicMock()
+        mock_session.post.return_value = MagicMock(status_code=200)
+        not_found = MagicMock()
+        not_found.status_code = 404
+        not_found.content = b""
+        mock_session.get.return_value = not_found
+        mocker.patch("homenet.requests.Session", return_value=mock_session)
+        result = _orbi_backup_config()
+        assert "error" in result
+        assert "404" in result["error"]
+        assert "fallback_url" in result
+
+    def test_tiny_response_treated_as_error_page_not_real_backup(self, mocker):
+        """A real config blob is at least a few KB. 200 OK with <200
+        bytes is almost certainly an HTML error page, not a backup."""
+        from homenet import _orbi_backup_config
+
+        mocker.patch("homenet._get_homenet_cred", return_value=("admin", "pw"))
+        mock_session = MagicMock()
+        mock_session.post.return_value = MagicMock(status_code=200)
+        suspicious = MagicMock()
+        suspicious.status_code = 200
+        suspicious.content = b"<html>error</html>"
+        mock_session.get.return_value = suspicious
+        mocker.patch("homenet.requests.Session", return_value=mock_session)
+        result = _orbi_backup_config()
+        assert "error" in result
+        assert "bytes" in result["error"].lower()
+        assert "fallback_url" in result
+
+    def test_connect_timeout_returns_unreachable(self, mocker):
+        import requests as _req
+
+        from homenet import _orbi_backup_config
+
+        mocker.patch("homenet._get_homenet_cred", return_value=("admin", "pw"))
+        mock_session = MagicMock()
+        mock_session.post.return_value = MagicMock(status_code=200)
+        mock_session.get.side_effect = _req.exceptions.ConnectTimeout()
+        mocker.patch("homenet.requests.Session", return_value=mock_session)
+        result = _orbi_backup_config()
+        assert "error" in result
+        assert "unreachable" in result["error"].lower()
+        assert "fallback_url" in result
+
+
+class TestVerizonBackupHelper:
+    def test_url_uses_admin_save_restore_route(self):
+        from homenet import _verizon_backup_url
+
+        url = _verizon_backup_url()
+        assert url.startswith("http://192.168.1.1")
+        assert "system/saverestore" in url
+
+
+class TestBackupRoutes:
+    """API surface for backup. Type-to-confirm guard NOT used here
+    because backup is a read-style action (no destructive side effects
+    on the router itself); the only file written is on the local disk
+    in a sandboxed directory."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_backups_dir(self, tmp_path, mocker):
+        mocker.patch("homenet.BACKUPS_DIR", str(tmp_path / "backups"))
+
+    def test_unknown_vendor_returns_400(self, client):
+        resp = client.post("/api/homenet/backup/cisco")
+        assert resp.status_code == 400
+        body = resp.get_json()
+        assert body["ok"] is False
+        assert "Unknown vendor" in body["error"]
+
+    def test_orbi_dispatches_to_helper_on_success(self, client, mocker):
+        mocker.patch(
+            "homenet._orbi_backup_config",
+            return_value={
+                "ok": True,
+                "path": "/tmp/orbi_x.cfg",
+                "filename": "orbi_x.cfg",
+                "bytes": 1024,
+                "vendor": "orbi",
+            },
+        )
+        resp = client.post("/api/homenet/backup/orbi")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["mode"] == "downloaded"
+        assert body["filename"] == "orbi_x.cfg"
+
+    def test_orbi_failure_returns_needs_fallback_with_url(self, client, mocker):
+        """When the SOAP backup fails, the route surfaces ok=False BUT
+        with mode='needs-fallback' + fallback_url so the UI can offer
+        the deep-link as recovery instead of just dead-ending."""
+        mocker.patch(
+            "homenet._orbi_backup_config",
+            return_value={"error": "404 from CGI", "fallback_url": "https://10.0.0.1/"},
+        )
+        resp = client.post("/api/homenet/backup/orbi")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is False
+        assert body["mode"] == "needs-fallback"
+        assert body["fallback_url"] == "https://10.0.0.1/"
+
+    def test_verizon_returns_deep_link_url(self, client):
+        resp = client.post("/api/homenet/backup/verizon")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["mode"] == "deep-link"
+        assert "192.168.1.1" in body["url"]
+        assert "saverestore" in body["url"]
+
+    def test_list_route_returns_both_vendors(self, client):
+        resp = client.get("/api/homenet/backup/list")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert "orbi" in body["backups"]
+        assert "verizon" in body["backups"]
 
 
 class TestTopologyRoute:
