@@ -5777,6 +5777,95 @@ async function hnFireReboot() {
   }
 }
 
+// ── Router config backups (new feature 2026-05-09) ───────────────────────
+// Two flows depending on vendor:
+//   * Orbi  -> POST /api/homenet/backup/orbi runs the SOAP-based real
+//              backup, saves to backups/orbi/, response carries the
+//              saved path. On failure (older firmware path didn't work)
+//              the response includes a fallback_url so we can offer the
+//              deep-link as a one-click recovery.
+//   * Verizon -> POST returns mode='deep-link' + url. We open the admin
+//                Save/Restore page in a new tab; user clicks Save there.
+// Both flows refresh the saved-backups list afterwards so the user sees
+// their new file appear (Orbi case) or knows to drop the downloaded
+// file into backups/verizon/ themselves.
+
+async function hnLoadBackupList() {
+  const container = document.getElementById("hn-backup-history");
+  if (!container) return;
+  try {
+    const r = await fetch("/api/homenet/backup/list");
+    const d = await r.json();
+    if (!d.ok) {
+      container.innerHTML = `<div style="color:var(--red);font-size:11px">Error loading backups: ${esc(d.error || "unknown")}</div>`;
+      return;
+    }
+    const renderVendor = (vendor, label) => {
+      const list = (d.backups && d.backups[vendor]) || [];
+      if (!list.length) {
+        return `<div style="margin-bottom:8px"><strong style="color:var(--cyan);font-size:11px">${esc(label)}</strong> <span style="color:var(--muted);font-size:11px">— no backups yet</span></div>`;
+      }
+      const rows = list.slice(0, 15).map(b => {
+        const kb = (b.bytes / 1024).toFixed(1);
+        return `<tr>
+          <td style="padding:3px 8px;color:var(--text);font-family:var(--font-mono);font-size:11px">${esc(b.filename)}</td>
+          <td style="padding:3px 8px;color:var(--muted);font-size:11px;text-align:right">${kb} KB</td>
+          <td style="padding:3px 8px;color:var(--muted);font-size:11px">${esc(b.age_human)}</td>
+        </tr>`;
+      }).join("");
+      const overflow = list.length > 15 ? `<tr><td colspan="3" style="padding:3px 8px;color:var(--muted);font-size:11px;font-style:italic">… and ${list.length - 15} more</td></tr>` : "";
+      return `<div style="margin-bottom:14px">
+        <strong style="color:var(--cyan);font-size:11px">${esc(label)} <span style="color:var(--muted);font-weight:400">(${list.length} saved, max ${d.max_per_router || 50})</span></strong>
+        <table style="width:100%;border-collapse:collapse;margin-top:4px">${rows}${overflow}</table>
+      </div>`;
+    };
+    container.innerHTML = renderVendor("orbi", "Orbi RBRE960") + renderVendor("verizon", "Verizon CR1000A");
+  } catch (e) {
+    container.innerHTML = `<div style="color:var(--red);font-size:11px">Error: ${esc(e && e.message || e)}</div>`;
+  }
+}
+
+async function hnRunBackup(vendor, displayName) {
+  const status = document.getElementById("hn-backup-status");
+  const btn = document.getElementById(`hn-backup-${vendor}-btn`);
+  const setStatus = (msg, color) => {
+    if (status) {
+      status.textContent = msg;
+      status.style.color = color || "var(--muted)";
+    }
+  };
+  if (btn) btn.disabled = true;
+  setStatus(`Backing up ${displayName}…`);
+  try {
+    const r = await fetch(`/api/homenet/backup/${encodeURIComponent(vendor)}`, {method: "POST"});
+    const d = await r.json();
+    if (d.mode === "downloaded" && d.ok) {
+      const kb = ((d.bytes || 0) / 1024).toFixed(1);
+      setStatus(`✓ Saved ${esc(d.filename)} (${kb} KB) to backups/${vendor}/`, "var(--green)");
+      hnLoadBackupList();
+    } else if (d.mode === "deep-link" && d.url) {
+      window.open(d.url, "_blank", "noopener,noreferrer");
+      setStatus("✓ Opened admin UI -- click Save in the Verizon admin to download the config file.", "var(--green)");
+    } else if (d.mode === "needs-fallback" && d.fallback_url) {
+      const wantsFallback = confirm(
+        `Orbi API backup failed:\n\n${d.error}\n\nOpen the Orbi admin in a new tab to download manually?`
+      );
+      if (wantsFallback) {
+        window.open(d.fallback_url, "_blank", "noopener,noreferrer");
+        setStatus("Opened Orbi admin -- find the Backup option in Settings.", "var(--orange)");
+      } else {
+        setStatus(`Backup cancelled. ${d.error}`, "var(--orange)");
+      }
+    } else {
+      setStatus(`Backup failed: ${esc(d.error || "unknown error")}`, "var(--red)");
+    }
+  } catch (e) {
+    setStatus(`Network error: ${esc(e && e.message || e)}`, "var(--red)");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function homenetScan() {
   const btn = document.getElementById("hn-scan-btn");
   btn.disabled = true;
@@ -8765,6 +8854,45 @@ function renderSystemInfo(d, upgrades) {
         Orbi reboots via SOAP (real one-click — connection drops mid-response, expected).
         Verizon + TP-Link open the device's own admin UI to its reboot page; you click Reboot there.
         Either way: network drops for ~60-90s and every wireless device reconnects.
+      </div>
+    </details>
+
+    <!-- Router config backups (new feature 2026-05-09). Save snapshots
+         of router configuration so a factory-reset / replacement /
+         silent config drift can be recovered. Orbi uses real SOAP-based
+         download (saves a binary .cfg blob into backups/orbi/). Verizon
+         uses Path A deep-link to the admin Save/Restore page (browser
+         downloads the file; user manages it themselves). -->
+    <details style="margin-bottom:18px;border:1px solid #00d4ff44;border-radius:8px;background:#00d4ff08" id="hn-backup-section">
+      <summary style="cursor:pointer;padding:10px 14px;font-size:12px;color:var(--cyan);font-weight:700;letter-spacing:.04em;text-transform:uppercase"
+               onclick="setTimeout(hnLoadBackupList, 0)">
+        🗄 Config Backups — Routers (click to expand)
+      </summary>
+      <div style="padding:0 14px 14px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+          <button onclick="hnRunBackup('orbi','Orbi RBRE960')" id="hn-backup-orbi-btn"
+                  title="Pull Orbi config via SOAP + save under backups/orbi/"
+                  style="padding:8px 14px;background:var(--surface);color:var(--cyan);border:1px solid var(--cyan);border-radius:6px;cursor:pointer;font-family:var(--font-mono);font-size:12px">
+            💾 Backup Orbi RBRE960 <span style="font-size:9px;color:var(--muted);margin-left:4px">SOAP</span>
+          </button>
+          <button onclick="hnRunBackup('verizon','Verizon CR1000A')" id="hn-backup-verizon-btn"
+                  title="Open Verizon admin's Save/Restore page (browser downloads file)"
+                  style="padding:8px 14px;background:var(--surface);color:var(--cyan);border:1px solid var(--cyan);border-radius:6px;cursor:pointer;font-family:var(--font-mono);font-size:12px">
+            💾 Backup Verizon CR1000A <span style="font-size:9px;color:var(--muted);margin-left:4px">deep-link</span>
+          </button>
+          <button onclick="hnLoadBackupList()" title="Refresh the saved-backups list"
+                  style="padding:8px 14px;background:transparent;color:var(--muted);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-family:var(--font-mono);font-size:12px">
+            ↺ Refresh list
+          </button>
+        </div>
+        <div id="hn-backup-status" style="font-size:11px;color:var(--muted);min-height:16px;margin-bottom:10px"></div>
+        <div id="hn-backup-history">
+          <div style="font-size:11px;color:var(--muted)">Click a Backup button or Refresh to load history…</div>
+        </div>
+        <div style="font-size:11px;color:var(--muted);line-height:1.5;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+          Orbi backups save to <code>backups/orbi/</code> (gitignored). Capped at 50 files per router; oldest pruned automatically.
+          Verizon opens the admin Save/Restore page; your browser downloads the file. To track Verizon backups here too, drop the downloaded files into <code>backups/verizon/</code> manually.
+        </div>
       </div>
     </details>
 

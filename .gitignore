@@ -82,3 +82,4 @@ desktop.ini
 *.swo
 .claude/
 scripts/_probe_dumps/
+backups/
