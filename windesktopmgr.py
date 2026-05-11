@@ -10775,12 +10775,13 @@ def _compute_dashboard_summary() -> dict:
     level_order = {"critical": 0, "warning": 1, "info": 2, "ok": 3}
     concerns.sort(key=lambda c: level_order.get(c.get("level", "info"), 2))
 
-    # Router config backup staleness (new feature 2026-05-11). When the
-    # most recent file in backups/verizon/ is older than 30 days, surface
-    # an info-level concern with a one-click 'Open admin' action. Orbi
-    # staleness is INFO too (its scheduler-driven backup may be failing
-    # silently if the firmware path is wrong). Best-effort -- import
-    # failure mustn't kill the dashboard.
+    # Router config backup staleness. Both vendors require manual backups
+    # via their admin Save/Restore page (Orbi RBRE960 firmware rejects the
+    # documented SOAP backup endpoint; Verizon CR1000A's SPA needs browser
+    # interaction). The dashboard surfaces an info-level concern when the
+    # newest file in backups/<vendor>/ crosses the staleness threshold so
+    # the user knows it's time to re-run the manual backup. Best-effort --
+    # import failure mustn't kill the dashboard.
     try:
         from homenet import get_backup_health
 
@@ -10795,12 +10796,12 @@ def _compute_dashboard_summary() -> dict:
                     "icon": "🗄",
                     "title": f"Verizon CR1000A config backup is stale ({age_msg})",
                     "detail": (
-                        f"Last backup: {age_msg}. Verizon backups can't auto-run "
-                        "(deep-link requires browser). Click below to open the "
-                        "admin Save/Restore page; drop the downloaded file into "
-                        "backups/verizon/ to track it here."
+                        f"Last backup: {age_msg}. Verizon backups are manual -- "
+                        "click Backup → Verizon on the Home Network tab to open "
+                        "the admin Save/Restore page, then drop the downloaded "
+                        "file into backups/verizon/ to track it here."
                     ),
-                    "action": "Open Verizon admin",
+                    "action": "Open Home Network tab",
                     "action_fn": "switchTab('homenet')",
                 }
             )
@@ -10814,12 +10815,13 @@ def _compute_dashboard_summary() -> dict:
                     "icon": "🗄",
                     "title": f"Orbi RBRE960 config backup is stale ({age_msg})",
                     "detail": (
-                        f"Last backup: {age_msg}. The scheduler should auto-run "
-                        "every 24 h; if this concern persists check the Config "
-                        "Backups panel for the last error (firmware-path "
-                        "mismatch is a known issue)."
+                        f"Last backup: {age_msg}. Orbi backups are manual -- the "
+                        "RBRE960 firmware rejects the documented SOAP endpoint, "
+                        "so click Backup → Orbi on the Home Network tab to open "
+                        "the admin Save/Restore page, then drop the file into "
+                        "backups/orbi/."
                     ),
-                    "action": "Open Config Backups",
+                    "action": "Open Home Network tab",
                     "action_fn": "switchTab('homenet')",
                 }
             )
@@ -11254,22 +11256,14 @@ def start_server(open_browser: bool = True):  # pragma: no cover
     print(f"[ServicesCache] Worker started. {len(_services_cache)} cached, {services_requeued} re-queued.")
     print(f"[ProcessCache]  Worker started. {len(_process_cache)} cached, {process_requeued} re-queued.")
 
-    # Router config backup scheduler (new feature 2026-05-11). Daemon
-    # thread fires Orbi config download every WINDESKTOPMGR_BACKUP_INTERVAL_H
-    # hours (default 24h, 0 disables). Started here -- NOT at homenet
-    # import time -- so tests that import homenet don't spawn the
-    # background thread. Best-effort: scheduler failure must not block
-    # server startup.
-    try:
-        from homenet import start_backup_scheduler
-
-        sched_state = start_backup_scheduler()
-        if sched_state.get("enabled"):
-            print(f"[BackupScheduler] Started -- interval {sched_state['interval_h']}h.")
-        else:
-            print(f"[BackupScheduler] Disabled (interval_h={sched_state.get('interval_h')}).")
-    except Exception as e:  # noqa: BLE001
-        print(f"[BackupScheduler] Failed to start: {e}")
+    # Router config backups are MANUAL (reverted 2026-05-11). The earlier
+    # daemon-thread scheduler fired daily failures because neither vendor
+    # supports a working unattended-backup path: Orbi RBRE960 returns
+    # HTTP 500 on the documented SOAP endpoint, and Verizon CR1000A's
+    # admin SPA requires browser interaction. Backups are now triggered
+    # from the UI's Backup buttons (open the device admin Save/Restore
+    # page in a new tab) and the dashboard surfaces a concern when the
+    # newest file is older than the per-vendor staleness threshold.
 
     print("\n  WinDesktopMgr running at http://localhost:5000\n")
     app.run(debug=False, port=5000, use_reloader=False, threaded=True)

@@ -4178,80 +4178,47 @@ class TestBackupsDirResolution:
             importlib.reload(homenet)
 
 
-class TestBackupSchedulerState:
-    """Backup scheduler module-level state + start/stop lifecycle.
+class TestBackupHealthRoute:
+    """GET /api/homenet/backup/health returns the backup-health snapshot.
 
-    Tests never spawn the real scheduler thread against the real
-    router -- start_backup_scheduler is called with explicit
-    ``interval_h`` and the underlying _orbi_backup_config is always
-    mocked. Each test calls stop_backup_scheduler() in a try/finally
-    so a leaked thread can't interfere with subsequent tests."""
+    Replaces the old /api/homenet/backup/scheduler route after the
+    scheduler was reverted on 2026-05-11 (Orbi RBRE960 firmware
+    rejects the documented SOAP backup endpoint, Verizon needs
+    browser interaction -- daemon thread fired daily failures with
+    nothing to show for it)."""
 
-    @pytest.fixture(autouse=True)
-    def _stop_after_each(self):
-        yield
-        # Always tear down so a leaked daemon doesn't pollute the
-        # state dict the next test reads.
-        from homenet import stop_backup_scheduler
-
-        stop_backup_scheduler()
-
-    def test_interval_zero_does_not_start_thread(self, monkeypatch):
-        """interval_h=0 explicitly disables -- thread must NOT start."""
-        from homenet import get_backup_scheduler_state, start_backup_scheduler
-
-        monkeypatch.delenv("WINDESKTOPMGR_BACKUP_INTERVAL_H", raising=False)
-        result = start_backup_scheduler(interval_h=0)
-        assert result["enabled"] is False
-        state = get_backup_scheduler_state()
-        assert state["thread_alive"] is False
-
-    def test_env_var_zero_disables(self, monkeypatch):
-        """WINDESKTOPMGR_BACKUP_INTERVAL_H=0 in env -> disabled."""
-        from homenet import start_backup_scheduler
-
-        monkeypatch.setenv("WINDESKTOPMGR_BACKUP_INTERVAL_H", "0")
-        result = start_backup_scheduler()
-        assert result["enabled"] is False
-
-    def test_env_var_invalid_falls_back_to_default(self, monkeypatch):
-        """Garbage env var value shouldn't crash; falls back to default."""
-        from homenet import start_backup_scheduler
-
-        monkeypatch.setenv("WINDESKTOPMGR_BACKUP_INTERVAL_H", "not-a-number")
-        result = start_backup_scheduler()
-        assert result["interval_h"] == 24.0
-        assert result["enabled"] is True
-
-    def test_idempotent_start_only_spawns_one_thread(self, mocker):
-        """Calling start twice while a thread is running -> the second
-        call is a no-op (returns current state, doesn't spawn another)."""
-        from homenet import start_backup_scheduler
-
-        mocker.patch("homenet._orbi_backup_config", return_value={"ok": True})
-        s1 = start_backup_scheduler(interval_h=1.0)
-        s2 = start_backup_scheduler(interval_h=1.0)
-        assert s1["enabled"] is True
-        assert s2["enabled"] is True
-        assert s2["thread_alive"] is True
-
-    def test_explicit_interval_overrides_env_var(self, monkeypatch):
-        from homenet import start_backup_scheduler
-
-        monkeypatch.setenv("WINDESKTOPMGR_BACKUP_INTERVAL_H", "12")
-        result = start_backup_scheduler(interval_h=6.0)
-        assert result["interval_h"] == 6.0
-
-    def test_route_returns_state_plus_health(self, client):
-        """GET /api/homenet/backup/scheduler returns the state dict
-        AND embeds the backup-health snapshot for the UI."""
-        resp = client.get("/api/homenet/backup/scheduler")
+    def test_route_returns_health(self, client):
+        resp = client.get("/api/homenet/backup/health")
         assert resp.status_code == 200
         body = resp.get_json()
-        for key in ("enabled", "interval_h", "thread_alive", "health"):
-            assert key in body
-        for hk in ("verizon_stale", "orbi_stale", "verizon_stale_threshold_days"):
-            assert hk in body["health"]
+        for hk in (
+            "verizon_stale",
+            "orbi_stale",
+            "verizon_stale_threshold_days",
+            "orbi_stale_threshold_days",
+            "verizon_age_days",
+            "orbi_age_days",
+        ):
+            assert hk in body
+
+    def test_old_scheduler_route_is_gone(self, client):
+        """Regression guard: the scheduler route was REMOVED on revert.
+        If something accidentally re-adds it, this test fires.
+
+        Note: a GET on /api/homenet/backup/scheduler returns 405 (not 404)
+        because the path collides with /api/homenet/backup/<vendor> (POST-
+        only) -- Flask resolves the URL to the vendor route and rejects
+        the method. What we assert is that no GET handler returns the old
+        scheduler payload (enabled / interval_h / last_run_at)."""
+        resp = client.get("/api/homenet/backup/scheduler")
+        assert resp.status_code != 200, "Scheduler route should no longer be served"
+        # And there's no scheduler payload structure to be found anywhere.
+        body = resp.get_data(as_text=True)
+        for forbidden in ("interval_h", "last_run_at", "next_due_at", "thread_alive"):
+            assert forbidden not in body, (
+                f"Response leaked scheduler key {forbidden!r} -- the scheduler "
+                "was reverted on 2026-05-11 and must not come back."
+            )
 
 
 class TestBackupHealth:
@@ -4301,92 +4268,30 @@ class TestBackupHealth:
         assert h["verizon_age_days"] > 30
 
 
-class TestBackupSchedulerLoop:
-    """End-to-end loop test with very short interval + mocked helper."""
+class TestSchedulerSymbolsAreGone:
+    """Regression guard. The scheduler was reverted on 2026-05-11 after
+    user feedback ("if both backups don't work why even do it?"). These
+    assertions break the build if someone re-adds the scheduler symbols
+    without coming back to first principles."""
 
-    @pytest.fixture(autouse=True)
-    def _stop_after_each(self):
-        yield
-        # Stop the scheduler AND clear leftover state so the next test
-        # doesn't see a stale last_outcome / last_error from this one.
-        # The state dict is module-level so leakage across tests is
-        # otherwise possible.
+    def test_scheduler_module_symbols_absent(self):
         import homenet
 
-        homenet.stop_backup_scheduler()
-        with homenet._backup_scheduler_lock:
-            homenet._backup_scheduler_state.update(
-                {
-                    "enabled": False,
-                    "interval_h": 24.0,
-                    "last_run_at": None,
-                    "last_outcome": None,
-                    "last_error": None,
-                    "last_filename": None,
-                    "next_due_at": None,
-                    "thread_alive": False,
-                }
+        for sym in (
+            "start_backup_scheduler",
+            "stop_backup_scheduler",
+            "get_backup_scheduler_state",
+            "_backup_scheduler_loop",
+            "_backup_scheduler_state",
+            "_backup_scheduler_thread",
+            "_backup_scheduler_lock",
+            "_BACKUP_SCHEDULER_DEFAULT_INTERVAL_H",
+        ):
+            assert not hasattr(homenet, sym), (
+                f"homenet.{sym} should have been removed during the 2026-05-11 "
+                "scheduler revert. Both vendors require manual backups; the "
+                "scheduler was firing daily failures with nothing to show for it."
             )
-
-    def test_thread_fires_backup_and_records_success(self, mocker):
-        import time as _time
-
-        from homenet import get_backup_scheduler_state, start_backup_scheduler, stop_backup_scheduler
-
-        stub = mocker.patch(
-            "homenet._orbi_backup_config",
-            return_value={"ok": True, "filename": "orbi_test.cfg", "bytes": 1024},
-        )
-        start_backup_scheduler(interval_h=1 / 3600.0)
-        deadline = _time.time() + 5
-        while _time.time() < deadline:
-            if stub.called and get_backup_scheduler_state().get("last_outcome"):
-                break
-            _time.sleep(0.1)
-        stop_backup_scheduler()
-        assert stub.called
-        state = get_backup_scheduler_state()
-        assert state["last_outcome"] == "success"
-        assert state["last_filename"] == "orbi_test.cfg"
-
-    def test_thread_records_failure_outcome(self, mocker):
-        import time as _time
-
-        from homenet import get_backup_scheduler_state, start_backup_scheduler, stop_backup_scheduler
-
-        mocker.patch(
-            "homenet._orbi_backup_config",
-            return_value={"error": "Orbi returned 500"},
-        )
-        start_backup_scheduler(interval_h=1 / 3600.0)
-        deadline = _time.time() + 5
-        while _time.time() < deadline:
-            if get_backup_scheduler_state().get("last_outcome"):
-                break
-            _time.sleep(0.1)
-        stop_backup_scheduler()
-        state = get_backup_scheduler_state()
-        assert state["last_outcome"] == "failed"
-        assert "500" in (state.get("last_error") or "")
-
-    def test_thread_survives_uncaught_exception_in_helper(self, mocker):
-        """An exception in _orbi_backup_config must not kill the daemon."""
-        import time as _time
-
-        from homenet import get_backup_scheduler_state, start_backup_scheduler, stop_backup_scheduler
-
-        mocker.patch("homenet._orbi_backup_config", side_effect=RuntimeError("boom"))
-        start_backup_scheduler(interval_h=1 / 3600.0)
-        deadline = _time.time() + 5
-        while _time.time() < deadline:
-            if get_backup_scheduler_state().get("last_outcome"):
-                break
-            _time.sleep(0.1)
-        state = get_backup_scheduler_state()
-        assert state["thread_alive"] is True
-        assert state["last_outcome"] == "failed"
-        assert "boom" in (state.get("last_error") or "")
-        stop_backup_scheduler()
 
 
 class TestOrbiBackupHelper:
