@@ -193,7 +193,7 @@
       <button type="button" onclick="exportPDF()" title="Open the browser print dialog — choose 'Save as PDF'" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--yellow);border:none;cursor:pointer;border-right:1px solid var(--border)">Export PDF</button>
       <button type="button" onclick="exportHTML()" title="Download a self-contained copy of this diagram" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--blue);border:none;cursor:pointer">Export HTML</button>
     </div>
-    <div class="badge" style="color:var(--green);border-color:#00e67633">2,137 tests · 85% coverage</div>
+    <div class="badge" style="color:var(--green);border-color:#00e67633">2,131 tests · 85% coverage</div>
     <div class="badge">
       <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
     </div>
@@ -382,9 +382,9 @@
         <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)" title="Hierarchical topology join (#9): inventory + switch MAC table + Orbi per-AP mapping"><span class="method">GET</span>/api/homenet/topology</div>
         <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)" title="Add a transparent device by MAC (#9): for MoCA bridges that have no IP and never appear in ARP"><span class="method">POST</span>/api/homenet/device/add-manual</div>
         <div class="route-chip" style="border-color:#ff456044;background:#ff45600d;color:var(--red)" title="Remote reboot (#16): Orbi via SOAP (real reboot), Verizon + TP-Link via deep-link to admin UI. Type-to-confirm guard required server-side."><span class="method">POST</span>/api/homenet/reboot/&lt;device&gt;</div>
-        <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)" title="Router config backup: Orbi via SOAP-bracketed CGI download (saves to backups/orbi/), Verizon via deep-link to admin Save/Restore page. Backups capped at 50 per router; oldest pruned automatically."><span class="method">POST</span>/api/homenet/backup/&lt;vendor&gt;</div>
+        <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)" title="Router config backup (MANUAL — scheduler reverted 2026-05-11): both vendors open the admin Save/Restore page in a new tab. Orbi RBRE960 firmware rejects the documented SOAP backup endpoint; Verizon's SPA needs browser interaction. Files dropped into backups/&lt;vendor&gt;/ are tracked + capped at 50."><span class="method">POST</span>/api/homenet/backup/&lt;vendor&gt;</div>
         <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)" title="List saved router config backups, newest first per vendor."><span class="method">GET</span>/api/homenet/backup/list</div>
-        <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)" title="Backup scheduler status: enabled, interval_h, last_run_at, last_outcome, next_due_at + per-vendor staleness health snapshot. WINDESKTOPMGR_BACKUP_INTERVAL_H=N to configure (0 disables)."><span class="method">GET</span>/api/homenet/backup/scheduler</div>
+        <div class="route-chip" style="border-color:#448aff44;background:#448aff0d;color:var(--blue)" title="Backup staleness snapshot (replaces /api/homenet/backup/scheduler on revert): per-vendor age in days + stale-threshold + stale flag, fed to the dashboard concerns pipeline."><span class="method">GET</span>/api/homenet/backup/health</div>
       </div>
     </div>
     <div>
@@ -768,7 +768,7 @@
 
   <!-- ── LAYER 7: TEST SUITE ──────────────────────────────────── -->
   <div class="row row-tests" id="layer-tests">
-    <div class="row-label">🧪 Test Suite — 2,137 tests · pytest · 85% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
+    <div class="row-label">🧪 Test Suite — 2,131 tests · pytest · 85% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
       <div class="test-chip">
         <div class="test-title">test_routes.py</div>
@@ -816,7 +816,7 @@
       </div>
       <div class="test-chip">
         <div class="test-title">test_homenet.py</div>
-        <div class="test-sub">279 tests · Verizon · Orbi SOAP · SNMP · ARP · credentials · blueprint routes · IEEE OUI lookup · mDNS · randomized-MAC detection · category substring patterns · topology builder (#9) · Verizon MoCA bridge auto-discovery (#42) · per-bridge column layout · phantom-BSSID filter · remote reboot (#16) · router config backups</div>
+        <div class="test-sub">273 tests · Verizon · Orbi SOAP · SNMP · ARP · credentials · blueprint routes · IEEE OUI lookup · mDNS · randomized-MAC detection · category substring patterns · topology builder (#9) · Verizon MoCA bridge auto-discovery (#42) · per-bridge column layout · phantom-BSSID filter · remote reboot (#16) · router config backups (manual; scheduler reverted 2026-05-11)</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_logging.py</div>
@@ -1104,7 +1104,7 @@
           <div style="flex:0 0 auto;min-width:120px;background:#ff80ab0a;border:1px solid #ff80ab44;border-radius:8px;padding:10px 12px;text-align:center">
             <div style="font-size:16px;margin-bottom:4px">🧪</div>
             <div style="color:var(--pink);font-weight:700;font-size:10px">3. PYTEST</div>
-            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">2,137 tests · 85% cov · ~60s</div>
+            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">2,131 tests · 85% cov · ~60s</div>
           </div>
           <div style="display:flex;align-items:center;padding:0 4px;color:var(--pink);font-size:14px">→</div>
 
@@ -1246,7 +1246,7 @@
 
 
 <div class="footer">
-  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 2,137 tests · ~21,480 lines</span>
+  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 2,131 tests · ~21,480 lines</span>
   <span>github.com/shigsdev/windesktopmgr · Updated 2026-04-14</span>
 </div>
 
