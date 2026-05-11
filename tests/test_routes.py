@@ -1608,6 +1608,34 @@ class TestDashboardSummaryRoute:
 
         mocker.patch.object(_tw, "get_all_task_health", return_value=[])
 
+        # BIOS audit error reader — also stubbed empty so the clean-state
+        # test doesn't pick up real bios_audit_history.json errors that
+        # accumulated on the dev machine (the file persists across runs).
+        # Test was previously fragile to this; mocking unblocks deterministic
+        # 'overall == ok' assertions regardless of disk state.
+        import bios_audit as _ba
+
+        mocker.patch.object(_ba, "recent_errors", return_value=[])
+
+        # Router-config backup health — same reasoning. Default OFF so the
+        # clean-state test doesn't see stale-backup info concerns from a
+        # real backups/ folder on disk.
+        import homenet as _hn
+
+        mocker.patch.object(
+            _hn,
+            "get_backup_health",
+            return_value={
+                "verizon_stale": False,
+                "orbi_stale": False,
+                "verizon_age_days": 0,
+                "orbi_age_days": 0,
+                "verizon_last_backup_at": None,
+                "orbi_last_backup_at": None,
+                "verizon_stale_threshold_days": 30,
+            },
+        )
+
     def test_returns_200_with_structure(self, client, mocker):
         self._mock_dashboard_deps(mocker)
         resp = client.get("/api/dashboard/summary")
