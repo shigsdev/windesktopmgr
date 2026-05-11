@@ -2,7 +2,7 @@
 
 import os
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock
 
 import pytest  # noqa: F401 -- used by backlog #10 classes via pytest.skip
@@ -2365,7 +2365,7 @@ class TestEnrichDeviceNames:
         in balance-alb bonding, the scanner recently saw only MAC '...CB'.
         After roll-up, '...CC' and '...CD' must also show active=True
         without their last_seen being rewritten."""
-        from datetime import timedelta, timezone
+        from datetime import timezone
 
         from homenet import _rollup_active_by_ip
 
@@ -2406,7 +2406,7 @@ class TestEnrichDeviceNames:
     def test_rollup_no_fresh_mac_at_ip_leaves_all_inactive(self):
         """If EVERY MAC at an IP is stale (> 15 min), the rollup must NOT
         activate anyone. Genuinely-offline devices stay offline."""
-        from datetime import timedelta, timezone
+        from datetime import timezone
 
         from homenet import _rollup_active_by_ip
 
@@ -2433,7 +2433,7 @@ class TestEnrichDeviceNames:
 
     def test_rollup_different_ips_are_independent(self):
         """Two unrelated devices at two different IPs must not cross-activate."""
-        from datetime import timedelta, timezone
+        from datetime import timezone
 
         from homenet import _rollup_active_by_ip
 
@@ -2477,7 +2477,7 @@ class TestEnrichDeviceNames:
         """Stale entries at 0.0.0.0 or 169.254.x.y must NOT accidentally
         activate a real device at a populated IP. Same-IP grouping must
         skip those 'catch-all' addresses."""
-        from datetime import timedelta, timezone
+        from datetime import timezone
 
         from homenet import _rollup_active_by_ip
 
@@ -2517,7 +2517,7 @@ class TestEnrichDeviceNames:
         sweep sees only the primary bond winner (the classic balance-alb
         per-destination-hash behaviour). After the light scan, all three
         MACs must still show active=True."""
-        from datetime import timedelta, timezone
+        from datetime import timezone
 
         now = datetime.now(timezone.utc)
         fresh = (now - timedelta(seconds=5)).isoformat()
@@ -4176,6 +4176,217 @@ class TestBackupsDirResolution:
         finally:
             monkeypatch.delenv("WINDESKTOPMGR_BACKUP_DIR", raising=False)
             importlib.reload(homenet)
+
+
+class TestBackupSchedulerState:
+    """Backup scheduler module-level state + start/stop lifecycle.
+
+    Tests never spawn the real scheduler thread against the real
+    router -- start_backup_scheduler is called with explicit
+    ``interval_h`` and the underlying _orbi_backup_config is always
+    mocked. Each test calls stop_backup_scheduler() in a try/finally
+    so a leaked thread can't interfere with subsequent tests."""
+
+    @pytest.fixture(autouse=True)
+    def _stop_after_each(self):
+        yield
+        # Always tear down so a leaked daemon doesn't pollute the
+        # state dict the next test reads.
+        from homenet import stop_backup_scheduler
+
+        stop_backup_scheduler()
+
+    def test_interval_zero_does_not_start_thread(self, monkeypatch):
+        """interval_h=0 explicitly disables -- thread must NOT start."""
+        from homenet import get_backup_scheduler_state, start_backup_scheduler
+
+        monkeypatch.delenv("WINDESKTOPMGR_BACKUP_INTERVAL_H", raising=False)
+        result = start_backup_scheduler(interval_h=0)
+        assert result["enabled"] is False
+        state = get_backup_scheduler_state()
+        assert state["thread_alive"] is False
+
+    def test_env_var_zero_disables(self, monkeypatch):
+        """WINDESKTOPMGR_BACKUP_INTERVAL_H=0 in env -> disabled."""
+        from homenet import start_backup_scheduler
+
+        monkeypatch.setenv("WINDESKTOPMGR_BACKUP_INTERVAL_H", "0")
+        result = start_backup_scheduler()
+        assert result["enabled"] is False
+
+    def test_env_var_invalid_falls_back_to_default(self, monkeypatch):
+        """Garbage env var value shouldn't crash; falls back to default."""
+        from homenet import start_backup_scheduler
+
+        monkeypatch.setenv("WINDESKTOPMGR_BACKUP_INTERVAL_H", "not-a-number")
+        result = start_backup_scheduler()
+        assert result["interval_h"] == 24.0
+        assert result["enabled"] is True
+
+    def test_idempotent_start_only_spawns_one_thread(self, mocker):
+        """Calling start twice while a thread is running -> the second
+        call is a no-op (returns current state, doesn't spawn another)."""
+        from homenet import start_backup_scheduler
+
+        mocker.patch("homenet._orbi_backup_config", return_value={"ok": True})
+        s1 = start_backup_scheduler(interval_h=1.0)
+        s2 = start_backup_scheduler(interval_h=1.0)
+        assert s1["enabled"] is True
+        assert s2["enabled"] is True
+        assert s2["thread_alive"] is True
+
+    def test_explicit_interval_overrides_env_var(self, monkeypatch):
+        from homenet import start_backup_scheduler
+
+        monkeypatch.setenv("WINDESKTOPMGR_BACKUP_INTERVAL_H", "12")
+        result = start_backup_scheduler(interval_h=6.0)
+        assert result["interval_h"] == 6.0
+
+    def test_route_returns_state_plus_health(self, client):
+        """GET /api/homenet/backup/scheduler returns the state dict
+        AND embeds the backup-health snapshot for the UI."""
+        resp = client.get("/api/homenet/backup/scheduler")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        for key in ("enabled", "interval_h", "thread_alive", "health"):
+            assert key in body
+        for hk in ("verizon_stale", "orbi_stale", "verizon_stale_threshold_days"):
+            assert hk in body["health"]
+
+
+class TestBackupHealth:
+    """get_backup_health() summarises the most-recent backup per vendor
+    + flags staleness so the dashboard pipeline can surface concerns."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_backups_dir(self, tmp_path, mocker):
+        mocker.patch("homenet.BACKUPS_DIR", str(tmp_path / "backups"))
+
+    def test_no_backups_returns_stale_for_both_vendors(self):
+        """No backups -> stale=True for both. A never-backed-up router
+        is just as stale as a 31-day-old one from the dashboard's POV."""
+        from homenet import get_backup_health
+
+        h = get_backup_health()
+        assert h["verizon_stale"] is True
+        assert h["orbi_stale"] is True
+        assert h["verizon_age_days"] is None
+        assert h["orbi_age_days"] is None
+
+    def test_recent_backup_marks_not_stale(self, _isolate_backups_dir):
+        """Backup file with mtime <1 day old -> not stale."""
+        from homenet import _ensure_backup_dir, get_backup_health
+
+        vdir = _ensure_backup_dir("verizon")
+        f = os.path.join(vdir, "verizon_recent.cfg")
+        with open(f, "wb") as fh:
+            fh.write(b"x" * 1024)
+        h = get_backup_health()
+        assert h["verizon_stale"] is False
+        assert h["verizon_age_days"] is not None
+        assert h["verizon_age_days"] < 1.0
+
+    def test_old_verizon_backup_marks_stale_at_30d_threshold(self, _isolate_backups_dir):
+
+        from homenet import _ensure_backup_dir, get_backup_health
+
+        vdir = _ensure_backup_dir("verizon")
+        f = os.path.join(vdir, "verizon_old.cfg")
+        with open(f, "wb") as fh:
+            fh.write(b"x" * 1024)
+        old_ts = (datetime.now() - timedelta(days=31)).timestamp()
+        os.utime(f, (old_ts, old_ts))
+        h = get_backup_health()
+        assert h["verizon_stale"] is True
+        assert h["verizon_age_days"] > 30
+
+
+class TestBackupSchedulerLoop:
+    """End-to-end loop test with very short interval + mocked helper."""
+
+    @pytest.fixture(autouse=True)
+    def _stop_after_each(self):
+        yield
+        # Stop the scheduler AND clear leftover state so the next test
+        # doesn't see a stale last_outcome / last_error from this one.
+        # The state dict is module-level so leakage across tests is
+        # otherwise possible.
+        import homenet
+
+        homenet.stop_backup_scheduler()
+        with homenet._backup_scheduler_lock:
+            homenet._backup_scheduler_state.update(
+                {
+                    "enabled": False,
+                    "interval_h": 24.0,
+                    "last_run_at": None,
+                    "last_outcome": None,
+                    "last_error": None,
+                    "last_filename": None,
+                    "next_due_at": None,
+                    "thread_alive": False,
+                }
+            )
+
+    def test_thread_fires_backup_and_records_success(self, mocker):
+        import time as _time
+
+        from homenet import get_backup_scheduler_state, start_backup_scheduler, stop_backup_scheduler
+
+        stub = mocker.patch(
+            "homenet._orbi_backup_config",
+            return_value={"ok": True, "filename": "orbi_test.cfg", "bytes": 1024},
+        )
+        start_backup_scheduler(interval_h=1 / 3600.0)
+        deadline = _time.time() + 5
+        while _time.time() < deadline:
+            if stub.called and get_backup_scheduler_state().get("last_outcome"):
+                break
+            _time.sleep(0.1)
+        stop_backup_scheduler()
+        assert stub.called
+        state = get_backup_scheduler_state()
+        assert state["last_outcome"] == "success"
+        assert state["last_filename"] == "orbi_test.cfg"
+
+    def test_thread_records_failure_outcome(self, mocker):
+        import time as _time
+
+        from homenet import get_backup_scheduler_state, start_backup_scheduler, stop_backup_scheduler
+
+        mocker.patch(
+            "homenet._orbi_backup_config",
+            return_value={"error": "Orbi returned 500"},
+        )
+        start_backup_scheduler(interval_h=1 / 3600.0)
+        deadline = _time.time() + 5
+        while _time.time() < deadline:
+            if get_backup_scheduler_state().get("last_outcome"):
+                break
+            _time.sleep(0.1)
+        stop_backup_scheduler()
+        state = get_backup_scheduler_state()
+        assert state["last_outcome"] == "failed"
+        assert "500" in (state.get("last_error") or "")
+
+    def test_thread_survives_uncaught_exception_in_helper(self, mocker):
+        """An exception in _orbi_backup_config must not kill the daemon."""
+        import time as _time
+
+        from homenet import get_backup_scheduler_state, start_backup_scheduler, stop_backup_scheduler
+
+        mocker.patch("homenet._orbi_backup_config", side_effect=RuntimeError("boom"))
+        start_backup_scheduler(interval_h=1 / 3600.0)
+        deadline = _time.time() + 5
+        while _time.time() < deadline:
+            if get_backup_scheduler_state().get("last_outcome"):
+                break
+            _time.sleep(0.1)
+        state = get_backup_scheduler_state()
+        assert state["thread_alive"] is True
+        assert state["last_outcome"] == "failed"
+        assert "boom" in (state.get("last_error") or "")
+        stop_backup_scheduler()
 
 
 class TestOrbiBackupHelper:

@@ -17,7 +17,7 @@ import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 from flask import Blueprint, jsonify, request
@@ -2274,6 +2274,21 @@ def homenet_backup_list():
     return jsonify(list_router_backups())
 
 
+@homenet_bp.route("/api/homenet/backup/scheduler")
+def homenet_backup_scheduler():
+    """Backup scheduler status -- enabled / interval / last-run / next-due.
+
+    Read-only. To change the interval, set WINDESKTOPMGR_BACKUP_INTERVAL_H
+    before tray startup (0 disables). A POST endpoint to mutate at runtime
+    is intentionally NOT exposed here -- the env-var is enough for this
+    feature's scope, and avoiding mutate-while-running keeps the thread
+    lifecycle simple.
+    """
+    state = get_backup_scheduler_state()
+    state["health"] = get_backup_health()
+    return jsonify(state)
+
+
 @homenet_bp.route("/api/homenet/backup/<vendor>", methods=["POST"])
 def homenet_backup_run(vendor: str):
     """Trigger a router config backup.
@@ -3056,6 +3071,201 @@ def list_router_backups(vendor: str | None = None) -> dict:
         # Newest first -- most-recent backup at the top of the UI list.
         entries.sort(key=lambda e: e["mtime"], reverse=True)
         out["backups"][v] = entries
+    return out
+
+
+# ── Backup scheduler (continuous / scheduled router config backups) ────────
+# Background daemon thread fires _orbi_backup_config() on a fixed interval
+# (default 24h, configurable via WINDESKTOPMGR_BACKUP_INTERVAL_H env var,
+# set to 0 to disable). Verizon CAN'T be auto-backed-up (deep-link requires
+# browser interaction) but we track staleness of the verizon/ folder and
+# surface a dashboard concern when the most recent file is >30 days old.
+#
+# Why a separate thread rather than reusing the tray HealthMonitor poll:
+# the cadences are very different (5 min health vs 24 h backup) and
+# coupling them would mean either polling backups too often OR firing
+# the health-check too rarely. Independent threads are simpler.
+#
+# Thread is started by ``start_backup_scheduler()`` -- called from
+# ``windesktopmgr.start_server`` so it runs whether launched via tray
+# or directly. Tests don't call start_server, so the thread doesn't
+# spawn during pytest -- prevents the daemon from hitting the real
+# router during test runs.
+
+_BACKUP_SCHEDULER_DEFAULT_INTERVAL_H = 24.0
+_BACKUP_VERIZON_STALE_DAYS = 30
+
+_backup_scheduler_state: dict = {
+    "enabled": False,
+    "interval_h": _BACKUP_SCHEDULER_DEFAULT_INTERVAL_H,
+    "last_run_at": None,  # ISO timestamp of the last attempt (success or failure)
+    "last_outcome": None,  # "success" | "failed" | "skipped" | None
+    "last_error": None,  # error string when outcome=failed
+    "last_filename": None,  # saved filename when outcome=success
+    "next_due_at": None,  # ISO timestamp of the next scheduled run
+    "thread_alive": False,
+}
+_backup_scheduler_lock = threading.Lock()
+_backup_scheduler_stop = threading.Event()
+_backup_scheduler_thread: threading.Thread | None = None
+
+
+def get_backup_scheduler_state() -> dict:
+    """Snapshot the scheduler state for the API + UI. Thread-safe."""
+    with _backup_scheduler_lock:
+        return dict(_backup_scheduler_state)
+
+
+def _backup_scheduler_loop(interval_s: float) -> None:
+    """Daemon-thread body. Fires Orbi backup every ``interval_s`` seconds.
+
+    Sleeps in 60-second chunks so a stop signal (test teardown, tray
+    shutdown) wakes the thread within a minute rather than blocking up
+    to 24 hours. ``stop_backup_scheduler()`` sets the event.
+
+    Each cycle updates ``_backup_scheduler_state`` with the outcome
+    so the UI can show ``last_run_at`` + ``last_outcome`` (success /
+    failed / skipped). Failures don't crash the thread -- they're
+    logged into state and the loop continues to the next interval.
+    """
+    while not _backup_scheduler_stop.is_set():
+        next_due = datetime.now(timezone.utc) + timedelta(seconds=interval_s)
+        with _backup_scheduler_lock:
+            _backup_scheduler_state["next_due_at"] = next_due.isoformat()
+            _backup_scheduler_state["thread_alive"] = True
+
+        # Sleep in 60s chunks so stop_backup_scheduler() wakes us within
+        # a minute. The total sleep equals interval_s before we attempt
+        # the next backup.
+        remaining = interval_s
+        while remaining > 0 and not _backup_scheduler_stop.is_set():
+            chunk = min(60.0, remaining)
+            if _backup_scheduler_stop.wait(timeout=chunk):
+                break  # stop signal received
+            remaining -= chunk
+        if _backup_scheduler_stop.is_set():
+            break
+
+        # Fire the backup. Wrap in try/except so a single exception
+        # doesn't kill the loop -- next cycle will try again.
+        result: dict
+        try:
+            result = _orbi_backup_config()
+        except Exception as e:  # noqa: BLE001 -- thread mustn't die
+            result = {"error": f"Scheduler caught uncaught exception: {e}"}
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with _backup_scheduler_lock:
+            _backup_scheduler_state["last_run_at"] = now_iso
+            if result.get("ok"):
+                _backup_scheduler_state["last_outcome"] = "success"
+                _backup_scheduler_state["last_error"] = None
+                _backup_scheduler_state["last_filename"] = result.get("filename")
+            else:
+                _backup_scheduler_state["last_outcome"] = "failed"
+                _backup_scheduler_state["last_error"] = result.get("error", "Unknown error")
+                _backup_scheduler_state["last_filename"] = None
+
+    # Loop exited -- mark thread as dead so the UI doesn't show a stale
+    # "alive" state after shutdown.
+    with _backup_scheduler_lock:
+        _backup_scheduler_state["thread_alive"] = False
+
+
+def start_backup_scheduler(interval_h: float | None = None) -> dict:
+    """Start the backup scheduler daemon thread.
+
+    Idempotent: if a thread is already running, returns the current
+    state without starting another. ``interval_h`` overrides the env
+    var + default. ``interval_h=0`` disables the scheduler entirely
+    (the thread doesn't start, state.enabled stays False).
+    """
+    global _backup_scheduler_thread
+
+    if interval_h is None:
+        env_val = os.environ.get("WINDESKTOPMGR_BACKUP_INTERVAL_H", "").strip()
+        try:
+            interval_h = float(env_val) if env_val else _BACKUP_SCHEDULER_DEFAULT_INTERVAL_H
+        except ValueError:
+            interval_h = _BACKUP_SCHEDULER_DEFAULT_INTERVAL_H
+
+    if interval_h <= 0:
+        # Explicitly disabled. Return state but don't spawn.
+        with _backup_scheduler_lock:
+            _backup_scheduler_state.update({"enabled": False, "interval_h": interval_h})
+        return get_backup_scheduler_state()
+
+    with _backup_scheduler_lock:
+        if _backup_scheduler_thread and _backup_scheduler_thread.is_alive():
+            return dict(_backup_scheduler_state)
+        _backup_scheduler_stop.clear()
+        _backup_scheduler_state.update(
+            {
+                "enabled": True,
+                "interval_h": interval_h,
+                "thread_alive": True,
+            }
+        )
+
+    _backup_scheduler_thread = threading.Thread(
+        target=_backup_scheduler_loop,
+        args=(interval_h * 3600.0,),
+        daemon=True,
+        name="backup-scheduler",
+    )
+    _backup_scheduler_thread.start()
+    return get_backup_scheduler_state()
+
+
+def stop_backup_scheduler() -> None:
+    """Signal the scheduler thread to exit + wait briefly for it.
+
+    Used by tests + clean tray shutdown. Best-effort: thread is a
+    daemon so a forced exit also kills it.
+    """
+    _backup_scheduler_stop.set()
+    global _backup_scheduler_thread
+    thread = _backup_scheduler_thread
+    if thread and thread.is_alive():
+        thread.join(timeout=2.0)
+    with _backup_scheduler_lock:
+        _backup_scheduler_state["thread_alive"] = False
+
+
+def get_backup_health() -> dict:
+    """Backup health snapshot for the dashboard concerns pipeline.
+
+    Returns ``{verizon_age_days, orbi_age_days, verizon_stale,
+    orbi_stale}`` where ``*_stale`` is True when the most recent
+    backup for that vendor is older than the per-vendor threshold
+    (or no backup exists at all -- a never-backed-up router is
+    just as stale).
+    """
+    listing = list_router_backups()
+    now = datetime.now()
+    out: dict = {
+        "verizon_stale_threshold_days": _BACKUP_VERIZON_STALE_DAYS,
+    }
+    for vendor in ("orbi", "verizon"):
+        backups = listing["backups"].get(vendor, [])
+        if not backups:
+            out[f"{vendor}_age_days"] = None
+            out[f"{vendor}_stale"] = True  # no backup -> definitely stale
+            out[f"{vendor}_last_backup_at"] = None
+            continue
+        # Newest first per list_router_backups
+        newest = backups[0]
+        try:
+            mtime = datetime.fromisoformat(newest["mtime"])
+            age_days = (now - mtime).total_seconds() / 86400.0
+        except (ValueError, KeyError):
+            age_days = None
+        out[f"{vendor}_age_days"] = round(age_days, 1) if age_days is not None else None
+        out[f"{vendor}_last_backup_at"] = newest.get("mtime")
+        threshold = (
+            _BACKUP_VERIZON_STALE_DAYS if vendor == "verizon" else _BACKUP_SCHEDULER_DEFAULT_INTERVAL_H / 24.0 * 2
+        )
+        out[f"{vendor}_stale"] = age_days is None or age_days > threshold
     return out
 
 

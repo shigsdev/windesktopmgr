@@ -5820,6 +5820,47 @@ async function hnLoadBackupList() {
       </div>`;
     };
     container.innerHTML = renderVendor("orbi", "Orbi RBRE960") + renderVendor("verizon", "Verizon CR1000A");
+    // Fetch + render scheduler status (new feature 2026-05-11). Best-
+    // effort: scheduler-status fetch failure shouldn't break the
+    // backup-list display.
+    try {
+      const sr = await fetch("/api/homenet/backup/scheduler");
+      const sd = await sr.json();
+      const block = document.getElementById("hn-backup-scheduler-status");
+      if (block) {
+        if (sd.enabled) {
+          const lastRun = sd.last_run_at ? new Date(sd.last_run_at).toLocaleString() : "never";
+          const nextDue = sd.next_due_at ? new Date(sd.next_due_at).toLocaleString() : "soon";
+          const outcomeIcon = sd.last_outcome === "success" ? "✓"
+                            : sd.last_outcome === "failed"  ? "✗"
+                            :                                  "·";
+          const outcomeColor = sd.last_outcome === "success" ? "var(--green)"
+                              : sd.last_outcome === "failed"  ? "var(--red)"
+                              :                                  "var(--muted)";
+          const errorLine = sd.last_outcome === "failed" && sd.last_error
+            ? `<div style="color:var(--orange);margin-top:4px">Last error: ${esc(sd.last_error)}</div>`
+            : "";
+          const successLine = sd.last_outcome === "success" && sd.last_filename
+            ? `<div style="color:var(--muted);margin-top:4px">Saved: <code>${esc(sd.last_filename)}</code></div>`
+            : "";
+          block.style.display = "block";
+          block.innerHTML = `
+            <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:baseline">
+              <span style="color:var(--cyan);font-weight:600">⏱ Auto-backup scheduler</span>
+              <span><strong>Interval:</strong> every ${esc(String(sd.interval_h))}h</span>
+              <span style="color:${outcomeColor}"><strong>${outcomeIcon} Last:</strong> ${esc(lastRun)} (${esc(sd.last_outcome || "no runs yet")})</span>
+              <span style="color:var(--muted)"><strong>Next:</strong> ${esc(nextDue)}</span>
+            </div>
+            ${errorLine}${successLine}
+          `;
+        } else {
+          block.style.display = "block";
+          block.innerHTML = `<span style="color:var(--muted)">⏸ Auto-backup scheduler disabled (interval_h=${esc(String(sd.interval_h))}). Set <code>WINDESKTOPMGR_BACKUP_INTERVAL_H</code> > 0 + restart tray to enable.</span>`;
+        }
+      }
+    } catch (e) {
+      // Don't bubble -- the main backup-list rendering above is what matters
+    }
     // Show the actual resolved BACKUPS_DIR so the user knows where files
     // land. Defaults to ~/OneDrive/WinDesktopMgr/backup; overridable via
     // WINDESKTOPMGR_BACKUP_DIR env var.
@@ -8897,6 +8938,12 @@ function renderSystemInfo(d, upgrades) {
           </button>
         </div>
         <div id="hn-backup-status" style="font-size:11px;color:var(--muted);min-height:16px;margin-bottom:10px"></div>
+        <!-- Scheduler status (new feature 2026-05-11). Populated by
+             hnLoadBackupList; shows whether the background scheduler is
+             running, the interval, last-run outcome, next-due ETA. -->
+        <div id="hn-backup-scheduler-status" style="font-size:11px;padding:8px 12px;background:var(--surface);border:1px solid var(--border);border-radius:6px;margin-bottom:10px;display:none">
+          <!-- intentionally empty until first load -->
+        </div>
         <div id="hn-backup-history">
           <div style="font-size:11px;color:var(--muted)">Click a Backup button or Refresh to load history…</div>
         </div>
