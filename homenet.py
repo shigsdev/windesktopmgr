@@ -2772,13 +2772,29 @@ def _tplink_reboot_url() -> str:
 #   intermediate.
 #
 # Storage layout:
-#   {APP_DIR}/backups/orbi/orbi_YYYYMMDD_HHMMSS.cfg
-#   {APP_DIR}/backups/verizon/  -- empty by default; user can drop files
-#                                  in here from their Downloads folder
-# Gitignored. The ``list_router_backups()`` helper enumerates with
-# size + mtime + age so the UI can show a rolling history.
+#   {BACKUPS_DIR}/orbi/orbi_YYYYMMDD_HHMMSS.cfg
+#   {BACKUPS_DIR}/verizon/  -- empty by default; user can drop files
+#                              in here from their Downloads folder
+#
+# BACKUPS_DIR resolution (precedence):
+#   1. ``WINDESKTOPMGR_BACKUP_DIR`` environment variable (for power
+#      users / CI / running under different machine accounts)
+#   2. ``~/OneDrive/WinDesktopMgr/backup`` (the user's chosen default
+#      2026-05-10 -- OneDrive sync means backups land in cloud +
+#      survive a machine wipe / new laptop)
+#
+# We use ``os.path.expanduser("~")`` rather than hardcoding ``higs7``
+# so the same code works on any account that has the OneDrive folder
+# at the standard Windows location. If OneDrive isn't installed the
+# directory still gets created locally -- it just won't sync, which
+# is a survivable degraded state for an explicit user-set path.
+#
+# Tests still patch ``homenet.BACKUPS_DIR`` directly via mocker so
+# this module-level computation only runs once at import time.
 
-BACKUPS_DIR = os.path.join(APP_DIR, "backups")
+BACKUPS_DIR = os.environ.get("WINDESKTOPMGR_BACKUP_DIR") or os.path.join(
+    os.path.expanduser("~"), "OneDrive", "WinDesktopMgr", "backup"
+)
 # Cap so a runaway loop / accidental cron job can't fill the disk.
 # 50 backups @ ~50 KB each = 2.5 MB max per router. Plenty of history,
 # trivial disk cost.
@@ -2994,10 +3010,18 @@ def list_router_backups(vendor: str | None = None) -> dict:
     ('orbi' / 'verizon'); None returns both. Each entry has filename,
     full path, bytes, mtime ISO string, age in human-readable form.
 
-    Returns ``{"ok": True, "backups": {"orbi": [...], "verizon": [...]}}``.
+    Returns ``{"ok": True, "backups": {"orbi": [...], "verizon": [...]},
+    "backup_dir": "...", "max_per_router": N}``. ``backup_dir`` lets the
+    UI surface "files saved to ..." dynamically rather than hardcoding
+    a path the user might have overridden via WINDESKTOPMGR_BACKUP_DIR.
     Always succeeds (returns empty lists for missing dirs).
     """
-    out: dict = {"ok": True, "backups": {}, "max_per_router": _MAX_BACKUPS_PER_ROUTER}
+    out: dict = {
+        "ok": True,
+        "backups": {},
+        "max_per_router": _MAX_BACKUPS_PER_ROUTER,
+        "backup_dir": BACKUPS_DIR,
+    }
     vendors = [vendor] if vendor in ("orbi", "verizon") else ("orbi", "verizon")
     now = datetime.now()
     for v in vendors:

@@ -5820,6 +5820,17 @@ async function hnLoadBackupList() {
       </div>`;
     };
     container.innerHTML = renderVendor("orbi", "Orbi RBRE960") + renderVendor("verizon", "Verizon CR1000A");
+    // Show the actual resolved BACKUPS_DIR so the user knows where files
+    // land. Defaults to ~/OneDrive/WinDesktopMgr/backup; overridable via
+    // WINDESKTOPMGR_BACKUP_DIR env var.
+    const helper = document.getElementById("hn-backup-helper-text");
+    if (helper && d.backup_dir) {
+      helper.innerHTML = `
+        Backups saved to <code>${esc(d.backup_dir)}</code> (capped at ${d.max_per_router || 50} files per router; oldest pruned automatically).
+        For Verizon, the admin Save/Restore page opens in a new tab; your browser downloads the file. To track Verizon backups in this list, drop the downloaded files into the <code>verizon/</code> subfolder manually.
+        Override the location by setting the <code>WINDESKTOPMGR_BACKUP_DIR</code> environment variable before starting WinDesktopMgr.
+      `;
+    }
   } catch (e) {
     container.innerHTML = `<div style="color:var(--red);font-size:11px">Error: ${esc(e && e.message || e)}</div>`;
   }
@@ -8889,9 +8900,11 @@ function renderSystemInfo(d, upgrades) {
         <div id="hn-backup-history">
           <div style="font-size:11px;color:var(--muted)">Click a Backup button or Refresh to load history…</div>
         </div>
-        <div style="font-size:11px;color:var(--muted);line-height:1.5;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
-          Orbi backups save to <code>backups/orbi/</code> (gitignored). Capped at 50 files per router; oldest pruned automatically.
-          Verizon opens the admin Save/Restore page; your browser downloads the file. To track Verizon backups here too, drop the downloaded files into <code>backups/verizon/</code> manually.
+        <div id="hn-backup-helper-text" style="font-size:11px;color:var(--muted);line-height:1.5;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+          <!-- Populated dynamically by hnLoadBackupList so the user sees
+               the actual resolved BACKUPS_DIR (which they may have
+               overridden via WINDESKTOPMGR_BACKUP_DIR). -->
+          Loading backup-folder location…
         </div>
       </div>
     </details>

@@ -4097,6 +4097,86 @@ class TestRouterConfigBackup:
         assert "orbi" in result["backups"]
         assert "verizon" not in result["backups"]
 
+    def test_list_response_includes_backup_dir_for_ui_display(self, _isolate_backups_dir):
+        """The UI surfaces the resolved BACKUPS_DIR so the user always
+        knows where files land (especially important now that the
+        default path is OneDrive-synced and overridable via env var).
+        """
+        from homenet import list_router_backups
+
+        result = list_router_backups()
+        assert "backup_dir" in result
+        assert result["backup_dir"] == _isolate_backups_dir
+
+
+class TestBackupsDirResolution:
+    """The new feature 2026-05-10: BACKUPS_DIR is no longer the repo
+    dir's ``backups/`` subfolder; defaults to ``~/OneDrive/WinDesktopMgr/
+    backup`` so backups auto-sync to cloud + survive a machine wipe.
+    Overridable via WINDESKTOPMGR_BACKUP_DIR env var.
+
+    These tests reload homenet under different env states. Don't
+    monkey-patch the module-level value here -- the point IS to
+    exercise the import-time resolution logic.
+    """
+
+    def test_default_path_uses_user_onedrive_folder(self, monkeypatch):
+        """Default (no env var) should resolve to ~/OneDrive/WinDesktopMgr/backup."""
+        import importlib
+        import os as _os
+
+        monkeypatch.delenv("WINDESKTOPMGR_BACKUP_DIR", raising=False)
+        import homenet
+
+        importlib.reload(homenet)
+        try:
+            expected = _os.path.join(_os.path.expanduser("~"), "OneDrive", "WinDesktopMgr", "backup")
+            assert expected == homenet.BACKUPS_DIR, (
+                f"Default BACKUPS_DIR should resolve under user's OneDrive folder. Got: {homenet.BACKUPS_DIR}"
+            )
+        finally:
+            # Restore via reimport so subsequent tests in this session
+            # see the real (or env-overridden) value rather than whatever
+            # this test left around.
+            importlib.reload(homenet)
+
+    def test_env_var_override_wins_over_default(self, monkeypatch, tmp_path):
+        """WINDESKTOPMGR_BACKUP_DIR set -> that path wins."""
+        import importlib
+
+        custom = str(tmp_path / "custom-backup-location")
+        monkeypatch.setenv("WINDESKTOPMGR_BACKUP_DIR", custom)
+        import homenet
+
+        importlib.reload(homenet)
+        try:
+            assert custom == homenet.BACKUPS_DIR
+        finally:
+            monkeypatch.delenv("WINDESKTOPMGR_BACKUP_DIR", raising=False)
+            importlib.reload(homenet)
+
+    def test_ensure_backup_dir_creates_intermediate_parents(self, monkeypatch, tmp_path):
+        """The OneDrive default path may have multiple non-existent
+        parent directories on first run (e.g. WinDesktopMgr/ then
+        backup/). _ensure_backup_dir + the underlying os.makedirs MUST
+        create the whole chain, not just the leaf."""
+        import importlib
+
+        deep = str(tmp_path / "level1" / "level2" / "level3" / "backup")
+        monkeypatch.setenv("WINDESKTOPMGR_BACKUP_DIR", deep)
+        import homenet
+
+        importlib.reload(homenet)
+        try:
+            from homenet import _ensure_backup_dir
+
+            path = _ensure_backup_dir("orbi")
+            assert os.path.isdir(path)
+            assert path.endswith(os.path.join("backup", "orbi"))
+        finally:
+            monkeypatch.delenv("WINDESKTOPMGR_BACKUP_DIR", raising=False)
+            importlib.reload(homenet)
+
 
 class TestOrbiBackupHelper:
     """_orbi_backup_config tested with the network mocked end-to-end."""
