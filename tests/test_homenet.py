@@ -2895,6 +2895,95 @@ class TestOrbiSoapConnApMacExtraction:
         devs = _parse_orbi_soap(xml)
         assert devs[0]["conn_ap_mac"] == ""
 
+    def test_corrupted_conn_ap_mac_is_dropped_to_empty(self):
+        """Bug 2026-05-12: the RBRE960 firmware was observed emitting a
+        28-hex-char string in <ConnAPMAC> for satellite-connected clients
+        (e.g. `22656C28:2C222294:61622201:6168`). Without validation that
+        garbage poisoned the inventory and 24/43 wireless devices ended up
+        in the 'Orbi mesh (AP unknown)' bucket. Parser must drop bad
+        values to '' rather than store them."""
+        from homenet import _parse_orbi_soap
+
+        xml = """<Device>
+        <IP>10.0.0.50</IP>
+        <Name>FireStick</Name>
+        <MAC>AA:BB:CC:DD:EE:FF</MAC>
+        <ConnAPMAC>22656C28:2C222294:61622201:6168</ConnAPMAC>
+        </Device>"""
+        devs = _parse_orbi_soap(xml)
+        assert len(devs) == 1
+        assert devs[0]["conn_ap_mac"] == ""
+
+    def test_corrupted_conn_ap_mac_captures_debug_sample(self, tmp_path, monkeypatch):
+        """When the parser sees a malformed ConnAPMAC it should write the
+        raw response to ~/homenet_orbi_debug.xml so the user can attach it
+        to a bug report. Single-shot per process to avoid disk spam."""
+        import os
+
+        import homenet
+
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+        monkeypatch.setattr(homenet, "_orbi_bad_connapmac_sample_captured", False)
+        xml = """<Device><MAC>AA:BB:CC:DD:EE:FF</MAC><ConnAPMAC>not-a-real-mac</ConnAPMAC></Device>"""
+        homenet._parse_orbi_soap(xml)
+        sample = tmp_path / "homenet_orbi_debug.xml"
+        assert sample.exists(), "Bad-ConnAPMAC parser should write a debug sample"
+        contents = sample.read_text(encoding="utf-8")
+        assert "<ConnAPMAC>not-a-real-mac</ConnAPMAC>" in contents
+        assert "ConnAPMAC" in contents
+
+    def test_corrupted_conn_ap_mac_capture_is_single_shot(self, tmp_path, monkeypatch):
+        """Avoid filling the disk with one capture per topology refresh --
+        only the first malformed parse per process writes the file."""
+        import os
+
+        import homenet
+
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+        monkeypatch.setattr(homenet, "_orbi_bad_connapmac_sample_captured", False)
+        homenet._parse_orbi_soap("<Device><MAC>AA:BB:CC:DD:EE:FF</MAC><ConnAPMAC>bad</ConnAPMAC></Device>")
+        sample = tmp_path / "homenet_orbi_debug.xml"
+        first_mtime = sample.stat().st_mtime_ns
+        # Second bad parse must NOT rewrite the file.
+        homenet._parse_orbi_soap("<Device><MAC>FF:EE:DD:CC:BB:AA</MAC><ConnAPMAC>also-bad</ConnAPMAC></Device>")
+        assert sample.stat().st_mtime_ns == first_mtime
+
+
+class TestLoadInventorySanitisesBadConnApMac:
+    """Bug 2026-05-12: inventory files written before the parser hardened
+    have corrupt conn_ap_mac values (24 of 43 wireless devices on the
+    user's network). Sanitise on load so the topology builder gets clean
+    data without waiting for a fresh Orbi scan."""
+
+    def test_load_drops_bad_conn_ap_mac_from_persisted_inventory(self, tmp_path, monkeypatch):
+        import json
+
+        import homenet
+
+        f = tmp_path / "homenet_inventory.json"
+        f.write_text(
+            json.dumps(
+                {
+                    "devices": {
+                        "AA:BB:CC:DD:EE:FF": {
+                            "mac": "AA:BB:CC:DD:EE:FF",
+                            "conn_ap_mac": "22656C28:2C222294:61622201:6168",  # corrupt
+                        },
+                        "11:22:33:44:55:66": {
+                            "mac": "11:22:33:44:55:66",
+                            "conn_ap_mac": "28:94:01:3F:73:E1",  # good
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(homenet, "HOMENET_INVENTORY_FILE", str(f))
+        inv = homenet._load_homenet_inventory()
+        devs = inv["devices"]
+        assert devs["AA:BB:CC:DD:EE:FF"]["conn_ap_mac"] == "", "Corrupt value must be cleared"
+        assert devs["11:22:33:44:55:66"]["conn_ap_mac"] == "28:94:01:3F:73:E1", "Valid value preserved"
+
 
 class TestBuildTopology:
     """Topology builder is the heart of #9 -- joins three data sources

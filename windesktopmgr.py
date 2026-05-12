@@ -10828,6 +10828,45 @@ def _compute_dashboard_summary() -> dict:
     except Exception:  # noqa: BLE001 -- never let backup-status break the dashboard
         pass
 
+    # Orbi mesh-unknown bucket (bug 2026-05-12). When the RBRE960 firmware
+    # emits corrupted ConnAPMAC values for satellite-connected clients, the
+    # topology builder can't tell which Orbi node those clients belong to
+    # and they all collapse into the "Orbi mesh (AP unknown)" column. The
+    # parser captures a sample to ~/homenet_orbi_debug.xml so we can debug,
+    # but the user needs to know WHY their satellite columns disappeared.
+    # Surface as INFO when the unknown bucket dominates wireless mappings.
+    try:
+        from homenet import build_topology
+
+        topo = build_topology()
+        stats = topo.get("stats", {})
+        unknown_count = len(topo.get("orbi_mesh_unknown_ap") or [])
+        wireless_mapped = stats.get("wireless_mapped", 0)
+        # Threshold: more wireless devices in the unknown bucket than mapped.
+        # Avoids firing for the "1 stray client off a satellite" case while
+        # catching the "all my satellites disappeared" regression.
+        if unknown_count > 0 and unknown_count >= wireless_mapped:
+            concerns.append(
+                {
+                    "level": "info",
+                    "tab": "homenet",
+                    "icon": "📡",
+                    "title": f"Orbi reporting {unknown_count} wireless devices with unknown AP",
+                    "detail": (
+                        f"{unknown_count} clients vs {wireless_mapped} correctly mapped. "
+                        "The Orbi RBRE960 SOAP response is emitting corrupt ConnAPMAC "
+                        "values for satellite-connected clients (likely a firmware "
+                        "quirk), so the topology can't show per-satellite columns. "
+                        "A raw sample of the bad response was captured to "
+                        "~/homenet_orbi_debug.xml -- attach it when reporting this."
+                    ),
+                    "action": "Open Home Network",
+                    "action_fn": "switchTab('homenet')",
+                }
+            )
+    except Exception:  # noqa: BLE001 -- never let topology probe break the dashboard
+        pass
+
     overall = (
         "critical"
         if any(c["level"] == "critical" for c in concerns)

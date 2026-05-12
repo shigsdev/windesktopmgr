@@ -638,6 +638,43 @@ def _orbi_get_devices() -> dict:
         session.close()
 
 
+# Session-level guard so the bad-ConnAPMAC sample is captured AT MOST once
+# per process. Without this every topology refresh (~12s in some flows)
+# would rewrite the same debug file. Reset by tray restart so a re-test
+# captures fresh data.
+_orbi_bad_connapmac_sample_captured = False
+
+# Strict MAC-shape validator. Six octets, two hex chars each, colon-separated.
+# Used to reject the corrupted `conn_ap_mac` values the RBRE960 firmware has
+# been observed emitting for satellite-connected clients (e.g.
+# `22656C28:2C222294:61622201:6168` -- 28 hex chars rather than 12). Without
+# this guard those corrupt values were poisoning the inventory and the
+# topology builder lost the satellite columns. See bug fix 2026-05-12.
+_VALID_MAC_RE = re.compile(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$")
+
+
+def _capture_orbi_bad_sample(xml_text: str, reason: str) -> None:
+    """Save the raw Orbi SOAP response when the parser sees malformed data.
+
+    Best-effort + single-shot per process so we don't fill the disk, and
+    silent on failure so a logging hiccup never breaks the topology pipeline.
+    The captured file is what we'd ask the user to share when investigating
+    the upstream firmware quirk that produces the corrupted ConnAPMAC values.
+    """
+    global _orbi_bad_connapmac_sample_captured
+    if _orbi_bad_connapmac_sample_captured:
+        return
+    try:
+        path = os.path.join(os.path.expanduser("~"), "homenet_orbi_debug.xml")
+        header = f"<!-- Captured by WinDesktopMgr — reason: {reason} — {datetime.now(timezone.utc).isoformat()} -->\n"
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(header + xml_text)
+        _orbi_bad_connapmac_sample_captured = True
+        print(f"[homenet] Captured Orbi SOAP debug sample to {path} ({reason})")
+    except Exception:  # noqa: BLE001 -- diagnostics must never raise
+        pass
+
+
 def _parse_orbi_soap(xml_text: str) -> list:
     """Parse Orbi GetAttachDevice2 SOAP response into device list.
 
@@ -648,6 +685,7 @@ def _parse_orbi_soap(xml_text: str) -> list:
     Also supports legacy @-delimited format from older firmware.
     """
     devices = []
+    bad_connapmac_count = 0
 
     # Try XML <Device> format first (RBRE960 with current firmware)
     device_blocks = re.findall(r"<Device>(.*?)</Device>", xml_text, re.DOTALL)
@@ -665,7 +703,24 @@ def _parse_orbi_soap(xml_text: str) -> list:
             # client is associated with -- needed by the topology diagram
             # (#9). Normalised to upper-colon so it joins cleanly against
             # the satellite MAC list later. Empty when the client is wired.
-            conn_ap_mac = _tag("ConnAPMAC").upper().replace("-", ":")
+            #
+            # Bug 2026-05-12: the RBRE960 firmware has been observed emitting
+            # corrupted ConnAPMAC values for satellite-connected clients --
+            # 28-hex-char strings like `22656C28:2C222294:61622201:6168`
+            # instead of a real 6-octet MAC. Without validation those values
+            # land in the inventory and 24 of 43 wireless devices end up in
+            # the "Orbi mesh (AP unknown)" bucket because their AP MAC isn't
+            # plausible. Validate at parse time, drop bad values to "" so
+            # the device shows up under (still) the unknown bucket but the
+            # poisoned MAC doesn't propagate to other code paths. Capture a
+            # raw sample on first occurrence so we can debug the firmware
+            # quirk later.
+            conn_ap_mac_raw = _tag("ConnAPMAC").upper().replace("-", ":")
+            if conn_ap_mac_raw and not _VALID_MAC_RE.match(conn_ap_mac_raw):
+                bad_connapmac_count += 1
+                conn_ap_mac = ""
+            else:
+                conn_ap_mac = conn_ap_mac_raw
             devices.append(
                 {
                     "ip": _tag("IP"),
@@ -681,6 +736,11 @@ def _parse_orbi_soap(xml_text: str) -> list:
                     "conn_ap_mac": conn_ap_mac,
                     "device_name_user_set": _tag("NameUserSet") == "true",
                 }
+            )
+        if bad_connapmac_count > 0:
+            _capture_orbi_bad_sample(
+                xml_text,
+                f"{bad_connapmac_count} <ConnAPMAC> values failed MAC-shape validation",
             )
         return devices
 
@@ -1391,11 +1451,30 @@ def _arp_scan() -> list:
 
 
 def _load_homenet_inventory() -> dict:
-    """Load persisted device inventory."""
+    """Load persisted device inventory.
+
+    Sanitises ``conn_ap_mac`` on the way in so corrupted values (a known
+    RBRE960 firmware quirk -- see _parse_orbi_soap) that landed in the
+    JSON file before the parser was hardened are dropped to "" rather
+    than poisoning the topology builder for the lifetime of the file.
+    Self-healing -- the next Orbi scan repopulates with validated values.
+    """
     try:
         if os.path.exists(HOMENET_INVENTORY_FILE):
             with open(HOMENET_INVENTORY_FILE, encoding="utf-8") as f:
-                return json.load(f)
+                inv = json.load(f)
+            # One-shot sanitisation. If we don't do this, devices already
+            # written with corrupt conn_ap_mac stay broken until the user
+            # deletes their inventory file. Keeps the original on-disk
+            # record around so a fresh scan that produces good values can
+            # write back correct data.
+            devs = inv.get("devices") or {}
+            if isinstance(devs, dict):
+                for dev in devs.values():
+                    raw = (dev.get("conn_ap_mac") or "").upper()
+                    if raw and not _VALID_MAC_RE.match(raw):
+                        dev["conn_ap_mac"] = ""
+            return inv
     except Exception:
         pass
     return {"devices": {}, "last_scan": None}
