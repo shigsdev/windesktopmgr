@@ -10835,16 +10835,22 @@ def _compute_dashboard_summary() -> dict:
     # parser captures a sample to ~/homenet_orbi_debug.xml so we can debug,
     # but the user needs to know WHY their satellite columns disappeared.
     # Surface as INFO when the unknown bucket dominates wireless mappings.
+    #
+    # IMPORTANT: read inventory directly rather than calling build_topology()
+    # -- the dashboard polls every ~5s and build_topology re-runs the TP-Link
+    # SNMP probe + Orbi satellite probe each call, which spiked tray CPU to
+    # 58% in the first version of this concern. Direct inventory read is a
+    # cheap dict scan with no I/O.
     try:
-        from homenet import build_topology
+        from homenet import _load_homenet_inventory
 
-        topo = build_topology()
-        stats = topo.get("stats", {})
-        unknown_count = len(topo.get("orbi_mesh_unknown_ap") or [])
-        wireless_mapped = stats.get("wireless_mapped", 0)
-        # Threshold: more wireless devices in the unknown bucket than mapped.
-        # Avoids firing for the "1 stray client off a satellite" case while
-        # catching the "all my satellites disappeared" regression.
+        inv = _load_homenet_inventory()
+        devs = (inv.get("devices") or {}).values()
+        wireless_devs = [d for d in devs if d.get("source") == "orbi"]
+        unknown = [d for d in wireless_devs if not (d.get("conn_ap_mac") or "").strip()]
+        unknown_count = len(unknown)
+        wireless_total = len(wireless_devs)
+        wireless_mapped = wireless_total - unknown_count
         if unknown_count > 0 and unknown_count >= wireless_mapped:
             concerns.append(
                 {
@@ -10864,7 +10870,7 @@ def _compute_dashboard_summary() -> dict:
                     "action_fn": "switchTab('homenet')",
                 }
             )
-    except Exception:  # noqa: BLE001 -- never let topology probe break the dashboard
+    except Exception:  # noqa: BLE001 -- never let inventory probe break the dashboard
         pass
 
     overall = (
