@@ -5731,6 +5731,21 @@ async function hnFireReboot() {
     status.textContent = "Sending reboot…";
     status.style.color = "var(--muted)";
   }
+  // Bug fix 2026-05-12: open the popup window SYNCHRONOUSLY, inside the
+  // user-gesture stack of the click that called us. If we wait until
+  // after `await fetch(...)` to call window.open, modern browsers
+  // (Chrome / Edge / Firefox) treat it as a non-gesture popup and
+  // silently block it -- the user clicks Reboot and "nothing happens".
+  // For SOAP-mode (Orbi) we close the popup once we know the response
+  // didn't need a deep-link. `noopener,noreferrer` is dropped here so
+  // we keep a handle on the popup; we re-apply the equivalent isolation
+  // by setting the popup's opener to null after navigating.
+  let popup = null;
+  try {
+    popup = window.open("about:blank", "_blank");
+  } catch (_) {
+    popup = null;
+  }
   try {
     const r = await fetch(`/api/homenet/reboot/${encodeURIComponent(device)}`, {
       method: "POST",
@@ -5741,6 +5756,7 @@ async function hnFireReboot() {
     });
     const data = await r.json();
     if (!r.ok || !data.ok) {
+      if (popup) { try { popup.close(); } catch (_) {} }
       if (status) {
         status.textContent = "Failed: " + (data.error || r.statusText);
         status.style.color = "var(--red)";
@@ -5749,18 +5765,29 @@ async function hnFireReboot() {
       return;
     }
     if (data.mode === "deep-link" && data.url) {
-      // Open the device's admin UI in a new tab so user can finish.
-      window.open(data.url, "_blank", "noopener,noreferrer");
+      // Navigate the placeholder window we pre-opened in the user-gesture
+      // stack. Fallback to a fresh window.open if the placeholder was
+      // blocked (some hardened popup-blockers reject even about:blank).
+      if (popup) {
+        try { popup.opener = null; } catch (_) {}
+        try { popup.location.href = data.url; }
+        catch (_) { window.open(data.url, "_blank", "noopener,noreferrer"); }
+      } else {
+        window.open(data.url, "_blank", "noopener,noreferrer");
+      }
       if (status) {
         status.textContent = "Opened admin UI -- click Reboot there to finish.";
         status.style.color = "var(--green)";
       }
     } else if (data.mode === "reboot-fired") {
+      // SOAP path doesn't need a deep-link; close the placeholder.
+      if (popup) { try { popup.close(); } catch (_) {} }
       if (status) {
         status.textContent = data.message || "Reboot triggered.";
         status.style.color = "var(--green)";
       }
     } else {
+      if (popup) { try { popup.close(); } catch (_) {} }
       if (status) {
         status.textContent = "Unknown response mode: " + (data.mode || "?");
         status.style.color = "var(--orange)";
@@ -5769,6 +5796,7 @@ async function hnFireReboot() {
     // Auto-close after a short delay so the user sees the success message
     setTimeout(() => hnCloseRebootConfirm(), 2500);
   } catch (e) {
+    if (popup) { try { popup.close(); } catch (_) {} }
     if (status) {
       status.textContent = "Error: " + (e && e.message || e);
       status.style.color = "var(--red)";
