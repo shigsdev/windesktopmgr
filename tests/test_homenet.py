@@ -3591,6 +3591,62 @@ class TestMocaVendorDetection:
         # Pattern matches but user-attested anyway -> still True (idempotent)
         assert _is_moca_bridge({"vendor": "Actiontec", "wired_via": "moca_bridge"}) is True
 
+    def test_is_moca_bridge_blink_sync_module_false_positive(self):
+        """Bug 2026-05-12: the Blink Sync Module uses the Actiontec OUI
+        (00:03:7F) and was getting auto-classified as a MoCA bridge,
+        spawning a phantom 'Actiontec A30B' column in the user's
+        topology with no children. dns_hostname='blink-sync-module'
+        proves it's not a network bridge."""
+        from homenet import _is_moca_bridge
+
+        # Blink discovered via DNS -- vendor matches MoCA pattern, hostname
+        # makes it obvious it's not a bridge.
+        blink = {
+            "mac": "00:03:7F:B4:A3:0B",
+            "vendor": "Actiontec",
+            "dns_hostname": "blink-sync-module",
+            "wired_via": "",
+        }
+        assert _is_moca_bridge(blink) is False
+
+    def test_is_moca_bridge_hostname_check_case_insensitive(self):
+        from homenet import _is_moca_bridge
+
+        # Case-insensitive substring match -- catches "Blink-Sync-Module",
+        # "BLINK-SYNC-MODULE", etc.
+        for hn in ("blink-sync-module", "Blink-Sync-Module", "BLINK-SYNC-MODULE"):
+            assert _is_moca_bridge({"vendor": "Actiontec", "dns_hostname": hn}) is False
+
+    def test_is_moca_bridge_hostname_check_falls_back_to_hostname_field(self):
+        """When dns_hostname is empty but hostname is set, we still check it."""
+        from homenet import _is_moca_bridge
+
+        assert _is_moca_bridge({"vendor": "Actiontec", "dns_hostname": "", "hostname": "blink-sync-module"}) is False
+
+    def test_is_moca_bridge_user_override_still_wins_over_hostname_check(self):
+        """If the user explicitly tags wired_via='moca_bridge', that overrides
+        even the Blink hostname check (defensive: they may have a weird
+        deployment we haven't seen)."""
+        from homenet import _is_moca_bridge
+
+        dev = {
+            "vendor": "Actiontec",
+            "dns_hostname": "blink-sync-module",
+            "wired_via": "moca_bridge",  # user attested
+        }
+        assert _is_moca_bridge(dev) is True
+
+    def test_is_moca_bridge_real_actiontec_still_passes(self):
+        """The fix mustn't break legitimate Actiontec MoCA bridges --
+        their hostname is empty (router-discovered) or names them as
+        bridges, never as Blink/Echo/Ring."""
+        from homenet import _is_moca_bridge
+
+        # Real Actiontec ECB6200 bridge: vendor matches, no hostname
+        assert _is_moca_bridge({"vendor": "Actiontec", "dns_hostname": ""}) is True
+        # Real Actiontec with router-side label
+        assert _is_moca_bridge({"vendor": "Actiontec", "dns_hostname": "MoCA-Living-Room"}) is True
+
 
 class TestIsPlausibleOrbiApMac:
     """Backlog #42 follow-up #2 (2026-05-08): the topology builder was

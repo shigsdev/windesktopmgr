@@ -2479,6 +2479,23 @@ def _is_infra_by_hostname(device: dict) -> bool:
     return any(p in host for p in _INFRA_HOSTNAME_PATTERNS)
 
 
+"""Hostnames that prove a device is NOT a MoCA bridge despite vendor pattern match.
+
+Blink Sync Modules use the Actiontec OUI (00:03:7F) and would otherwise get
+auto-classified as MoCA bridges; same risk for other Actiontec-OEM consumer
+gear. We check ``dns_hostname`` / ``hostname`` for these substrings (case-
+insensitive) and short-circuit to False. Conservative list -- only entries
+that have been seen misclassified in the wild.
+"""
+_NON_MOCA_BRIDGE_HOSTNAME_SUBSTRINGS: tuple[str, ...] = (
+    "blink-sync",
+    "blink-mini",
+    "echo",  # Amazon Echo on Actiontec OUI -- if it ever happens
+    "firetv",
+    "ring-",  # Ring cameras / Ring devices
+)
+
+
 def _is_moca_bridge(device: dict) -> bool:
     """True if this device is a MoCA-over-coax Ethernet bridge.
 
@@ -2494,7 +2511,13 @@ def _is_moca_bridge(device: dict) -> bool:
          it as a bridge even after they set wired_via=moca. Fixed
          here -- any non-empty wired_via value is treated as the
          user's final word on bridge-vs-endpoint classification.
-      3. **No user attestation** (wired_via empty) -- fall back to
+      3. **Hostname proves it's NOT a bridge** -- Blink Sync Modules
+         use the Actiontec OUI (00:03:7F) and were getting auto-
+         classified as MoCA bridges, spawning a phantom "Actiontec
+         A30B" column with no children. dns_hostname contains
+         "blink-sync" so we short-circuit to False before the vendor
+         pattern fires. See _NON_MOCA_BRIDGE_HOSTNAME_SUBSTRINGS.
+      4. **No user attestation** (wired_via empty) -- fall back to
          vendor-name pattern match against _MOCA_VENDOR_PATTERNS.
          Auto-detection so the user doesn't have to tag every
          well-known device manually on a fresh setup.
@@ -2503,6 +2526,12 @@ def _is_moca_bridge(device: dict) -> bool:
     if wv == "moca_bridge":
         return True
     if wv in ("moca", "verizon_lan", "switch"):
+        return False
+    # Hostname-based negative match -- catches Actiontec-OEM consumer gear
+    # (Blink Sync Module et al.) whose vendor matches the MoCA pattern but
+    # whose hostname makes clear it's not a network bridge.
+    hostname = (device.get("dns_hostname") or device.get("hostname") or "").lower()
+    if hostname and any(s in hostname for s in _NON_MOCA_BRIDGE_HOSTNAME_SUBSTRINGS):
         return False
     vendor = (device.get("vendor") or "").lower()
     if not vendor:
