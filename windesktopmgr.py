@@ -10836,42 +10836,17 @@ def _compute_dashboard_summary() -> dict:
     # but the user needs to know WHY their satellite columns disappeared.
     # Surface as INFO when the unknown bucket dominates wireless mappings.
     #
-    # IMPORTANT: read inventory directly rather than calling build_topology()
-    # -- the dashboard polls every ~5s and build_topology re-runs the TP-Link
-    # SNMP probe + Orbi satellite probe each call, which spiked tray CPU to
-    # 58% in the first version of this concern. Direct inventory read is a
-    # cheap dict scan with no I/O.
-    try:
-        from homenet import _load_homenet_inventory
-
-        inv = _load_homenet_inventory()
-        devs = (inv.get("devices") or {}).values()
-        wireless_devs = [d for d in devs if d.get("source") == "orbi"]
-        unknown = [d for d in wireless_devs if not (d.get("conn_ap_mac") or "").strip()]
-        unknown_count = len(unknown)
-        wireless_total = len(wireless_devs)
-        wireless_mapped = wireless_total - unknown_count
-        if unknown_count > 0 and unknown_count >= wireless_mapped:
-            concerns.append(
-                {
-                    "level": "info",
-                    "tab": "homenet",
-                    "icon": "📡",
-                    "title": f"Orbi reporting {unknown_count} wireless devices with unknown AP",
-                    "detail": (
-                        f"{unknown_count} clients vs {wireless_mapped} correctly mapped. "
-                        "The Orbi RBRE960 SOAP response is emitting corrupt ConnAPMAC "
-                        "values for satellite-connected clients (likely a firmware "
-                        "quirk), so the topology can't show per-satellite columns. "
-                        "A raw sample of the bad response was captured to "
-                        "~/homenet_orbi_debug.xml -- attach it when reporting this."
-                    ),
-                    "action": "Open Home Network",
-                    "action_fn": "switchTab('homenet')",
-                }
-            )
-    except Exception:  # noqa: BLE001 -- never let inventory probe break the dashboard
-        pass
+    # NOTE 2026-05-13: removed the "Orbi reporting N wireless devices with
+    # unknown AP" dashboard concern. The Orbi RBRE960 firmware emits a
+    # corrupted ConnAPMAC sentinel for satellite-connected clients -- this
+    # is a STATIC fact about the user's hardware, not an actionable issue.
+    # Surfacing it as a dashboard concern that re-fires every poll was
+    # nagging without action. Moved to the topology stats line + the
+    # Unknown column subtitle where it's contextual. The raw response
+    # sample at ~/homenet_orbi_debug.xml is still captured by the parser
+    # on first occurrence per process for anyone investigating the
+    # firmware quirk further. User feedback 2026-05-13: "I still see this
+    # error... are you checking post-deploy?".
 
     overall = (
         "critical"

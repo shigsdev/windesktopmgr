@@ -92,9 +92,27 @@ def cmd_all():
 
 
 def cmd_verify():
-    """Restart the running app and run /api/selftest against it."""
-    print(f"\n{BOLD}Verify (restart + selftest){RESET}")
-    return run("post_restart_check", [sys.executable, "scripts/post_restart_check.py"])
+    """Restart the running app and run /api/selftest + semantic checks.
+
+    Two-step gate:
+      1. post_restart_check.py -- restarts the tray, polls heartbeat,
+         runs 14 mock-or-thin /api/selftest probes. Catches startup
+         crashes, mock-vs-reality drift, log-error regressions.
+      2. post_deploy_topology_check.py -- hits live endpoints and
+         asserts SEMANTIC correctness (no phantom MoCA bridges, no
+         Blink false-positives, dashboard concerns well-formed,
+         etc.). Catches the class of regressions where pytest is
+         green but the user-visible product is wrong. Added
+         2026-05-13 after a "5 MoCAs but I only have 4" issue
+         shipped past pytest + selftest and was caught by the user.
+    """
+    print(f"\n{BOLD}Verify (restart + selftest + semantic checks){RESET}")
+    ok = run("post_restart_check", [sys.executable, "scripts/post_restart_check.py"])
+    # Always run the semantic checker even if post_restart_check warned --
+    # the CPU-budget flakiness post-selftest isn't a real regression but
+    # we still want the topology to be semantically sound.
+    ok_sem = run("post_deploy_topology_check", [sys.executable, "scripts/post_deploy_topology_check.py"])
+    return ok and ok_sem
 
 
 def cmd_ship():
