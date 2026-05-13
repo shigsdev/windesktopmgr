@@ -5310,6 +5310,15 @@ async function hnTopoRefresh() {
 
   wrap.style.display = "";
   if (legend) legend.style.display = "flex";
+  // Bug fix 2026-05-12: openEditModal(mac) looks devices up in _hnDevices,
+  // which is populated from /api/homenet/inventory. If the user opens
+  // the topology section BEFORE the inventory poll has fired (timing
+  // race on first tab activation), clicking a MoCA bridge / Orbi AP
+  // header is a silent no-op. Backfill _hnDevices from the topology
+  // payload's devices map so the clickable headers work immediately.
+  if (!_hnDevices.length && data.devices && typeof data.devices === "object") {
+    _hnDevices = Object.values(data.devices);
+  }
   wrap.innerHTML = hnTopoBuildSvg(data);
 }
 
@@ -5364,12 +5373,25 @@ function hnTopoBuildSvg(t) {
 
   for (const ap of (t.aps || [])) {
     const rows = ap.clients.map(m => ({ mac: m, label: ap.is_base ? "via Orbi base" : "via satellite", dev: devices[m] || { mac: m } }));
+    // Subtitle hints when the AP has no user-set friendly_name so the
+    // user knows clicking the header opens the edit modal. The Orbi base
+    // always has a friendly fallback ("Orbi RBRE960 (Base)") from
+    // _INFRA_LABELS, so the hint only really fires for satellites.
+    const apDev = devices[ap.mac] || {};
+    const apFriendly = (apDev.friendly_name || "").trim();
+    const apSub = apFriendly || ap.is_base
+      ? `${ap.clients.length} client${ap.clients.length !== 1 ? "s" : ""}`
+      : `✏ click header to name · ${ap.clients.length} client${ap.clients.length !== 1 ? "s" : ""}`;
     columns.push({
       kind: ap.is_base ? "ap_base" : "ap_satellite",
       id: ap.id,
       name: ap.name,
-      sub: `${ap.clients.length} client${ap.clients.length !== 1 ? "s" : ""}`,
+      sub: apSub,
       rows: rows,
+      // Click the header → open the edit modal for this AP's MAC so the
+      // user can set a friendly_name without hunting through the device
+      // table.
+      click_mac: ap.mac,
     });
   }
 
@@ -5432,7 +5454,7 @@ function hnTopoBuildSvg(t) {
       const macSuffix = bridgeMac.replace(/:/g, "").slice(-4).toUpperCase();
       const displayName = friendly || `${vendor} ${macSuffix}`;
       const kids = childrenMap[bridgeMac] || [];
-      return { bridgeMac, dev, displayName, kids };
+      return { bridgeMac, dev, displayName, kids, hasFriendlyName: !!friendly };
     });
     bridgeColumns.sort((a, b) => a.displayName.localeCompare(b.displayName));
     for (const bc of bridgeColumns) {
@@ -5441,6 +5463,19 @@ function hnTopoBuildSvg(t) {
         label: "behind bridge",
         dev: devices[childMac] || { mac: childMac },
       }));
+      // Subtitle hints the user that they can click to set a name. Only
+      // shown when there's no friendly_name yet (otherwise the existing
+      // downstream-device-count subtitle is more informative).
+      let sub;
+      if (!bc.hasFriendlyName) {
+        sub = bc.kids.length
+          ? `✏ click header to name · ${bc.kids.length} downstream`
+          : "✏ click header to name";
+      } else {
+        sub = bc.kids.length
+          ? `${bc.kids.length} downstream device${bc.kids.length !== 1 ? "s" : ""}`
+          : "no downstream devices yet";
+      }
       columns.push({
         kind: "moca",
         id: `moca-bridge-${bc.bridgeMac.replace(/:/g, "")}`,
@@ -5448,14 +5483,14 @@ function hnTopoBuildSvg(t) {
         // both are infrastructure tiers, so the icon-prefix tells you
         // "this is a hop, not a leaf device" at a glance.
         name: `📻 ${bc.displayName}`,
-        sub: bc.kids.length
-          ? `${bc.kids.length} downstream device${bc.kids.length !== 1 ? "s" : ""}`
-          : "no downstream devices yet",
+        sub,
         rows,
         // Carry the bridge-MAC through so the empty-state hint can
         // tell the user which bridge to assign devices to in the
-        // edit modal.
+        // edit modal, AND so the column header click handler can open
+        // the device-edit modal for this bridge directly.
         bridge_mac: bc.bridgeMac,
+        click_mac: bc.bridgeMac,
       });
     }
   }
@@ -5526,7 +5561,22 @@ function hnTopoBuildSvg(t) {
     // can assert "API says N MoCA bridges → SVG renders N moca columns"
     // without parsing visible label text. Mirrors the data-metric pattern
     // on Trends cards (#39).
-    svg += `<g data-column-kind="${_esc(col.kind || '')}" data-column-id="${_esc(col.id || '')}">`;
+    // When the column carries a click_mac (MoCA bridge / Orbi AP) wrap the
+    // SVG node in a clickable <g> so the user can open the device-edit modal
+    // for that MAC -- the primary entry point for setting friendly_name on
+    // an infra node. Bug fix 2026-05-12: previously the only way to rename
+    // a MoCA bridge was to scroll the device table and find it; topology
+    // headers were inert. Cursor:pointer + a tooltip make the affordance
+    // discoverable.
+    const headerExtra = col.click_mac
+      ? ` style="cursor:pointer" onclick="openEditModal('${_esc(col.click_mac).replace(/'/g, '')}')" data-click-mac="${_esc(col.click_mac)}"`
+      : "";
+    svg += `<g data-column-kind="${_esc(col.kind || '')}" data-column-id="${_esc(col.id || '')}"${headerExtra}>`;
+    if (col.click_mac) {
+      // Tooltip mirrors what the device-edit modal does so the user knows
+      // what clicking the header will do.
+      svg += `<title>Click to edit this ${col.kind === "moca" ? "MoCA bridge" : "Orbi AP"} (set a friendly name, location, notes)</title>`;
+    }
     svg += _hnSvgNode(x, INFRA_Y, NODE_W, label, col.sub || "", colorByKind[col.kind] || "var(--muted)");
     svg += `</g>`;
 
