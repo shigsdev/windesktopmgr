@@ -3764,10 +3764,16 @@ class TestBuildTopology:
         # up the friendly_name if it were set.
         assert sat_entry["friendly_name"] == ""
 
-    def test_commscope_fios_set_top_box_recognised_as_moca(self):
-        """The Verizon FiOS VMS4100 / VMS1100 Set-Top Boxes are MoCA
-        endpoints -- they bridge the coax network into video. Vendor name
-        is Commscope (or pre-acquisition Arris). Must land in moca_bridges."""
+    def test_commscope_fios_set_top_box_NOT_auto_classified_as_bridge(self):
+        """Bug 2026-05-12 reversal of earlier behaviour: the Verizon FiOS
+        VMS4100 / VMS1100 Set-Top Boxes (Commscope vendor) are MoCA
+        ENDPOINTS, not Ethernet-to-coax bridges. Earlier we auto-
+        classified them as bridges (which spawned a phantom column in
+        the user's topology); now we keep them out of moca_bridges
+        UNLESS the user explicitly attests wired_via=moca_bridge.
+
+        User can still classify a Commscope as a real bridge by
+        editing the device and selecting wired_via='moca_bridge'."""
         from homenet import build_topology
 
         inv = self._inventory(
@@ -3780,8 +3786,27 @@ class TestBuildTopology:
             },
         )
         t = build_topology(inv, switch_data={})
+        # NO auto-classification as a bridge
+        assert "B0:5D:D4:76:2A:C0" not in t["moca_bridges"]
+
+    def test_commscope_explicitly_tagged_as_bridge_DOES_appear(self):
+        """Reverse of the above: if the user explicitly tags a Commscope
+        device as wired_via='moca_bridge', it MUST appear in the bridge
+        list -- their attestation wins."""
+        from homenet import build_topology
+
+        inv = self._inventory(
+            {
+                "mac": "B0:5D:D4:76:2A:C0",
+                "ip": "",
+                "vendor": "Commscope",
+                "hostname": "MyCommscopeBridge",
+                "network": "wired",
+                "wired_via": "moca_bridge",
+            },
+        )
+        t = build_topology(inv, switch_data={})
         assert "B0:5D:D4:76:2A:C0" in t["moca_bridges"]
-        assert "B0:5D:D4:76:2A:C0" not in t["via_verizon_or_moca"]
 
     def test_wireless_devices_without_ap_stay_in_unmapped(self):
         """Wireless devices without a conn_ap_mac (e.g. inventory captured
@@ -3805,14 +3830,21 @@ class TestMocaVendorDetection:
     @pytest.mark.parametrize(
         "vendor, expected",
         [
+            # Known Ethernet-to-coax bridge vendors: auto-classified
             ("Actiontec Electronics, Inc.", True),
             ("ACTIONTEC ELECTRONICS", True),  # case-insensitive
+            ("Askey Computer Corp", True),  # Verizon Network Extenders
             ("GoCoax", True),
             ("Hitron Technologies", True),
             ("Westell Technologies", True),
             ("Motorola Mobility LLC", True),
             ("ScreenBeam Inc.", True),
-            # Near-misses
+            # Bug 2026-05-12: Commscope / Arris are MoCA endpoints (Verizon
+            # FiOS STBs), NOT bridges. Must NOT auto-classify -- the user
+            # can still tag explicitly via wired_via=moca_bridge.
+            ("Commscope", False),
+            ("Arris Group", False),
+            # Other near-misses
             ("Apple, Inc.", False),
             ("Cisco Systems", False),
             ("", False),
@@ -3834,17 +3866,19 @@ class TestMocaVendorDetection:
         vendor pattern."""
         from homenet import _is_moca_bridge
 
-        # Vendor matches MoCA pattern but user says "moca endpoint" -> NOT bridge
-        assert _is_moca_bridge({"vendor": "Commscope", "wired_via": "moca"}) is False
-        # Same for Askey + verizon_lan (rare but possible -- some Askey
-        # gear is a USB-Ethernet adapter, not a MoCA bridge)
+        # User says "moca endpoint" -> NOT bridge (overrides any classifier)
+        assert _is_moca_bridge({"vendor": "Actiontec", "wired_via": "moca"}) is False
+        # Same for verizon_lan
         assert _is_moca_bridge({"vendor": "Askey", "wired_via": "verizon_lan"}) is False
         # And for switch override
         assert _is_moca_bridge({"vendor": "Actiontec", "wired_via": "switch"}) is False
-        # Vendor matches AND no wired_via set -> auto-detect still fires
-        assert _is_moca_bridge({"vendor": "Commscope"}) is True
-        # Vendor matches AND user explicitly says "moca_bridge" -> still bridge
+        # Commscope auto-detection no longer fires (bug 2026-05-12 second-
+        # round fix: Commscope/Arris dropped from _ETHERNET_MOCA_BRIDGE_VENDORS
+        # because they're STBs, not bridges). User can still tag explicitly:
+        assert _is_moca_bridge({"vendor": "Commscope"}) is False  # no longer auto-True
         assert _is_moca_bridge({"vendor": "Commscope", "wired_via": "moca_bridge"}) is True
+        # Real bridge vendor still auto-classifies
+        assert _is_moca_bridge({"vendor": "Actiontec"}) is True
 
     def test_is_moca_bridge_user_attestation_overrides_vendor(self):
         """Bug 2026-04-25: user reported "I have two MoCA's, only see one"

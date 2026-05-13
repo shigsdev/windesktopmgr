@@ -2666,9 +2666,19 @@ def _is_moca_bridge(device: dict) -> bool:
          "blink-sync" so we short-circuit to False before the vendor
          pattern fires. See _NON_MOCA_BRIDGE_HOSTNAME_SUBSTRINGS.
       4. **No user attestation** (wired_via empty) -- fall back to
-         vendor-name pattern match against _MOCA_VENDOR_PATTERNS.
-         Auto-detection so the user doesn't have to tag every
-         well-known device manually on a fresh setup.
+         vendor-name pattern match against _ETHERNET_MOCA_BRIDGE_VENDORS
+         (the STRICT subset that ships Ethernet-to-coax bridges, NOT the
+         broader _MOCA_VENDOR_PATTERNS which includes Commscope/Arris STBs).
+         Auto-detection so the user doesn't have to tag every well-known
+         bridge manually on a fresh setup.
+
+         Bug 2026-05-12: this used to call _MOCA_VENDOR_PATTERNS which
+         includes "commscope" + "arris". Result: every Verizon FiOS
+         set-top box got auto-classified as a MoCA bridge, spawning a
+         phantom column in the user's topology. Even after the
+         verizon-moca-page auto-tag was narrowed, this classifier kept
+         re-deciding "Commscope -> bridge" on every render, so the
+         migration's effect was invisible. Tightened here.
     """
     wv = (device.get("wired_via") or "").lower()
     if wv == "moca_bridge":
@@ -2684,7 +2694,7 @@ def _is_moca_bridge(device: dict) -> bool:
     vendor = (device.get("vendor") or "").lower()
     if not vendor:
         return False
-    return any(p in vendor for p in _MOCA_VENDOR_PATTERNS)
+    return any(p in vendor for p in _ETHERNET_MOCA_BRIDGE_VENDORS)
 
 
 def _is_plausible_orbi_ap_mac(mac: str) -> bool:
