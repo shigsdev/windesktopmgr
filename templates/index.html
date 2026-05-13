@@ -5291,7 +5291,7 @@ async function hnTopoRefresh() {
     ];
     if (s.via_verizon_or_moca) parts.push(`${s.via_verizon_or_moca} Verizon-direct/MoCA`);
     if (s.moca_bridges) parts.push(`${s.moca_bridges} MoCA bridge${s.moca_bridges !== 1 ? "s" : ""}`);
-    if (s.orbi_mesh_unknown_ap) parts.push(`${s.orbi_mesh_unknown_ap} unknown (Orbi didn't pin AP)`);
+    if (s.orbi_mesh_unknown_ap) parts.push(`${s.orbi_mesh_unknown_ap} unknown (Orbi firmware doesn't expose per-satellite mapping)`);
     if (s.unmapped) parts.push(`${s.unmapped} unmapped`);
     if (!s.switch_available) parts.push("⚠ switch unreachable — see Network Settings");
     // Hint: surface a one-line nudge if any satellite is still showing as
@@ -5501,11 +5501,17 @@ function hnTopoBuildSvg(t) {
   // confusing). Still honest UI for the Orbi SOAP-API limitation: they're
   // on the mesh somewhere, just not pinpointed to base/satellite.
   if ((t.orbi_mesh_unknown_ap || []).length) {
+    // Bug 2026-05-12: subtitle now explains the firmware-quirk root cause
+    // so the user doesn't think "we" broke satellite mapping. RBRE960
+    // returns a corrupted ConnAPMAC sentinel (`22656C28:...`) instead of
+    // the real satellite MAC for satellite-connected clients -- the
+    // parser drops it and the client lands here. A raw sample is
+    // captured to ~/homenet_orbi_debug.xml on first occurrence.
     columns.push({
       kind: "orbi_mesh_unknown",
       id: "orbi-mesh-unknown",
       name: "Unknown",
-      sub: `${t.orbi_mesh_unknown_ap.length} wireless client${t.orbi_mesh_unknown_ap.length !== 1 ? "s" : ""} — Orbi didn't say which AP`,
+      sub: `${t.orbi_mesh_unknown_ap.length} wireless · Orbi firmware doesn't expose per-satellite mapping`,
       rows: t.orbi_mesh_unknown_ap.map(m => ({ mac: m, label: "wireless", dev: devices[m] || { mac: m } })),
     });
   }

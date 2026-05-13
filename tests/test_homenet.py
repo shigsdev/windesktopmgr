@@ -1492,8 +1492,12 @@ class TestVerizonMocaIntegration:
     def test_scan_loop_merges_moca_bridges_with_correct_source_and_wired_via(self, client, mocker):
         """End-to-end: full scan calls _verizon_get_moca_devices and merges
         each bridge into inventory tagged source=verizon-moca-page and
-        wired_via=moca_bridge so the topology builder groups them right."""
-        # Stub everything else the scan touches
+        wired_via=moca_bridge so the topology builder groups them right.
+
+        Uses real Askey OUI (88:DE:7C) so the vendor lookup matches
+        _ETHERNET_MOCA_BRIDGE_VENDORS and the auto-tag fires. Bug
+        2026-05-12 narrowed auto-tagging to known-bridge vendors (was
+        previously unconditional)."""
         mocker.patch("homenet._wifi_ensure_orbi_connected", return_value=(False, True, ""))
         mocker.patch("homenet._wifi_restore")
         mocker.patch("homenet._arp_scan", return_value=[])
@@ -1504,10 +1508,10 @@ class TestVerizonMocaIntegration:
             return_value={
                 "ok": True,
                 "moca_devices": [
-                    {"mac": "02:00:00:11:11:01", "signal_a": "3260", "signal_b": "3327"},
-                    {"mac": "02:00:00:11:11:02", "signal_a": "3359", "signal_b": "3374"},
+                    {"mac": "88:DE:7C:C2:57:36", "signal_a": "3260", "signal_b": "3327"},
+                    {"mac": "88:DE:7C:C2:57:37", "signal_a": "3359", "signal_b": "3374"},
                 ],
-                "moca_lan_mac": "02:00:00:AA:00:43",
+                "moca_lan_mac": "78:67:0E:BD:A4:43",
                 "moca_lan_state": "Up",
                 "coordinator": "gateway",
             },
@@ -1519,13 +1523,54 @@ class TestVerizonMocaIntegration:
 
         result = homenet_full_scan()
         assert result["ok"] is True
-        # Both bridges in inventory
-        assert "02:00:00:11:11:01" in saved["devices"]
-        assert "02:00:00:11:11:02" in saved["devices"]
-        # Tagged correctly
-        b1 = saved["devices"]["02:00:00:11:11:01"]
+        # Both Askey bridges in inventory
+        assert "88:DE:7C:C2:57:36" in saved["devices"]
+        assert "88:DE:7C:C2:57:37" in saved["devices"]
+        # Tagged correctly -- Askey OUI is a known-bridge vendor so auto-tag fires
+        b1 = saved["devices"]["88:DE:7C:C2:57:36"]
         assert b1["source"] == "verizon-moca-page"
         assert b1["wired_via"] == "moca_bridge"
+
+    def test_scan_loop_does_not_auto_tag_commscope_as_bridge(self, client, mocker):
+        """Bug 2026-05-12 'I only have 4 MoCAs': Commscope/Arris are
+        Verizon FiOS STBs that appear on the MoCA-LAN page but are NOT
+        Ethernet-to-coax bridges. They must NOT get auto-tagged as
+        moca_bridge. The user can explicitly tag wired_via=moca_bridge
+        via the edit modal if they really have a Commscope bridge."""
+        from homenet import _mac_vendor
+
+        commscope_mac = "B0:5D:D4:76:2A:C0"
+        # Pre-condition: the MAC really resolves to Commscope in our OUI db
+        assert "commscope" in (_mac_vendor(commscope_mac) or "").lower()
+
+        mocker.patch("homenet._wifi_ensure_orbi_connected", return_value=(False, True, ""))
+        mocker.patch("homenet._wifi_restore")
+        mocker.patch("homenet._arp_scan", return_value=[])
+        mocker.patch("homenet._verizon_get_devices", return_value={"ok": True, "known_devices": []})
+        mocker.patch("homenet._enrich_device_names", side_effect=lambda inv: inv)
+        mocker.patch(
+            "homenet._verizon_get_moca_devices",
+            return_value={
+                "ok": True,
+                "moca_devices": [
+                    {"mac": commscope_mac, "signal_a": "3260", "signal_b": "3327"},
+                ],
+                "moca_lan_mac": "78:67:0E:BD:A4:43",
+                "moca_lan_state": "Up",
+                "coordinator": "gateway",
+            },
+        )
+        mocker.patch("homenet._load_homenet_inventory", return_value={"devices": {}, "last_scan": None})
+        saved = {}
+        mocker.patch("homenet._save_homenet_inventory", side_effect=lambda inv: saved.update(inv))
+        from homenet import homenet_full_scan
+
+        homenet_full_scan()
+        # Commscope is in inventory (we want to surface it)...
+        assert commscope_mac in saved["devices"]
+        # ...but NOT auto-tagged as a bridge -- it stays empty so the
+        # topology builder doesn't spawn a phantom column.
+        assert saved["devices"][commscope_mac]["wired_via"] == ""
 
     def test_scan_loop_skips_gateway_moca_lan_mac(self, client, mocker):
         """The CR1000A's own MoCA-LAN MAC must NOT be merged as a bridge --
@@ -2979,10 +3024,235 @@ class TestLoadInventorySanitisesBadConnApMac:
             encoding="utf-8",
         )
         monkeypatch.setattr(homenet, "HOMENET_INVENTORY_FILE", str(f))
+        # Reset module flags so a prior test's failure doesn't leak
+        monkeypatch.setattr(homenet, "_inventory_load_failed", False)
         inv = homenet._load_homenet_inventory()
         devs = inv["devices"]
         assert devs["AA:BB:CC:DD:EE:FF"]["conn_ap_mac"] == "", "Corrupt value must be cleared"
         assert devs["11:22:33:44:55:66"]["conn_ap_mac"] == "28:94:01:3F:73:E1", "Valid value preserved"
+
+
+class TestInventoryLoadFailSafeAgainstStateWipe:
+    """RCA for 2026-05-12 'MoCA names disappeared' incident.
+
+    Pre-fix flow: _load_homenet_inventory caught EVERY exception silently
+    and returned {"devices": {}, "last_scan": None}. A subsequent scan
+    would merge into that empty inventory, then _save_homenet_inventory
+    would persist the empty-but-with-new-scan-data result -- clobbering
+    every user-attested friendly_name / category / wired_via /
+    behind_moca_bridge value. Trigger: a single transient JSON parse
+    failure (partial-write race, encoding hiccup, disk hiccup) was
+    enough to wipe months of user attestation.
+
+    Post-fix:
+      1. Load failure sets a module-level _inventory_load_failed flag
+         and prints a CRITICAL log message instead of silently
+         returning empty.
+      2. _save_homenet_inventory CHECKS that flag and REFUSES to write
+         while load is failing.
+      3. _save_homenet_inventory writes atomically (tmp + os.replace)
+         so no partial-write window can corrupt the file in the future.
+    """
+
+    def test_load_failure_sets_flag(self, tmp_path, monkeypatch):
+        import homenet
+
+        # Create a deliberately-corrupt JSON file (truncated mid-value)
+        f = tmp_path / "homenet_inventory.json"
+        f.write_text('{"devices": {"AA:BB:CC:DD:EE:FF": {"mac": "AA:BB:CC:D', encoding="utf-8")
+        monkeypatch.setattr(homenet, "HOMENET_INVENTORY_FILE", str(f))
+        monkeypatch.setattr(homenet, "_inventory_load_failed", False)
+        inv = homenet._load_homenet_inventory()
+        # Load returns empty but sets the failure flag
+        assert inv == {"devices": {}, "last_scan": None}
+        assert homenet._inventory_load_failed is True
+
+    def test_save_refuses_when_load_failed(self, tmp_path, monkeypatch, capsys):
+        """Save must not overwrite the corrupt-but-preserved file."""
+        import homenet
+
+        f = tmp_path / "homenet_inventory.json"
+        original = '{"devices": {"AA:BB:CC:DD:EE:FF": {"mac": "AA:BB:CC:D'  # truncated
+        f.write_text(original, encoding="utf-8")
+        monkeypatch.setattr(homenet, "HOMENET_INVENTORY_FILE", str(f))
+        monkeypatch.setattr(homenet, "_inventory_load_failed", False)
+        # Trigger load failure -> flag set
+        homenet._load_homenet_inventory()
+        assert homenet._inventory_load_failed is True
+        # Now attempt to save -- must be refused
+        homenet._save_homenet_inventory({"devices": {"01:02:03:04:05:06": {"mac": "01:02:03:04:05:06"}}})
+        # File content must be unchanged
+        assert f.read_text(encoding="utf-8") == original
+        out = capsys.readouterr().out
+        assert "REFUSING to save" in out
+
+    def test_save_writes_atomically_via_tmp_rename(self, tmp_path, monkeypatch):
+        """No partial-write window: tmp file then os.replace."""
+        import homenet
+
+        f = tmp_path / "homenet_inventory.json"
+        f.write_text('{"devices": {}, "last_scan": null}', encoding="utf-8")
+        monkeypatch.setattr(homenet, "HOMENET_INVENTORY_FILE", str(f))
+        monkeypatch.setattr(homenet, "_inventory_load_failed", False)
+        new_inv = {
+            "devices": {"AA:BB:CC:DD:EE:FF": {"mac": "AA:BB:CC:DD:EE:FF", "friendly_name": "Living Room"}},
+            "last_scan": "2026-05-13T00:00:00",
+        }
+        homenet._save_homenet_inventory(new_inv)
+        import json
+
+        # File must parse and contain the new data
+        loaded = json.loads(f.read_text(encoding="utf-8"))
+        assert loaded["devices"]["AA:BB:CC:DD:EE:FF"]["friendly_name"] == "Living Room"
+        # No leftover tmp file
+        assert not (tmp_path / "homenet_inventory.json.tmp").exists()
+
+    def test_load_success_clears_prior_failure_flag(self, tmp_path, monkeypatch):
+        """Once a valid file is loaded, the flag is cleared so saves resume."""
+        import json
+
+        import homenet
+
+        f = tmp_path / "homenet_inventory.json"
+        monkeypatch.setattr(homenet, "HOMENET_INVENTORY_FILE", str(f))
+        # Set the flag manually then load a valid file
+        monkeypatch.setattr(homenet, "_inventory_load_failed", True)
+        f.write_text(json.dumps({"devices": {}, "last_scan": None}), encoding="utf-8")
+        homenet._load_homenet_inventory()
+        assert homenet._inventory_load_failed is False
+
+    def test_load_first_run_no_file_returns_empty_no_failure(self, tmp_path, monkeypatch):
+        """First-run case: no file exists -> empty inventory + flag stays False."""
+        import homenet
+
+        f = tmp_path / "homenet_inventory.json"
+        assert not f.exists()
+        monkeypatch.setattr(homenet, "HOMENET_INVENTORY_FILE", str(f))
+        monkeypatch.setattr(homenet, "_inventory_load_failed", False)
+        inv = homenet._load_homenet_inventory()
+        assert inv == {"devices": {}, "last_scan": None}
+        assert homenet._inventory_load_failed is False
+
+
+class TestPhantomMocaBridgeMigration:
+    """Bug 2026-05-12: user reported '4 MoCAs but topology shows 5'.
+
+    Root cause: _verizon_get_moca_devices returns ALL endpoints on the
+    coax network, and the post-merge auto-tag set wired_via=moca_bridge
+    on every one of them -- including Commscope/Arris devices which are
+    almost always Verizon FiOS set-top boxes (built-in MoCA receivers,
+    not network bridges).
+
+    Fix: only auto-tag KNOWN-bridge vendors (Askey, Actiontec, Hitron,
+    Westell, GoCoax, ScreenBeam, Motorola Mobility). Commscope/Arris
+    stay un-tagged on auto-discovery. Existing inventory entries get
+    migrated on load -- their phantom wired_via tag is cleared so they
+    fall out of the bridge bucket.
+    """
+
+    def test_load_clears_phantom_commscope_tag(self, tmp_path, monkeypatch):
+        import json
+
+        import homenet
+
+        f = tmp_path / "homenet_inventory.json"
+        f.write_text(
+            json.dumps(
+                {
+                    "devices": {
+                        # Auto-tagged Commscope STB -- phantom bridge
+                        "B0:5D:D4:76:2A:C0": {
+                            "mac": "B0:5D:D4:76:2A:C0",
+                            "vendor": "Commscope",
+                            "source": "verizon-moca-page",
+                            "wired_via": "moca_bridge",
+                            "friendly_name": "",
+                        },
+                        # Real Askey bridge -- keep
+                        "88:DE:7C:C2:57:36": {
+                            "mac": "88:DE:7C:C2:57:36",
+                            "vendor": "ASKEY COMPUTER CORP",
+                            "source": "verizon-moca-page",
+                            "wired_via": "moca_bridge",
+                            "friendly_name": "",
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(homenet, "HOMENET_INVENTORY_FILE", str(f))
+        monkeypatch.setattr(homenet, "_inventory_load_failed", False)
+        inv = homenet._load_homenet_inventory()
+        devs = inv["devices"]
+        # Commscope -- cleared
+        assert devs["B0:5D:D4:76:2A:C0"]["wired_via"] == ""
+        # Askey -- preserved
+        assert devs["88:DE:7C:C2:57:36"]["wired_via"] == "moca_bridge"
+
+    def test_load_preserves_commscope_tag_when_children_attached(self, tmp_path, monkeypatch):
+        """If the user explicitly assigned a child device to a Commscope
+        bridge, they intend it to be a bridge -- migration must NOT clear it."""
+        import json
+
+        import homenet
+
+        f = tmp_path / "homenet_inventory.json"
+        f.write_text(
+            json.dumps(
+                {
+                    "devices": {
+                        "B0:5D:D4:76:2A:C0": {
+                            "mac": "B0:5D:D4:76:2A:C0",
+                            "vendor": "Commscope",
+                            "source": "verizon-moca-page",
+                            "wired_via": "moca_bridge",
+                        },
+                        # A child device attached via behind_moca_bridge
+                        "AA:BB:CC:DD:EE:FF": {
+                            "mac": "AA:BB:CC:DD:EE:FF",
+                            "behind_moca_bridge": "B0:5D:D4:76:2A:C0",
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(homenet, "HOMENET_INVENTORY_FILE", str(f))
+        monkeypatch.setattr(homenet, "_inventory_load_failed", False)
+        inv = homenet._load_homenet_inventory()
+        # User intent preserved
+        assert inv["devices"]["B0:5D:D4:76:2A:C0"]["wired_via"] == "moca_bridge"
+
+    def test_load_only_migrates_verizon_moca_page_source(self, tmp_path, monkeypatch):
+        """Devices added via add-manual or other sources are not auto-tagged
+        by us -- user attested their wired_via. Don't second-guess them."""
+        import json
+
+        import homenet
+
+        f = tmp_path / "homenet_inventory.json"
+        f.write_text(
+            json.dumps(
+                {
+                    "devices": {
+                        # Manually added by user as a bridge
+                        "B0:5D:D4:76:2A:C0": {
+                            "mac": "B0:5D:D4:76:2A:C0",
+                            "vendor": "Commscope",
+                            "source": "manual",  # not verizon-moca-page
+                            "wired_via": "moca_bridge",
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(homenet, "HOMENET_INVENTORY_FILE", str(f))
+        monkeypatch.setattr(homenet, "_inventory_load_failed", False)
+        inv = homenet._load_homenet_inventory()
+        # Source != verizon-moca-page -> migration doesn't touch it
+        assert inv["devices"]["B0:5D:D4:76:2A:C0"]["wired_via"] == "moca_bridge"
 
 
 class TestBuildTopology:

@@ -117,6 +117,15 @@ def reset_globals():
     # as a duplicate.
     wdm._request_log_suppressor._state.clear()
 
+    # Inventory load-failure flag (homenet.py, added 2026-05-12 to fix the
+    # silent state-wipe regression). Must reset between tests so a prior
+    # test that deliberately triggered a load failure doesn't make later
+    # tests' _save_homenet_inventory calls a no-op.
+    import homenet
+
+    homenet._inventory_load_failed = False
+    homenet._inventory_load_failure_reason = ""
+
     yield  # run the test
 
     # Post-test cleanup (same as pre-test for symmetry)
