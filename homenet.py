@@ -1450,8 +1450,31 @@ def _arp_scan() -> list:
 # ── Unified device inventory ─────────────────────────────────────────────────
 
 
+# Module-level flag set when _load_homenet_inventory hits a parse error.
+# _save_homenet_inventory checks this and REFUSES to overwrite the on-disk
+# file when the most recent load failed -- without this guard, a corrupted
+# read would return an empty inventory and the next save would clobber the
+# user's friendly_names / categories / locations / wired_via attestations.
+# This pattern caused the 2026-05-12 "MoCA names disappeared" incident:
+# a transient JSON parse failure (likely a partial-write race during a
+# previous save) returned empty, a subsequent scan merged into empty,
+# and the empty result was persisted -- silently wiping months of user
+# attestation. Now: load failures raise visibly, save refuses to write
+# until the user has explicitly restored or recreated the inventory.
+_inventory_load_failed = False
+_inventory_load_failure_reason = ""
+
+
 def _load_homenet_inventory() -> dict:
-    """Load persisted device inventory.
+    """Load persisted device inventory. Fail-loud on corruption.
+
+    Returns the parsed inventory dict when the file is valid. Returns
+    a fresh ``{"devices": {}, "last_scan": None}`` only when the file
+    DOESN'T EXIST (legitimate first-run case). Any other failure --
+    parse error, encoding hiccup, partial-write race -- sets the
+    module-level ``_inventory_load_failed`` flag so the matching
+    ``_save_homenet_inventory`` refuses to overwrite the file, AND
+    logs loudly so the user can investigate.
 
     Sanitises ``conn_ap_mac`` on the way in so corrupted values (a known
     RBRE960 firmware quirk -- see _parse_orbi_soap) that landed in the
@@ -1459,35 +1482,111 @@ def _load_homenet_inventory() -> dict:
     than poisoning the topology builder for the lifetime of the file.
     Self-healing -- the next Orbi scan repopulates with validated values.
     """
+    global _inventory_load_failed, _inventory_load_failure_reason
+    if not os.path.exists(HOMENET_INVENTORY_FILE):
+        # Legitimate first-run: no file = empty inventory, no failure flag.
+        _inventory_load_failed = False
+        _inventory_load_failure_reason = ""
+        return {"devices": {}, "last_scan": None}
     try:
-        if os.path.exists(HOMENET_INVENTORY_FILE):
-            with open(HOMENET_INVENTORY_FILE, encoding="utf-8") as f:
-                inv = json.load(f)
-            # One-shot sanitisation. If we don't do this, devices already
-            # written with corrupt conn_ap_mac stay broken until the user
-            # deletes their inventory file. Keeps the original on-disk
-            # record around so a fresh scan that produces good values can
-            # write back correct data.
-            devs = inv.get("devices") or {}
-            if isinstance(devs, dict):
-                for dev in devs.values():
-                    raw = (dev.get("conn_ap_mac") or "").upper()
-                    if raw and not _VALID_MAC_RE.match(raw):
-                        dev["conn_ap_mac"] = ""
-            return inv
-    except Exception:
-        pass
-    return {"devices": {}, "last_scan": None}
+        with open(HOMENET_INVENTORY_FILE, encoding="utf-8") as f:
+            inv = json.load(f)
+    except Exception as e:  # noqa: BLE001 -- need to catch every parse failure
+        _inventory_load_failed = True
+        _inventory_load_failure_reason = f"{type(e).__name__}: {e}"
+        # Loud log so the failure doesn't slip past unnoticed. The user
+        # sees this in the tray console + post_restart_check log scan.
+        print(
+            f"[HomeNet] CRITICAL: inventory load failed ({_inventory_load_failure_reason}). "
+            f"Returning empty inventory; saves will be REFUSED until {HOMENET_INVENTORY_FILE} "
+            "is restored / repaired. File preserved on disk -- inspect or restore manually."
+        )
+        return {"devices": {}, "last_scan": None}
+    # Successful load -- clear any prior failure flag.
+    _inventory_load_failed = False
+    _inventory_load_failure_reason = ""
+    # One-shot sanitisation. If we don't do this, devices already
+    # written with corrupt conn_ap_mac stay broken until the user
+    # deletes their inventory file. Keeps the original on-disk
+    # record around so a fresh scan that produces good values can
+    # write back correct data.
+    devs = inv.get("devices") or {}
+    if isinstance(devs, dict):
+        # Build a set of MACs that are referenced as a parent bridge so
+        # the migration below can refuse to clear bridges that have
+        # downstream children (user explicitly assigned at least one
+        # device to that bridge -- means they intend it to be one).
+        bridges_with_children: set[str] = set()
+        for dev in devs.values():
+            if not isinstance(dev, dict):
+                continue
+            parent = (dev.get("behind_moca_bridge") or "").upper().strip()
+            if parent:
+                bridges_with_children.add(parent)
+        for mac, dev in devs.items():
+            if not isinstance(dev, dict):
+                continue
+            raw = (dev.get("conn_ap_mac") or "").upper()
+            if raw and not _VALID_MAC_RE.match(raw):
+                dev["conn_ap_mac"] = ""
+            # Phantom-MoCA-bridge migration (bug 2026-05-12): a previous
+            # verizon-moca-page scan auto-tagged every endpoint as
+            # wired_via=moca_bridge, including Commscope/Arris devices
+            # which are almost always Verizon FiOS STBs. Clear the tag
+            # so they fall out of the bridge bucket. Skips devices the
+            # user has explicitly attached children to (those are real
+            # bridges in the user's mental model -- don't override).
+            if (
+                dev.get("source") == "verizon-moca-page"
+                and dev.get("wired_via") == "moca_bridge"
+                and mac.upper() not in bridges_with_children
+            ):
+                vendor = (dev.get("vendor") or "").lower()
+                if vendor and not any(p in vendor for p in _ETHERNET_MOCA_BRIDGE_VENDORS):
+                    dev["wired_via"] = ""
+    return inv
 
 
 def _save_homenet_inventory(inventory: dict) -> None:
-    """Persist device inventory to disk."""
+    """Persist device inventory to disk atomically.
+
+    Writes to a temp file in the same directory then renames over the
+    target -- prevents the partial-write race that caused the
+    2026-05-12 "MoCA names disappeared" incident, where a crash mid-
+    write left a half-written file that the next load couldn't parse.
+
+    Refuses to write when ``_inventory_load_failed`` is set (the most
+    recent load saw a corrupt file). Without this guard, a single
+    transient parse error would let downstream code merge into an
+    empty inventory and persist the empty result, silently wiping
+    everything. Better to surface the load failure loudly and let
+    the user repair manually than to compound it by clobbering.
+    """
+    if _inventory_load_failed:
+        print(
+            "[HomeNet] REFUSING to save inventory: most recent load failed "
+            f"({_inventory_load_failure_reason}). Restore / inspect "
+            f"{HOMENET_INVENTORY_FILE} before further writes -- this guard "
+            "prevents the 2026-05-12 silent state-wipe regression."
+        )
+        return
     with _homenet_lock:
+        tmp_path = HOMENET_INVENTORY_FILE + ".tmp"
         try:
-            with open(HOMENET_INVENTORY_FILE, "w", encoding="utf-8") as f:
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(inventory, f, indent=2)
-        except Exception as e:
+            # os.replace is atomic on Windows AND POSIX -- either the
+            # rename happens completely or the original file is untouched.
+            # No half-written-during-crash window.
+            os.replace(tmp_path, HOMENET_INVENTORY_FILE)
+        except Exception as e:  # noqa: BLE001
             print(f"[HomeNet] save error: {e}")
+            # Best-effort cleanup of the temp file if it leaked.
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 def _merge_device_data(inventory: dict, source: str, devices: list) -> dict:
@@ -1827,10 +1926,31 @@ def homenet_full_scan() -> dict:
                 # builder groups them correctly. The merge preserves
                 # user-set wired_via on existing entries (won't clobber
                 # an existing manual classification).
+                #
+                # Bug 2026-05-12: user reported "I only have 4 MoCAs" but
+                # the topology showed 5. The 5th was a Commscope-OUI
+                # device which is almost always a Verizon FiOS set-top
+                # box (Commscope/Arris ship the STBs that have built-in
+                # MoCA receivers -- they appear on the MoCA-LAN list but
+                # are endpoints, not Ethernet-to-coax bridges). Only
+                # auto-tag KNOWN-bridge vendors (Askey, Actiontec, Hitron,
+                # Westell, gocoax, screenbeam, motorola mobility).
+                # Commscope/Arris devices stay un-tagged so they don't
+                # spawn a phantom bridge column; the user can still
+                # explicitly tag wired_via=moca_bridge if they have a
+                # real Commscope MoCA bridge (rare).
                 for m in moca_inventory_devices:
                     mac = m["mac"]
-                    if mac in inventory["devices"] and not inventory["devices"][mac].get("wired_via"):
-                        inventory["devices"][mac]["wired_via"] = "moca_bridge"
+                    if mac not in inventory["devices"]:
+                        continue
+                    entry = inventory["devices"][mac]
+                    if entry.get("wired_via"):
+                        continue  # respect user attestation
+                    vendor = (entry.get("vendor") or "").lower()
+                    if vendor and any(p in vendor for p in _ETHERNET_MOCA_BRIDGE_VENDORS):
+                        entry["wired_via"] = "moca_bridge"
+                    # else: leave wired_via empty -- treat as a MoCA endpoint
+                    # (STB / TV box) that happens to be on the coax network.
         elif "error" in moca:
             errors.append(f"Verizon MoCA: {moca['error']}")
 
@@ -2453,6 +2573,34 @@ _MOCA_VENDOR_PATTERNS: tuple[str, ...] = (
     # transparent MoCA bridges (no IP of their own, just relay coax<->
     # Ethernet) ship with Askey hardware.
     "askey",
+)
+
+
+# Strict subset of _MOCA_VENDOR_PATTERNS: vendors that ship Ethernet-to-coax
+# MoCA BRIDGES (the device acts as a network bridge -- traffic crosses it).
+# Used specifically when auto-tagging devices discovered via the Verizon
+# CR1000A's MoCA-LAN page so we don't spawn phantom bridge columns for
+# every Commscope set-top box on the user's coax network.
+#
+# Bug 2026-05-12: user reported "I only have 4 MoCAs" -- the 5th column
+# was a Commscope OUI device (B0:5D:D4) which is almost certainly a
+# Verizon FiOS set-top box, not a network bridge. Commscope/Arris ship
+# the STBs that have built-in MoCA receivers -- they appear on the
+# MoCA-LAN list but are endpoints, not Ethernet-to-coax bridges.
+#
+# Devices with vendors NOT in this list still get persisted to inventory
+# (the user might have a non-listed bridge) -- they just don't get
+# auto-tagged with wired_via=moca_bridge. The user can explicitly tag
+# wired_via=moca_bridge via the device-edit modal if auto-detection
+# was wrong.
+_ETHERNET_MOCA_BRIDGE_VENDORS: tuple[str, ...] = (
+    "actiontec",  # ECB6200 series
+    "askey",  # Verizon-branded Network Extenders
+    "gocoax",  # GoCoax MA2500D
+    "hitron",  # Hitron Coda bridges
+    "motorola mobility",  # MM1000 OEM
+    "screenbeam",  # Actiontec spinoff
+    "westell",  # legacy Verizon extenders
 )
 
 
