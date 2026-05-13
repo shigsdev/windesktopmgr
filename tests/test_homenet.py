@@ -3032,6 +3032,47 @@ class TestLoadInventorySanitisesBadConnApMac:
         assert devs["11:22:33:44:55:66"]["conn_ap_mac"] == "28:94:01:3F:73:E1", "Valid value preserved"
 
 
+class TestProductionInventoryFileIsolation:
+    """Regression guard for the structural fix that closes the gap behind
+    the 2026-05-08 'MoCA names disappeared' incident.
+
+    RCA finding: pytest pre-commit hooks could write to the user's REAL
+    homenet_inventory.json because HOMENET_INVENTORY_FILE was a module
+    constant pointing at the production path. A leaky test that ran
+    _save_homenet_inventory without monkeypatching the path would clobber
+    user state.
+
+    Fix lives in conftest.py: an autouse session-scoped fixture that
+    redirects HOMENET_INVENTORY_FILE to a tmp_path. This test verifies
+    the fixture is active -- if someone removes it, the production path
+    is exposed again and the assertion fires."""
+
+    def test_homenet_inventory_file_is_redirected_to_tmp_path(self, tmp_path_factory):
+        import homenet
+
+        path = homenet.HOMENET_INVENTORY_FILE
+        # The session fixture sets this to something under the pytest
+        # tmp_path tree. The exact path is per-session and unpredictable
+        # but it MUST NOT be the production path.
+        production_paths = (
+            r"C:\shigsapps\windesktopmgr\homenet_inventory.json",
+            "C:/shigsapps/windesktopmgr/homenet_inventory.json",
+        )
+        for prod in production_paths:
+            assert path.lower() != prod.lower(), (
+                f"HOMENET_INVENTORY_FILE points at production path {path!r}. "
+                "The _isolate_homenet_inventory_file fixture in conftest.py "
+                "should have redirected this. If you removed that fixture, "
+                "restore it -- any test that accidentally writes to the "
+                "production file would clobber the user's friendly_names + "
+                "categories + wired_via attestations."
+            )
+        # And the path SHOULD live under pytest's tmp tree
+        assert "tmp" in path.lower() or "temp" in path.lower(), (
+            f"HOMENET_INVENTORY_FILE = {path!r} doesn't look like a pytest tmp path"
+        )
+
+
 class TestInventoryLoadFailSafeAgainstStateWipe:
     """RCA for 2026-05-12 'MoCA names disappeared' incident.
 

@@ -25,7 +25,45 @@ if PROJECT_ROOT not in sys.path:
 import pytest
 
 import disk
+import homenet
 import windesktopmgr as wdm
+
+# ── Production-file isolation (autouse, session-scoped) ───────────────────────
+#
+# RCA for the 2026-05-08 "MoCA names disappeared" incident pinned the wipe to
+# the 10:55 window when pytest ran pre-commit hooks for commit e640534. The
+# inventory dropped from ~32 KB to ~9 KB in a single scan/light cycle while
+# the live tray was running. The suspect path: a test in the suite imported
+# homenet, exercised a route that called _save_homenet_inventory without
+# mocking the save path, and the call wrote into the REAL inventory file
+# (C:\shigsapps\windesktopmgr\homenet_inventory.json -- the same one the
+# tray was reading) because nothing redirected HOMENET_INVENTORY_FILE.
+#
+# This session-scoped autouse fixture closes that gap structurally: every
+# test in the suite gets a fresh tmp_path-backed homenet_inventory.json by
+# default. Tests that need to test the inventory load/save itself
+# (TestInventoryLoadFailSafeAgainstStateWipe etc.) override locally via
+# monkeypatch -- their override wins because they run AFTER this fixture.
+#
+# Without this fixture, any future test that accidentally hits an unmocked
+# _save_homenet_inventory would clobber the user's production state again.
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _isolate_homenet_inventory_file(tmp_path_factory):
+    """Redirect homenet.HOMENET_INVENTORY_FILE to a per-session tmp path
+    so no test can write to the user's real inventory file.
+
+    Returns the test path so tests that want to read what was written
+    can resolve it without hardcoding."""
+    test_inv = tmp_path_factory.mktemp("homenet_inventory_isolated") / "homenet_inventory.json"
+    real = homenet.HOMENET_INVENTORY_FILE
+    homenet.HOMENET_INVENTORY_FILE = str(test_inv)
+    try:
+        yield str(test_inv)
+    finally:
+        homenet.HOMENET_INVENTORY_FILE = real
+
 
 # ── Fixture loading helpers ───────────────────────────────────────────────────
 
