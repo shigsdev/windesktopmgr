@@ -6203,6 +6203,26 @@ function openEditModal(mac) {
         }).join("");
     behindEl.value = dev.behind_moca_bridge || "";
   }
+  // Via Orbi satellite dropdown: list every device the user has attested
+  // as wired_via='orbi_satellite' (2026-05-13 manual-attestation path,
+  // see homenet.py). Excludes self so a satellite can't be its own parent.
+  const viaSatEl = document.getElementById("hn-edit-via-orbi-satellite");
+  if (viaSatEl) {
+    const sats = _hnDevices.filter(d =>
+      (d.wired_via || "").toLowerCase() === "orbi_satellite" && d.mac !== mac
+    );
+    sats.sort((a, b) => {
+      const na = (a.friendly_name || a.hostname || a.mac || "").toLowerCase();
+      const nb = (b.friendly_name || b.hostname || b.mac || "").toLowerCase();
+      return na.localeCompare(nb);
+    });
+    viaSatEl.innerHTML = '<option value="">— Not on a satellite (base or unknown) —</option>'
+      + sats.map(s => {
+          const label = (s.friendly_name || s.hostname || s.mac);
+          return `<option value="${esc(s.mac)}">📡 ${esc(label)}</option>`;
+        }).join("");
+    viaSatEl.value = dev.via_orbi_satellite || "";
+  }
   document.getElementById("hn-edit-modal").style.display = "flex";
 }
 
@@ -6328,7 +6348,8 @@ async function saveDeviceEdit() {
       location: document.getElementById("hn-edit-location").value,
       notes: document.getElementById("hn-edit-notes").value,
       wired_via: document.getElementById("hn-edit-wired-via").value,
-      behind_moca_bridge: document.getElementById("hn-edit-behind-moca").value
+      behind_moca_bridge: document.getElementById("hn-edit-behind-moca").value,
+      via_orbi_satellite: (document.getElementById("hn-edit-via-orbi-satellite") || {}).value || ""
     })
   });
   const data = await r.json();
@@ -9267,6 +9288,7 @@ function renderSystemInfo(d, upgrades) {
             <option value="verizon_lan">🔌 Verizon LAN port (plugged into Verizon)</option>
             <option value="moca">🌀 via MoCA (downstream of bridge)</option>
             <option value="moca_bridge">📻 IS a MoCA bridge (coax-to-Ethernet)</option>
+            <option value="orbi_satellite">📡 IS an Orbi satellite (mesh AP)</option>
             <option value="switch">🔀 On TP-Link switch (force)</option>
           </select>
         </div>
@@ -9281,6 +9303,16 @@ function renderSystemInfo(d, upgrades) {
                  current MoCA bridges list. We rebuild on every modal open
                  so newly-added bridges show up immediately. -->
             <option value="">— Not behind any bridge —</option>
+          </select>
+        </div>
+        <div style="margin-bottom:10px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">
+            Via Orbi satellite (parent AP)
+            <span style="color:var(--muted);font-weight:400" title="Topology diagram (2026-05-13): if this wireless device is connected to a specific Orbi satellite (not the base), pick it here. Needed because the RBRE960 firmware quirk corrupts the ConnAPMAC field for satellite-connected clients, so the topology can't auto-detect which satellite each client is on. Set wired_via=orbi_satellite on each satellite first; this dropdown picks up everything in that list.">ⓘ</span>
+          </label>
+          <select id="hn-edit-via-orbi-satellite" style="width:100%;padding:6px 10px;border:1px solid var(--border);
+                  border-radius:6px;background:var(--surface);color:var(--text);font-family:var(--font-mono);font-size:12px">
+            <option value="">— Not on a satellite (base or unknown) —</option>
           </select>
         </div>
         <div style="margin-bottom:16px">

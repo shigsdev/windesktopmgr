@@ -394,6 +394,53 @@ class TestHomeNetDeviceUpdate:
         )
         assert resp.status_code == 404
 
+    def test_update_accepts_wired_via_orbi_satellite(self, client, mocker):
+        """Bug fix 2026-05-13: new wired_via value lets users declare a
+        device as an Orbi satellite for manual-attestation topology."""
+        inv = {
+            "devices": {"28:94:01:40:58:F6": {"mac": "28:94:01:40:58:F6"}},
+            "last_scan": None,
+        }
+        mocker.patch("homenet._load_homenet_inventory", return_value=inv)
+        mocker.patch("homenet._save_homenet_inventory")
+        resp = client.post(
+            "/api/homenet/device/update",
+            json={"mac": "28:94:01:40:58:F6", "wired_via": "orbi_satellite"},
+        )
+        assert resp.status_code == 200
+        assert inv["devices"]["28:94:01:40:58:F6"]["wired_via"] == "orbi_satellite"
+
+    def test_update_accepts_via_orbi_satellite(self, client, mocker):
+        """Per-client AP attestation: the new via_orbi_satellite field
+        sets the parent satellite for a wireless device."""
+        inv = {
+            "devices": {"AA:BB:CC:DD:EE:FF": {"mac": "AA:BB:CC:DD:EE:FF"}},
+            "last_scan": None,
+        }
+        mocker.patch("homenet._load_homenet_inventory", return_value=inv)
+        mocker.patch("homenet._save_homenet_inventory")
+        resp = client.post(
+            "/api/homenet/device/update",
+            json={"mac": "AA:BB:CC:DD:EE:FF", "via_orbi_satellite": "28:94:01:40:58:F6"},
+        )
+        assert resp.status_code == 200
+        assert inv["devices"]["AA:BB:CC:DD:EE:FF"]["via_orbi_satellite"] == "28:94:01:40:58:F6"
+
+    def test_update_rejects_invalid_via_orbi_satellite_format(self, client, mocker):
+        """Validation: via_orbi_satellite must look like a MAC or be empty."""
+        inv = {
+            "devices": {"AA:BB:CC:DD:EE:FF": {"mac": "AA:BB:CC:DD:EE:FF"}},
+            "last_scan": None,
+        }
+        mocker.patch("homenet._load_homenet_inventory", return_value=inv)
+        mocker.patch("homenet._save_homenet_inventory")
+        client.post(
+            "/api/homenet/device/update",
+            json={"mac": "AA:BB:CC:DD:EE:FF", "via_orbi_satellite": "not-a-mac"},
+        )
+        # Garbage value silently ignored -- the field is NOT set
+        assert "via_orbi_satellite" not in inv["devices"]["AA:BB:CC:DD:EE:FF"]
+
 
 class TestHomeNetRescanHostname:
     """Test the per-device DNS hostname rescan endpoint (backlog #7, Path A).
@@ -3320,6 +3367,103 @@ class TestBuildTopology:
         assert t["router"]["ip"] == "192.168.1.1"
         assert t["router"]["mac"] == "11:11:11:11:11:11"
         assert t["router"]["name"] == "Verizon CR1000A"
+
+    def test_user_attested_orbi_satellite_appears_as_ap_column(self):
+        """Bug fix 2026-05-13: the RBRE960 firmware quirk corrupts
+        ConnAPMAC for satellite-connected clients, so the auto-discovery
+        path from `conn_ap_mac` can no longer surface satellites. User
+        manually attests via wired_via='orbi_satellite'. The topology
+        builder MUST render an AP column for any attested satellite
+        even when no client has yet been assigned to it (empty-column
+        is the affordance for the user to click + name the satellite)."""
+        from homenet import build_topology
+
+        sat_mac = "28:94:01:40:58:F6"
+        inv = self._inventory(
+            {"mac": "28:94:01:3F:73:E1", "ip": "10.0.0.1"},  # base
+            {
+                "mac": sat_mac,
+                "ip": "",
+                "vendor": "Netgear",
+                "wired_via": "orbi_satellite",
+                "friendly_name": "Master Bedroom",
+            },
+        )
+        t = build_topology(inv, switch_data={})
+        ap_macs = {ap["mac"] for ap in t["aps"]}
+        assert sat_mac in ap_macs, (
+            "User-attested Orbi satellite must appear as an AP column even "
+            "without any clients assigned to it. Without this, the user can't "
+            "rename the satellite via the clickable header (PR #29)."
+        )
+
+    def test_via_orbi_satellite_assigns_clients_to_attested_satellite(self):
+        """When a wireless device has via_orbi_satellite=<sat_mac>, the
+        topology builder buckets it under that satellite's AP column.
+        Same pattern as behind_moca_bridge for MoCA bridges."""
+        from homenet import build_topology
+
+        sat_mac = "28:94:01:40:58:F6"
+        inv = self._inventory(
+            {"mac": "28:94:01:3F:73:E1", "ip": "10.0.0.1"},  # base
+            {
+                "mac": sat_mac,
+                "ip": "",
+                "vendor": "Netgear",
+                "wired_via": "orbi_satellite",
+                "friendly_name": "Master Bedroom",
+            },
+            {
+                "mac": "AA:BB:CC:DD:EE:FF",
+                "ip": "10.0.0.50",
+                "network": "wireless",
+                "via_orbi_satellite": sat_mac,
+            },
+        )
+        t = build_topology(inv, switch_data={})
+        sat_col = next((ap for ap in t["aps"] if ap["mac"] == sat_mac), None)
+        assert sat_col is not None
+        assert "AA:BB:CC:DD:EE:FF" in sat_col["clients"]
+
+    def test_via_orbi_satellite_pointing_at_unattested_mac_is_dropped(self):
+        """Dangling pointer: a client points at a sat_mac that's no longer
+        tagged as orbi_satellite (user changed their mind / removed the
+        satellite). The client must NOT spawn a phantom column -- it
+        falls through to whichever other bucket applies (or none)."""
+        from homenet import build_topology
+
+        inv = self._inventory(
+            {"mac": "28:94:01:3F:73:E1", "ip": "10.0.0.1"},
+            {
+                "mac": "AA:BB:CC:DD:EE:FF",
+                "ip": "10.0.0.50",
+                "network": "wireless",
+                "via_orbi_satellite": "FF:FF:FF:FF:FF:FF",  # not in inventory as a sat
+            },
+        )
+        t = build_topology(inv, switch_data={})
+        ap_macs = {ap["mac"] for ap in t["aps"]}
+        assert "FF:FF:FF:FF:FF:FF" not in ap_macs, "Dangling sat reference must not spawn a column"
+
+    def test_via_orbi_satellite_self_reference_is_ignored(self):
+        """A satellite can't be its own parent satellite -- defensive
+        guard against UI bugs that might send mac == via_orbi_satellite."""
+        from homenet import build_topology
+
+        sat_mac = "28:94:01:40:58:F6"
+        inv = self._inventory(
+            {
+                "mac": sat_mac,
+                "ip": "",
+                "wired_via": "orbi_satellite",
+                "via_orbi_satellite": sat_mac,  # self-reference
+            },
+        )
+        t = build_topology(inv, switch_data={})
+        sat_col = next((ap for ap in t["aps"] if ap["mac"] == sat_mac), None)
+        assert sat_col is not None
+        # The satellite is in its own AP column but NOT as its own client
+        assert sat_mac not in sat_col["clients"]
 
     def test_switch_unavailable_is_reported_not_fatal(self):
         from homenet import build_topology

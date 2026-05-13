@@ -1662,6 +1662,12 @@ def _merge_device_data(inventory: dict, source: str, devices: list) -> dict:
             # this can only ever be set by user attestation -- there's no
             # auto-discovery path that could populate it.
             "behind_moca_bridge": existing.get("behind_moca_bridge", ""),
+            # MAC of the parent Orbi satellite this client is connected to,
+            # set by the user via the device-edit modal. Mirrors
+            # behind_moca_bridge for the Orbi mesh: the RBRE960 firmware
+            # quirk (2026-05-08) corrupts ConnAPMAC for satellite-connected
+            # clients, so manual attestation is the only reliable signal.
+            "via_orbi_satellite": existing.get("via_orbi_satellite", ""),
             "active": dev.get("activity", 1) == 1 if "activity" in dev else True,
         }
 
@@ -2187,12 +2193,15 @@ def homenet_device_update():
     # leaking into the topology classifier and creating ghost columns.
     if "wired_via" in body:
         val = str(body["wired_via"]).lower().strip()
-        # "moca_bridge" = the device IS a MoCA bridge (override vendor
-        # detection -- e.g. when the vendor name doesn't match _MOCA_
-        # VENDOR_PATTERNS but the user knows it's a coax-to-Ethernet
-        # bridge, like a Verizon-branded extender or a third-party box
-        # whose OUI hasn't been catalogued yet).
-        if val in ("moca", "moca_bridge", "verizon_lan", "switch", ""):
+        # "moca_bridge"     = device IS a MoCA Ethernet-to-coax bridge
+        # "orbi_satellite"  = device IS an Orbi mesh satellite (manual
+        #   attestation -- needed because the RBRE960 firmware quirk
+        #   from 2026-05-08 stopped emitting valid ConnAPMAC values for
+        #   satellite-connected clients, so the topology builder can no
+        #   longer auto-synthesize satellite columns from the Orbi SOAP
+        #   response. User reads the satellite MAC from the Orbi admin
+        #   and tags it here.
+        if val in ("moca", "moca_bridge", "verizon_lan", "switch", "orbi_satellite", ""):
             inventory["devices"][mac]["wired_via"] = val
     # Parent MoCA bridge -- MAC of the bridge this device sits behind.
     # Validates the format (or accepts empty to clear the link). We
@@ -2203,6 +2212,18 @@ def homenet_device_update():
         val = str(body["behind_moca_bridge"]).upper().replace("-", ":").strip()
         if val == "" or re.match(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$", val):
             inventory["devices"][mac]["behind_moca_bridge"] = val
+    # Parent Orbi satellite -- MAC of the satellite this client is
+    # connected to. Mirror of behind_moca_bridge but for the Orbi mesh.
+    # Needed because the RBRE960 firmware quirk corrupts ConnAPMAC for
+    # satellite-connected clients (see _parse_orbi_soap), so the user
+    # must manually assert which satellite each client is on if they
+    # want per-satellite columns. Validated like behind_moca_bridge:
+    # accept empty (clear) or valid MAC shape; the topology builder
+    # gracefully skips dangling pointers.
+    if "via_orbi_satellite" in body:
+        val = str(body["via_orbi_satellite"]).upper().replace("-", ":").strip()
+        if val == "" or re.match(r"^[0-9A-F]{2}(:[0-9A-F]{2}){5}$", val):
+            inventory["devices"][mac]["via_orbi_satellite"] = val
 
     _save_homenet_inventory(inventory)
     return jsonify({"ok": True, "message": "Device updated"})
@@ -2248,7 +2269,7 @@ def homenet_device_add_manual():
         )
 
     wired_via = (body.get("wired_via") or "moca_bridge").lower()
-    if wired_via not in ("moca", "moca_bridge", "verizon_lan", "switch", ""):
+    if wired_via not in ("moca", "moca_bridge", "verizon_lan", "switch", "orbi_satellite", ""):
         wired_via = "moca_bridge"  # default for the common manual-add case
 
     inventory["devices"][mac] = {
@@ -3543,6 +3564,32 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
         if not _is_plausible_orbi_ap_mac(ap_mac):
             continue
         aps_by_mac.setdefault(ap_mac, []).append(mac.upper())
+
+    # User-attested Orbi satellites (bug fix 2026-05-13): the RBRE960
+    # firmware quirk (since ~2026-05-08) corrupts ConnAPMAC for satellite-
+    # connected clients, so auto-discovery from `conn_ap_mac` only ever
+    # surfaces the base. User attests satellites via wired_via='orbi_
+    # satellite' on the device-edit modal -- ensure those MACs appear as
+    # AP columns even without any clients pointing at them yet.
+    for mac, dev in devices_by_mac.items():
+        if (dev.get("wired_via") or "").lower() == "orbi_satellite":
+            aps_by_mac.setdefault(mac.upper(), [])
+
+    # Per-client manual Orbi-satellite attestation. Mirrors
+    # behind_moca_bridge: the user tags each wireless device with the
+    # satellite they're connected to (`via_orbi_satellite=<mac>`), and we
+    # bucket them under the matching AP column. Dangling pointers (sat
+    # MAC no longer in attested set) are silently dropped -- the client
+    # falls through to whichever bucket their conn_ap_mac says (or none).
+    attested_satellite_macs = {
+        m.upper() for m, dev in devices_by_mac.items() if (dev.get("wired_via") or "").lower() == "orbi_satellite"
+    }
+    for mac, dev in devices_by_mac.items():
+        sat_parent = (dev.get("via_orbi_satellite") or "").upper().strip()
+        if sat_parent and sat_parent in attested_satellite_macs and mac.upper() != sat_parent:
+            kids = aps_by_mac.setdefault(sat_parent, [])
+            if mac.upper() not in kids:
+                kids.append(mac.upper())
 
     # Orbi base router lookup. Multiple inventory entries may share IP
     # 10.0.0.1 (a real Orbi BSSID + a transient randomized-MAC client
