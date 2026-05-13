@@ -1655,6 +1655,51 @@ class TestDashboardSummaryRoute:
         assert data["overall"] == "ok"
         assert data["total"] == 0
 
+    def test_orbi_mesh_unknown_concern_not_emitted(self, client, mocker, tmp_path):
+        """Regression: 2026-05-13 user feedback was "I still see this error...
+        are you checking post-deploy?". The Orbi RBRE960 emits a corrupted
+        ConnAPMAC sentinel for satellite-connected clients (firmware quirk
+        we can't fix from our side). PR #27 surfaced this as a dashboard
+        concern that re-fired every ~5s on dashboard refresh, nagging the
+        user with the same scary text and no resolution path.
+
+        Demoted to the topology stats line. The concern must NOT appear in
+        the dashboard summary even when many devices have empty
+        conn_ap_mac (the failure-mode signal for the firmware quirk)."""
+        import json
+
+        import homenet
+
+        # Plant inventory that LOOKS like the firmware quirk -- 25 orbi-
+        # sourced devices, all with empty conn_ap_mac
+        inv_file = tmp_path / "homenet_inventory.json"
+        devs = {}
+        for i in range(25):
+            mac = f"AA:BB:CC:DD:EE:{i:02X}"
+            devs[mac] = {
+                "mac": mac,
+                "source": "orbi",
+                "conn_ap_mac": "",
+                "network": "wireless",
+            }
+        inv_file.write_text(
+            json.dumps({"devices": devs, "last_scan": "2026-05-13T00:00:00"}),
+            encoding="utf-8",
+        )
+        mocker.patch.object(homenet, "HOMENET_INVENTORY_FILE", str(inv_file))
+        mocker.patch.object(homenet, "_inventory_load_failed", False)
+
+        self._mock_dashboard_deps(mocker)
+        resp = client.get("/api/dashboard/summary")
+        data = resp.get_json()
+        # The old concern's title was "Orbi reporting N wireless devices
+        # with unknown AP" -- it must not appear anywhere in the response.
+        all_titles = " ".join(c.get("title", "") for c in data.get("concerns", []))
+        assert "Orbi reporting" not in all_titles, (
+            "Orbi mesh-unknown dashboard concern must stay demoted -- it nags the "
+            "user about a static firmware fact with no resolution path."
+        )
+
     def test_critical_concern_raises_overall_to_critical(self, client, mocker):
         self._mock_dashboard_deps(
             mocker,

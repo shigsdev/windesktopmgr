@@ -5501,31 +5501,34 @@ function hnTopoBuildSvg(t) {
   // confusing). Still honest UI for the Orbi SOAP-API limitation: they're
   // on the mesh somewhere, just not pinpointed to base/satellite.
   if ((t.orbi_mesh_unknown_ap || []).length) {
-    // Bug 2026-05-12: subtitle now explains the firmware-quirk root cause
-    // so the user doesn't think "we" broke satellite mapping. RBRE960
-    // returns a corrupted ConnAPMAC sentinel (`22656C28:...`) instead of
-    // the real satellite MAC for satellite-connected clients -- the
-    // parser drops it and the client lands here. A raw sample is
-    // captured to ~/homenet_orbi_debug.xml on first occurrence.
+    // User feedback 2026-05-13: "I am assuming the unknown is one orbi
+    // satellite and the unmapped is another" -- the previous column name
+    // "Unknown" + same-shaped column visual encouraged that wrong mental
+    // model. These are NOT separate satellites; they're failure-mode
+    // buckets that happen to both contain wireless devices. Rename so the
+    // difference is plain. Bug-source is the RBRE960 SOAP firmware quirk
+    // (corrupted ConnAPMAC sentinel for satellite-connected clients).
     columns.push({
       kind: "orbi_mesh_unknown",
       id: "orbi-mesh-unknown",
-      name: "Unknown",
-      sub: `${t.orbi_mesh_unknown_ap.length} wireless · Orbi firmware doesn't expose per-satellite mapping`,
+      name: "Orbi mesh (satellite ?)",
+      sub: `${t.orbi_mesh_unknown_ap.length} wireless · firmware didn't say WHICH satellite`,
       rows: t.orbi_mesh_unknown_ap.map(m => ({ mac: m, label: "wireless", dev: devices[m] || { mac: m } })),
     });
   }
 
-  // Truly unmapped column on the right -- wireless devices we haven't yet
-  // associated with an AP (no conn_ap_mac after migration) plus anything else
-  // that fell through every classification above. Hidden when empty so the
-  // common case (everything categorised) doesn't show a stray empty column.
+  // Truly unmapped column on the right -- devices ARP saw but Orbi /
+  // Verizon scans didn't return at all, so we have no AP info, no router
+  // attestation, nothing. Distinct from "Orbi mesh (satellite ?)" above:
+  // those came FROM the Orbi (it knows them, just won't say which AP);
+  // these are ARP-only ghosts. Renamed 2026-05-13 to make the
+  // distinction obvious.
   if ((t.unmapped || []).length) {
     columns.push({
       kind: "unmapped",
       id: "unmapped",
-      name: "Unmapped",
-      sub: `${t.unmapped.length} device${t.unmapped.length !== 1 ? "s" : ""}`,
+      name: "Unmapped (ARP-only)",
+      sub: `${t.unmapped.length} device${t.unmapped.length !== 1 ? "s" : ""} · seen by ARP but not by Orbi/Verizon`,
       rows: t.unmapped.map(m => ({ mac: m, label: devices[m]?.network || "?", dev: devices[m] || { mac: m } })),
     });
   }
