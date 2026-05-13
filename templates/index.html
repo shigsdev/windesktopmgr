@@ -6203,14 +6203,18 @@ function openEditModal(mac) {
   document.getElementById("hn-edit-modal").style.display = "flex";
 }
 
-// Mirror of homenet.py _MOCA_VENDOR_PATTERNS -- kept in sync manually.
-// Used by the edit modal to identify potential MoCA-bridge devices for
-// the parent-bridge dropdown without a round-trip to the server.
+// Mirror of homenet.py _ETHERNET_MOCA_BRIDGE_VENDORS -- kept in sync manually.
+// Used by the edit modal's "Behind MoCA bridge" parent dropdown to filter
+// devices that could plausibly be bridges. Bug 2026-05-12: Commscope/Arris
+// removed because they're Verizon FiOS STBs (MoCA endpoints, not bridges).
+// A user who really has a Commscope/Arris bridge can still tag it
+// explicitly via wired_via=moca_bridge in the same modal -- once tagged,
+// the dropdown picks it up via the wired_via check, not vendor.
 function _isMocaVendor(vendor) {
   const v = (vendor || "").toLowerCase();
   if (!v) return false;
-  return ["actiontec", "gocoax", "motorola mobility", "screenbeam",
-          "hitron", "westell", "commscope", "arris", "askey"]
+  return ["actiontec", "askey", "gocoax", "hitron",
+          "motorola mobility", "screenbeam", "westell"]
          .some(p => v.includes(p));
 }
 
