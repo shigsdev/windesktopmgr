@@ -234,6 +234,120 @@ class TestCheckOrbiSatelliteVisibility:
         assert "firmware" in result.lower()
 
 
+class TestCheckNoRecentBiosAuditErrors:
+    """The semantic gate that would have caught the 2026-05-14 'bios_serial
+    timing out for a month' issue. Returns None on healthy or transient
+    errors; returns a WARN string when the same field has failed 3+ times
+    in the last 7 days."""
+
+    def _now_iso(self):
+        from datetime import datetime, timezone
+
+        return datetime.now(timezone.utc).isoformat()
+
+    def _hours_ago(self, h):
+        from datetime import datetime, timedelta, timezone
+
+        return (datetime.now(timezone.utc) - timedelta(hours=h)).isoformat()
+
+    def test_passes_with_no_errors(self, monkeypatch):
+        monkeypatch.setattr(
+            checker,
+            "_get",
+            lambda host, path: {"history": [{"kind": "baseline", "timestamp": self._now_iso()}]},
+        )
+        assert checker.check_no_recent_bios_audit_errors("http://x") is None
+
+    def test_passes_with_one_transient_error(self, monkeypatch):
+        """A single error isn't a pattern -- don't fail the gate."""
+        monkeypatch.setattr(
+            checker,
+            "_get",
+            lambda host, path: {
+                "history": [
+                    {
+                        "kind": "error",
+                        "timestamp": self._hours_ago(2),
+                        "errors": [{"field": "bios_serial", "error": "timeout after 10s"}],
+                    },
+                ]
+            },
+        )
+        assert checker.check_no_recent_bios_audit_errors("http://x") is None
+
+    def test_passes_when_old_errors_outside_window(self, monkeypatch):
+        """Errors from 14 days ago are not 'recent' -- ignored."""
+        from datetime import datetime, timedelta, timezone
+
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
+        monkeypatch.setattr(
+            checker,
+            "_get",
+            lambda host, path: {
+                "history": [
+                    {
+                        "kind": "error",
+                        "timestamp": old_ts,
+                        "errors": [{"field": "bios_serial", "error": "timeout after 10s"}],
+                    }
+                    for _ in range(10)
+                ]
+            },
+        )
+        assert checker.check_no_recent_bios_audit_errors("http://x") is None
+
+    def test_warns_when_same_field_fails_3_plus_times_in_7d(self, monkeypatch):
+        """The exact pattern from the user's 2026-05-14 report:
+        bios_serial failing every poll for many days."""
+        monkeypatch.setattr(
+            checker,
+            "_get",
+            lambda host, path: {
+                "history": [
+                    {
+                        "kind": "error",
+                        "timestamp": self._hours_ago(i),
+                        "errors": [{"field": "bios_serial", "error": "timeout after 10s"}],
+                    }
+                    for i in (1, 12, 24, 36)
+                ]
+            },
+        )
+        result = checker.check_no_recent_bios_audit_errors("http://x")
+        assert result is not None
+        assert "bios_serial" in result
+        assert "chronic" in result.lower() or "4x" in result.lower() or "cache" in result.lower()
+
+    def test_aggregates_across_multiple_fields(self, monkeypatch):
+        """Both bios_serial AND vbs failing -> both reported in the warning."""
+        monkeypatch.setattr(
+            checker,
+            "_get",
+            lambda host, path: {
+                "history": [
+                    {
+                        "kind": "error",
+                        "timestamp": self._hours_ago(i),
+                        "errors": [{"field": "bios_serial", "error": "x"}],
+                    }
+                    for i in (1, 2, 3)
+                ]
+                + [
+                    {
+                        "kind": "error",
+                        "timestamp": self._hours_ago(i),
+                        "errors": [{"field": "vbs", "error": "y"}],
+                    }
+                    for i in (4, 5, 6)
+                ]
+            },
+        )
+        result = checker.check_no_recent_bios_audit_errors("http://x")
+        assert result is not None
+        assert "bios_serial" in result
+        assert "vbs" in result
+
+
 class TestCheckTopologyBasics:
     def test_fails_when_fetch_errors(self, monkeypatch):
         monkeypatch.setattr(checker, "_get", lambda host, path: {"_fetch_error": "boom"})
