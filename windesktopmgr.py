@@ -8633,6 +8633,39 @@ def bios_audit_snapshot_route():
     return jsonify({"ok": True, "snapshot": snap})
 
 
+@app.route("/api/bios/audit/poll", methods=["POST"])
+def bios_audit_poll_route():
+    """Force a BIOS audit poll cycle right now.
+
+    Useful for verifying that a fix actually worked on the live system
+    without waiting up to 15 min for the next scheduled poll. The user
+    can click 'Force Poll Now' in the UI and immediately see whether
+    new errors appear in the audit history (or whether everything
+    succeeded clean).
+
+    Bug context 2026-05-14: PR #36 added caching for bios_serial / vbs
+    that eliminated chronic timeouts. Without this endpoint the only
+    way to verify the fix was to wait for the next 15-min cycle, which
+    left the user staring at 8 historical error entries thinking the
+    fix didn't work.
+    """
+    import bios_audit
+
+    try:
+        result = bios_audit.check_and_log_bios_changes(force=True, context="user")
+        return jsonify(
+            {
+                "ok": True,
+                "context": result.get("context"),
+                "changes_count": len(result.get("changes") or []),
+                "errors_count": len(result.get("errors") or []),
+                "snapshot_timestamp": (result.get("snapshot") or {}).get("timestamp"),
+            }
+        )
+    except Exception as e:  # noqa: BLE001 -- never crash this convenience route
+        return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 500
+
+
 # ── Baseline / drift detection (backlog #14) ────────────────────────
 
 

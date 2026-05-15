@@ -1155,6 +1155,70 @@ class TestSlowWmiQueryCaches:
         assert bios_audit._vbs_cache == {"data": None, "ts": 0.0}
 
 
+class TestBiosAuditPollRoute:
+    """Bug fix 2026-05-14: after the cache PR #36 silenced chronic
+    bios_serial timeouts, the user reported "error still there" because
+    the audit panel still showed 8 pre-fix historical errors. The user
+    had no way to verify the fix worked without waiting for the next
+    15-min poll cycle. New POST /api/bios/audit/poll forces a fresh
+    cycle on demand."""
+
+    def test_poll_returns_ok_with_counts(self, client, bios_audit_tmp, mock_ps):
+        mock_ps(
+            {
+                "Win32_BIOS).SerialNumber": "POLL-TEST",
+                "Win32_DeviceGuard": '{"VirtualizationBasedSecurityStatus": 2, "SecurityServicesRunning": [2]}',
+            }
+        )
+        resp = client.post("/api/bios/audit/poll")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["errors_count"] == 0
+        assert body["changes_count"] == 0
+        assert body["snapshot_timestamp"], "must include the snapshot timestamp"
+
+    def test_poll_surfaces_error_count_when_collectors_fail(self, client, bios_audit_tmp, mocker):
+        """A force-poll where all collectors fail should report errors_count > 0."""
+        import subprocess as sp
+
+        # Pre-populate the history file with a baseline so the diff
+        # logic considers this a follow-up snapshot, not the first one.
+        # We use the mocked subprocess to emit a clean baseline first,
+        # then switch it to fail for the poll under test.
+        from tests.test_bios_audit import _sample_bios_reader
+
+        # Baseline snapshot
+        ok_mock = mocker.patch(
+            "bios_audit.subprocess.run",
+            return_value=type("R", (), {"returncode": 0, "stdout": "ABC", "stderr": ""})(),
+        )
+        bios_audit.check_and_log_bios_changes(bios_reader=_sample_bios_reader, force=True, context="user")
+        ok_mock.stop if hasattr(ok_mock, "stop") else None
+
+        # Reset caches so the failure-mode subprocess actually fires
+        bios_audit._reset_slow_query_caches()
+        mocker.patch(
+            "bios_audit.subprocess.run",
+            side_effect=sp.TimeoutExpired(cmd="powershell", timeout=10),
+        )
+        resp = client.post("/api/bios/audit/poll")
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["ok"] is True
+        assert body["errors_count"] >= 1, "force-poll with failing collectors must surface error count"
+
+    def test_poll_returns_500_on_exception(self, client, mocker):
+        """Defensive: if check_and_log raises, the route returns 500 with
+        a useful error message (NOT a stack trace to the user)."""
+        mocker.patch("bios_audit.check_and_log_bios_changes", side_effect=RuntimeError("boom"))
+        resp = client.post("/api/bios/audit/poll")
+        assert resp.status_code == 500
+        body = resp.get_json()
+        assert body["ok"] is False
+        assert "boom" in body["error"]
+
+
 class TestLoadBiosAuditFrontendCoverage:
     """Bug 2026-05-14: user reported 'the refresh button does nothing' on
     the BIOS Audit Trail panel. Root cause: the JS render loop had
@@ -1184,13 +1248,44 @@ class TestLoadBiosAuditFrontendCoverage:
         start = html.find("async function loadBiosAudit(")
         assert start > 0, "loadBiosAudit function not found"
         # Reasonable cap on how far the function body extends
-        body = html[start : start + 8000]
+        body = html[start : start + 12000]
         for kind in ("baseline", "change", "error"):
             assert f'entry.kind === "{kind}"' in body, (
                 f"loadBiosAudit() must have a render branch for kind={kind!r}. "
                 "Without it, those entries are silently dropped from the rendered "
                 "list and the user sees a frozen-looking refresh button."
             )
+
+    def test_load_bios_audit_filters_to_24h_window_by_default(self):
+        """Bug fix 2026-05-14: 8 historical errors from before the cache
+        fix were drowning out recent state. Default view filters to
+        last 24h so users can see whether the system is healthy NOW
+        without scrolling through old noise. Toggle restores full view."""
+        html = self._index_html()
+        start = html.find("async function loadBiosAudit(")
+        body = html[start : start + 12000]
+        # The 24-hour cutoff calculation must be present
+        assert "24 * 3600 * 1000" in body or "cutoffMs" in body, (
+            "loadBiosAudit must include a 24-hour cutoff filter so historical errors don't drown out recent state."
+        )
+        # The "Show all history" toggle must be checked
+        assert "bios-audit-show-all" in body, (
+            "loadBiosAudit must read the 'Show all history' checkbox so the "
+            "user can opt into the full history when needed."
+        )
+
+    def test_force_poll_button_function_exists(self):
+        """The Force Poll Now button calls forceBiosPoll() which POSTs
+        to /api/bios/audit/poll."""
+        html = self._index_html()
+        assert "function forceBiosPoll(" in html, (
+            "forceBiosPoll function missing -- the Force Poll Now button wouldn't be wired to anything."
+        )
+        # Find the function body
+        start = html.find("async function forceBiosPoll(")
+        body = html[start : start + 3000]
+        assert "/api/bios/audit/poll" in body, "must POST to the new poll endpoint"
+        assert 'method: "POST"' in body, "must use POST"
 
     def test_load_bios_audit_provides_visual_refresh_feedback(self):
         """The refresh action must produce visible feedback even when
@@ -1200,7 +1295,7 @@ class TestLoadBiosAuditFrontendCoverage:
         registered."""
         html = self._index_html()
         start = html.find("async function loadBiosAudit(")
-        body = html[start : start + 8000]
+        body = html[start : start + 12000]
         assert "opacity" in body and "Refreshed" in body, (
             "loadBiosAudit must include visual feedback for refresh "
             "(opacity dim + 'Refreshed at HH:MM:SS' footer). Without it, "
