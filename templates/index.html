@@ -3404,6 +3404,52 @@ async function loadBios() {
   }
 }
 
+async function forceBiosPoll() {
+  // Force-trigger a fresh BIOS audit poll right now (don't wait 15 min).
+  // Bug fix 2026-05-14: after PR #36 cached bios_serial / vbs to fix
+  // chronic timeouts, the user looked at the audit panel and still saw
+  // 8 historical errors. They had no way to verify the fix worked
+  // without waiting for the next 15-min cycle. This button hits the
+  // /api/bios/audit/poll endpoint, forces a poll, and reports the
+  // result inline so the user can SEE that the fix is working.
+  const content = document.getElementById("bios-audit-content");
+  const status = document.createElement("div");
+  status.style.cssText = "margin:8px 0;padding:8px 12px;background:var(--surface);border-radius:6px;font-size:12px;color:var(--muted)";
+  status.textContent = "⚡ Forcing a poll cycle…";
+  if (content && content.parentElement) content.parentElement.insertBefore(status, content);
+  try {
+    const r = await fetch("/api/bios/audit/poll", { method: "POST" });
+    const d = await r.json();
+    if (d.ok) {
+      const errs = d.errors_count || 0;
+      const changes = d.changes_count || 0;
+      const color = errs ? "var(--red)" : "var(--green)";
+      const icon = errs ? "✗" : "✓";
+      status.style.background = errs ? "#ff405018" : "#00d96820";
+      status.style.color = color;
+      status.innerHTML = `${icon} Poll completed at ${(d.snapshot_timestamp || "now")} — <strong>${errs} error${errs === 1 ? "" : "s"}, ${changes} change${changes === 1 ? "" : "s"}</strong>${errs === 0 ? " (cache fix working as intended)" : ""}`;
+    } else {
+      status.style.background = "#ff405018";
+      status.style.color = "var(--red)";
+      status.textContent = `✗ Poll failed: ${d.error || "unknown error"}`;
+    }
+  } catch (e) {
+    status.style.background = "#ff405018";
+    status.style.color = "var(--red)";
+    status.textContent = `✗ Poll request failed: ${(e && e.message) || e}`;
+  }
+  // Also re-render the history so the user sees any new entry that landed
+  loadBiosAudit();
+  // Fade out the status banner after a few seconds so it doesn't clutter
+  setTimeout(() => {
+    if (status.parentElement) {
+      status.style.transition = "opacity 0.6s";
+      status.style.opacity = "0";
+      setTimeout(() => status.remove(), 700);
+    }
+  }, 6000);
+}
+
 async function loadBiosAudit() {
   const content = document.getElementById("bios-audit-content");
   if (!content) return;
@@ -3419,12 +3465,28 @@ async function loadBiosAudit() {
     const r = await fetch("/api/bios/audit/history?limit=20");
     const d = await r.json();
     const esc = s => String(s == null ? "—" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
-    const history = (d.history || []).slice().reverse(); // newest first
-    if (!history.length) {
+    const fullHistory = (d.history || []).slice().reverse(); // newest first
+    if (!fullHistory.length) {
       content.innerHTML = '<div style="color:var(--muted)">No snapshots yet — the baseline will be captured on the next polling cycle (up to 60 s).</div>';
       content.style.opacity = "1";
       return;
     }
+    // 24-hour filter (bug fix 2026-05-14): user reported "error still
+    // there" after the cache fix in PR #36 because 8 historical errors
+    // from BEFORE the fix were still on screen, even though no new
+    // errors had been added since the fix landed. By default we now
+    // hide entries older than 24h so recent state isn't drowned by
+    // historical noise. The "Show all history" checkbox restores the
+    // full list. Hidden count is reported in the footer so nothing
+    // disappears silently.
+    const showAll = !!(document.getElementById("bios-audit-show-all") || {}).checked;
+    const cutoffMs = Date.now() - 24 * 3600 * 1000;
+    const history = showAll ? fullHistory : fullHistory.filter(e => {
+      if (!e.timestamp) return true;  // unparseable -> show
+      const t = new Date(e.timestamp).getTime();
+      return isNaN(t) || t >= cutoffMs;
+    });
+    const hiddenCount = fullHistory.length - history.length;
     // Context chip renderer: "user" (gray) or "elevated" (purple)
     const ctxChip = ctx => {
       if (ctx === "elevated") {
@@ -3479,7 +3541,23 @@ async function loadBiosAudit() {
     if (counts.change) summary.push(`<span style="color:var(--orange)">${counts.change} change${counts.change === 1 ? "" : "s"}</span>`);
     if (counts.error) summary.push(`<span style="color:var(--red)">${counts.error} error${counts.error === 1 ? "" : "s"}</span>`);
     if (counts.other) summary.push(`<span style="color:var(--muted)">${counts.other} other</span>`);
-    html += `</div><div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border);font-size:11px;color:var(--muted);display:flex;justify-content:space-between"><span>${summary.join(" · ") || "no entries"}</span><span>↻ Refreshed ${esc(now)}</span></div>`;
+    // If we filtered any entries, surface a small "N hidden, click to show"
+    // hint so the user knows nothing was silently lost. Bug fix 2026-05-14.
+    let hiddenLine = "";
+    if (hiddenCount > 0 && !showAll) {
+      hiddenLine = `<div style="margin-top:10px;padding:8px 12px;background:var(--surface);border-radius:6px;font-size:11px;color:var(--muted);text-align:center">${hiddenCount} older entr${hiddenCount === 1 ? "y" : "ies"} hidden (>24h old) — toggle "Show all history" above to see ${hiddenCount === 1 ? "it" : "them"}</div>`;
+    }
+    // Close the flex container BEFORE appending footer/hidden-line so
+    // the DOM is well-formed regardless of which path we take.
+    html += "</div>";
+    // If the recent window is empty (cache fix is preventing new errors,
+    // no real changes happening, no context shifts), replace the empty
+    // entries container with a friendly "Polling healthy, nothing to
+    // report" card instead of leaving a blank gap.
+    if (!history.length) {
+      html = `<div style="padding:16px;background:var(--surface);border-radius:8px;border-left:3px solid var(--green);text-align:center"><div style="color:var(--green);font-weight:600;margin-bottom:4px">✓ Polling healthy</div><div style="font-size:12px;color:var(--muted)">No baselines, changes, or errors in the last 24 hours. The polling loop is running silently because nothing has changed.</div></div>`;
+    }
+    html += `${hiddenLine}<div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border);font-size:11px;color:var(--muted);display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px"><span>${summary.join(" · ") || "(no entries in window)"}</span><span>↻ Refreshed ${esc(now)}</span></div>`;
     content.innerHTML = html;
     content.style.opacity = "1";
   } catch (e) {
@@ -8619,13 +8697,23 @@ function renderSystemInfo(d, upgrades) {
     <!-- BIOS AUDIT TRAIL PANEL -- always visible, does NOT depend on /api/bios/status -->
     <div id="bios-audit-panel" style="margin:16px 0">
       <div style="padding:20px;background:var(--card);border:1px solid var(--border);border-radius:10px;border-left:4px solid var(--cyan)">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
           <div style="font-weight:700;font-size:15px;color:var(--cyan)">📋 BIOS Audit Trail</div>
-          <button class="btn-action" onclick="loadBiosAudit()" style="padding:5px 12px;font-size:11px">↺ Refresh</button>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <label style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px;cursor:pointer">
+              <input type="checkbox" id="bios-audit-show-all" onchange="loadBiosAudit()" style="cursor:pointer">
+              Show all history
+            </label>
+            <button class="btn-action" onclick="forceBiosPoll()" style="padding:5px 12px;font-size:11px"
+                    title="Force a fresh BIOS audit poll right now (don't wait 15 min). Useful for confirming a fix worked.">⚡ Force Poll Now</button>
+            <button class="btn-action" onclick="loadBiosAudit()" style="padding:5px 12px;font-size:11px">↺ Refresh</button>
+          </div>
         </div>
         <div style="font-size:12px;color:var(--muted);margin-bottom:12px">
           Tracks changes to BIOS version, Secure Boot, TPM, boot mode, and VBS state.
-          Snapshots every 15 minutes via the tray polling loop.
+          Snapshots every 15 minutes via the tray polling loop. By default the
+          panel shows entries from the last 24 hours so historical noise doesn't
+          drown out recent state -- toggle "Show all history" to see everything.
         </div>
         <div id="bios-audit-content" style="font-size:13px">Loading…</div>
       </div>
