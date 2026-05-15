@@ -207,6 +207,57 @@ def check_inventory_load_not_failed(host: str) -> str | None:
     return None
 
 
+def check_no_recent_bios_audit_errors(host: str) -> str | None:
+    """The BIOS audit polling loop records every collection failure as a
+    `kind=error` entry. Recurring entries from the same field over many
+    days mean a slow-WMI-query problem we should be caching around (PR
+    fix 2026-05-14 caches bios_serial + vbs).
+
+    Catches: same-field error N times in the last 7 days. Allows: a
+    single transient timeout (those happen).
+    """
+    h = _get(host, "/api/bios/audit/history?limit=100")
+    if not h or "_fetch_error" in h:
+        return None
+    history = h.get("history") or []
+    # Count errors per field in the most recent 7-day window
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    err_counts: dict[str, int] = {}
+    for entry in history:
+        if entry.get("kind") != "error":
+            continue
+        ts_raw = entry.get("timestamp")
+        if not ts_raw:
+            continue
+        try:
+            # bios_audit writes naive isoformat -- treat as UTC
+            ts = datetime.fromisoformat(ts_raw)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        if ts < cutoff:
+            continue
+        for e in entry.get("errors") or []:
+            field = e.get("field") or "?"
+            err_counts[field] = err_counts.get(field, 0) + 1
+    # Threshold: more than 2 errors for the same field in a week is a
+    # pattern, not a transient. Either fix the underlying query or
+    # cache around the slowness.
+    chronic = {f: n for f, n in err_counts.items() if n >= 3}
+    if chronic:
+        details = ", ".join(f"{f}={n}x" for f, n in sorted(chronic.items()))
+        return (
+            f"BIOS audit has chronic errors in last 7 days: {details}. "
+            "These won't disappear on their own -- either bump the timeout "
+            "or cache the field (e.g., bios_serial is a hardware ID that "
+            "never changes, so process-lifetime cache is fine)."
+        )
+    return None
+
+
 # Registry. Each entry: (name, callable, severity).
 # severity: 'fail' -> nonzero exit; 'warn' -> visible but doesn't fail.
 CHECKS: list[tuple[str, Callable[[str], str | None], str]] = [
@@ -216,6 +267,7 @@ CHECKS: list[tuple[str, Callable[[str], str | None], str]] = [
     ("no_self_referential_classifier_loop", check_no_self_referential_classifier_loop, "fail"),
     ("no_phantom_blink_bridges", check_no_phantom_actiontec_blink_bridges, "fail"),
     ("inventory_load_not_failed", check_inventory_load_not_failed, "fail"),
+    ("no_recent_bios_audit_errors", check_no_recent_bios_audit_errors, "warn"),
     ("orbi_satellite_visibility", check_orbi_satellite_visibility, "warn"),
 ]
 

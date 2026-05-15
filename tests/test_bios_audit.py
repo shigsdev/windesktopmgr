@@ -6,6 +6,7 @@ are fully mocked -- no subprocess ever actually runs.
 """
 
 import json
+import subprocess
 from datetime import datetime, timedelta
 
 import pytest
@@ -13,6 +14,17 @@ import pytest
 import bios_audit
 
 # ── Fixtures ───────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _reset_bios_audit_caches():
+    """Reset module-level WMI-query caches (bug fix 2026-05-14) so a
+    prior test's cached bios_serial / vbs doesn't leak into the next
+    test. Without this, a test that sets bios_serial would make the
+    next test see the cached value instead of triggering its own mock."""
+    bios_audit._reset_slow_query_caches()
+    yield
+    bios_audit._reset_slow_query_caches()
 
 
 @pytest.fixture
@@ -715,7 +727,12 @@ class TestCheckAndLogErrorEntry:
         )
         bios_audit.check_and_log_bios_changes(bios_reader=_sample_bios_reader, force=True, context="user")
 
-        # Second pass: PS times out for everything → snapshot has errors but no value changes
+        # Second pass: PS times out for everything → snapshot has errors but no value changes.
+        # Reset the slow-WMI caches first so the cached bios_serial / vbs from
+        # pass 1 don't shield us from the simulated timeout. Bug fix 2026-05-14
+        # added caching that this test pre-dated; without the reset the cached
+        # values short-circuit subprocess and no errors propagate.
+        bios_audit._reset_slow_query_caches()
         mocker.patch(
             "bios_audit.subprocess.run",
             side_effect=sp.TimeoutExpired(cmd="powershell", timeout=10),
@@ -744,14 +761,19 @@ class TestCheckAndLogErrorEntry:
         )
         bios_audit.check_and_log_bios_changes(bios_reader=_sample_bios_reader, force=True, context="user")
 
-        # Transient failure
+        # Transient failure -- reset caches so the failure actually propagates
+        # past the bios_serial / vbs caches added in 2026-05-14
+        bios_audit._reset_slow_query_caches()
         mocker.patch(
             "bios_audit.subprocess.run",
             side_effect=sp.TimeoutExpired(cmd="powershell", timeout=10),
         )
         bios_audit.check_and_log_bios_changes(bios_reader=_sample_bios_reader, force=True, context="user")
 
-        # Recovery — same values as baseline
+        # Recovery — same values as baseline. Reset caches again so the
+        # recovery values are actually re-read (cached failures don't poison
+        # next pass since failure path doesn't cache).
+        bios_audit._reset_slow_query_caches()
         mock_ps(
             {
                 "Win32_BIOS).SerialNumber": "9T46D14",
@@ -1053,6 +1075,84 @@ class TestHistoryRouteFiltersPhantoms:
         body = resp.get_json()
         assert body["include_phantoms"] is True
         assert len(body["history"]) == 3
+
+
+class TestSlowWmiQueryCaches:
+    """Bug fix 2026-05-14: bios_serial timed out every poll for a month
+    (10 of the user's 11 history entries on 2026-05-14 were
+    bios_serial timeouts). vbs occasionally timed out too. Both target
+    fields change very rarely -- caching kills the recurring failures
+    cheaply.
+    """
+
+    def test_bios_serial_cached_after_first_read(self, mock_ps):
+        """First call hits PowerShell. Second call returns cached value
+        without calling subprocess again."""
+        mock = mock_ps({"Win32_BIOS).SerialNumber": "SN-123"})
+        s1, e1 = bios_audit._get_bios_serial()
+        s2, e2 = bios_audit._get_bios_serial()
+        assert s1 == "SN-123"
+        assert s2 == "SN-123"
+        assert e1 is None and e2 is None
+        assert mock.call_count == 1, "Second call must hit cache, not subprocess"
+
+    def test_bios_serial_failure_does_not_cache(self, mock_ps, mocker):
+        """If the first call timed out, we must NOT cache the failure --
+        try again on the next poll. Otherwise a transient slow-WMI
+        moment would freeze us at None forever."""
+
+        def _fail(*_, **__):
+            raise subprocess.TimeoutExpired(cmd="powershell", timeout=20)
+
+        # Force the first call to fail
+        mocker.patch("bios_audit.subprocess.run", side_effect=_fail)
+        s1, e1 = bios_audit._get_bios_serial()
+        assert s1 is None
+        assert e1 and "timeout" in e1.lower()
+        # Now provide a successful response and call again
+        mock_ps({"Win32_BIOS).SerialNumber": "SN-456"})
+        s2, e2 = bios_audit._get_bios_serial()
+        assert s2 == "SN-456", "Second attempt must re-read after a prior failure"
+
+    def test_bios_serial_empty_string_does_not_cache(self, mock_ps):
+        """If the WMI query returned 200 but the serial was empty
+        (bizarre edge case), we should retry next time. Empty serial
+        is indistinguishable from 'not yet read' -- treat as not-cached."""
+        mock = mock_ps({"Win32_BIOS).SerialNumber": ""})
+        bios_audit._get_bios_serial()  # first call: empty
+        bios_audit._get_bios_serial()  # second call: should retry
+        assert mock.call_count == 2
+
+    def test_vbs_cached_within_ttl(self, mock_ps):
+        mock = mock_ps(
+            {"Win32_DeviceGuard": '{"VirtualizationBasedSecurityStatus": 2, "SecurityServicesRunning": [2]}'}
+        )
+        v1, _ = bios_audit._get_vbs_state()
+        v2, _ = bios_audit._get_vbs_state()
+        assert v1 == v2
+        assert v1["vbs_status"] == "running"
+        assert mock.call_count == 1, "Second call within TTL must hit cache"
+
+    def test_vbs_re_reads_after_ttl_expires(self, mock_ps, monkeypatch):
+        """After VBS_CACHE_TTL_S elapses, a fresh read happens."""
+        mock = mock_ps(
+            {"Win32_DeviceGuard": '{"VirtualizationBasedSecurityStatus": 2, "SecurityServicesRunning": [2]}'}
+        )
+        bios_audit._get_vbs_state()  # populates cache
+        # Force the cache to look stale by setting ts to long ago
+        monkeypatch.setattr(bios_audit, "_vbs_cache", {"data": {"vbs_status": "running"}, "ts": 0.0})
+        bios_audit._get_vbs_state()  # should re-read
+        assert mock.call_count == 2
+
+    def test_reset_slow_query_caches_clears_state(self, mock_ps):
+        """The test helper actually clears state -- defends the autouse
+        fixture from a future refactor that might break it."""
+        mock_ps({"Win32_BIOS).SerialNumber": "SN-XYZ"})
+        bios_audit._get_bios_serial()
+        assert bios_audit._bios_serial_cache == "SN-XYZ"
+        bios_audit._reset_slow_query_caches()
+        assert bios_audit._bios_serial_cache is None
+        assert bios_audit._vbs_cache == {"data": None, "ts": 0.0}
 
 
 class TestLoadBiosAuditFrontendCoverage:

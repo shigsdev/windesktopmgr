@@ -37,6 +37,7 @@ import json
 import os
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import NamedTuple
@@ -57,6 +58,34 @@ CHANGE_ALERT_WINDOW = timedelta(hours=24)
 ERROR_ALERT_WINDOW = timedelta(hours=24)
 
 _history_lock = threading.RLock()
+
+# ── Slow-WMI-query caches (bug fix 2026-05-14) ─────────────────────
+#
+# User saw weeks of `bios_serial: timeout after 10s` and occasional
+# `vbs: timeout after 15s` errors in the audit trail (8 of 11 entries
+# were errors). The Win32_BIOS / Win32_DeviceGuard CIM queries are
+# transiently slow on this machine. Both target values change very
+# rarely (BIOS serial = hardware ID, never; VBS = needs admin +
+# reboot), so caching kills the recurring failures cheaply:
+#
+#   _bios_serial_cache:   process-lifetime -- BIOS serial is hardware
+#   _vbs_cache:           VBS_CACHE_TTL_S TTL -- VBS state can change
+#                          but rarely; 1h refresh catches real changes
+#
+# Tray restart resets both caches so the next poll re-reads. Tests
+# reset via the bios_audit_tmp fixture chain.
+
+_bios_serial_cache: str | None = None
+_vbs_cache: dict = {"data": None, "ts": 0.0}
+VBS_CACHE_TTL_S = 3600  # 1 hour
+
+
+def _reset_slow_query_caches() -> None:
+    """Test helper: drop the slow-WMI-query caches between tests so
+    each test sees a fresh state. Production code never calls this."""
+    global _bios_serial_cache, _vbs_cache
+    _bios_serial_cache = None
+    _vbs_cache = {"data": None, "ts": 0.0}
 
 
 # ── Security-state capture helpers ─────────────────────────────────
@@ -164,12 +193,24 @@ def _get_boot_mode() -> tuple[str | None, str | None]:
 
 
 def _get_vbs_state() -> tuple[dict | None, str | None]:
-    """Virtualization-Based Security / HVCI / Credential Guard state."""
+    """Virtualization-Based Security / HVCI / Credential Guard state.
+
+    Result is cached for VBS_CACHE_TTL_S (default 3600s) because VBS
+    state changes are rare (require admin + reboot) and the
+    Win32_DeviceGuard CIM query is expensive -- has been observed
+    timing out at 15 s on this user's machine, multiple times per
+    month. Cache eliminates the recurring failures while still
+    catching real changes within an hour. Bug fix 2026-05-14.
+    """
+    global _vbs_cache
+    now = time.time()
+    if _vbs_cache["data"] is not None and (now - _vbs_cache["ts"]) < VBS_CACHE_TTL_S:
+        return dict(_vbs_cache["data"]), None
     res = _run_ps(
         "Get-CimInstance -ClassName Win32_DeviceGuard "
         "-Namespace root\\Microsoft\\Windows\\DeviceGuard | "
         "ConvertTo-Json -Depth 2",
-        timeout=15,
+        timeout=30,
     )
     if not res.ok:
         return None, res.error
@@ -183,19 +224,40 @@ def _get_vbs_state() -> tuple[dict | None, str | None]:
     services = data.get("SecurityServicesRunning") or []
     if not isinstance(services, list):
         services = [services]
-    return {
+    parsed = {
         "vbs_status": vbs_map.get(data.get("VirtualizationBasedSecurityStatus")),
         "hvci_running": 2 in services if services else None,
         "cred_guard_running": 1 in services if services else None,
-    }, None
+    }
+    _vbs_cache["data"] = dict(parsed)
+    _vbs_cache["ts"] = now
+    return parsed, None
 
 
 def _get_bios_serial() -> tuple[str | None, str | None]:
-    """SerialNumber from Win32_BIOS -- not exposed by get_current_bios()."""
-    res = _run_ps("(Get-CimInstance Win32_BIOS).SerialNumber")
+    """SerialNumber from Win32_BIOS -- not exposed by get_current_bios().
+
+    Cached for the lifetime of the process after the first successful
+    read. The BIOS serial number is a hardware identifier baked into
+    the motherboard firmware -- it does NOT change unless the user
+    swaps motherboards (a once-in-a-decade event for this app's
+    audience). Caching eliminates the every-poll Win32_BIOS CIM query
+    that has been timing out at 10 s on this user's machine since
+    April 20 (8 of 11 audit history entries on 2026-05-14 were
+    bios_serial timeouts). A tray restart re-reads on next poll, so
+    the rare motherboard-swap case is covered at zero ongoing cost.
+    Bug fix 2026-05-14.
+    """
+    global _bios_serial_cache
+    if _bios_serial_cache is not None:
+        return _bios_serial_cache, None
+    res = _run_ps("(Get-CimInstance Win32_BIOS).SerialNumber", timeout=20)
     if not res.ok:
         return None, res.error
-    return (res.stdout or None), None
+    serial = res.stdout or None
+    if serial:
+        _bios_serial_cache = serial
+    return serial, None
 
 
 # ── Snapshot ───────────────────────────────────────────────────────
