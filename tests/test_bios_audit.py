@@ -1053,3 +1053,57 @@ class TestHistoryRouteFiltersPhantoms:
         body = resp.get_json()
         assert body["include_phantoms"] is True
         assert len(body["history"]) == 3
+
+
+class TestLoadBiosAuditFrontendCoverage:
+    """Bug 2026-05-14: user reported 'the refresh button does nothing' on
+    the BIOS Audit Trail panel. Root cause: the JS render loop had
+    branches for `kind=baseline` and `kind=change` but silently dropped
+    `kind=error`. The user's live history had 8 errors + 3 baselines;
+    clicking refresh re-fetched but the rendered list never changed.
+
+    These are SOURCE-LEVEL contract tests (read templates/index.html as
+    text and assert string patterns). Same pattern as the per-bridge
+    column test from PR #19. They prevent the silent-drop regression
+    from sneaking back."""
+
+    @staticmethod
+    def _index_html() -> str:
+        from pathlib import Path
+
+        return (Path(__file__).parent.parent / "templates" / "index.html").read_text(encoding="utf-8")
+
+    def test_load_bios_audit_handles_every_known_kind(self):
+        """Every kind that bios_audit.HistoryEntry can emit must have a
+        render branch in loadBiosAudit. Currently: baseline, change,
+        error. If a future entry kind ('warning', 'info', etc.) is
+        added to the backend, this test fires until the renderer
+        catches up."""
+        html = self._index_html()
+        # Anchor to the loadBiosAudit function body
+        start = html.find("async function loadBiosAudit(")
+        assert start > 0, "loadBiosAudit function not found"
+        # Reasonable cap on how far the function body extends
+        body = html[start : start + 8000]
+        for kind in ("baseline", "change", "error"):
+            assert f'entry.kind === "{kind}"' in body, (
+                f"loadBiosAudit() must have a render branch for kind={kind!r}. "
+                "Without it, those entries are silently dropped from the rendered "
+                "list and the user sees a frozen-looking refresh button."
+            )
+
+    def test_load_bios_audit_provides_visual_refresh_feedback(self):
+        """The refresh action must produce visible feedback even when
+        the rendered content is identical. User feedback 2026-05-14:
+        'refresh button does nothing'. The fix: opacity dim during fetch
+        + 'Refreshed at HH:MM:SS' footer so the user can SEE the click
+        registered."""
+        html = self._index_html()
+        start = html.find("async function loadBiosAudit(")
+        body = html[start : start + 8000]
+        assert "opacity" in body and "Refreshed" in body, (
+            "loadBiosAudit must include visual feedback for refresh "
+            "(opacity dim + 'Refreshed at HH:MM:SS' footer). Without it, "
+            "the user can't tell whether the click registered when the "
+            "rendered content is unchanged."
+        )

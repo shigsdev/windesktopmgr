@@ -3407,6 +3407,14 @@ async function loadBios() {
 async function loadBiosAudit() {
   const content = document.getElementById("bios-audit-content");
   if (!content) return;
+  // Synchronous visual feedback BEFORE the fetch so the user can tell
+  // the click registered. Without this the UI looked frozen on the same
+  // 3 baseline entries and the user reported "the refresh button does
+  // nothing" (2026-05-14). The brief "Refreshing..." state confirms
+  // the click was received and the fetch is in flight.
+  const prevHtml = content.innerHTML;
+  content.style.opacity = "0.6";
+  content.style.transition = "opacity 0.15s";
   try {
     const r = await fetch("/api/bios/audit/history?limit=20");
     const d = await r.json();
@@ -3414,6 +3422,7 @@ async function loadBiosAudit() {
     const history = (d.history || []).slice().reverse(); // newest first
     if (!history.length) {
       content.innerHTML = '<div style="color:var(--muted)">No snapshots yet — the baseline will be captured on the next polling cycle (up to 60 s).</div>';
+      content.style.opacity = "1";
       return;
     }
     // Context chip renderer: "user" (gray) or "elevated" (purple)
@@ -3426,25 +3435,61 @@ async function loadBiosAudit() {
       }
       return '';
     };
+    // Count entries by kind so we can report what the user is seeing
+    // (and what was previously hidden -- error entries had been
+    // silently dropped from the render). Bug fix 2026-05-14.
+    const counts = {baseline: 0, change: 0, error: 0, other: 0};
     let html = '<div style="display:flex;flex-direction:column;gap:10px">';
     for (const entry of history) {
       const ts = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : "(no timestamp)";
       const chip = ctxChip(entry.context);
       if (entry.kind === "change") {
+        counts.change++;
         const rows = (entry.changes || []).map(c =>
           `<div style="font-family:'JetBrains Mono',monospace;font-size:12px;padding:3px 0"><span style="color:var(--cyan)">${esc(c.field)}</span>: <span style="color:var(--muted);text-decoration:line-through">${esc(c.old)}</span> → <strong style="color:var(--orange)">${esc(c.new)}</strong></div>`
         ).join("");
         html += `<div style="background:var(--surface);border-left:3px solid var(--orange);padding:10px 14px;border-radius:6px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span>${chip}<span style="font-weight:600;color:var(--orange)">⚠ CHANGE</span></span><span style="font-size:11px;color:var(--muted)">${esc(ts)}</span></div>${rows}</div>`;
       } else if (entry.kind === "baseline") {
+        counts.baseline++;
         const note = entry.note || "initial snapshot captured";
         html += `<div style="background:var(--surface);border-left:3px solid var(--cyan);padding:10px 14px;border-radius:6px"><div style="display:flex;justify-content:space-between;align-items:center"><span>${chip}<span style="font-weight:600;color:var(--cyan)">◆ BASELINE</span></span><span style="font-size:11px;color:var(--muted)">${esc(ts)}</span></div><div style="font-size:12px;color:var(--muted);margin-top:4px">${esc(note)}</div></div>`;
+      } else if (entry.kind === "error") {
+        // Bug fix 2026-05-14: error entries were silently dropped from
+        // the render loop. User reported "refresh button does nothing"
+        // because clicking re-fetched data but the rendered list never
+        // changed -- on this user's machine 8 of 11 entries were errors
+        // that vanished into the void. Render them as red-bar rows
+        // alongside baselines + changes so the user knows the polling
+        // cycle is actually running and which fields are failing.
+        counts.error++;
+        const errs = (entry.errors || []).map(e =>
+          `<div style="font-family:'JetBrains Mono',monospace;font-size:12px;padding:3px 0"><span style="color:var(--cyan)">${esc(e.field)}</span>: <span style="color:var(--red)">${esc(e.error)}</span></div>`
+        ).join("") || '<div style="font-size:12px;color:var(--muted)">(no error details)</div>';
+        html += `<div style="background:var(--surface);border-left:3px solid var(--red);padding:10px 14px;border-radius:6px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span>${chip}<span style="font-weight:600;color:var(--red)">✗ ERROR</span></span><span style="font-size:11px;color:var(--muted)">${esc(ts)}</span></div>${errs}</div>`;
+      } else {
+        counts.other++;
       }
     }
-    html += '</div>';
+    // Footer: timestamps + counts so the user can SEE that the refresh
+    // ran even when no entries changed. Without this the UI rendered
+    // the identical 3 baselines on every click -> "does nothing".
+    const now = new Date().toLocaleTimeString();
+    const summary = [];
+    if (counts.baseline) summary.push(`<span style="color:var(--cyan)">${counts.baseline} baseline${counts.baseline === 1 ? "" : "s"}</span>`);
+    if (counts.change) summary.push(`<span style="color:var(--orange)">${counts.change} change${counts.change === 1 ? "" : "s"}</span>`);
+    if (counts.error) summary.push(`<span style="color:var(--red)">${counts.error} error${counts.error === 1 ? "" : "s"}</span>`);
+    if (counts.other) summary.push(`<span style="color:var(--muted)">${counts.other} other</span>`);
+    html += `</div><div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border);font-size:11px;color:var(--muted);display:flex;justify-content:space-between"><span>${summary.join(" · ") || "no entries"}</span><span>↻ Refreshed ${esc(now)}</span></div>`;
     content.innerHTML = html;
+    content.style.opacity = "1";
   } catch (e) {
     console.error("Failed to load BIOS audit trail:", e);
-    content.innerHTML = '<div style="color:var(--red)">Failed to load audit trail.</div>';
+    content.innerHTML = '<div style="color:var(--red)">Failed to load audit trail: ' + String(e && e.message || e) + '</div>';
+    content.style.opacity = "1";
+    // Restore previous content if we just emptied it on error
+    if (prevHtml && content.innerHTML.startsWith('<div style="color:var(--red)')) {
+      content.innerHTML += '<div style="margin-top:8px;font-size:11px;color:var(--muted)">(previous content preserved below)</div>' + prevHtml;
+    }
   }
 }
 
