@@ -376,3 +376,72 @@ class TestCheckTopologyBasics:
         result = checker.check_topology_basics("http://x")
         assert result is not None
         assert "stats" in result
+
+
+class TestCheckNvidiaStatusEndpoint:
+    """Post-deploy semantic check for /api/nvidia/status. Catches the
+    2026-05-18 regression where the NVIDIA update card was invisible."""
+
+    def test_passes_with_nvidia_gpu_and_valid_schema(self, monkeypatch):
+        data = {
+            "ok": True,
+            "has_nvidia": True,
+            "Name": "NVIDIA GeForce RTX 4060 Ti",
+            "InstalledVersion": "595.79",
+            "LatestVersion": "595.79",
+            "UpdateAvailable": False,
+            "UpdateSource": "nvidia_api",
+        }
+        monkeypatch.setattr(checker, "_get", lambda host, path: data)
+        assert checker.check_nvidia_status_endpoint("http://x") is None
+
+    def test_passes_with_no_nvidia_gpu(self, monkeypatch):
+        data = {"ok": True, "has_nvidia": False}
+        monkeypatch.setattr(checker, "_get", lambda host, path: data)
+        assert checker.check_nvidia_status_endpoint("http://x") is None
+
+    def test_fails_on_fetch_error(self, monkeypatch):
+        monkeypatch.setattr(checker, "_get", lambda host, path: {"_fetch_error": "404"})
+        result = checker.check_nvidia_status_endpoint("http://x")
+        assert result is not None
+        assert "fetch failed" in result
+
+    def test_fails_when_gpu_present_but_installed_version_empty(self, monkeypatch):
+        data = {
+            "ok": True,
+            "has_nvidia": True,
+            "Name": "NVIDIA GeForce RTX 4060 Ti",
+            "InstalledVersion": "",
+            "UpdateAvailable": False,
+            "UpdateSource": "none",
+        }
+        monkeypatch.setattr(checker, "_get", lambda host, path: data)
+        result = checker.check_nvidia_status_endpoint("http://x")
+        assert result is not None
+        assert "InstalledVersion" in result
+
+    def test_fails_when_required_key_missing(self, monkeypatch):
+        data = {
+            "ok": True,
+            "has_nvidia": True,
+            "Name": "NVIDIA GeForce RTX 4060 Ti",
+            # Missing InstalledVersion, UpdateAvailable, UpdateSource
+        }
+        monkeypatch.setattr(checker, "_get", lambda host, path: data)
+        result = checker.check_nvidia_status_endpoint("http://x")
+        assert result is not None
+        assert "missing required key" in result
+
+    def test_update_available_passes_schema_check(self, monkeypatch):
+        """When an update IS available, the schema check still passes."""
+        data = {
+            "ok": True,
+            "has_nvidia": True,
+            "Name": "NVIDIA GeForce RTX 4060 Ti",
+            "InstalledVersion": "591.74",
+            "LatestVersion": "595.79",
+            "UpdateAvailable": True,
+            "UpdateSource": "nvidia_api",
+        }
+        monkeypatch.setattr(checker, "_get", lambda host, path: data)
+        assert checker.check_nvidia_status_endpoint("http://x") is None

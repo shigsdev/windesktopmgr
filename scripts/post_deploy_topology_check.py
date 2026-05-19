@@ -258,6 +258,30 @@ def check_no_recent_bios_audit_errors(host: str) -> str | None:
     return None
 
 
+def check_nvidia_status_endpoint(host: str) -> str | None:
+    """The /api/nvidia/status endpoint must respond and, if an NVIDIA GPU
+    is present, return the expected schema fields. Catches the 2026-05-18
+    regression where the user was notified about an NVIDIA update but
+    neither the dashboard nor driver tab showed it."""
+    d = _get(host, "/api/nvidia/status")
+    if d is None or "_fetch_error" in d:
+        return f"nvidia status fetch failed: {d.get('_fetch_error') if d else 'no response'}"
+    if not d.get("ok"):
+        return f"nvidia status returned ok={d.get('ok')}"
+    if not d.get("has_nvidia"):
+        # No NVIDIA GPU — that's fine, not a failure.
+        return None
+    # GPU is present — verify the update-detection fields are populated
+    for key in ("Name", "InstalledVersion", "UpdateAvailable", "UpdateSource"):
+        if key not in d:
+            return f"nvidia status missing required key: {key}"
+    if not d.get("InstalledVersion"):
+        return "nvidia status has NVIDIA GPU but InstalledVersion is empty"
+    if not d.get("Name"):
+        return "nvidia status has NVIDIA GPU but Name is empty"
+    return None
+
+
 # Registry. Each entry: (name, callable, severity).
 # severity: 'fail' -> nonzero exit; 'warn' -> visible but doesn't fail.
 CHECKS: list[tuple[str, Callable[[str], str | None], str]] = [
@@ -267,6 +291,7 @@ CHECKS: list[tuple[str, Callable[[str], str | None], str]] = [
     ("no_self_referential_classifier_loop", check_no_self_referential_classifier_loop, "fail"),
     ("no_phantom_blink_bridges", check_no_phantom_actiontec_blink_bridges, "fail"),
     ("inventory_load_not_failed", check_inventory_load_not_failed, "fail"),
+    ("nvidia_status_endpoint", check_nvidia_status_endpoint, "fail"),
     ("no_recent_bios_audit_errors", check_no_recent_bios_audit_errors, "warn"),
     ("orbi_satellite_visibility", check_orbi_satellite_visibility, "warn"),
 ]
