@@ -193,7 +193,7 @@
       <button type="button" onclick="exportPDF()" title="Open the browser print dialog — choose 'Save as PDF'" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--yellow);border:none;cursor:pointer;border-right:1px solid var(--border)">Export PDF</button>
       <button type="button" onclick="exportHTML()" title="Download a self-contained copy of this diagram" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--blue);border:none;cursor:pointer">Export HTML</button>
     </div>
-    <div class="badge" style="color:var(--green);border-color:#00e67633">2,200 tests · 85% coverage</div>
+    <div class="badge" style="color:var(--green);border-color:#00e67633">2,229 tests · 87% coverage</div>
     <div class="badge">
       <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
     </div>
@@ -287,7 +287,7 @@
 
   <!-- ── LAYER 2: FLASK BACKEND ───────────────────────────────── -->
   <div class="row row-flask" id="layer-flask">
-    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~11,279 lines + homenet.py Blueprint · ~3,897 lines + disk.py Blueprint · ~1,179 lines + remediation.py Blueprint · ~438 lines + nlq.py Blueprint · ~416 lines + baseline.py · ~380 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · applogging.py RotatingFileHandler · dashboard summary cache (30s TTL + single-flight background refresh) · request-log flood suppressor · SAFE_PROCESSES kill guard + SYSTEM_PROCESSES_GLOSSARY · pynvml GPU metrics collector · psutil+socket network metrics collector · mac-vendor-lookup IEEE OUI (~36k vendors) + zeroconf mDNS for device name resolution · baseline.py drift detection (startup + services + tasks)</div>
+    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~11,470 lines + homenet.py Blueprint · ~3,897 lines + disk.py Blueprint · ~1,179 lines + remediation.py Blueprint · ~438 lines + nlq.py Blueprint · ~416 lines + baseline.py · ~380 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · applogging.py RotatingFileHandler · dashboard summary cache (30s TTL + single-flight background refresh) · request-log flood suppressor · SAFE_PROCESSES kill guard + SYSTEM_PROCESSES_GLOSSARY · pynvml GPU metrics collector · psutil+socket network metrics collector · mac-vendor-lookup IEEE OUI (~36k vendors) + zeroconf mDNS for device name resolution · baseline.py drift detection (startup + services + tasks)</div>
     <div style="margin-bottom:10px">
       <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes (73 endpoints)</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
@@ -359,6 +359,7 @@
         <div class="route-chip" style="border-color:#ffd74044;background:#ffd7400d;color:var(--yellow)"><span class="method">POST</span>/api/disk/open</div>
         <div class="route-chip" style="border-color:#ffd74044;background:#ffd7400d;color:var(--yellow)"><span class="method">POST</span>/api/disk/run-tool</div>
         <div class="route-chip"><span class="method">POST</span>/api/launch/nvidia-app</div>
+        <div class="route-chip"><span class="method">GET</span>/api/nvidia/status</div>
         <!-- Ops / Observability (health · selftest · restart · logs) -->
         <div style="display:inline-flex;align-items:center;gap:4px;background:#00e67615;border:1px dashed #00e67644;border-radius:5px;padding:2px 8px;font-size:9px;color:var(--green);font-weight:700;letter-spacing:.06em;text-transform:uppercase" title="Ops endpoints used by dev.py verify + tray health poller">OPS: selftest · verify</div>
         <div class="route-chip" id="rt-health" style="border-color:#00e67644;background:#00e6760d;color:var(--green)"><span class="method">GET</span>/api/health</div>
@@ -772,11 +773,11 @@
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
       <div class="test-chip">
         <div class="test-title">test_routes.py</div>
-        <div class="test-sub">245 tests · all Flask endpoints · server config · warranty · sysinfo · stale data · metrics history · dashboard cache · flood suppressor · SAFE_PROCESSES guard · glossary</div>
+        <div class="test-sub">260 tests · all Flask endpoints · server config · warranty · sysinfo · stale data · metrics history · dashboard cache · flood suppressor · SAFE_PROCESSES guard · glossary · NVIDIA status</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_powershell.py</div>
-        <div class="test-sub">341 tests · WMI mocking · subprocess mocking · single-item normalization · timeouts · cloud attrs</div>
+        <div class="test-sub">390 tests · WMI mocking · subprocess mocking · single-item normalization · timeouts · cloud attrs · NVIDIA fuzzy PFID · WU fallback · update cache</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_system_health_diag.py</div>

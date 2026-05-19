@@ -877,11 +877,13 @@
       </div>
     </div>
 
+    <div id="drv-nvidia-card" style="display:none"></div>
+
     <div class="driver-grid" id="driver-grid">
       <div class="empty-state">
         <div class="big-icon">⬡</div>
         <h3>No scan results yet</h3>
-        <p>Click <strong>Run Scan</strong> to enumerate your installed drivers and check for Dell updates.</p>
+        <p>Click <strong>Run Scan</strong> to enumerate your installed drivers and check for updates.</p>
       </div>
     </div>
 
@@ -1299,6 +1301,8 @@ document.querySelectorAll(".page-tab").forEach(btn => {
     });
     if (page === "dashboard") {
       loadDashboard();
+    } else if (page === "drivers") {
+      if (!_tabLoaded["drivers"]) { _tabLoaded["drivers"] = true; drvLoadNvidiaStatus(); }
     } else if (page === "bsod") {
       if (!_tabLoaded["bsod"])    { _tabLoaded["bsod"]    = true; loadBsodData(false); }
     } else if (page === "startup") {
@@ -1350,6 +1354,73 @@ document.querySelectorAll(".page-tab").forEach(btn => {
 // DRIVER MANAGER
 // ══════════════════════════════════════════════════════════════════════════
 let allDrivers = [], activeTab = "All", pollTimer = null;
+
+/** Load NVIDIA GPU status on tab open — shows GPU info immediately without
+ *  requiring a manual scan.  The card appears above the scan results grid
+ *  so the user sees it even before clicking "Run Scan". */
+async function drvLoadNvidiaStatus() {
+  try {
+    const r = await fetch("/api/nvidia/status");
+    const data = await r.json();
+    const card = document.getElementById("drv-nvidia-card");
+    if (!data.ok || !data.has_nvidia) { card.style.display = "none"; return; }
+
+    const installed = esc(data.InstalledVersion || "—");
+    const latest    = esc(data.LatestVersion || "");
+    const gpuName   = esc(data.Name || "NVIDIA GPU");
+    const source    = data.UpdateSource || "none";
+    const hasUpdate = data.UpdateAvailable === true;
+
+    const statusBadge = hasUpdate
+      ? '<span style="background:#ff7043;color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">Update Available</span>'
+      : '<span style="background:#00e5a0;color:#1a1a2e;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">Up to Date</span>';
+
+    const latestRow = latest
+      ? `<div style="display:flex;justify-content:space-between;margin-top:6px">
+           <span style="color:#6b7a90">Latest Version</span>
+           <span style="color:${hasUpdate ? '#ff7043' : '#00e5a0'};font-weight:600">${latest}</span>
+         </div>` : "";
+
+    const sourceLabel = source === "nvidia_api" ? "NVIDIA API"
+                      : source === "installer2_cache" ? "Local Cache"
+                      : source === "windows_update" ? "Windows Update"
+                      : "";
+    const sourceRow = sourceLabel
+      ? `<div style="display:flex;justify-content:space-between;margin-top:6px">
+           <span style="color:#6b7a90">Detected via</span>
+           <span style="color:#8a8aaa">${sourceLabel}</span>
+         </div>` : "";
+
+    const updateBtn = hasUpdate
+      ? `<button onclick="drvOpenNvidiaApp(event)" style="margin-top:12px;width:100%;padding:8px 16px;
+           background:linear-gradient(135deg,#76b900,#5a9e00);color:#fff;border:none;border-radius:6px;
+           cursor:pointer;font-weight:600;font-size:12px">🟢 Update via NVIDIA App</button>`
+      : "";
+
+    card.innerHTML = `
+      <div style="background:var(--card);border:1px solid ${hasUpdate ? '#ff7043' : 'var(--border)'};
+        border-radius:10px;padding:16px 20px;margin-bottom:16px;
+        ${hasUpdate ? 'box-shadow:0 0 12px rgba(255,112,67,0.15)' : ''}">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:20px">🎮</span>
+            <span style="font-weight:600;color:#e0e0e0">${gpuName}</span>
+          </div>
+          ${statusBadge}
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:6px">
+          <span style="color:#6b7a90">Installed Version</span>
+          <span style="color:#e0e0e0;font-weight:500">${installed}</span>
+        </div>
+        ${latestRow}
+        ${sourceRow}
+        ${updateBtn}
+      </div>`;
+    card.style.display = "";
+  } catch(e) {
+    console.error("Failed to load NVIDIA status:", e);
+  }
+}
 
 document.getElementById("tabs").addEventListener("click", e => {
   const btn = e.target.closest(".tab");

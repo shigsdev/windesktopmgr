@@ -712,7 +712,17 @@ def get_gpu_metrics() -> dict:
 # Known GPU product family IDs for the NVIDIA driver lookup API.
 # Resolved via https://www.nvidia.com/Download/API/lookupValueSearch.aspx?TypeID=3&ParentID=<series>
 # Series 127 = GeForce RTX 40 Series (Desktop)
+# Series 129 = GeForce RTX 50 Series (Desktop)
+# Series 120 = GeForce RTX 30 Series (Desktop)
+# Series 116 = GeForce RTX 20 Series (Desktop)
+# Series 112 = GeForce GTX 16 Series (Desktop)
 _NVIDIA_PFID_MAP: dict[str, int] = {
+    # RTX 50 series
+    "NVIDIA GeForce RTX 5090": 1054,
+    "NVIDIA GeForce RTX 5080": 1055,
+    "NVIDIA GeForce RTX 5070 Ti": 1056,
+    "NVIDIA GeForce RTX 5070": 1057,
+    # RTX 40 series
     "NVIDIA GeForce RTX 4090": 995,
     "NVIDIA GeForce RTX 4080 SUPER": 1041,
     "NVIDIA GeForce RTX 4080": 996,
@@ -722,7 +732,75 @@ _NVIDIA_PFID_MAP: dict[str, int] = {
     "NVIDIA GeForce RTX 4070": 1015,
     "NVIDIA GeForce RTX 4060 Ti": 1022,
     "NVIDIA GeForce RTX 4060": 1023,
+    # RTX 30 series
+    "NVIDIA GeForce RTX 3090 Ti": 948,
+    "NVIDIA GeForce RTX 3090": 890,
+    "NVIDIA GeForce RTX 3080 Ti": 892,
+    "NVIDIA GeForce RTX 3080": 889,
+    "NVIDIA GeForce RTX 3070 Ti": 900,
+    "NVIDIA GeForce RTX 3070": 891,
+    "NVIDIA GeForce RTX 3060 Ti": 899,
+    "NVIDIA GeForce RTX 3060": 904,
+    "NVIDIA GeForce RTX 3050": 978,
+    # RTX 20 series
+    "NVIDIA GeForce RTX 2080 Ti": 838,
+    "NVIDIA GeForce RTX 2080 SUPER": 856,
+    "NVIDIA GeForce RTX 2080": 815,
+    "NVIDIA GeForce RTX 2070 SUPER": 855,
+    "NVIDIA GeForce RTX 2070": 824,
+    "NVIDIA GeForce RTX 2060 SUPER": 854,
+    "NVIDIA GeForce RTX 2060": 843,
+    # GTX 16 series
+    "NVIDIA GeForce GTX 1660 Ti": 846,
+    "NVIDIA GeForce GTX 1660 SUPER": 858,
+    "NVIDIA GeForce GTX 1660": 845,
+    "NVIDIA GeForce GTX 1650 SUPER": 857,
+    "NVIDIA GeForce GTX 1650": 847,
 }
+
+
+def _lookup_nvidia_pfid(gpu_name: str) -> int | None:
+    """Fuzzy lookup of GPU product family ID from the PFID map.
+
+    Handles common variations in GPU name strings from nvidia-smi and WMI:
+    - Missing "NVIDIA" prefix (WMI sometimes drops it)
+    - Extra suffixes like "8GB", "16GB", "Laptop GPU"
+    - Case differences
+
+    Returns the pfid int or None if no match.
+    """
+    # 1. Exact match (fastest path)
+    pfid = _NVIDIA_PFID_MAP.get(gpu_name)
+    if pfid is not None:
+        return pfid
+
+    # 2. Normalise: strip, ensure "NVIDIA " prefix, collapse whitespace
+    name = " ".join(gpu_name.strip().split())  # collapse whitespace
+    if not name.upper().startswith("NVIDIA "):
+        name = "NVIDIA " + name
+
+    pfid = _NVIDIA_PFID_MAP.get(name)
+    if pfid is not None:
+        return pfid
+
+    # 3. Case-insensitive exact match
+    name_lower = name.lower()
+    for key, val in _NVIDIA_PFID_MAP.items():
+        if key.lower() == name_lower:
+            return val
+
+    # 4. Substring match — GPU name contains a known model (longest match wins)
+    # Handles "NVIDIA GeForce RTX 4060 Ti 16GB" → "NVIDIA GeForce RTX 4060 Ti"
+    best_key, best_len = None, 0
+    for key in _NVIDIA_PFID_MAP:
+        if key.lower() in name_lower and len(key) > best_len:
+            best_key = key
+            best_len = len(key)
+    if best_key:
+        return _NVIDIA_PFID_MAP[best_key]
+
+    return None
+
 
 # NVIDIA AjaxDriverService API endpoint
 _NVIDIA_DRIVER_API = "https://gfwsl.geforce.com/services_toolkit/services/com/nvidia/services/AjaxDriverService.php"
@@ -807,17 +885,42 @@ def _query_nvidia_api(pfid: int, *, studio: bool = True) -> dict | None:
         return None
 
 
+# ── NVIDIA update info cache ──────────────────────────────────────────────
+# The NVIDIA API is queried via get_driver_health() inside the dashboard
+# fan-out, which runs every 30s.  Hammering the API every 30s is wasteful
+# and risks rate-limiting.  Cache the result for 10 minutes — driver
+# releases don't happen more than once a week, and the Installer2 / WU
+# fallbacks are even slower to change.
+_nvidia_update_cache: dict = {"data": None, "ts": None}
+_NVIDIA_UPDATE_CACHE_TTL = timedelta(minutes=10)
+
+
+def _reset_nvidia_update_cache() -> None:
+    """Test helper — clear the NVIDIA update cache between tests."""
+    _nvidia_update_cache["data"] = None
+    _nvidia_update_cache["ts"] = None
+
+
 def get_nvidia_update_info() -> dict | None:
     """Check for NVIDIA GPU and pending driver updates.
 
     Detection priority:
     1. NVIDIA public API (real-time, works even if update not downloaded)
     2. Installer2 Cache registry (downloaded-but-not-installed)
-    3. Windows Update (pending NVIDIA driver)
+    3. Windows Update pending driver list (catches updates the API missed)
+
+    Results are cached for 10 minutes to avoid hammering the NVIDIA API
+    on every 30-second dashboard refresh.
 
     Returns dict with InstalledVersion, LatestVersion, UpdateAvailable, Name
     or None if no NVIDIA GPU found.
     """
+    # Check cache first
+    if _nvidia_update_cache["data"] is not None and _nvidia_update_cache["ts"] is not None:
+        age = datetime.now() - _nvidia_update_cache["ts"]
+        if age < _NVIDIA_UPDATE_CACHE_TTL:
+            return _nvidia_update_cache["data"]
+
     gpu = _get_nvidia_gpu_info()
     if not gpu:
         return None
@@ -831,7 +934,7 @@ def get_nvidia_update_info() -> dict | None:
     is_studio = _detect_nvidia_driver_branch()
 
     # Method 1: NVIDIA public API — real-time latest version check
-    pfid = _NVIDIA_PFID_MAP.get(name)
+    pfid = _lookup_nvidia_pfid(name)
     if pfid:
         api_result = _query_nvidia_api(pfid, studio=is_studio)
         # Do NOT fall back to the other branch — Game Ready 595.97 is not
@@ -875,8 +978,29 @@ def get_nvidia_update_info() -> dict | None:
         except Exception:
             pass
 
+    # Method 3: Windows Update pending driver list — catches NVIDIA updates
+    # that the public API hasn't published yet (e.g., NVIDIA App notified the
+    # user before the AjaxDriverService API was updated).  Uses the existing
+    # _dell_cache if a scan has run, otherwise makes a fresh WU query.
+    if not latest:
+        try:
+            wu = get_windows_update_drivers()
+            if wu:
+                for title, info in wu.items():
+                    if "nvidia" in title.lower():
+                        wu_ver = info.get("DriverVersion", "")
+                        if wu_ver and wu_ver != installed:
+                            # WU returns Windows 4-part version — convert
+                            nv_ver = _win_to_nvidia_version(wu_ver)
+                            if nv_ver != installed:
+                                latest = nv_ver
+                                source = "windows_update"
+                                break
+        except Exception:
+            pass
+
     update_available = bool(latest and latest != installed)
-    return {
+    result = {
         "Name": name,
         "InstalledVersion": installed,
         "WindowsVersion": gpu["win_ver"],
@@ -884,6 +1008,12 @@ def get_nvidia_update_info() -> dict | None:
         "UpdateAvailable": update_available,
         "UpdateSource": source,
     }
+
+    # Cache the result for 10 minutes
+    _nvidia_update_cache["data"] = result
+    _nvidia_update_cache["ts"] = datetime.now()
+
+    return result
 
 
 def get_windows_update_drivers() -> dict | None:
@@ -8145,6 +8275,20 @@ Write-Output 'not_found'
     except Exception:
         pass
     return jsonify({"ok": True, "launched": False, "fallback_url": fallback})
+
+
+@app.route("/api/nvidia/status")
+def api_nvidia_status():
+    """Lightweight NVIDIA GPU + update status for the Driver Manager tab.
+
+    Returns the cached NVIDIA update info without requiring a full driver scan.
+    The driver tab calls this on load so the user sees GPU status immediately
+    instead of the old "No scan results yet — click Run Scan" empty state.
+    """
+    info = get_nvidia_update_info()
+    if info is None:
+        return jsonify({"ok": True, "has_nvidia": False})
+    return jsonify({"ok": True, "has_nvidia": True, **info})
 
 
 @app.route("/api/scan/start", methods=["POST"])

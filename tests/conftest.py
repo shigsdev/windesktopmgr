@@ -150,6 +150,10 @@ def reset_globals():
     # test's mocked collectors and silently skip their own mocks.
     wdm._dashboard_cache_clear()
 
+    # NVIDIA update info cache (10-min TTL). Must reset between tests so
+    # a prior test's cached result doesn't bleed into the next test.
+    wdm._reset_nvidia_update_cache()
+
     # Request-log flood suppressor state -- a prior test's requests must
     # not cause a later test's first request to be silently suppressed
     # as a duplicate.

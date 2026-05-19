@@ -157,6 +157,62 @@ class TestLaunchNvidiaApp:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# GET  /api/nvidia/status
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestNvidiaStatusRoute:
+    """Tests for /api/nvidia/status — lightweight NVIDIA GPU update info for
+    the Driver Manager tab auto-load.  Doesn't require a full driver scan."""
+
+    def test_returns_update_available(self, client, mocker):
+        mocker.patch(
+            "windesktopmgr.get_nvidia_update_info",
+            return_value={
+                "Name": "NVIDIA GeForce RTX 4060 Ti",
+                "InstalledVersion": "591.74",
+                "WindowsVersion": "32.0.15.9174",
+                "LatestVersion": "595.79",
+                "UpdateAvailable": True,
+                "UpdateSource": "nvidia_api",
+            },
+        )
+        resp = client.get("/api/nvidia/status")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["has_nvidia"] is True
+        assert data["UpdateAvailable"] is True
+        assert data["LatestVersion"] == "595.79"
+        assert data["Name"] == "NVIDIA GeForce RTX 4060 Ti"
+
+    def test_returns_up_to_date(self, client, mocker):
+        mocker.patch(
+            "windesktopmgr.get_nvidia_update_info",
+            return_value={
+                "Name": "NVIDIA GeForce RTX 4060 Ti",
+                "InstalledVersion": "595.79",
+                "WindowsVersion": "32.0.15.9579",
+                "LatestVersion": "595.79",
+                "UpdateAvailable": False,
+                "UpdateSource": "nvidia_api",
+            },
+        )
+        resp = client.get("/api/nvidia/status")
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["has_nvidia"] is True
+        assert data["UpdateAvailable"] is False
+
+    def test_returns_no_nvidia_when_none(self, client, mocker):
+        mocker.patch("windesktopmgr.get_nvidia_update_info", return_value=None)
+        resp = client.get("/api/nvidia/status")
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["has_nvidia"] is False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # GET  /api/bsod/data
 # ══════════════════════════════════════════════════════════════════════════════
 
