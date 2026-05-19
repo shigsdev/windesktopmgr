@@ -809,8 +809,14 @@ _NVIDIA_DRIVER_API = "https://gfwsl.geforce.com/services_toolkit/services/com/nv
 def _detect_nvidia_driver_branch() -> bool:
     """Detect whether the user is on Studio/CRD or Game Ready driver branch.
 
-    Checks NVIDIA App's SHIM.json for IsCRD flag, falls back to True (Studio)
-    since that's the safer default — offering Game Ready to a Studio user is wrong.
+    Checks NVIDIA App's SHIM.json for IsCRD flag.  The flag lives INSIDE
+    the ``NVDriver`` sub-object (not at top level), e.g.::
+
+        {"NVDriver": {"IsCRD": false, "Version": 59595, ...}}
+
+    Falls back to False (Game Ready) since that's the most common consumer
+    configuration and returning True (Studio) when the user has Game Ready
+    causes the API to return nothing (the exact bug from 2026-05-18).
 
     Returns True for Studio/CRD, False for Game Ready.
     """
@@ -829,11 +835,21 @@ def _detect_nvidia_driver_branch() -> bool:
         if matches:
             with open(matches[0]) as f:
                 data = json.load(f)
-            return data.get("IsCRD", True)
+            # IsCRD is nested inside NVDriver, not at top level
+            nv_driver = data.get("NVDriver") or {}
+            is_crd = nv_driver.get("IsCRD")
+            if is_crd is not None:
+                return bool(is_crd)
+            # Legacy fallback: some older SHIM.json versions had it at top level
+            top_level = data.get("IsCRD")
+            if top_level is not None:
+                return bool(top_level)
     except Exception:
         pass
-    # Default to Studio — safer than offering Game Ready to Studio users
-    return True
+    # Default to Game Ready — most common consumer configuration.
+    # Defaulting to Studio when user has Game Ready causes the API to
+    # return nothing (no Studio driver for many consumer GPUs).
+    return False
 
 
 def _query_nvidia_api(pfid: int, *, studio: bool = True) -> dict | None:
@@ -937,11 +953,18 @@ def get_nvidia_update_info() -> dict | None:
     pfid = _lookup_nvidia_pfid(name)
     if pfid:
         api_result = _query_nvidia_api(pfid, studio=is_studio)
-        # Do NOT fall back to the other branch — Game Ready 595.97 is not
-        # a valid "update" for a Studio 595.79 user (different driver branches).
         if api_result and api_result.get("version"):
             latest = api_result["version"]
             source = "nvidia_api"
+        else:
+            # Primary branch returned nothing — try the other branch.
+            # This catches SHIM.json misdetection (2026-05-18 bug: IsCRD was
+            # nested inside NVDriver, not at top level, so branch detection
+            # defaulted wrong) and GPUs that only have one branch available.
+            alt_result = _query_nvidia_api(pfid, studio=not is_studio)
+            if alt_result and alt_result.get("version"):
+                latest = alt_result["version"]
+                source = "nvidia_api"
 
     # Method 2: Installer2 Cache (offline fallback) — pure Python via winreg
     if not latest:

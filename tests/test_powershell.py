@@ -3449,23 +3449,54 @@ class TestGetNvidiaGpuInfo:
 
 
 class TestDetectNvidiaDriverBranch:
-    """Tests for _detect_nvidia_driver_branch() — detects Studio vs Game Ready."""
+    """Tests for _detect_nvidia_driver_branch() — detects Studio vs Game Ready.
 
-    def test_studio_detected_from_shim(self, mocker, tmp_path):
+    The IsCRD flag lives inside the NVDriver sub-object of SHIM.json,
+    not at top level.  Bug 2026-05-18: reading from top level caused
+    Game Ready users to be misdetected as Studio, making the API return
+    nothing for their GPU.
+    """
+
+    def test_studio_detected_from_nvdriver(self, mocker, tmp_path):
+        """IsCRD=True inside NVDriver → Studio."""
         shim = tmp_path / "SHIM.json"
-        shim.write_text(json.dumps({"IsCRD": True, "NVDriver.Version": 59579}))
+        shim.write_text(json.dumps({"NVDriver": {"IsCRD": True, "Version": 59579}}))
         mocker.patch("glob.glob", return_value=[str(shim)])
         assert wdm._detect_nvidia_driver_branch() is True
 
-    def test_game_ready_detected_from_shim(self, mocker, tmp_path):
+    def test_game_ready_detected_from_nvdriver(self, mocker, tmp_path):
+        """IsCRD=False inside NVDriver → Game Ready."""
         shim = tmp_path / "SHIM.json"
-        shim.write_text(json.dumps({"IsCRD": False}))
+        shim.write_text(json.dumps({"NVDriver": {"IsCRD": False, "Version": 59595}}))
         mocker.patch("glob.glob", return_value=[str(shim)])
         assert wdm._detect_nvidia_driver_branch() is False
 
-    def test_missing_shim_defaults_to_studio(self, mocker):
-        mocker.patch("glob.glob", return_value=[])
+    def test_legacy_top_level_iscrd_still_works(self, mocker, tmp_path):
+        """Older SHIM.json format with IsCRD at top level."""
+        shim = tmp_path / "SHIM.json"
+        shim.write_text(json.dumps({"IsCRD": True}))
+        mocker.patch("glob.glob", return_value=[str(shim)])
         assert wdm._detect_nvidia_driver_branch() is True
+
+    def test_missing_shim_defaults_to_game_ready(self, mocker):
+        """No SHIM.json → default to Game Ready (most common consumer config)."""
+        mocker.patch("glob.glob", return_value=[])
+        assert wdm._detect_nvidia_driver_branch() is False
+
+    def test_nvdriver_takes_precedence_over_top_level(self, mocker, tmp_path):
+        """If both exist, NVDriver.IsCRD wins."""
+        shim = tmp_path / "SHIM.json"
+        shim.write_text(json.dumps({"IsCRD": True, "NVDriver": {"IsCRD": False}}))
+        mocker.patch("glob.glob", return_value=[str(shim)])
+        assert wdm._detect_nvidia_driver_branch() is False
+
+    def test_null_iscrd_in_nvdriver_falls_through(self, mocker, tmp_path):
+        """NVDriver.IsCRD = null → falls through to top-level or default."""
+        shim = tmp_path / "SHIM.json"
+        shim.write_text(json.dumps({"NVDriver": {"IsCRD": None}}))
+        mocker.patch("glob.glob", return_value=[str(shim)])
+        # No top-level IsCRD either → defaults to Game Ready
+        assert wdm._detect_nvidia_driver_branch() is False
 
 
 class TestQueryNvidiaApi:
@@ -3658,17 +3689,36 @@ class TestGetNvidiaUpdateInfo:
         # API should NOT be called since pfid is not in the map
         api_mock.assert_not_called()
 
-    def test_studio_api_failure_does_not_fall_back_to_game_ready(self, mocker):
-        """Studio driver API fails → must NOT fall back to Game Ready.
-        Game Ready 595.97 is NOT a valid update for Studio 595.79 user."""
+    def test_primary_branch_fails_falls_back_to_alt_branch(self, mocker):
+        """Primary branch API returns None → tries the other branch.
+        Bug 2026-05-18: SHIM.json IsCRD was nested inside NVDriver,
+        causing Studio misdetection on a Game Ready user. Alt-branch
+        fallback ensures we still find the update."""
+        self._mock_gpu(mocker)
+
+        # Primary branch (Studio) returns None, alt (Game Ready) has an update
+        def _side_effect(pfid, *, studio=True):
+            if studio:
+                return None  # Studio has nothing for this GPU
+            return {"version": "596.49", "url": "", "date": "", "name": "Game Ready"}
+
+        api_mock = mocker.patch("windesktopmgr._query_nvidia_api", side_effect=_side_effect)
+        result = wdm.get_nvidia_update_info()
+        # API should be called TWICE (primary + alt branch)
+        assert api_mock.call_count == 2
+        assert result["UpdateAvailable"] is True
+        assert result["LatestVersion"] == "596.49"
+        assert result["UpdateSource"] == "nvidia_api"
+
+    def test_both_branches_fail_returns_no_update(self, mocker):
+        """Both Studio and Game Ready APIs return None → no update found."""
         self._mock_gpu(mocker)
         api_mock = mocker.patch("windesktopmgr._query_nvidia_api", return_value=None)
         self._mock_winreg_cache(mocker, entries=[])
         mocker.patch("windesktopmgr.get_windows_update_drivers", return_value=None)
         result = wdm.get_nvidia_update_info()
-        # API should be called exactly ONCE (Studio only), not twice
-        api_mock.assert_called_once()
-        # No update from API — falls through to Installer2 Cache
+        # API should be called TWICE (primary + alt)
+        assert api_mock.call_count == 2
         assert result["UpdateSource"] == "none"
         assert result["UpdateAvailable"] is False
 
