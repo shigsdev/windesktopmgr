@@ -931,18 +931,34 @@ def get_nvidia_update_info() -> dict | None:
     Returns dict with InstalledVersion, LatestVersion, UpdateAvailable, Name
     or None if no NVIDIA GPU found.
     """
-    # Check cache first
-    if _nvidia_update_cache["data"] is not None and _nvidia_update_cache["ts"] is not None:
-        age = datetime.now() - _nvidia_update_cache["ts"]
-        if age < _NVIDIA_UPDATE_CACHE_TTL:
-            return _nvidia_update_cache["data"]
-
+    # Always read the current installed driver version first. It's cheap
+    # (nvidia-smi + WMI, ~300 ms) compared to the expensive API + Windows
+    # Update fan-out the cache is protecting (~5 s+).
+    #
+    # We need this BEFORE consulting the cache so we can detect the
+    # "user just installed the new driver" case. Without this check the
+    # cache would keep serving ``UpdateAvailable: True`` (with the OLD
+    # InstalledVersion) for up to 10 minutes after the install, leaving
+    # the dashboard concern and Driver Manager NVIDIA card stuck on
+    # "Update Available" until the TTL expired. The cache key is now
+    # tied to the installed version, so a version bump invalidates
+    # immediately.
     gpu = _get_nvidia_gpu_info()
     if not gpu:
         return None
 
     installed = gpu["installed"]
     name = gpu["name"]
+
+    # Cache hit — only when the installed version still matches what was
+    # cached. A mismatch means the user updated the driver since the last
+    # check; recompute so the UI clears immediately on the next refresh.
+    cached = _nvidia_update_cache["data"]
+    cached_ts = _nvidia_update_cache["ts"]
+    if cached is not None and cached_ts is not None and cached.get("InstalledVersion") == installed:
+        age = datetime.now() - cached_ts
+        if age < _NVIDIA_UPDATE_CACHE_TTL:
+            return cached
     latest = ""
     source = "none"
 

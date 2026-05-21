@@ -3806,6 +3806,64 @@ class TestGetNvidiaUpdateInfo:
         wdm.get_nvidia_update_info()
         assert api_mock.call_count == 2
 
+    def test_cache_invalidates_when_installed_version_changes(self, mocker):
+        """Regression for 2026-05-20 "NVIDIA driver stuck on Update Available"
+        bug. When the user installs the new driver, the cached
+        InstalledVersion no longer matches the actual installed version.
+        The cache must invalidate and recompute so the UI clears
+        immediately on the next dashboard refresh -- not 10 minutes later
+        when the TTL happens to expire.
+        """
+        # First call: cache populated with InstalledVersion=591.74 and an
+        # update from 595.79. (Update Available state.)
+        self._mock_gpu(mocker)
+        api_mock = self._mock_api(mocker, result=self.API_RESULT)
+        r1 = wdm.get_nvidia_update_info()
+        assert r1["InstalledVersion"] == "591.74"
+        assert r1["UpdateAvailable"] is True
+        assert api_mock.call_count == 1
+
+        # User installs 595.79. Same nvidia-smi/WMI now reports the newer
+        # version. The cache still has the stale 591.74 entry but its TTL
+        # has not elapsed.
+        updated_gpu = {
+            "name": "NVIDIA GeForce RTX 4060 Ti",
+            "installed": "595.79",
+            "win_ver": "32.0.15.9579",
+        }
+        mocker.patch("windesktopmgr._get_nvidia_gpu_info", return_value=updated_gpu)
+
+        # Second call: must NOT serve the stale "Update Available" cache.
+        # The API now returns 595.79 as latest (matches installed) -> no
+        # update available.
+        api_mock2 = mocker.patch(
+            "windesktopmgr._query_nvidia_api",
+            return_value={"version": "595.79", "url": "", "date": "", "name": "Studio"},
+        )
+        r2 = wdm.get_nvidia_update_info()
+        assert r2["InstalledVersion"] == "595.79"
+        assert r2["UpdateAvailable"] is False, (
+            "Cache must invalidate when installed version changes — "
+            "otherwise the dashboard stays stuck on Update Available "
+            "after the user runs the install."
+        )
+        # API was called fresh (cache was invalidated, not served).
+        assert api_mock2.call_count == 1
+
+    def test_cache_still_hit_when_installed_version_unchanged(self, mocker):
+        """The version-aware cache must not over-invalidate. When the
+        installed version is the same as cached, the second call must
+        still skip the expensive API/WU calls and serve from cache.
+        """
+        self._mock_gpu(mocker)
+        api_mock = self._mock_api(mocker, result=self.API_RESULT)
+        r1 = wdm.get_nvidia_update_info()
+        r2 = wdm.get_nvidia_update_info()
+        assert r1 == r2
+        # API only called once -- second call hit the cache despite the
+        # new pre-cache GPU read.
+        assert api_mock.call_count == 1
+
 
 class TestLookupNvidiaPfid:
     """Tests for _lookup_nvidia_pfid() — fuzzy GPU name → product family ID.
