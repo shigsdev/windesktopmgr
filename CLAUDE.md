@@ -10,8 +10,9 @@ No step may be skipped. No exceptions.
 2. ruff check + format       →  python -m ruff check . && python -m ruff format .
 3. pytest                    →  python -m pytest tests/ -n auto   (parallel, ~48s)
 4. Update architecture.html  →  REQUIRED if any of the triggers below apply
-5. git commit + push         →  (pre-commit hooks re-run ruff + pytest)
-6. python dev.py verify      →  POST /api/restart + /api/health + /api/selftest
+5. git commit + push branch  →  open PR, merge to main (pre-commit + pre-push hooks)
+6. deploy + verify           →  pull main into the primary repo, restart the tray,
+                                then `python dev.py verify` against the DEPLOYED code
 7. Print SOP Compliance Report (Phase 11 checklist — see bottom of this file)
 ```
 
@@ -28,11 +29,14 @@ the diagram rots and the checklist is a lie. Triggers:
 If none of those triggers apply, mark Phase 9 `architecture.html` as ⏭️ Skipped
 with a one-line reason in the SOP Compliance Report. Never silently skip.
 
-**Step 6 is NON-OPTIONAL (for code changes).** It is the only gate that runs
-real PowerShell against the live instance. Mocked tests alone are insufficient
-— `dev.py verify` catches mock-vs-reality drift, startup crashes, and PS
-output format regressions. See the Docs-Only Fast Path below for the one
-exception.
+**Step 6 is NON-OPTIONAL (for code changes).** The running tray re-execs from
+the **primary repo** (`C:\shigsapps\windesktopmgr`), NOT the worktree — so the
+deploy half of step 6 (pull `main` into the primary repo, then restart the
+tray) is what actually makes a change live. `dev.py verify` then catches
+mock-vs-reality drift, startup crashes, and PS output format regressions.
+A green verify against a tray that re-execed *old* code is a false pass —
+always confirm the primary repo was pulled before the restart. See the
+Docs-Only Fast Path below for the one exception.
 
 **Step 7 is NON-OPTIONAL.** The SOP Compliance Report must be the LAST thing
 printed for every code change. See the template at the bottom of this file.
@@ -42,7 +46,7 @@ printed for every code change. See the template at the bottom of this file.
 ## 📝 Docs-Only Fast Path — Skip Testing When No Code Changed
 
 If a change touches **only documentation files** and no runtime behavior,
-Steps 2 (ruff), 3 (pytest), and 6 (dev.py verify) add no value and should
+Steps 2 (ruff), 3 (pytest), and 6 (deploy + verify) add no value and should
 be explicitly skipped. Running them on a doc-only commit just wastes ~90
 seconds per change and trains the habit of ignoring green output.
 
