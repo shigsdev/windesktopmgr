@@ -8905,23 +8905,28 @@ def fix_fast_startup_route():
 
 
 def fix_fast_startup(enable):
-    """Execute the Fast Startup registry toggle."""
+    """Toggle Fast Startup via the ``HiberbootEnabled`` registry value
+    (``HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power``).
+
+    Pure-Python via ``winreg`` — no PowerShell subprocess. Requires admin
+    (the key is under HKLM); a non-elevated process gets PermissionError,
+    surfaced in the message.
+    """
     value = 1 if enable else 0
     label = "enabled" if enable else "disabled"
-    ps = f"""
-try {{
-    Set-ItemProperty -Path "HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power" `
-        -Name "HiberbootEnabled" -Value {value} -Type DWord -Force
-    Write-Output "OK:{label}"
-}} catch {{ Write-Output "ERROR: $_" }}
-"""
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=10
+        key = winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Power",
+            0,
+            winreg.KEY_SET_VALUE,
         )
-        ok = "OK" in r.stdout
-        return {"ok": ok, "enabled": enable, "message": f"Fast Startup {label}." if ok else r.stdout.strip()}
-    except Exception as e:
+        try:
+            winreg.SetValueEx(key, "HiberbootEnabled", 0, winreg.REG_DWORD, value)
+        finally:
+            winreg.CloseKey(key)
+        return {"ok": True, "enabled": enable, "message": f"Fast Startup {label}."}
+    except Exception as e:  # noqa: BLE001
         return {"ok": False, "enabled": enable, "message": str(e)}
 
 
@@ -9338,32 +9343,52 @@ def warranty_data():
         cpu_name = sys_data.get("CPUName", "Unknown")
         is_affected = bool(re.search(r"i[579]-1[34]\d{3}", cpu_name))
 
-        # Microcode from registry
-        mcu_cmd = """
-try {
-    $key = Get-ItemProperty 'HKLM:\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0'
-    $raw = $key.'Update Revision'
-    if ($raw -is [byte[]]) { '0x' + [BitConverter]::ToString($raw).Replace('-','') }
-    else { [string]$raw }
-} catch { 'Unable to read' }
-"""
-        r2 = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", mcu_cmd], capture_output=True, text=True, timeout=10
-        )
-        microcode = r2.stdout.strip() if r2.stdout.strip() else "Unable to read"
+        # Microcode revision from the registry — winreg, no PowerShell.
+        # HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0 'Update Revision'
+        # is a REG_BINARY blob; format it as 0x<uppercase-hex>, matching what
+        # [BitConverter]::ToString().Replace('-','') produced.
+        microcode = "Unable to read"
+        try:
+            mc_key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+            )
+            try:
+                raw, _typ = winreg.QueryValueEx(mc_key, "Update Revision")
+            finally:
+                winreg.CloseKey(mc_key)
+            microcode = "0x" + raw.hex().upper() if isinstance(raw, (bytes, bytearray)) else str(raw)
+        except Exception:  # noqa: BLE001
+            microcode = "Unable to read"
 
-        # BSOD + WHEA counts (lightweight)
-        counts_cmd = """
-$bsod30 = @(Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Microsoft-Windows-WER-SystemErrorReporting';Id=1001} -MaxEvents 100 -EA SilentlyContinue |
-    Where-Object { $_.TimeCreated -gt (Get-Date).AddDays(-30) }).Count
-$whea = @(Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Microsoft-Windows-WHEA-Logger'} -MaxEvents 100 -EA SilentlyContinue).Count
-$kp41 = @(Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Microsoft-Windows-Kernel-Power';Id=41} -MaxEvents 100 -EA SilentlyContinue).Count
-@{BSODs30Days=$bsod30;WHEAErrors=$whea;UnexpectedShutdowns=$kp41} | ConvertTo-Json
-"""
-        r3 = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", counts_cmd], capture_output=True, text=True, timeout=20
-        )
-        counts = json.loads(r3.stdout.strip()) if r3.stdout.strip() else {}
+        # BSOD / WHEA / Kernel-Power-41 counts via the event-log API
+        # (win32evtlog), replacing three Get-WinEvent -FilterHashtable calls.
+        counts: dict = {}
+        try:
+            bsod_rows = _query_event_log_xpath(
+                "System",
+                _build_evt_xpath(ids=[1001], providers=["Microsoft-Windows-WER-SystemErrorReporting"]),
+                max_events=100,
+            )
+            cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+            bsod30 = sum(1 for e in bsod_rows if _parse_ts(e.get("TimeCreated", "")) >= cutoff)
+            whea = len(
+                _query_event_log_xpath(
+                    "System",
+                    _build_evt_xpath(providers=["Microsoft-Windows-WHEA-Logger"]),
+                    max_events=100,
+                )
+            )
+            kp41 = len(
+                _query_event_log_xpath(
+                    "System",
+                    _build_evt_xpath(ids=[41], providers=["Microsoft-Windows-Kernel-Power"]),
+                    max_events=100,
+                )
+            )
+            counts = {"BSODs30Days": bsod30, "WHEAErrors": whea, "UnexpectedShutdowns": kp41}
+        except Exception:  # noqa: BLE001
+            counts = {}
 
         service_tag = sys_data.get("DellServiceTag", "N/A")
         if service_tag in ("", "To Be Filled By O.E.M.", "Default string"):
