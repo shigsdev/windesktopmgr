@@ -532,12 +532,19 @@ def _win_to_nvidia_version(win_ver: str) -> str:
 
     Windows: 32.0.15.9174  →  NVIDIA: 591.74
     Formula: concatenate parts[2]+parts[3], drop first char, insert dot before last 2.
+
+    The conversion is only defined for the canonical NVIDIA form, where
+    parts[2]+parts[3] is exactly 6 digits ("15" + "9174" → "159174"). Any
+    other shape — a non-NVIDIA driver version, a malformed string — is
+    returned unchanged rather than run through the formula, which would
+    otherwise emit a garbage version (e.g. "32.0.1.23" → ".23") that could
+    misfire update detection.
     """
     parts = win_ver.split(".")
     if len(parts) < 4:
         return win_ver
     raw = parts[2] + parts[3]  # e.g. "159174"
-    if len(raw) < 3:
+    if not raw.isdigit() or len(raw) != 6:
         return win_ver
     raw = raw[1:]  # drop first char → "59174"
     return raw[:-2] + "." + raw[-2:]  # "591.74"

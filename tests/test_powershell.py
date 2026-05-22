@@ -3614,6 +3614,21 @@ class TestWinToNvidiaVersion:
         # e.g. 32.0.16.5770 → "165770" → drop first → "65770" → "657.70"
         assert wdm._win_to_nvidia_version("32.0.16.5770") == "657.70"
 
+    def test_too_few_digits_passthrough(self):
+        """raw shorter than the canonical 6 digits → returned unchanged.
+        Regression for the 2026-05-21 review: the old `len(raw) < 3` guard
+        let "32.0.1.23" (raw "123") through and emitted the garbage ".23".
+        """
+        assert wdm._win_to_nvidia_version("32.0.1.23") == "32.0.1.23"
+
+    def test_too_many_digits_passthrough(self):
+        """raw longer than 6 digits → returned unchanged, no garbage."""
+        assert wdm._win_to_nvidia_version("32.0.150.96490") == "32.0.150.96490"
+
+    def test_non_numeric_segments_passthrough(self):
+        """Non-digit version segments → returned unchanged."""
+        assert wdm._win_to_nvidia_version("32.0.1a.bcde") == "32.0.1a.bcde"
+
 
 class TestGetNvidiaUpdateInfo:
     """Tests for get_nvidia_update_info() — Python-based 3-tier detection:
