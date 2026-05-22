@@ -2779,45 +2779,59 @@ class TestCheckDellBiosCommandContent:
 
 
 class TestFixFastStartup:
+    """fix_fast_startup() — winreg HiberbootEnabled toggle, no PowerShell."""
+
+    def _mock_winreg(self, mocker, fail=None):
+        """Patch winreg for fix_fast_startup. fail = exception OpenKey raises."""
+        mocker.patch("windesktopmgr.winreg.CloseKey")
+        if fail is not None:
+            mocker.patch("windesktopmgr.winreg.OpenKey", side_effect=fail)
+        else:
+            mocker.patch("windesktopmgr.winreg.OpenKey", return_value=mocker.MagicMock())
+        mocker.patch("windesktopmgr.winreg.SetValueEx")
+
     def test_disable_returns_ok_true(self, mocker):
-        _mock_run(mocker, stdout="OK:disabled")
+        self._mock_winreg(mocker)
         result = wdm.fix_fast_startup(False)
         assert result["ok"] is True
         assert result["enabled"] is False
 
     def test_enable_returns_ok_true(self, mocker):
-        _mock_run(mocker, stdout="OK:enabled")
+        self._mock_winreg(mocker)
         result = wdm.fix_fast_startup(True)
         assert result["ok"] is True
         assert result["enabled"] is True
 
-    def test_disable_command_sets_value_zero(self, mocker):
-        m = _mock_run(mocker, stdout="OK:disabled")
+    def test_disable_writes_hiberboot_value_zero(self, mocker):
+        self._mock_winreg(mocker)
         wdm.fix_fast_startup(False)
-        cmd = m.call_args[0][0][-1]
-        assert "HiberbootEnabled" in cmd
-        assert "-Value 0" in cmd
+        # SetValueEx(key, name, reserved, type, value)
+        args = wdm.winreg.SetValueEx.call_args[0]
+        assert args[1] == "HiberbootEnabled"
+        assert args[4] == 0
 
-    def test_enable_command_sets_value_one(self, mocker):
-        m = _mock_run(mocker, stdout="OK:enabled")
+    def test_enable_writes_hiberboot_value_one(self, mocker):
+        self._mock_winreg(mocker)
         wdm.fix_fast_startup(True)
-        cmd = m.call_args[0][0][-1]
-        assert "HiberbootEnabled" in cmd
-        assert "-Value 1" in cmd
+        args = wdm.winreg.SetValueEx.call_args[0]
+        assert args[1] == "HiberbootEnabled"
+        assert args[4] == 1
 
-    def test_registry_path_correct(self, mocker):
-        m = _mock_run(mocker, stdout="OK:disabled")
+    def test_uses_session_manager_power_key(self, mocker):
+        self._mock_winreg(mocker)
         wdm.fix_fast_startup(False)
-        cmd = m.call_args[0][0][-1]
-        assert "Session Manager\\Power" in cmd
+        subkey = wdm.winreg.OpenKey.call_args[0][1]
+        assert subkey.endswith(r"Session Manager\Power")
 
-    def test_ps_error_returns_ok_false(self, mocker):
-        _mock_run(mocker, stdout="ERROR: Access denied")
+    def test_permission_error_returns_ok_false(self, mocker):
+        """A non-elevated process can't write HKLM — surface it, don't crash."""
+        self._mock_winreg(mocker, fail=PermissionError("Access is denied"))
         result = wdm.fix_fast_startup(False)
         assert result["ok"] is False
+        assert "denied" in result["message"].lower()
 
-    def test_timeout_returns_ok_false(self, mocker):
-        _mock_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 10))
+    def test_registry_error_returns_ok_false(self, mocker):
+        self._mock_winreg(mocker, fail=OSError("cannot open key"))
         result = wdm.fix_fast_startup(False)
         assert result["ok"] is False
 
@@ -3284,11 +3298,8 @@ class TestRemediationCommands:
 
 
 class TestWarrantyDataCommands:
-    """Tests for warranty_data() — CPU/BIOS/System info now from wmi.WMI(),
-    microcode and counts still from subprocess."""
-
-    MCU_OUT = "0x010001B4"
-    COUNTS_OUT = json.dumps({"BSODs30Days": 2, "WHEAErrors": 0, "UnexpectedShutdowns": 1})
+    """warranty_data() — CPU/BIOS/system from wmi.WMI(), microcode from winreg,
+    BSOD/WHEA/KP41 counts from the win32evtlog event-log API (no subprocess)."""
 
     CPU_OBJ = _wmi_obj(
         Name="  Intel(R) Core(TM) i9-14900K  ",
@@ -3311,12 +3322,20 @@ class TestWarrantyDataCommands:
                 "Win32_ComputerSystem": [self.CS_OBJ],
             },
         )
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = [
-            type("R", (), {"stdout": self.MCU_OUT, "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": self.COUNTS_OUT, "returncode": 0, "stderr": ""})(),
-        ]
-        return m
+        # Microcode — winreg HKLM\...\CentralProcessor\0 'Update Revision'.
+        mocker.patch("windesktopmgr.winreg.OpenKey", return_value=mocker.MagicMock())
+        mocker.patch("windesktopmgr.winreg.QueryValueEx", return_value=(b"\x01\x00\x01\xb4", 3))
+        mocker.patch("windesktopmgr.winreg.CloseKey")
+        # Counts — three _query_event_log_xpath calls (bsod 1001 / whea / kp41).
+        recent = datetime.now(timezone.utc).isoformat()
+        return mocker.patch(
+            "windesktopmgr._query_event_log_xpath",
+            side_effect=[
+                [{"TimeCreated": recent}, {"TimeCreated": recent}],  # bsod → 2
+                [],  # whea → 0
+                [{"TimeCreated": recent}],  # kp41 → 1
+            ],
+        )
 
     def test_warranty_returns_cpu_info_from_wmi(self, mocker, client):
         self._make_mock(mocker)
@@ -3332,24 +3351,36 @@ class TestWarrantyDataCommands:
         assert d["warranty"]["BIOSVersion"] == "2.23.0"
         assert d["warranty"]["BIOSDate"] == "2024-01-06"
 
-    def test_microcode_command_reads_registry(self, mocker, client):
-        m = self._make_mock(mocker)
+    def test_microcode_read_from_registry(self, mocker, client):
+        self._make_mock(mocker)
         client.get("/api/warranty/data")
-        cmd = m.call_args_list[0][0][0][-1]
-        assert "CentralProcessor" in cmd
-        assert "Update Revision" in cmd
+        subkey = wdm.winreg.OpenKey.call_args[0][1]
+        assert "CentralProcessor" in subkey
+        assert wdm.winreg.QueryValueEx.call_args[0][1] == "Update Revision"
 
-    def test_counts_command_queries_whea_logger(self, mocker, client):
-        m = self._make_mock(mocker)
-        client.get("/api/warranty/data")
-        cmd = m.call_args_list[1][0][0][-1]
-        assert "WHEA-Logger" in cmd
+    def test_microcode_formatted_as_hex(self, mocker, client):
+        self._make_mock(mocker)
+        d = client.get("/api/warranty/data").get_json()
+        assert d["warranty"]["MicrocodeVersion"] == "0x010001B4"
 
-    def test_counts_command_queries_kernel_power_41(self, mocker, client):
-        m = self._make_mock(mocker)
+    def test_counts_query_whea_logger(self, mocker, client):
+        q = self._make_mock(mocker)
         client.get("/api/warranty/data")
-        cmd = m.call_args_list[1][0][0][-1]
-        assert "41" in cmd
+        whea_xpath = q.call_args_list[1][0][1]
+        assert "WHEA-Logger" in whea_xpath
+
+    def test_counts_query_kernel_power_41(self, mocker, client):
+        q = self._make_mock(mocker)
+        client.get("/api/warranty/data")
+        kp_xpath = q.call_args_list[2][0][1]
+        assert "41" in kp_xpath
+
+    def test_warranty_returns_event_counts(self, mocker, client):
+        self._make_mock(mocker)
+        w = client.get("/api/warranty/data").get_json()["warranty"]
+        assert w["BSODs30Days"] == 2
+        assert w["WHEAErrors"] == 0
+        assert w["UnexpectedShutdowns"] == 1
 
 
 # ══════════════════════════════════════════════════════════════════════════════

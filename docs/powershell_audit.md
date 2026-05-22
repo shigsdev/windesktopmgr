@@ -4,12 +4,17 @@
 **Scope:** Every `subprocess.run("powershell" | "dism" | "netsh" | …)` call site across the three primary modules.
 **Regenerate:** `python scripts/audit_ps_sites.py` dumps the raw TSV the tables below are built from.
 
-> **[BATCH G — 2026-05-22]** Migrated 3 `windesktopmgr.py` Windows-Update sites
-> from `subprocess powershell` to the in-process `win32com` Update COM API:
-> `get_windows_update_drivers`, `get_update_history`, and the WU method of
-> `check_dell_bios_update`. The headline counts and per-site tables below are
-> therefore **3 sites stale** for `windesktopmgr.py` (60 → 57 PS sites; total
-> 74 → 71). Re-run `audit_ps_sites.py` for the current inventory.
+> **[#28 CLOSE-OUT — 2026-05-22, in progress]** Migrating the remaining
+> viable PowerShell sites off `subprocess`.
+> - **Batch G** (PR #42/#43): 3 Windows-Update sites → in-process `win32com`
+>   (`get_windows_update_drivers`, `get_update_history`, `check_dell_bios_update`
+>   WU method).
+> - **PR 1a**: 3 more `windesktopmgr.py` sites → `winreg` / `win32evtlog`
+>   (`fix_fast_startup`, `warranty_data` microcode + BSOD/WHEA/KP41 counts).
+>
+> The headline counts and per-site tables below are therefore **6 sites stale**
+> for `windesktopmgr.py` (60 → 54 PS sites; total 74 → 68). Re-run
+> `audit_ps_sites.py` for the live inventory.
 
 ## Headline numbers
 

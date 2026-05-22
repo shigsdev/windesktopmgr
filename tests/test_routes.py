@@ -1504,8 +1504,18 @@ class TestResumeBrokersRoute:
 
 
 class TestFixFastStartupRoute:
+    """POST /api/credentials/fix-fast-startup — winreg HiberbootEnabled toggle."""
+
+    def _mock_winreg(self, mocker, fail=None):
+        mocker.patch("windesktopmgr.winreg.CloseKey")
+        mocker.patch("windesktopmgr.winreg.SetValueEx")
+        if fail is not None:
+            mocker.patch("windesktopmgr.winreg.OpenKey", side_effect=fail)
+        else:
+            mocker.patch("windesktopmgr.winreg.OpenKey", return_value=mocker.MagicMock())
+
     def test_disable_fast_startup_returns_ok(self, client, mocker):
-        _mock_ps(mocker, stdout="OK:disabled")
+        self._mock_winreg(mocker)
         resp = client.post("/api/credentials/fix-fast-startup", json={"enable": False})
         assert resp.status_code == 200
         data = resp.get_json()
@@ -1513,22 +1523,15 @@ class TestFixFastStartupRoute:
         assert data["enabled"] is False
 
     def test_enable_fast_startup_returns_ok(self, client, mocker):
-        _mock_ps(mocker, stdout="OK:enabled")
+        self._mock_winreg(mocker)
         resp = client.post("/api/credentials/fix-fast-startup", json={"enable": True})
         data = resp.get_json()
         assert data["ok"] is True
         assert data["enabled"] is True
 
-    def test_ps_failure_returns_ok_false(self, client, mocker):
-        _mock_ps(mocker, stdout="ERROR: Access denied")
-        resp = client.post("/api/credentials/fix-fast-startup", json={"enable": False})
-        data = resp.get_json()
-        assert data["ok"] is False
-
-    def test_timeout_returns_ok_false(self, client, mocker):
-        import subprocess
-
-        mocker.patch("windesktopmgr.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ps", timeout=10))
+    def test_registry_failure_returns_ok_false(self, client, mocker):
+        """A non-elevated process can't write the HKLM key — ok:False, no crash."""
+        self._mock_winreg(mocker, fail=PermissionError("Access is denied"))
         resp = client.post("/api/credentials/fix-fast-startup", json={"enable": False})
         data = resp.get_json()
         assert data["ok"] is False
@@ -2142,10 +2145,8 @@ class TestServerConfig:
 
 
 class TestWarrantyRoute:
-    """Tests for /api/warranty/data — CPU/BIOS/system via WMI, microcode+counts via subprocess."""
-
-    MCU_OUT = "0x010001B4"
-    COUNTS_OUT = json.dumps({"BSODs30Days": 2, "WHEAErrors": 0, "UnexpectedShutdowns": 1})
+    """/api/warranty/data — CPU/BIOS/system via WMI, microcode via winreg,
+    BSOD/WHEA/KP41 counts via the win32evtlog event-log API (no subprocess)."""
 
     def _setup(
         self,
@@ -2159,6 +2160,8 @@ class TestWarrantyRoute:
         mfr="Dell Inc.",
         model="XPS 8960",
     ):
+        import datetime as _dt
+
         _mock_wmi(
             mocker,
             {
@@ -2167,12 +2170,19 @@ class TestWarrantyRoute:
                 "Win32_ComputerSystem": [_wmi_obj(Manufacturer=mfr, Model=model)],
             },
         )
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = [
-            type("R", (), {"stdout": self.MCU_OUT, "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": self.COUNTS_OUT, "returncode": 0, "stderr": ""})(),
-        ]
-        return m
+        # Microcode — winreg; counts — three _query_event_log_xpath calls.
+        mocker.patch("windesktopmgr.winreg.OpenKey", return_value=mocker.MagicMock())
+        mocker.patch("windesktopmgr.winreg.QueryValueEx", return_value=(b"\x01\x00\x01\xb4", 3))
+        mocker.patch("windesktopmgr.winreg.CloseKey")
+        recent = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        return mocker.patch(
+            "windesktopmgr._query_event_log_xpath",
+            side_effect=[
+                [{"TimeCreated": recent}, {"TimeCreated": recent}],
+                [],
+                [{"TimeCreated": recent}],
+            ],
+        )
 
     def test_returns_ok_with_warranty_data(self, client, mocker):
         self._setup(mocker)
@@ -2198,36 +2208,29 @@ class TestWarrantyRoute:
         d = r.get_json()
         assert d["warranty"]["IsAffectedCPU"] is False
 
-    def test_handles_wmi_failure(self, client, mocker):
+    def test_wmi_failure_degrades_gracefully(self, client, mocker):
+        """WMI failure is caught internally — the route still returns ok with
+        Unknown CPU/system fields rather than erroring the whole request."""
         mocker.patch("windesktopmgr.wmi.WMI", side_effect=Exception("WMI failed"))
-        mocker.patch("windesktopmgr.subprocess.run", side_effect=Exception("PS failed"))
-        r = client.get("/api/warranty/data")
-        d = r.get_json()
-        assert d["status"] == "error"
-        assert "message" in d
-
-    def test_warranty_timeout_handled(self, client, mocker):
-        import subprocess
-
-        # WMI works but subprocess times out
-        _mock_wmi(
-            mocker,
-            {
-                "Win32_Processor": [_wmi_obj(Name="Intel i9", ProcessorId="X", SerialNumber="N/A")],
-                "Win32_BIOS": [
-                    _wmi_obj(SerialNumber="TAG", SMBIOSBIOSVersion="1.0", ReleaseDate="20250101000000.000000+000")
-                ],
-                "Win32_ComputerSystem": [_wmi_obj(Manufacturer="Dell", Model="XPS")],
-            },
-        )
-        mocker.patch(
-            "windesktopmgr.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=15),
-        )
+        mocker.patch("windesktopmgr.winreg.OpenKey", side_effect=OSError("no key"))
+        mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
         r = client.get("/api/warranty/data")
         assert r.status_code == 200
         d = r.get_json()
-        assert d["status"] == "error"
+        assert d["status"] == "ok"
+        assert d["warranty"]["CPUModel"] == "Unknown"
+
+    def test_event_query_failure_degrades_gracefully(self, client, mocker):
+        """If the event-log query fails, the BSOD/WHEA/KP41 counts fall back
+        to 0 — the route must not error."""
+        self._setup(mocker)
+        mocker.patch("windesktopmgr._query_event_log_xpath", side_effect=Exception("evtlog error"))
+        r = client.get("/api/warranty/data")
+        assert r.status_code == 200
+        d = r.get_json()
+        assert d["status"] == "ok"
+        assert d["warranty"]["BSODs30Days"] == 0
+        assert d["warranty"]["WHEAErrors"] == 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
