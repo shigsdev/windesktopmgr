@@ -92,6 +92,31 @@ If **any** of these are touched, it is NOT docs-only — run the full workflow:
 
 ---
 
+## 📓 Backlog Logging — Record Every Merged Change (MANDATORY)
+
+`project_backlog.md` (in project memory:
+`~/.claude/projects/C--shigsapps-windesktopmgr/memory/project_backlog.md`)
+is the project's running record of what shipped. It only stays
+trustworthy if **every** change updates it — a gap is how an entire
+session's work goes unrecorded.
+
+**On every change that merges to `main`:**
+
+- **Planned feature** (has a numbered row in the `### Backlog` table) —
+  annotate that row in place: prepend `✅ SHIPPED <date> (PR #NN)` plus a
+  one-line result. Never delete the row.
+- **Bug fix, tech-debt, or any unplanned change** — append one dated row
+  to the `### Done` table:
+  `| <date> | Bug Fix | <short title> (PR #NN) | <1-2 sentence summary> |`
+
+There is no "if applicable" escape hatch — a bug fix is a change and gets
+a row. This mirrors the architecture.html trigger rule: the record is
+only worth keeping if it is never silently skipped. If a change genuinely
+warrants no entry (e.g. a pure CLAUDE.md typo fix), mark Phase 9 `Backlog`
+as ⏭️ Skipped with a one-line reason — never skip silently.
+
+---
+
 ## Python First, PowerShell Secondary (MANDATORY)
 
 Always prefer Python stdlib or pip packages over PowerShell/subprocess calls.
@@ -446,7 +471,7 @@ Phase 4  Quality Gates
 Phase 5  Tests
   [ ] New/modified code has test coverage
 Phase 9  Documentation
-  [ ] Backlog updated (if applicable)
+  [ ] Backlog updated — dated Done row or ✅ SHIPPED annotation (not optional)
   [ ] architecture.html updated (if applicable)
 Phase 10 Post-Incident (bug fixes only)
   [ ] Root cause + gap type documented
