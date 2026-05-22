@@ -943,6 +943,70 @@ class TestBaselineTabCoverage:
         )
 
 
+# ── Driver tab: NVIDIA card placement (2026-05-22) ─────────────────
+
+
+class TestDriverTabNvidiaCard:
+    """User feedback 2026-05-22: the NVIDIA GPU was rendered as a separate
+    banner (``#drv-nvidia-card``) pinned above the driver grid. It should
+    instead render as a normal card inside the ``#driver-grid`` matrix,
+    alongside every other driver. ``drvLoadNvidiaStatus()`` now injects a
+    driver-shaped entry into ``allDrivers`` and goes through the standard
+    ``renderGrid()`` path.
+
+    Guards against: the pinned banner coming back, and the NVIDIA card
+    not landing in the grid at all.
+    """
+
+    def test_nvidia_renders_in_grid_not_pinned_banner(self, loaded_page):
+        page, errors = loaded_page
+
+        status = page.evaluate("fetch('/api/nvidia/status').then(r => r.json())")
+        if not status.get("ok") or not status.get("has_nvidia"):
+            pytest.skip("no NVIDIA GPU on this machine — nothing to render")
+
+        # First switch to the Drivers tab triggers drvLoadNvidiaStatus().
+        page.evaluate("switchTab('drivers')")
+        page.wait_for_function(
+            """
+            () => {
+                const grid = document.getElementById('driver-grid');
+                if (!grid) return false;
+                return Array.from(grid.querySelectorAll('.driver-card[data-driver-name]'))
+                    .some(c => /nvidia/i.test(c.dataset.driverName));
+            }
+            """,
+            timeout=20_000,
+        )
+
+        # 1. The old pinned-banner element must be gone entirely.
+        assert page.evaluate("document.getElementById('drv-nvidia-card') === null"), (
+            "#drv-nvidia-card still exists — the NVIDIA GPU should render inside "
+            "#driver-grid as a normal card, not as a separate pinned banner"
+        )
+
+        # 2. The NVIDIA card must be a child of #driver-grid (the matrix).
+        nv = page.evaluate(
+            """
+            (() => {
+                const cards = Array.from(
+                    document.querySelectorAll('#driver-grid .driver-card[data-driver-name]'));
+                const card = cards.find(c => /nvidia/i.test(c.dataset.driverName));
+                return card
+                    ? {found: true, status: card.dataset.driverStatus, name: card.dataset.driverName}
+                    : {found: false};
+            })()
+            """
+        )
+        assert nv["found"], "NVIDIA card is not inside #driver-grid — it must be in the matrix"
+        assert nv["status"] in ("up_to_date", "update_available"), (
+            f"NVIDIA grid card has unexpected data-driver-status {nv['status']!r}"
+        )
+
+        actionable = [e for e in errors if "favicon" not in e.lower()]
+        assert not actionable, f"console errors on the Drivers tab: {actionable}"
+
+
 # ── investigateProcess: Memory tab → Processes tab handoff ────────
 
 
