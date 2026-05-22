@@ -881,8 +881,14 @@ def _query_nvidia_api(pfid: int, *, studio: bool = True) -> dict | None:
 
         url = _NVIDIA_DRIVER_API + "?" + urllib.parse.urlencode(params)
         req = urllib.request.Request(url, headers={"User-Agent": "WinDesktopMgr/1.0"})
+        # Cap the read so a hijacked endpoint, compromised DNS, or a broken
+        # proxy can't OOM the process with an unbounded response body.
+        # NVIDIA's single-driver payload is ~2 KB; 1 MiB is a generous
+        # ceiling. A truncated body fails json.loads and falls through to
+        # the except handler → None (same as any other API failure).
+        max_body = 1_048_576
         with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode())
+            data = json.loads(resp.read(max_body).decode())
         if data.get("Success") != "1" or not data.get("IDS"):
             return None
         info = data["IDS"][0].get("downloadInfo", {})

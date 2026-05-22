@@ -3566,6 +3566,34 @@ class TestQueryNvidiaApi:
         assert wdm._query_nvidia_api(1022, studio=True) is None
         assert wdm._query_nvidia_api(1022, studio=False) is None
 
+    def test_response_read_is_size_capped(self, mocker):
+        """The response body read must be bounded so a hijacked endpoint or
+        broken proxy can't OOM the process. Regression for the 2026-05-21
+        review finding — resp.read() was previously unbounded.
+        """
+        mock_resp = mocker.MagicMock()
+        mock_resp.read.return_value = self.GOOD_RESPONSE
+        mock_resp.__enter__ = mocker.MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = mocker.MagicMock(return_value=False)
+        mocker.patch("urllib.request.urlopen", return_value=mock_resp)
+        wdm._query_nvidia_api(1022, studio=True)
+        # read() must be called with an explicit positive byte limit.
+        mock_resp.read.assert_called_once()
+        args, _kwargs = mock_resp.read.call_args
+        assert args, "resp.read() called with no size limit — body is unbounded"
+        assert isinstance(args[0], int) and args[0] > 0
+
+    def test_oversized_body_fails_gracefully(self, mocker):
+        """A body that survives the cap but is not valid JSON (e.g. a
+        truncated multi-MB response) must fall through to None, not raise.
+        """
+        mock_resp = mocker.MagicMock()
+        mock_resp.read.return_value = b'{"Success":"1","IDS":[{"downloadInfo"'  # truncated
+        mock_resp.__enter__ = mocker.MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = mocker.MagicMock(return_value=False)
+        mocker.patch("urllib.request.urlopen", return_value=mock_resp)
+        assert wdm._query_nvidia_api(1022, studio=True) is None
+
 
 class TestWinToNvidiaVersion:
     """Tests for _win_to_nvidia_version() — Windows→NVIDIA version conversion."""
