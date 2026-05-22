@@ -1100,9 +1100,17 @@ try {
         print(f"[WU] Found {len(lookup)} driver update(s) via Windows Update")
         return lookup
     except subprocess.TimeoutExpired:
+        # A timeout is transient — do NOT cache it. Caching {} here used to
+        # poison the cache: every later call hit the `_dell_cache is not None`
+        # short-circuit at the top and returned {} forever, permanently
+        # disabling Windows Update driver detection (and the NVIDIA Method 3
+        # fallback) until the process restarted. Leave the cache unpopulated
+        # so the next call retries, and return None — the same "failure"
+        # signal the generic except path uses — so run_scan() marks drivers
+        # "unknown" rather than falsely "up to date".
         print("[WU error] Windows Update driver search timed out (120s)")
-        _dell_cache = {}
-        return {}
+        _dell_cache = None
+        return None
     except Exception as e:
         print(f"[WU error] {e}")
         _dell_cache = None

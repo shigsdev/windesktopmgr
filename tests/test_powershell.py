@@ -237,10 +237,25 @@ class TestGetWindowsUpdateDrivers:
         result = wdm.get_windows_update_drivers()
         assert result is None
 
-    def test_timeout_returns_empty_dict(self, mocker):
+    def test_timeout_returns_none_and_does_not_poison_cache(self, mocker):
+        """A WU search timeout must NOT be cached. Caching {} would make every
+        later call short-circuit on the `_dell_cache is not None` guard and
+        return {} forever, permanently disabling WU driver detection (and the
+        NVIDIA Method 3 fallback) until the process restarts. Regression for
+        the 2026-05-21 review finding.
+        """
+        # First call times out.
         _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=120))
         result = wdm.get_windows_update_drivers()
-        assert result == {}
+        assert result is None, "timeout is a failure — return None, not a misleading empty dict"
+        assert wdm._dell_cache is None, "timeout must not poison the module cache"
+
+        # Second call: WU is responsive again — must re-query, not serve a
+        # stale poisoned cache entry.
+        m = _mock_run(mocker, stdout=self.SAMPLE)
+        result2 = wdm.get_windows_update_drivers()
+        assert isinstance(result2, dict) and len(result2) == 1
+        assert m.called, "after a timeout the next call must re-query, not hit a poisoned cache"
 
     def test_command_searches_for_drivers(self, mocker):
         m = _mock_run(mocker, stdout=self.SAMPLE)
