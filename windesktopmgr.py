@@ -2977,13 +2977,23 @@ def summarize_drivers(results: list) -> dict:
     updates = [r for r in results if r["status"] == "update_available"]
     unknown = [r for r in results if r["status"] == "unknown"]
     ok = [r for r in results if r["status"] == "up_to_date"]
+    # Split important updates from low-priority ones. Low-priority updates
+    # are Monitor / printer-class INF metadata: Windows exposes these only
+    # as *optional* driver updates (Settings > Windows Update > Advanced
+    # options > Optional updates), never on the main Windows Update page.
+    # Telling the user to "Open Windows Update" for one sends them
+    # somewhere the update isn't shown — and these are "almost never worth
+    # installing" anyway. So they must not raise a warning or drive the
+    # main-Windows-Update advice; they're surfaced as an info note instead.
+    important = [r for r in updates if not r.get("low_priority")]
+    low_prio = [r for r in updates if r.get("low_priority")]
     insights = []
     actions = []
-    if updates:
-        cats = Counter(r["category"] for r in updates)
+    if important:
+        cats = Counter(r["category"] for r in important)
         top = cats.most_common(1)[0][0]
-        nvidia_updates = [r for r in updates if r.get("download_url", "").startswith("nvidia-app:")]
-        wu_updates_list = [r for r in updates if not r.get("download_url", "").startswith("nvidia-app:")]
+        nvidia_updates = [r for r in important if r.get("download_url", "").startswith("nvidia-app:")]
+        wu_updates_list = [r for r in important if not r.get("download_url", "").startswith("nvidia-app:")]
         # Build context-aware advice
         if nvidia_updates and wu_updates_list:
             advice = f"{len(nvidia_updates)} via NVIDIA App, {len(wu_updates_list)} via Windows Update."
@@ -2998,13 +3008,11 @@ def summarize_drivers(results: list) -> dict:
         insights.append(
             _insight(
                 "warning",
-                f"{len(updates)} driver update(s) available — most in {top}.",
+                f"{len(important)} driver update(s) available — most in {top}.",
                 advice,
             )
         )
-        critical = [
-            r for r in updates if r["category"] in ("Display", "Network", "Chipset") and not r.get("low_priority")
-        ]
+        critical = [r for r in important if r["category"] in ("Display", "Network", "Chipset")]
         if critical:
             insights.append(
                 _insight(
@@ -3014,7 +3022,18 @@ def summarize_drivers(results: list) -> dict:
                     "Prioritise display, network and chipset drivers for system stability.",
                 )
             )
-    if unknown and not updates:
+    if low_prio:
+        lp_top = Counter(r["category"] for r in low_prio).most_common(1)[0][0]
+        insights.append(
+            _insight(
+                "info",
+                f"{len(low_prio)} optional {lp_top.lower()}-class driver update(s) detected.",
+                "These are optional updates under Windows Update > Advanced options > "
+                "Optional updates — rarely worth installing, and not shown on the main "
+                "Windows Update page.",
+            )
+        )
+    if unknown and not important:
         insights.append(
             _insight(
                 "info",
@@ -3031,8 +3050,10 @@ def summarize_drivers(results: list) -> dict:
         if any(i["level"] == "warning" for i in insights)
         else "ok"
     )
-    if updates:
-        headline = f"{len(updates)} update(s) need attention"
+    if important:
+        headline = f"{len(important)} update(s) need attention"
+    elif low_prio:
+        headline = f"{len(low_prio)} optional driver update(s) — no action needed"
     elif unknown and not ok:
         headline = f"{len(unknown)} driver(s) could not be verified"
     elif unknown:
