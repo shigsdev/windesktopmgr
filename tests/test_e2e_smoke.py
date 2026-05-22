@@ -169,19 +169,42 @@ class TestProcessListE2E:
 
 
 class TestUpdatesHistoryE2E:
-    def test_returns_200_with_real_fixture(self, client, mocker):
-        _mock_single_ps(mocker, "ps_update_history.json")
+    # get_update_history was ported from a PowerShell subprocess to the
+    # in-process Windows Update COM API (backlog #28 Batch G), so there is no
+    # PS fixture to feed. These route-level e2e tests mock the function
+    # directly — consistent with how this file mocks check_dell_bios_update —
+    # and the function's COM internals are covered by TestGetUpdateHistory in
+    # test_powershell.py.
+    _SAMPLE = [
+        {
+            "Title": "2024-12 Cumulative Update (KB5048667)",
+            "Date": "2024-12-10T03:00:00+00:00",
+            "ResultCode": 2,
+            "Categories": "Security Updates",
+            "KB": "KB5048667",
+            "result": "Succeeded",
+        },
+        {
+            "Title": "Intel - Display - 31.0.101.5186",
+            "Date": "2024-11-20T10:00:00+00:00",
+            "ResultCode": 4,
+            "Categories": "Drivers",
+            "KB": "",
+            "result": "Failed",
+        },
+    ]
+
+    def test_returns_200_with_list(self, client, mocker):
+        mocker.patch("windesktopmgr.get_update_history", return_value=self._SAMPLE)
         resp = client.get("/api/updates/history")
         assert resp.status_code == 200
-        data = resp.get_json()
-        assert isinstance(data, list)
+        assert isinstance(resp.get_json(), list)
 
-    def test_update_count_matches(self, client, mocker):
-        _mock_single_ps(mocker, "ps_update_history.json")
-        expected = load_fixture("parsed/parsed_get_update_history.json")
+    def test_route_returns_full_history(self, client, mocker):
+        """The route must serialise every history entry — no truncation."""
+        mocker.patch("windesktopmgr.get_update_history", return_value=self._SAMPLE)
         resp = client.get("/api/updates/history")
-        data = resp.get_json()
-        assert len(data) == len(expected)
+        assert len(resp.get_json()) == len(self._SAMPLE)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

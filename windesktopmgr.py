@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 import psutil
 import pythoncom
 import win32api
+import win32com.client
 import win32evtlog
 import win32service
 import win32serviceutil
@@ -1109,63 +1110,119 @@ def get_nvidia_update_info() -> dict | None:
     return result
 
 
-def get_windows_update_drivers() -> dict | None:
+# ── Windows Update COM helpers ─────────────────────────────────────────────
+# The Windows Update API is reached via the Microsoft.Update.Session COM
+# object, driven in-process with win32com — no PowerShell subprocess (backlog
+# #28 Batch G). A prototype spike (2026-05-22) proved synchronous Search() /
+# QueryHistory() work cleanly from Python; the per-call win is the ~200-500 ms
+# PowerShell process spawn that COM eliminates.
+
+
+def _wu_prop(obj, name):
+    """Read a COM property that may not exist on this update/history type.
+
+    Driver-update objects expose ``DriverVersion`` etc., but a generic update
+    does not — accessing a missing COM property raises, so swallow it.
     """
-    Use Windows Update API via PowerShell to find available driver updates.
-    Returns a dict keyed by driver title (lowercase) -> update info, or None on failure.
+    try:
+        return getattr(obj, name)
+    except Exception:  # noqa: BLE001 — missing COM property → treat as absent
+        return None
+
+
+def _wu_iso(dt) -> str:
+    """COM date → ISO-8601 string (mirrors the PowerShell ``.ToString('o')``)."""
+    if dt is None:
+        return ""
+    try:
+        return dt.isoformat()
+    except Exception:  # noqa: BLE001
+        return str(dt)
+
+
+def _wu_searcher():
+    """Create a Windows Update ``IUpdateSearcher`` with COM initialised for
+    the current thread — same pattern as ``_wmi_conn()``. WU collectors run
+    in Flask worker threads, the dashboard fan-out, and run_scan's daemon
+    thread, none of which have COM set up by default.
+    """
+    pythoncom.CoInitialize()
+    session = win32com.client.Dispatch("Microsoft.Update.Session")
+    return session.CreateUpdateSearcher()
+
+
+def _wu_search_drivers(timeout_s: float = 120.0) -> list:
+    """Run the WU 'available driver updates' search via in-process COM.
+
+    Returns a list of update dicts. The COM ``Search()`` call is blocking and
+    cannot be interrupted, so it runs in a daemon worker thread we join with
+    a timeout — mirroring the ``subprocess(..., timeout=120)`` the PowerShell
+    version had. Raises ``TimeoutError`` on timeout (the orphaned worker is a
+    daemon and finishes on its own); re-raises any COM error.
+    """
+    box: dict = {}
+
+    def _run():
+        try:
+            searcher = _wu_searcher()
+            res = searcher.Search("IsInstalled=0 AND Type='Driver'")
+            updates = res.Updates
+            rows = []
+            for i in range(updates.Count):
+                u = updates.Item(i)
+                rows.append(
+                    {
+                        "Title": _wu_prop(u, "Title") or "",
+                        "Description": _wu_prop(u, "Description") or "",
+                        "DriverModel": _wu_prop(u, "DriverModel") or "",
+                        "DriverVersion": _wu_prop(u, "DriverVersion") or "",
+                        "DriverManufacturer": _wu_prop(u, "DriverManufacturer") or "",
+                    }
+                )
+            box["data"] = rows
+        except Exception as e:  # noqa: BLE001 — surfaced to the caller below
+            box["error"] = e
+
+    t = threading.Thread(target=_run, name="WUDriverSearch", daemon=True)
+    t.start()
+    t.join(timeout_s)
+    if t.is_alive():
+        raise TimeoutError(f"Windows Update driver search exceeded {timeout_s:.0f}s")
+    if "error" in box:
+        raise box["error"]
+    return box.get("data", [])
+
+
+def get_windows_update_drivers() -> dict | None:
+    """Find available driver updates via the Windows Update COM API
+    (in-process win32com — no PowerShell subprocess).
+
+    Returns a dict keyed by lowercase driver title -> update info, or None on
+    failure. Returns None (never {}) on timeout/error so a transient failure
+    is not cached — see the cache-poisoning note below.
     """
     global _wu_driver_cache
     if _wu_driver_cache is not None:
         return _wu_driver_cache
 
-    ps = r"""
-$Session = New-Object -ComObject Microsoft.Update.Session
-$Searcher = $Session.CreateUpdateSearcher()
-try {
-    $Results = $Searcher.Search("Type='Driver' AND IsInstalled=0")
-    $out = @()
-    foreach ($u in $Results.Updates) {
-        $out += [PSCustomObject]@{
-            Title       = $u.Title
-            Description = $u.Description
-            DriverModel = if ($u.DriverModel) { $u.DriverModel } else { "" }
-            DriverVersion = if ($u.DriverVersion) { $u.DriverVersion } else { "" }
-            DriverManufacturer = if ($u.DriverManufacturer) { $u.DriverManufacturer } else { "" }
-        }
-    }
-    $out | ConvertTo-Json -Depth 2
-} catch {
-    "[]"
-}
-"""
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=120
-        )
-        raw = r.stdout.strip()
-        data = json.loads(raw or "[]")
-        updates = data if isinstance(data, list) else [data]
-        # Build lookup: normalised title words -> update record
-        lookup = {}
-        for u in updates:
-            title = u.get("Title", "").lower()
-            lookup[title] = u
+        updates = _wu_search_drivers(timeout_s=120)
+        lookup = {(u["Title"] or "").lower(): u for u in updates}
         _wu_driver_cache = lookup
         print(f"[WU] Found {len(lookup)} driver update(s) via Windows Update")
         return lookup
-    except subprocess.TimeoutExpired:
-        # A timeout is transient — do NOT cache it. Caching {} here used to
-        # poison the cache: every later call hit the `_wu_driver_cache is not None`
-        # short-circuit at the top and returned {} forever, permanently
+    except TimeoutError as e:
+        # A timeout is transient — do NOT cache it. Caching {} here would
+        # poison the cache: every later call hits the `_wu_driver_cache is not
+        # None` short-circuit at the top and returns {} forever, permanently
         # disabling Windows Update driver detection (and the NVIDIA Method 3
-        # fallback) until the process restarted. Leave the cache unpopulated
-        # so the next call retries, and return None — the same "failure"
-        # signal the generic except path uses — so run_scan() marks drivers
-        # "unknown" rather than falsely "up to date".
-        print("[WU error] Windows Update driver search timed out (120s)")
+        # fallback) until the process restarts. Leave the cache unpopulated so
+        # the next call retries, and return None — the "failure" signal that
+        # makes run_scan() mark drivers "unknown" rather than "up to date".
+        print(f"[WU error] {e}")
         _wu_driver_cache = None
         return None
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"[WU error] {e}")
         _wu_driver_cache = None
         return None
@@ -2878,34 +2935,42 @@ RESULT_CODES = {1: "In Progress", 2: "Succeeded", 3: "Succeeded w/ Errors", 4: "
 
 
 def get_update_history() -> list:
-    ps = r"""
-try {
-    $sess = New-Object -ComObject Microsoft.Update.Session
-    $src  = $sess.CreateUpdateSearcher()
-    $n    = $src.GetTotalHistoryCount()
-    $hist = $src.QueryHistory(0, [Math]::Min($n, 150))
-    $hist | ForEach-Object {
-        [PSCustomObject]@{
-            Title      = $_.Title
-            Date       = $_.Date.ToString("o")
-            ResultCode = [int]$_.ResultCode
-            Categories = ($_.Categories | ForEach-Object { $_.Name }) -join ", "
-            KB         = if ($_.Title -match "KB(\d+)") { "KB$($Matches[1])" } else { "" }
-        }
-    } | ConvertTo-Json -Depth 2
-} catch { "[]" }
-"""
+    """Windows Update install history via the in-process Update COM API
+    (``IUpdateSearcher.QueryHistory`` — no PowerShell subprocess).
+
+    QueryHistory is a fast local call (no network), so unlike the driver
+    search it needs no timeout guard.
+    """
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=30
-        )
-        data = json.loads(r.stdout.strip() or "[]")
-        items = data if isinstance(data, list) else [data]
-        for item in items:
-            code = item.get("ResultCode", 0)
-            item["result"] = RESULT_CODES.get(code, "Unknown")
+        searcher = _wu_searcher()
+        total = searcher.GetTotalHistoryCount()
+        hist = searcher.QueryHistory(0, min(total, 150))
+        items = []
+        for i in range(hist.Count):
+            entry = hist.Item(i)
+            title = _wu_prop(entry, "Title") or ""
+            code = int(_wu_prop(entry, "ResultCode") or 0)
+            # Categories is an ICategoryCollection — join the category names.
+            cats = _wu_prop(entry, "Categories")
+            cat_names = []
+            if cats is not None:
+                for j in range(cats.Count):
+                    name = _wu_prop(cats.Item(j), "Name")
+                    if name:
+                        cat_names.append(name)
+            kb_m = re.search(r"KB(\d+)", title)
+            items.append(
+                {
+                    "Title": title,
+                    "Date": _wu_iso(_wu_prop(entry, "Date")),
+                    "ResultCode": code,
+                    "Categories": ", ".join(cat_names),
+                    "KB": f"KB{kb_m.group(1)}" if kb_m else "",
+                    "result": RESULT_CODES.get(code, "Unknown"),
+                }
+            )
         return items
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"[Update history error] {e}")
         return []
 
@@ -7206,31 +7271,23 @@ try {
                 result["error"] = f"Catalog: {e2}"
 
     # ── Method 3: Windows Update pending BIOS check ────────────────────────────
+    # Reuses get_windows_update_drivers() — the WU "available drivers" search
+    # already surfaces BIOS/Firmware updates, so there is no need for a second
+    # COM search here. This also shares the _wu_driver_cache if a driver scan
+    # has already run.
     if not result["latest_version"]:
-        ps_wu = r"""
-try {
-    $sess    = New-Object -ComObject Microsoft.Update.Session
-    $search  = $sess.CreateUpdateSearcher()
-    $pending = $search.Search("IsInstalled=0 AND Type='Driver'")
-    $bios    = $pending.Updates | Where-Object { $_.Title -match "BIOS|Firmware" } |
-               Select-Object -First 1
-    if ($bios) {
-        [PSCustomObject]@{
-            Title   = $bios.Title
-            Version = if ($bios.Title -match "(\d+\.\d+[\.\d]*)") { $Matches[1] } else { "" }
-        } | ConvertTo-Json
-    } else { Write-Output "NO_BIOS_IN_WU" }
-} catch { Write-Output "WU_ERROR" }
-"""
         try:
-            r3 = subprocess.run(
-                ["powershell", "-NonInteractive", "-Command", ps_wu], capture_output=True, text=True, timeout=30
-            )
-            out3 = r3.stdout.strip()
-            if out3 and out3.startswith("{"):
-                data3 = json.loads(out3)
-                ver3 = data3.get("Version", "")
-                title = data3.get("Title", "")
+            wu = get_windows_update_drivers()
+            bios_u = None
+            if wu:
+                bios_u = next(
+                    (u for u in wu.values() if re.search(r"BIOS|Firmware", u.get("Title", ""), re.IGNORECASE)),
+                    None,
+                )
+            if bios_u:
+                title = bios_u.get("Title", "")
+                m = re.search(r"(\d+\.\d+[.\d]*)", title)
+                ver3 = m.group(1) if m else ""
                 if ver3:
                     result["latest_version"] = ver3
                     result["release_notes"] = title[:200]
@@ -7238,7 +7295,7 @@ try {
                     result["update_available"] = True  # WU only shows pending updates
                     result["error"] = None
                     print(f"[BIOS] Windows Update found BIOS update: {title}")
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
     # ── Method 4: Get service tag for a direct personalised Dell support URL ────

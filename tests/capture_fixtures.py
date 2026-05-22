@@ -104,7 +104,9 @@ def main():
         ("get_driver_health", wdm.get_driver_health, ["ps_driver_health.json"]),
         ("get_disk_health", wdm.get_disk_health, ["ps_disk_health.json", "ps_disk_io.json"]),
         ("get_network_data", wdm.get_network_data, ["ps_network_conns.json", "ps_network_adapters.json"]),
-        ("get_update_history", wdm.get_update_history, ["ps_update_history.json"]),
+        # get_update_history no longer shells out to PowerShell — it uses the
+        # in-process Windows Update COM API (backlog #28 Batch G), so there is
+        # no subprocess stdout to capture.
         ("get_startup_items", wdm.get_startup_items, ["ps_startup_items.json"]),
         ("get_process_list", wdm.get_process_list, ["ps_process_list.json"]),
         ("get_thermals", wdm.get_thermals, ["ps_thermals.json"]),

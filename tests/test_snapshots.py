@@ -295,18 +295,11 @@ class TestGetMemoryAnalysisSnapshot:
         assert set(result.keys()) == set(expected.keys())
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# get_update_history
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-class TestGetUpdateHistorySnapshot:
-    def test_parses_real_output(self, mocker):
-        _mock_single_ps(mocker, "ps_update_history.json")
-        expected = load_fixture("parsed/parsed_get_update_history.json")
-        result = wdm.get_update_history()
-        assert isinstance(result, list)
-        assert len(result) == len(expected)
+# get_update_history no longer has a PS-output snapshot test — it was ported
+# from a PowerShell subprocess to the in-process Windows Update COM API
+# (backlog #28 Batch G), so there is no PS stdout to snapshot. Its behaviour
+# is covered by TestGetUpdateHistory in test_powershell.py with fake COM
+# objects.
 
 
 # ══════════════════════════════════════════════════════════════════════════════
