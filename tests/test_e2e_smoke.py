@@ -126,16 +126,22 @@ class TestServicesListE2E:
 
 
 class TestStartupListE2E:
+    """get_startup_items() is fully in-process (winreg + pathlib +
+    Schedule.Service COM, backlog #28 close-out) — no PowerShell subprocess
+    to mock. Mock the function directly with its captured parsed fixture,
+    consistent with how this file mocks get_thermals / get_system_timeline."""
+
     def test_returns_200_with_real_fixture(self, client, mocker):
-        _mock_single_ps(mocker, "ps_startup_items.json")
+        expected = load_fixture("parsed/parsed_get_startup_items.json")
+        mocker.patch("windesktopmgr.get_startup_items", return_value=expected)
         resp = client.get("/api/startup/list")
         assert resp.status_code == 200
         data = resp.get_json()
         assert isinstance(data, list)
 
     def test_item_count_matches(self, client, mocker):
-        _mock_single_ps(mocker, "ps_startup_items.json")
         expected = load_fixture("parsed/parsed_get_startup_items.json")
+        mocker.patch("windesktopmgr.get_startup_items", return_value=expected)
         resp = client.get("/api/startup/list")
         data = resp.get_json()
         assert len(data) == len(expected)

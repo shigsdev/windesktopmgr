@@ -15,9 +15,12 @@
 >   direct (`get_thermals` ×3, `_lookup_startup_via_fileinfo` ×2,
 >   `get_system_timeline`, and `homenet.py` `_get_orbi_ssid`).
 >
-> The headline counts and per-site tables below are therefore stale: 13
-> `windesktopmgr.py` sites migrated (60 → 47 PS sites) and 1 in `homenet.py`
-> (11 → 10); total 74 → 61. Re-run `audit_ps_sites.py` for the live inventory.
+> - **PR 2**: 2 more sites → `winreg` / `pathlib` / `Schedule.Service` COM
+>   (`get_startup_items` enumeration + `toggle_startup_item` action endpoint).
+>
+> The headline counts and per-site tables below are therefore stale: 15
+> `windesktopmgr.py` sites migrated (60 → 45 PS sites) and 1 in `homenet.py`
+> (11 → 10); total 74 → 59. Re-run `audit_ps_sites.py` for the live inventory.
 
 ## Headline numbers
 

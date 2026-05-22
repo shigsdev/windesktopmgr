@@ -107,7 +107,10 @@ def main():
         # get_update_history no longer shells out to PowerShell — it uses the
         # in-process Windows Update COM API (backlog #28 Batch G), so there is
         # no subprocess stdout to capture.
-        ("get_startup_items", wdm.get_startup_items, ["ps_startup_items.json"]),
+        # get_startup_items no longer shells out to PowerShell — it uses
+        # in-process winreg + pathlib + the Schedule.Service COM API
+        # (backlog #28 close-out), so there is no subprocess stdout to
+        # capture.
         ("get_process_list", wdm.get_process_list, ["ps_process_list.json"]),
         # get_thermals and get_system_timeline no longer shell out to PowerShell
         # — thermals uses the in-process ``wmi`` + ``psutil`` packages and the

@@ -1479,32 +1479,184 @@ class TestToggleService:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-class TestToggleStartupItem:
-    def test_backtick_stripped(self, mocker):
-        m = _mock_run(mocker, returncode=0)
-        wdm.toggle_startup_item("MyApp`; malicious", "task", True)
-        cmd = m.call_args[0][0][-1]
-        assert "`" not in cmd
-        assert ";" not in cmd
+def _mock_registry_toggle(mocker, *, found=True):
+    """Patch the winreg surface used by ``toggle_startup_item`` for registry
+    items. ``found=False`` makes ``OpenKey`` of the source raise
+    FileNotFoundError so the not-found branch can be exercised.
 
-    def test_newline_stripped(self, mocker):
-        m = _mock_run(mocker, returncode=0)
+    Returns a dict of the mocked winreg functions for call assertions.
+    """
+    open_key = mocker.patch("windesktopmgr.winreg.OpenKey")
+    if not found:
+        open_key.side_effect = FileNotFoundError("missing")
+    else:
+        open_key.return_value = mocker.MagicMock()
+    query = mocker.patch(
+        "windesktopmgr.winreg.QueryValueEx",
+        return_value=("C:\\App\\app.exe", 1),  # 1 == REG_SZ
+    )
+    create = mocker.patch("windesktopmgr.winreg.CreateKey", return_value=mocker.MagicMock())
+    set_val = mocker.patch("windesktopmgr.winreg.SetValueEx")
+    del_val = mocker.patch("windesktopmgr.winreg.DeleteValue")
+    mocker.patch("windesktopmgr.winreg.CloseKey")
+    return {
+        "OpenKey": open_key,
+        "QueryValueEx": query,
+        "CreateKey": create,
+        "SetValueEx": set_val,
+        "DeleteValue": del_val,
+    }
+
+
+def _mock_scheduler_for_toggle(mocker, *, task_found=True):
+    """Patch ``Schedule.Service`` COM + ``_find_scheduled_task`` for the
+    ``toggle_startup_item`` task branch. Returns the fake task object so
+    callers can assert ``task.Enabled`` was set."""
+    mocker.patch("windesktopmgr.pythoncom.CoInitialize")
+    scheduler = mocker.MagicMock()
+    scheduler.GetFolder.return_value = mocker.MagicMock()
+    mocker.patch("windesktopmgr.win32com.client.Dispatch", return_value=scheduler)
+    fake_task = mocker.MagicMock()
+    fake_task.Enabled = True
+    mocker.patch(
+        "windesktopmgr._find_scheduled_task",
+        return_value=fake_task if task_found else None,
+    )
+    return fake_task
+
+
+class TestToggleStartupItem:
+    def test_backtick_stripped_from_task_lookup(self, mocker):
+        """Input sanitisation: backticks/semicolons must be stripped before
+        the name reaches ``_find_scheduled_task``."""
+        _mock_scheduler_for_toggle(mocker)
+        find = mocker.patch("windesktopmgr._find_scheduled_task", return_value=mocker.MagicMock())
+        wdm.toggle_startup_item("MyApp`; malicious", "task", True)
+        assert find.called
+        looked_up = find.call_args[0][1]
+        assert "`" not in looked_up
+        assert ";" not in looked_up
+
+    def test_newline_stripped_from_task_lookup(self, mocker):
+        _mock_scheduler_for_toggle(mocker)
+        find = mocker.patch("windesktopmgr._find_scheduled_task", return_value=mocker.MagicMock())
         wdm.toggle_startup_item("MyApp\nRemove-Item C:\\", "task", False)
-        cmd = m.call_args[0][0][-1]
-        assert "\n" not in cmd
+        assert find.called
+        looked_up = find.call_args[0][1]
+        assert "\n" not in looked_up
 
     def test_spaces_preserved_in_startup_name(self, mocker):
-        """Startup items can have spaces in their names."""
-        m = _mock_run(mocker, returncode=0)
+        """Startup items can have spaces in their names — sanitiser must keep them."""
+        _mock_scheduler_for_toggle(mocker)
+        find = mocker.patch("windesktopmgr._find_scheduled_task", return_value=mocker.MagicMock())
         wdm.toggle_startup_item("My Cool App", "task", True)
-        cmd = m.call_args[0][0][-1]
-        assert "My Cool App" in cmd
+        looked_up = find.call_args[0][1]
+        assert looked_up == "My Cool App"
 
     def test_registry_toggle_uses_correct_hive(self, mocker):
-        m = _mock_run(mocker, returncode=0)
+        """Disabling an HKCU entry must open HKCU\\...\\Run for read and move
+        the value to Run-Disabled."""
+        m = _mock_registry_toggle(mocker)
+        result = wdm.toggle_startup_item("TestApp", "registry_hkcu", False)
+        assert result["ok"] is True
+        # First OpenKey call: read the source (Run) under HKCU
+        first_call = m["OpenKey"].call_args_list[0]
+        assert first_call[0][0] == wdm.winreg.HKEY_CURRENT_USER
+        assert "CurrentVersion\\Run" in first_call[0][1]
+        # CreateKey opens the destination (Run-Disabled) on the same hive
+        create_call = m["CreateKey"].call_args
+        assert create_call[0][0] == wdm.winreg.HKEY_CURRENT_USER
+        assert "Run-Disabled" in create_call[0][1]
+
+    def test_registry_hklm_enable_moves_from_disabled_to_run(self, mocker):
+        """Enabling must read from Run-Disabled and write into Run under HKLM."""
+        m = _mock_registry_toggle(mocker)
+        result = wdm.toggle_startup_item("TestApp", "registry_hklm", True)
+        assert result["ok"] is True
+        first_call = m["OpenKey"].call_args_list[0]
+        assert first_call[0][0] == wdm.winreg.HKEY_LOCAL_MACHINE
+        assert "Run-Disabled" in first_call[0][1]
+        create_call = m["CreateKey"].call_args
+        assert create_call[0][0] == wdm.winreg.HKEY_LOCAL_MACHINE
+        # Destination is plain Run (not Run-Disabled)
+        assert create_call[0][1].endswith("\\Run")
+
+    def test_registry_preserves_value_and_regtype(self, mocker):
+        """SetValueEx must receive the same (value, type) tuple QueryValueEx returned."""
+        m = _mock_registry_toggle(mocker)
+        m["QueryValueEx"].return_value = ("D:\\some\\path.exe -arg", 2)  # 2 == REG_EXPAND_SZ
         wdm.toggle_startup_item("TestApp", "registry_hkcu", False)
-        cmd = m.call_args[0][0][-1]
-        assert "HKCU:" in cmd
+        set_args = m["SetValueEx"].call_args[0]
+        # SetValueEx(key, name, reserved, regtype, value)
+        assert set_args[1] == "TestApp"
+        assert set_args[3] == 2
+        assert set_args[4] == "D:\\some\\path.exe -arg"
+
+    def test_registry_deletes_from_source(self, mocker):
+        m = _mock_registry_toggle(mocker)
+        wdm.toggle_startup_item("TestApp", "registry_hkcu", False)
+        # DeleteValue is invoked with the safe name
+        del_args = m["DeleteValue"].call_args[0]
+        assert del_args[1] == "TestApp"
+
+    def test_registry_value_not_found_returns_error(self, mocker):
+        _mock_registry_toggle(mocker, found=False)
+        result = wdm.toggle_startup_item("Missing", "registry_hkcu", True)
+        assert result["ok"] is False
+        assert "not found" in result["error"].lower()
+
+    def test_registry_exception_returns_error(self, mocker):
+        """Unexpected winreg errors propagate into {ok:False, error:...}."""
+        mocker.patch("windesktopmgr.winreg.OpenKey", side_effect=PermissionError("denied"))
+        result = wdm.toggle_startup_item("TestApp", "registry_hklm", False)
+        assert result["ok"] is False
+        assert result["error"]
+
+    def test_task_enabled_set_to_true(self, mocker):
+        fake_task = _mock_scheduler_for_toggle(mocker)
+        result = wdm.toggle_startup_item("SomeTask", "task", True)
+        assert result == {"ok": True, "error": ""}
+        assert fake_task.Enabled is True
+
+    def test_task_enabled_set_to_false(self, mocker):
+        fake_task = _mock_scheduler_for_toggle(mocker)
+        result = wdm.toggle_startup_item("SomeTask", "task", False)
+        assert result == {"ok": True, "error": ""}
+        assert fake_task.Enabled is False
+
+    def test_task_not_found_returns_error(self, mocker):
+        _mock_scheduler_for_toggle(mocker, task_found=False)
+        result = wdm.toggle_startup_item("Ghost", "task", True)
+        assert result["ok"] is False
+        assert "not found" in result["error"].lower()
+
+    def test_task_com_exception_returns_error(self, mocker):
+        mocker.patch("windesktopmgr.pythoncom.CoInitialize")
+        mocker.patch(
+            "windesktopmgr.win32com.client.Dispatch",
+            side_effect=Exception("COM error"),
+        )
+        result = wdm.toggle_startup_item("SomeTask", "task", True)
+        assert result["ok"] is False
+        assert result["error"]
+
+    def test_empty_name_returns_error(self):
+        """Sanitisation strips everything → empty name → invalid."""
+        result = wdm.toggle_startup_item("```", "registry_hkcu", True)
+        assert result["ok"] is False
+        assert "invalid" in result["error"].lower()
+
+    def test_unknown_type_returns_error(self):
+        result = wdm.toggle_startup_item("App", "folder", True)
+        assert result["ok"] is False
+        assert "cannot toggle" in result["error"].lower()
+
+    def test_no_subprocess_invoked(self, mocker):
+        """Regression guard — toggle_startup_item must not shell out to PS."""
+        _mock_scheduler_for_toggle(mocker)
+        ps = mocker.patch("windesktopmgr.subprocess.run")
+        wdm.toggle_startup_item("App", "task", True)
+        assert ps.call_count == 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2215,95 +2367,330 @@ class TestGetBsodEvents:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# get_startup_items — PowerShell registry + scheduler calls
+# get_startup_items — winreg + pathlib + Schedule.Service COM (no PowerShell)
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-class TestGetStartupItems:
-    REG_ITEMS = json.dumps(
-        [
-            {
-                "Name": "OneDrive",
-                "Command": r"C:\Program Files\Microsoft OneDrive\OneDrive.exe /background",
-                "Location": "HKCU\\...\\Run",
-                "Type": "registry_run",
-            },
-        ]
-    )
-    TASK_ITEMS = json.dumps(
-        [
-            {
-                "Name": "MicrosoftEdgeAutoLaunch",
-                "Command": r"C:\Program Files\Edge\msedge.exe --auto-launch",
-                "Location": "Task Scheduler",
-                "Type": "scheduled_task",
-            },
-        ]
-    )
+def _registry_enum_side_effect(entries_by_key):
+    """Build a winreg.EnumValue side_effect callable.
 
-    def _make_mock(self, mocker, reg=None, tasks=None):
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = [
-            type("R", (), {"stdout": reg or self.REG_ITEMS, "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": tasks or self.TASK_ITEMS, "returncode": 0, "stderr": ""})(),
-        ]
-        return m
+    ``entries_by_key`` maps the mocked key object returned by ``OpenKey`` to
+    a list of ``(name, value, regtype)`` tuples. Once each list is exhausted
+    the function raises OSError, which signals "no more values" to the
+    production loop.
+    """
+    state: dict = {id(k): 0 for k in entries_by_key}
+
+    def _side(key, idx):
+        entries = entries_by_key.get(key, [])
+        i = state.get(id(key), 0)
+        if i >= len(entries):
+            raise OSError("end of values")
+        state[id(key)] = i + 1
+        return entries[i]
+
+    return _side
+
+
+def _build_fake_task(name, *, triggers=("logon",), path="C:\\App\\app.exe", args="", enabled=True):
+    """Construct a fake Schedule.Service task COM object — only the
+    attributes ``_walk_tasks_with_logon_or_boot`` actually reads."""
+    _LOGON, _BOOT = 9, 8
+
+    trig_items = []
+    for t in triggers:
+        if t == "logon":
+            trig_items.append(types.SimpleNamespace(Type=_LOGON))
+        elif t == "boot":
+            trig_items.append(types.SimpleNamespace(Type=_BOOT))
+        else:
+            trig_items.append(types.SimpleNamespace(Type=99))  # not a startup trigger
+
+    triggers_coll = types.SimpleNamespace(
+        Count=len(trig_items),
+        Item=lambda i: trig_items[i - 1],  # COM is 1-indexed
+    )
+    actions_coll = types.SimpleNamespace(
+        Count=1,
+        Item=lambda i: types.SimpleNamespace(Path=path, Arguments=args),
+    )
+    definition = types.SimpleNamespace(Triggers=triggers_coll, Actions=actions_coll)
+    return types.SimpleNamespace(Name=name, Enabled=enabled, Definition=definition)
+
+
+def _build_fake_folder(tasks, subfolders=()):
+    """A fake Schedule.Service folder with ``GetTasks(1)``/``GetFolders(0)``."""
+    folder = types.SimpleNamespace()
+    folder.GetTasks = lambda flag: list(tasks)
+    folder.GetFolders = lambda flag: list(subfolders)
+    return folder
+
+
+def _mock_startup_environment(
+    mocker,
+    *,
+    registry_entries=None,
+    folder_files=None,
+    scheduler_root=None,
+    raise_com=False,
+):
+    """All-in-one mocker for ``get_startup_items``.
+
+    - ``registry_entries`` — dict keyed by (hive_const, subkey) → list of
+      (name, value, regtype) tuples. Missing entries default to empty.
+    - ``folder_files`` — dict keyed by env var ("ALLUSERSPROFILE" /
+      "APPDATA") → list of pathlib.Path-like objects.
+    - ``scheduler_root`` — fake folder for ``scheduler.GetFolder("\\")``;
+      defaults to a folder with no tasks.
+    - ``raise_com`` — make ``win32com.client.Dispatch`` raise.
+
+    Also stubs ``get_startup_item_info`` so enrichment doesn't queue real
+    background lookups during tests.
+    """
+    registry_entries = registry_entries or {}
+    folder_files = folder_files or {}
+
+    # ── winreg ───────────────────────────────────────────────────────────
+    opened_keys: dict = {}
+
+    def _open_key(hive, subkey, *_args, **_kw):
+        entries = registry_entries.get((hive, subkey))
+        if entries is None:
+            # Run-Disabled keys that don't exist raise FileNotFoundError,
+            # which production code swallows.
+            raise FileNotFoundError(subkey)
+        key_obj = mocker.MagicMock(name=f"key:{subkey}")
+        opened_keys[key_obj] = entries
+        return key_obj
+
+    mocker.patch("windesktopmgr.winreg.OpenKey", side_effect=_open_key)
+    mocker.patch(
+        "windesktopmgr.winreg.EnumValue",
+        side_effect=_registry_enum_side_effect(opened_keys),
+    )
+    mocker.patch("windesktopmgr.winreg.CloseKey")
+
+    # ── environment + pathlib for the Startup folder paths ───────────────
+    env = {k: f"C:\\fake\\{k}" for k in folder_files}
+    mocker.patch.dict("windesktopmgr.os.environ", env, clear=False)
+
+    from pathlib import Path
+
+    def _iterdir(self):
+        # Map this Path back to whichever env var its prefix mentions.
+        s = str(self)
+        for env_var, files in folder_files.items():
+            if env_var in s:
+                return iter(files)
+        raise FileNotFoundError(s)
+
+    mocker.patch.object(Path, "iterdir", _iterdir)
+
+    # ── Schedule.Service COM ─────────────────────────────────────────────
+    mocker.patch("windesktopmgr.pythoncom.CoInitialize")
+    if raise_com:
+        mocker.patch(
+            "windesktopmgr.win32com.client.Dispatch",
+            side_effect=Exception("COM error"),
+        )
+    else:
+        scheduler = mocker.MagicMock()
+        scheduler.GetFolder.return_value = scheduler_root or _build_fake_folder([])
+        mocker.patch(
+            "windesktopmgr.win32com.client.Dispatch",
+            return_value=scheduler,
+        )
+
+    # ── enrichment side-effect short-circuit ────────────────────────────
+    mocker.patch("windesktopmgr.get_startup_item_info", return_value=None)
+
+
+_RUN = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+_DIS = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run-Disabled"
+
+
+def _fake_file(name, full_path):
+    """A pathlib.Path-like object good enough for the Startup-folder loop."""
+    p = types.SimpleNamespace(
+        stem=name,
+        is_file=lambda: True,
+    )
+    p.__str__ = lambda: full_path  # type: ignore[attr-defined]
+    # str(entry) is used in the producer
+    return _StrPath(name, full_path)
+
+
+class _StrPath:
+    """Minimal pathlib.Path stand-in supporting ``stem``, ``is_file()`` and
+    ``str(p)`` — the only surface ``get_startup_items`` touches."""
+
+    def __init__(self, stem, full):
+        self.stem = stem
+        self._full = full
+
+    def is_file(self):
+        return True
+
+    def __str__(self):
+        return self._full
+
+
+class TestGetStartupItems:
+    HKLM = None  # filled in lazily in setup so we use the real winreg constants
+    HKCU = None
+
+    def _hives(self):
+        return wdm.winreg.HKEY_LOCAL_MACHINE, wdm.winreg.HKEY_CURRENT_USER
 
     def test_returns_list(self, mocker):
-        self._make_mock(mocker)
+        hklm, hkcu = self._hives()
+        _mock_startup_environment(
+            mocker,
+            registry_entries={
+                (hklm, _RUN): [("OneDrive", r"C:\Program Files\OneDrive.exe /bg", 1)],
+                (hkcu, _RUN): [],
+            },
+        )
         result = wdm.get_startup_items()
         assert isinstance(result, list)
+        assert any(i["Name"] == "OneDrive" for i in result)
 
     def test_items_have_required_fields(self, mocker):
-        self._make_mock(mocker)
+        hklm, _ = self._hives()
+        _mock_startup_environment(
+            mocker,
+            registry_entries={(hklm, _RUN): [("Foo", "foo.exe", 1)]},
+        )
         result = wdm.get_startup_items()
-        # PS outputs PascalCase keys: Name, Command, Location, Type
         for item in result:
-            for field in ("Name", "Command", "Location", "Type"):
+            for field in ("Name", "Command", "Location", "Type", "Enabled"):
                 assert field in item
 
-    def test_empty_output_returns_empty_list(self, mocker):
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = [
-            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
-        ]
+    def test_empty_everything_returns_empty_list(self, mocker):
+        _mock_startup_environment(mocker)
         result = wdm.get_startup_items()
         assert result == []
 
-    def test_malformed_json_returns_empty_list(self, mocker):
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = [
-            type("R", (), {"stdout": "bad json", "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
-        ]
-        result = wdm.get_startup_items()
-        assert isinstance(result, list)
-
-    def test_timeout_returns_empty_list(self, mocker):
-        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=30))
-        result = wdm.get_startup_items()
-        assert result == []
-
-    def test_nonzero_returncode_handled(self, mocker):
-        _mock_run(mocker, stdout="[]", returncode=1, stderr="error")
-        result = wdm.get_startup_items()
-        assert isinstance(result, list)
-
-    def test_command_queries_registry_run_keys(self, mocker):
-        m = _mock_run(mocker, stdout="[]")
-        wdm.get_startup_items()
-        ps_cmd = m.call_args[0][0][-1]
-        assert "CurrentVersion\\Run" in ps_cmd or "Get-ScheduledTask" in ps_cmd
-
-    def test_single_object_normalized(self, mocker):
-        single = json.dumps(
-            {"Name": "OneDrive", "Command": "onedrive.exe", "Location": "HKCU Run", "Type": "registry_hkcu"}
+    def test_registry_hklm_run_emitted(self, mocker):
+        hklm, _ = self._hives()
+        _mock_startup_environment(
+            mocker,
+            registry_entries={(hklm, _RUN): [("HKLMApp", "hklm.exe", 1)]},
         )
-        _mock_run(mocker, stdout=single)
         result = wdm.get_startup_items()
-        assert isinstance(result, list)
-        assert len(result) == 1
+        match = [i for i in result if i["Name"] == "HKLMApp"]
+        assert match
+        assert match[0]["Type"] == "registry_hklm"
+        assert match[0]["Enabled"] is True
+        assert match[0]["Command"] == "hklm.exe"
+
+    def test_registry_hkcu_run_emitted(self, mocker):
+        _, hkcu = self._hives()
+        _mock_startup_environment(
+            mocker,
+            registry_entries={(hkcu, _RUN): [("HKCUApp", "hkcu.exe", 1)]},
+        )
+        result = wdm.get_startup_items()
+        match = [i for i in result if i["Name"] == "HKCUApp"]
+        assert match
+        assert match[0]["Type"] == "registry_hkcu"
+
+    def test_run_disabled_marked_disabled(self, mocker):
+        hklm, _ = self._hives()
+        _mock_startup_environment(
+            mocker,
+            registry_entries={(hklm, _DIS): [("DisabledApp", "dis.exe", 1)]},
+        )
+        result = wdm.get_startup_items()
+        match = [i for i in result if i["Name"] == "DisabledApp"]
+        assert match
+        assert match[0]["Enabled"] is False
+
+    def test_missing_run_disabled_key_does_not_crash(self, mocker):
+        """Run-Disabled often doesn't exist on a clean box — FileNotFoundError
+        must be swallowed."""
+        # No registry entries supplied → every OpenKey raises FileNotFoundError
+        _mock_startup_environment(mocker)
+        result = wdm.get_startup_items()
+        assert result == []
+
+    def test_startup_folder_items_emitted(self, mocker):
+        files = [_StrPath("Notepad", r"C:\fake\APPDATA\...\Notepad.lnk")]
+        _mock_startup_environment(mocker, folder_files={"APPDATA": files})
+        result = wdm.get_startup_items()
+        match = [i for i in result if i["Name"] == "Notepad"]
+        assert match
+        assert match[0]["Type"] == "folder"
+        assert match[0]["Enabled"] is True
+
+    def test_scheduled_task_with_logon_trigger_emitted(self, mocker):
+        task = _build_fake_task(
+            "EdgeAutoLaunch",
+            triggers=("logon",),
+            path=r"C:\Program Files\Edge\msedge.exe",
+            args="--auto-launch",
+        )
+        root = _build_fake_folder([task])
+        _mock_startup_environment(mocker, scheduler_root=root)
+        result = wdm.get_startup_items()
+        match = [i for i in result if i["Name"] == "EdgeAutoLaunch"]
+        assert match
+        assert match[0]["Type"] == "task"
+        assert match[0]["Location"] == "Task Scheduler"
+        assert "msedge.exe" in match[0]["Command"]
+        assert "--auto-launch" in match[0]["Command"]
+
+    def test_scheduled_task_with_boot_trigger_emitted(self, mocker):
+        task = _build_fake_task("BootSvc", triggers=("boot",))
+        _mock_startup_environment(mocker, scheduler_root=_build_fake_folder([task]))
+        result = wdm.get_startup_items()
+        assert any(i["Name"] == "BootSvc" for i in result)
+
+    def test_scheduled_task_without_logon_or_boot_filtered(self, mocker):
+        """Tasks with no Logon/Boot trigger must NOT appear."""
+        task = _build_fake_task("HourlyTask", triggers=("other",))
+        _mock_startup_environment(mocker, scheduler_root=_build_fake_folder([task]))
+        result = wdm.get_startup_items()
+        assert not [i for i in result if i["Name"] == "HourlyTask"]
+
+    def test_scheduled_task_recursion_into_subfolders(self, mocker):
+        """``_walk_tasks_with_logon_or_boot`` must recurse into sub-folders."""
+        nested = _build_fake_task("NestedTask", triggers=("logon",))
+        sub = _build_fake_folder([nested])
+        root = _build_fake_folder([], subfolders=[sub])
+        _mock_startup_environment(mocker, scheduler_root=root)
+        result = wdm.get_startup_items()
+        assert any(i["Name"] == "NestedTask" for i in result)
+
+    def test_scheduler_exception_swallowed(self, mocker):
+        """If Schedule.Service Dispatch raises, the registry/folder items
+        still come through and nothing crashes."""
+        hklm, _ = self._hives()
+        _mock_startup_environment(
+            mocker,
+            registry_entries={(hklm, _RUN): [("Reg1", "r.exe", 1)]},
+            raise_com=True,
+        )
+        result = wdm.get_startup_items()
+        assert any(i["Name"] == "Reg1" for i in result)
+
+    def test_no_subprocess_invoked(self, mocker):
+        """Regression guard — get_startup_items must not shell out to PS."""
+        _mock_startup_environment(mocker)
+        ps = mocker.patch("windesktopmgr.subprocess.run")
+        wdm.get_startup_items()
+        assert ps.call_count == 0
+
+    def test_suspicious_flag_added(self, mocker):
+        """The enrichment loop should add a ``suspicious`` bool to every item."""
+        hklm, _ = self._hives()
+        _mock_startup_environment(
+            mocker,
+            registry_entries={(hklm, _RUN): [("App", "app.exe", 1)]},
+        )
+        result = wdm.get_startup_items()
+        assert all("suspicious" in i for i in result)
+        assert all(isinstance(i["suspicious"], bool) for i in result)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

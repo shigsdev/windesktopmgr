@@ -2516,122 +2516,227 @@ def get_startup_item_info(name: str, command: str) -> dict | None:
     return None
 
 
-def get_startup_items() -> list:
-    ps = r"""
-$items = @()
-# HKLM Run
-try {
-    $k = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -EA Stop
-    $k.PSObject.Properties | Where-Object { $_.Name -notlike "PS*" } | ForEach-Object {
-        $items += [PSCustomObject]@{ Name=$_.Name; Command=$_.Value; Location="HKLM Run"; Type="registry_hklm"; Enabled=$true }
-    }
-} catch {}
-# HKLM Run (disabled)
-try {
-    $k = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run-Disabled" -EA Stop
-    $k.PSObject.Properties | Where-Object { $_.Name -notlike "PS*" } | ForEach-Object {
-        $items += [PSCustomObject]@{ Name=$_.Name; Command=$_.Value; Location="HKLM Run"; Type="registry_hklm"; Enabled=$false }
-    }
-} catch {}
-# HKCU Run
-try {
-    $k = Get-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -EA Stop
-    $k.PSObject.Properties | Where-Object { $_.Name -notlike "PS*" } | ForEach-Object {
-        $items += [PSCustomObject]@{ Name=$_.Name; Command=$_.Value; Location="HKCU Run"; Type="registry_hkcu"; Enabled=$true }
-    }
-} catch {}
-# HKCU Run (disabled)
-try {
-    $k = Get-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run-Disabled" -EA Stop
-    $k.PSObject.Properties | Where-Object { $_.Name -notlike "PS*" } | ForEach-Object {
-        $items += [PSCustomObject]@{ Name=$_.Name; Command=$_.Value; Location="HKCU Run"; Type="registry_hkcu"; Enabled=$false }
-    }
-} catch {}
-# Startup folder - all users
-try {
-    $f = "$env:ALLUSERSPROFILE\Microsoft\Windows\Start Menu\Programs\Startup"
-    Get-ChildItem $f -EA Stop | ForEach-Object {
-        $items += [PSCustomObject]@{ Name=$_.BaseName; Command=$_.FullName; Location="Startup Folder (All Users)"; Type="folder"; Enabled=$true }
-    }
-} catch {}
-# Startup folder - current user
-try {
-    $f = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
-    Get-ChildItem $f -EA Stop | ForEach-Object {
-        $items += [PSCustomObject]@{ Name=$_.BaseName; Command=$_.FullName; Location="Startup Folder (User)"; Type="folder"; Enabled=$true }
-    }
-} catch {}
-# Scheduled tasks with logon/boot triggers
-try {
-    Get-ScheduledTask | Where-Object {
-        ($_.Triggers | Where-Object { $_.CimClass.CimClassName -match "LogonTrigger|BootTrigger" })
-    } | ForEach-Object {
-        $act = $_.Actions | Select-Object -First 1
-        $cmd = if ($act.Execute) { "$($act.Execute) $($act.Arguments)".Trim() } else { $_.TaskName }
-        $items += [PSCustomObject]@{ Name=$_.TaskName; Command=$cmd; Location="Task Scheduler"; Type="task"; Enabled=($_.State -ne "Disabled") }
-    }
-} catch {}
-$items | ConvertTo-Json -Depth 2
-"""
-    try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=30
-        )
-        data = json.loads(r.stdout.strip() or "[]")
-        items = data if isinstance(data, list) else [data]
-        for item in items:
-            cmd = (item.get("Command") or "").lower()
-            item["suspicious"] = any(re.search(p, cmd) for p in SUSPICIOUS_PATTERNS)
-            # Attach enrichment info (may be None if still pending)
-            info = get_startup_item_info(item.get("Name", ""), item.get("Command", ""))
-            item["info"] = info
+# Task Scheduler COM trigger-type constants (TASK_TRIGGER_TYPE2 — MSDN).
+_TASK_TRIGGER_BOOT = 8
+_TASK_TRIGGER_LOGON = 9
 
-        # Sort: suspicious first, then by recommendation priority, then name
-        rec_order = {"disable": 0, "optional": 1, "keep": 2, None: 3}
-        items.sort(
-            key=lambda x: (
-                not x.get("suspicious", False),
-                rec_order.get((x.get("info") or {}).get("recommendation"), 3),
-                x.get("Name", "").lower(),
-            )
+
+def _walk_tasks_with_logon_or_boot(folder, out: list) -> None:
+    """Recursively collect Schedule.Service tasks whose triggers include a
+    Logon or Boot trigger (the PowerShell `CimClassName -match
+    "LogonTrigger|BootTrigger"` equivalent). Each emitted entry has the same
+    shape `get_startup_items` produced from PS: Name / Command / Location /
+    Type / Enabled.
+    """
+    try:
+        for task in folder.GetTasks(1):  # 1 = TASK_ENUM_HIDDEN: include hidden
+            try:
+                definition = task.Definition
+                triggers = definition.Triggers
+                has_match = False
+                for j in range(1, triggers.Count + 1):  # COM collections are 1-indexed
+                    if triggers.Item(j).Type in (_TASK_TRIGGER_LOGON, _TASK_TRIGGER_BOOT):
+                        has_match = True
+                        break
+                if not has_match:
+                    continue
+                cmd = task.Name
+                actions = definition.Actions
+                if actions.Count > 0:
+                    a = actions.Item(1)
+                    path = getattr(a, "Path", "") or ""
+                    if path:
+                        args = getattr(a, "Arguments", "") or ""
+                        cmd = f"{path} {args}".strip()
+                out.append(
+                    {
+                        "Name": task.Name,
+                        "Command": cmd,
+                        "Location": "Task Scheduler",
+                        "Type": "task",
+                        "Enabled": bool(task.Enabled),
+                    }
+                )
+            except Exception:  # noqa: BLE001 — skip individual broken tasks
+                continue
+    except Exception:  # noqa: BLE001 — GetTasks can refuse on a restricted folder
+        pass
+    try:
+        for sub in folder.GetFolders(0):
+            _walk_tasks_with_logon_or_boot(sub, out)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _find_scheduled_task(folder, name: str):
+    """Recursively locate a Task Scheduler task by name (used by
+    ``toggle_startup_item``)."""
+    try:
+        for task in folder.GetTasks(1):
+            if task.Name == name:
+                return task
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        for sub in folder.GetFolders(0):
+            found = _find_scheduled_task(sub, name)
+            if found is not None:
+                return found
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def get_startup_items() -> list:
+    """Enumerate startup items from every source — all in-process (backlog
+    #28 close-out): HKLM/HKCU ``Run`` + ``Run-Disabled`` via ``winreg``,
+    Startup folder via ``pathlib``, and scheduled tasks with Logon/Boot
+    triggers via the ``Schedule.Service`` COM object. No PowerShell."""
+    items: list = []
+
+    # ── Registry Run keys (HKLM/HKCU × Run + Run-Disabled) ───────────────
+    _RUN_SUBKEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+    _DISABLED_SUBKEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run-Disabled"
+    for hive_const, hive_label, item_type in (
+        (winreg.HKEY_LOCAL_MACHINE, "HKLM Run", "registry_hklm"),
+        (winreg.HKEY_CURRENT_USER, "HKCU Run", "registry_hkcu"),
+    ):
+        for subkey, enabled in ((_RUN_SUBKEY, True), (_DISABLED_SUBKEY, False)):
+            try:
+                key = winreg.OpenKey(hive_const, subkey)
+                try:
+                    i = 0
+                    while True:
+                        try:
+                            name, value, _typ = winreg.EnumValue(key, i)
+                            items.append(
+                                {
+                                    "Name": name,
+                                    "Command": str(value),
+                                    "Location": hive_label,
+                                    "Type": item_type,
+                                    "Enabled": enabled,
+                                }
+                            )
+                            i += 1
+                        except OSError:
+                            break  # no more values
+                finally:
+                    winreg.CloseKey(key)
+            except FileNotFoundError:
+                pass  # Run-Disabled often doesn't exist until first toggle
+            except Exception:  # noqa: BLE001
+                pass
+
+    # ── Startup folders (All Users + Current User) ───────────────────────
+    from pathlib import Path
+
+    for env_var, label in (
+        ("ALLUSERSPROFILE", "Startup Folder (All Users)"),
+        ("APPDATA", "Startup Folder (User)"),
+    ):
+        root = os.environ.get(env_var, "")
+        if not root:
+            continue
+        folder_path = Path(root) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+        try:
+            for entry in folder_path.iterdir():
+                if entry.is_file():
+                    items.append(
+                        {
+                            "Name": entry.stem,
+                            "Command": str(entry),
+                            "Location": label,
+                            "Type": "folder",
+                            "Enabled": True,
+                        }
+                    )
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ── Scheduled tasks with Logon/Boot triggers (Schedule.Service COM) ──
+    try:
+        pythoncom.CoInitialize()
+        scheduler = win32com.client.Dispatch("Schedule.Service")
+        scheduler.Connect()
+        _walk_tasks_with_logon_or_boot(scheduler.GetFolder("\\"), items)
+    except Exception as e:  # noqa: BLE001
+        print(f"[Startup tasks] {e}")
+
+    # ── Enrich + sort (unchanged) ────────────────────────────────────────
+    for item in items:
+        cmd = (item.get("Command") or "").lower()
+        item["suspicious"] = any(re.search(p, cmd) for p in SUSPICIOUS_PATTERNS)
+        info = get_startup_item_info(item.get("Name", ""), item.get("Command", ""))
+        item["info"] = info
+
+    rec_order = {"disable": 0, "optional": 1, "keep": 2, None: 3}
+    items.sort(
+        key=lambda x: (
+            not x.get("suspicious", False),
+            rec_order.get((x.get("info") or {}).get("recommendation"), 3),
+            x.get("Name", "").lower(),
         )
-        return items
-    except Exception as e:
-        print(f"[Startup error] {e}")
-        return []
+    )
+    return items
 
 
 def toggle_startup_item(name: str, item_type: str, enable: bool) -> dict:
+    """Toggle a startup item between Run and Run-Disabled (registry) or
+    enable/disable a scheduled task — pure-Python via ``winreg`` and the
+    ``Schedule.Service`` COM object. No PowerShell (backlog #28 close-out).
+    """
     safe_name = re.sub(r"[^a-zA-Z0-9\-_. ]", "", name).strip()
+    if not safe_name:
+        return {"ok": False, "error": "Invalid name"}
+
     if item_type in ("registry_hklm", "registry_hkcu"):
-        hive = "HKLM" if item_type == "registry_hklm" else "HKCU"
-        src = f"{hive}:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run"
-        dst = f"{hive}:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run-Disabled"
-        if enable:
-            ps = (
-                f'$v=(Get-ItemProperty "{dst}" -Name "{safe_name}" -EA Stop)."{safe_name}"; '
-                f'Set-ItemProperty "{src}" -Name "{safe_name}" -Value $v; '
-                f'Remove-ItemProperty "{dst}" -Name "{safe_name}"'
-            )
-        else:
-            ps = (
-                f'$v=(Get-ItemProperty "{src}" -Name "{safe_name}" -EA Stop)."{safe_name}"; '
-                f'if (-not (Test-Path "{dst}")) {{ New-Item "{dst}" -Force | Out-Null }}; '
-                f'Set-ItemProperty "{dst}" -Name "{safe_name}" -Value $v; '
-                f'Remove-ItemProperty "{src}" -Name "{safe_name}"'
-            )
-    elif item_type == "task":
-        action = "Enable-ScheduledTask" if enable else "Disable-ScheduledTask"
-        ps = f'{action} -TaskName "{safe_name}" -EA Stop'
-    else:
-        return {"ok": False, "error": "Cannot toggle this item type"}
-    try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=15
-        )
-        return {"ok": r.returncode == 0, "error": r.stderr.strip() if r.returncode != 0 else ""}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+        hive = winreg.HKEY_LOCAL_MACHINE if item_type == "registry_hklm" else winreg.HKEY_CURRENT_USER
+        run_subkey = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+        disabled_subkey = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run-Disabled"
+        # Enabling means moving the value from Run-Disabled → Run; disabling
+        # is the reverse. The value's REG_TYPE is preserved (Run entries are
+        # commonly REG_SZ but occasionally REG_EXPAND_SZ).
+        src, dst = (disabled_subkey, run_subkey) if enable else (run_subkey, disabled_subkey)
+        try:
+            sk = winreg.OpenKey(hive, src, 0, winreg.KEY_READ)
+            try:
+                value, regtype = winreg.QueryValueEx(sk, safe_name)
+            finally:
+                winreg.CloseKey(sk)
+            # CreateKey opens-or-creates — Run-Disabled often doesn't exist yet.
+            dk = winreg.CreateKey(hive, dst)
+            try:
+                winreg.SetValueEx(dk, safe_name, 0, regtype, value)
+            finally:
+                winreg.CloseKey(dk)
+            sk = winreg.OpenKey(hive, src, 0, winreg.KEY_SET_VALUE)
+            try:
+                winreg.DeleteValue(sk, safe_name)
+            finally:
+                winreg.CloseKey(sk)
+            return {"ok": True, "error": ""}
+        except FileNotFoundError:
+            return {"ok": False, "error": f"Startup entry not found: {safe_name}"}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)}
+
+    if item_type == "task":
+        try:
+            pythoncom.CoInitialize()
+            scheduler = win32com.client.Dispatch("Schedule.Service")
+            scheduler.Connect()
+            task = _find_scheduled_task(scheduler.GetFolder("\\"), safe_name)
+            if task is None:
+                return {"ok": False, "error": f"Task not found: {safe_name}"}
+            task.Enabled = bool(enable)
+            return {"ok": True, "error": ""}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)}
+
+    return {"ok": False, "error": "Cannot toggle this item type"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
