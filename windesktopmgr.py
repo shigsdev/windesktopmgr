@@ -1151,46 +1151,58 @@ def _wu_searcher():
     return session.CreateUpdateSearcher()
 
 
-def _wu_search_drivers(timeout_s: float = 120.0) -> list:
-    """Run the WU 'available driver updates' search via in-process COM.
+def _wu_run(work, timeout_s: float, label: str):
+    """Run a COM-using callable bounded by a wall-clock timeout.
 
-    Returns a list of update dicts. The COM ``Search()`` call is blocking and
-    cannot be interrupted, so it runs in a daemon worker thread we join with
-    a timeout — mirroring the ``subprocess(..., timeout=120)`` the PowerShell
-    version had. Raises ``TimeoutError`` on timeout (the orphaned worker is a
-    daemon and finishes on its own); re-raises any COM error.
+    WU COM calls (``Search`` / ``QueryHistory``) block and cannot be
+    interrupted, and a cold Windows Update Agent can take tens of seconds to
+    initialise on the first call after a restart. So ``work`` runs in a
+    daemon worker thread we join with a timeout — mirroring the subprocess
+    timeouts the PowerShell versions had. Raises ``TimeoutError`` on timeout
+    (the orphaned daemon worker finishes on its own); re-raises any error
+    from ``work``.
     """
     box: dict = {}
 
-    def _run():
+    def _runner():
         try:
-            searcher = _wu_searcher()
-            res = searcher.Search("IsInstalled=0 AND Type='Driver'")
-            updates = res.Updates
-            rows = []
-            for i in range(updates.Count):
-                u = updates.Item(i)
-                rows.append(
-                    {
-                        "Title": _wu_prop(u, "Title") or "",
-                        "Description": _wu_prop(u, "Description") or "",
-                        "DriverModel": _wu_prop(u, "DriverModel") or "",
-                        "DriverVersion": _wu_prop(u, "DriverVersion") or "",
-                        "DriverManufacturer": _wu_prop(u, "DriverManufacturer") or "",
-                    }
-                )
-            box["data"] = rows
+            box["data"] = work()
         except Exception as e:  # noqa: BLE001 — surfaced to the caller below
             box["error"] = e
 
-    t = threading.Thread(target=_run, name="WUDriverSearch", daemon=True)
+    t = threading.Thread(target=_runner, name=f"WU-{label}", daemon=True)
     t.start()
     t.join(timeout_s)
     if t.is_alive():
-        raise TimeoutError(f"Windows Update driver search exceeded {timeout_s:.0f}s")
+        raise TimeoutError(f"{label} exceeded {timeout_s:.0f}s")
     if "error" in box:
         raise box["error"]
-    return box.get("data", [])
+    return box.get("data")
+
+
+def _wu_search_drivers(timeout_s: float = 120.0) -> list:
+    """Run the WU 'available driver updates' search via in-process COM,
+    bounded by ``timeout_s`` (the blocking COM ``Search()`` cannot be
+    cancelled — see ``_wu_run``). Raises ``TimeoutError`` on timeout."""
+
+    def _search():
+        searcher = _wu_searcher()
+        updates = searcher.Search("IsInstalled=0 AND Type='Driver'").Updates
+        rows = []
+        for i in range(updates.Count):
+            u = updates.Item(i)
+            rows.append(
+                {
+                    "Title": _wu_prop(u, "Title") or "",
+                    "Description": _wu_prop(u, "Description") or "",
+                    "DriverModel": _wu_prop(u, "DriverModel") or "",
+                    "DriverVersion": _wu_prop(u, "DriverVersion") or "",
+                    "DriverManufacturer": _wu_prop(u, "DriverManufacturer") or "",
+                }
+            )
+        return rows
+
+    return _wu_run(_search, timeout_s, "Windows Update driver search") or []
 
 
 def get_windows_update_drivers() -> dict | None:
@@ -2938,10 +2950,14 @@ def get_update_history() -> list:
     """Windows Update install history via the in-process Update COM API
     (``IUpdateSearcher.QueryHistory`` — no PowerShell subprocess).
 
-    QueryHistory is a fast local call (no network), so unlike the driver
-    search it needs no timeout guard.
+    QueryHistory itself is a fast local call, but creating the COM session
+    cold-starts the Windows Update Agent, which can take tens of seconds on
+    the first call after a restart. Bounded by a 60 s worker-thread timeout
+    so a cold WUA can't hang the Updates tab — this restores the cap the old
+    PowerShell ``subprocess(..., timeout=30)`` provided.
     """
-    try:
+
+    def _query():
         searcher = _wu_searcher()
         total = searcher.GetTotalHistoryCount()
         hist = searcher.QueryHistory(0, min(total, 150))
@@ -2970,6 +2986,9 @@ def get_update_history() -> list:
                 }
             )
         return items
+
+    try:
+        return _wu_run(_query, 60, "Windows Update history query") or []
     except Exception as e:  # noqa: BLE001
         print(f"[Update history error] {e}")
         return []

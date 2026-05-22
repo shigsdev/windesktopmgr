@@ -30,7 +30,11 @@ RESET = "\033[0m"
 DEFAULT_HOST = "http://localhost:5000"
 HEARTBEAT_TIMEOUT_S = 45
 HEARTBEAT_POLL_INTERVAL_S = 1.0
-SELFTEST_TIMEOUT_S = 120
+# Must be >= the server's own selftest budget (overall_budget = 180 s in
+# windesktopmgr.api_selftest). 120 s was below it, so a cold-start selftest
+# that legitimately ran 120-180 s — common when the Windows Update COM API
+# is cold — made this client give up before the server even finished.
+SELFTEST_TIMEOUT_S = 300
 
 
 def _get_json(url: str, timeout: float = 5.0) -> dict | None:
