@@ -244,18 +244,11 @@ class TestGetProcessListSnapshot:
             assert "Name" in proc or "ProcessName" in proc
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# get_startup_items
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-class TestGetStartupItemsSnapshot:
-    def test_parses_real_output(self, mocker):
-        _mock_single_ps(mocker, "ps_startup_items.json")
-        expected = load_fixture("parsed/parsed_get_startup_items.json")
-        result = wdm.get_startup_items()
-        assert isinstance(result, list)
-        assert len(result) == len(expected)
+# get_startup_items no longer has a PS-output snapshot test — it was ported
+# from a PowerShell subprocess to in-process winreg + pathlib + the
+# Schedule.Service COM API (backlog #28 close-out), so there is no PS stdout
+# to snapshot. Its behaviour is covered by TestGetStartupItems in
+# test_powershell.py with fake winreg / COM objects.
 
 
 # ══════════════════════════════════════════════════════════════════════════════

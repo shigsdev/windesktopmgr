@@ -459,25 +459,44 @@ class TestStartupToggleRoute:
         assert data["ok"] is False
         assert "error" in data
 
-    def test_registry_hklm_enable_calls_subprocess(self, client, mocker):
-        mock_run = _mock_ps(mocker)
+    def test_registry_hklm_enable_invokes_winreg(self, client, mocker):
+        """toggle_startup_item now uses winreg directly (no subprocess) —
+        assert the route reaches the winreg surface."""
+        open_key = mocker.patch("windesktopmgr.winreg.OpenKey", return_value=mocker.MagicMock())
+        mocker.patch("windesktopmgr.winreg.QueryValueEx", return_value=("foo.exe", 1))
+        mocker.patch("windesktopmgr.winreg.CreateKey", return_value=mocker.MagicMock())
+        mocker.patch("windesktopmgr.winreg.SetValueEx")
+        mocker.patch("windesktopmgr.winreg.DeleteValue")
+        mocker.patch("windesktopmgr.winreg.CloseKey")
         resp = client.post(
             "/api/startup/toggle",
             json={"name": "MyApp", "type": "registry_hklm", "enable": True},
         )
         assert resp.status_code == 200
-        assert mock_run.called
+        assert resp.get_json()["ok"] is True
+        assert open_key.called
+        # Source must be Run-Disabled when enable=True, under HKLM
+        first_call = open_key.call_args_list[0]
+        assert first_call[0][0] == wdm.winreg.HKEY_LOCAL_MACHINE
+        assert "Run-Disabled" in first_call[0][1]
 
-    def test_task_disable_calls_subprocess(self, client, mocker):
-        mock_run = _mock_ps(mocker)
+    def test_task_disable_invokes_scheduler_com(self, client, mocker):
+        """toggle_startup_item task branch drives Schedule.Service COM —
+        assert the route disables the task via the COM ``.Enabled`` setter."""
+        mocker.patch("windesktopmgr.pythoncom.CoInitialize")
+        scheduler = mocker.MagicMock()
+        scheduler.GetFolder.return_value = mocker.MagicMock()
+        mocker.patch("windesktopmgr.win32com.client.Dispatch", return_value=scheduler)
+        fake_task = mocker.MagicMock()
+        fake_task.Enabled = True
+        mocker.patch("windesktopmgr._find_scheduled_task", return_value=fake_task)
         resp = client.post(
             "/api/startup/toggle",
             json={"name": "MyTask", "type": "task", "enable": False},
         )
         assert resp.status_code == 200
-        assert mock_run.called
-        cmd = mock_run.call_args[0][0][-1]
-        assert "Disable-ScheduledTask" in cmd or "Disable" in cmd
+        assert resp.get_json()["ok"] is True
+        assert fake_task.Enabled is False
 
 
 # ══════════════════════════════════════════════════════════════════════════════
