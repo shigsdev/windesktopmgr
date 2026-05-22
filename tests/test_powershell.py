@@ -3869,15 +3869,57 @@ class TestGetNvidiaUpdateInfo:
         """The version-aware cache must not over-invalidate. When the
         installed version is the same as cached, the second call must
         still skip the expensive API/WU calls and serve from cache.
+
+        Counterpart to test_cache_invalidates_when_installed_version_changes:
+        that test proves a version *change* recomputes; this proves a
+        version *match* does not. The ``is`` assertion verifies the exact
+        cached object is handed back — not a recomputed-but-equal dict —
+        so a regression that always recomputed would fail here.
         """
         self._mock_gpu(mocker)
         api_mock = self._mock_api(mocker, result=self.API_RESULT)
         r1 = wdm.get_nvidia_update_info()
         r2 = wdm.get_nvidia_update_info()
-        assert r1 == r2
+        # Same object identity -> genuinely served from cache, not recomputed.
+        assert r1 is r2
         # API only called once -- second call hit the cache despite the
         # new pre-cache GPU read.
         assert api_mock.call_count == 1
+
+    def test_empty_installed_version_returns_none(self, mocker):
+        """Regression for the 2026-05-21 review finding. When
+        _get_nvidia_gpu_info() yields a GPU dict with no usable installed
+        version (nvidia-smi absent + WMI returned no DriverVersion),
+        get_nvidia_update_info() must bail out with None rather than run —
+        and cache — a result keyed on an empty string. A cached "" entry
+        caused a full ~5s API+WU recompute on every call whenever a later
+        WMI read flickered the real version back.
+        """
+        blank_gpu = {"name": "NVIDIA GeForce RTX 4060 Ti", "installed": "", "win_ver": ""}
+        self._mock_gpu(mocker, gpu=blank_gpu)
+        api_mock = self._mock_api(mocker, result=self.API_RESULT)
+        result = wdm.get_nvidia_update_info()
+        assert result is None
+        # The expensive API path must be skipped entirely.
+        api_mock.assert_not_called()
+        # Nothing cached -- a later call with a real version recomputes clean.
+        assert wdm._nvidia_update_cache["data"] is None
+
+    def test_concurrent_calls_are_thread_safe(self, mocker):
+        """get_nvidia_update_info() is called concurrently by the dashboard
+        fan-out, run_scan(), and /api/nvidia/status. The cache lock must
+        keep the (data, ts) pair consistent — 12 parallel callers must all
+        get a valid, identical result and none may raise.
+        """
+        import concurrent.futures
+
+        self._mock_gpu(mocker)
+        self._mock_api(mocker, result=self.API_RESULT)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as ex:
+            results = list(ex.map(lambda _: wdm.get_nvidia_update_info(), range(12)))
+        assert all(r is not None for r in results)
+        assert all(r["InstalledVersion"] == "591.74" for r in results)
+        assert all(r["UpdateAvailable"] is True for r in results)
 
 
 class TestLookupNvidiaPfid:

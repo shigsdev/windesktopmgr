@@ -909,12 +909,19 @@ def _query_nvidia_api(pfid: int, *, studio: bool = True) -> dict | None:
 # fallbacks are even slower to change.
 _nvidia_update_cache: dict = {"data": None, "ts": None}
 _NVIDIA_UPDATE_CACHE_TTL = timedelta(minutes=10)
+# get_nvidia_update_info() is called concurrently from the dashboard
+# fan-out's ThreadPoolExecutor, run_scan()'s daemon thread, and the
+# /api/nvidia/status route. The lock makes the (data, ts) pair read and
+# written atomically so a reader never sees fresh data paired with a stale
+# timestamp (or None), which would otherwise misfire the TTL check.
+_nvidia_update_cache_lock = threading.Lock()
 
 
 def _reset_nvidia_update_cache() -> None:
     """Test helper — clear the NVIDIA update cache between tests."""
-    _nvidia_update_cache["data"] = None
-    _nvidia_update_cache["ts"] = None
+    with _nvidia_update_cache_lock:
+        _nvidia_update_cache["data"] = None
+        _nvidia_update_cache["ts"] = None
 
 
 def get_nvidia_update_info() -> dict | None:
@@ -950,11 +957,24 @@ def get_nvidia_update_info() -> dict | None:
     installed = gpu["installed"]
     name = gpu["name"]
 
+    # No usable installed-version string. _get_nvidia_gpu_info() can return a
+    # GPU dict with installed="" when nvidia-smi is absent AND WMI yields no
+    # DriverVersion. Without a version we can't tell update-vs-current, and
+    # caching a result keyed on "" would either falsely cache-hit forever or
+    # — if the version flickers back on a later WMI read — force the full
+    # ~5 s API + Windows Update recompute on every call. Bail out instead;
+    # the /api/nvidia/status route treats None as "no NVIDIA card to show".
+    if not installed:
+        return None
+
     # Cache hit — only when the installed version still matches what was
     # cached. A mismatch means the user updated the driver since the last
     # check; recompute so the UI clears immediately on the next refresh.
-    cached = _nvidia_update_cache["data"]
-    cached_ts = _nvidia_update_cache["ts"]
+    # Read the (data, ts) pair under the lock so a concurrent writer can't
+    # hand us fresh data with a stale timestamp.
+    with _nvidia_update_cache_lock:
+        cached = _nvidia_update_cache["data"]
+        cached_ts = _nvidia_update_cache["ts"]
     if cached is not None and cached_ts is not None and cached.get("InstalledVersion") == installed:
         age = datetime.now() - cached_ts
         if age < _NVIDIA_UPDATE_CACHE_TTL:
@@ -1048,9 +1068,11 @@ def get_nvidia_update_info() -> dict | None:
         "UpdateSource": source,
     }
 
-    # Cache the result for 10 minutes
-    _nvidia_update_cache["data"] = result
-    _nvidia_update_cache["ts"] = datetime.now()
+    # Cache the result for 10 minutes. Write the (data, ts) pair under the
+    # lock so concurrent readers always see a consistent snapshot.
+    with _nvidia_update_cache_lock:
+        _nvidia_update_cache["data"] = result
+        _nvidia_update_cache["ts"] = datetime.now()
 
     return result
 
