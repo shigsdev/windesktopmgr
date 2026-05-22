@@ -877,8 +877,6 @@
       </div>
     </div>
 
-    <div id="drv-nvidia-card" style="display:none"></div>
-
     <div class="driver-grid" id="driver-grid">
       <div class="empty-state">
         <div class="big-icon">⬡</div>
@@ -1355,71 +1353,38 @@ document.querySelectorAll(".page-tab").forEach(btn => {
 // ══════════════════════════════════════════════════════════════════════════
 let allDrivers = [], activeTab = "All", pollTimer = null;
 
-/** Load NVIDIA GPU status on tab open — shows GPU info immediately without
- *  requiring a manual scan.  The card appears above the scan results grid
- *  so the user sees it even before clicking "Run Scan". */
+/** Load NVIDIA GPU status on tab open and render it as a normal card inside
+ *  the driver grid — so the user sees GPU status immediately without running
+ *  a full scan, but it sits in the same matrix as every other driver instead
+ *  of as a separate banner pinned above the grid. A subsequent Run Scan
+ *  replaces the grid with the full driver list (which already includes the
+ *  NVIDIA GPU via run_scan), so there is never a duplicate NVIDIA card. */
 async function drvLoadNvidiaStatus() {
   try {
     const r = await fetch("/api/nvidia/status");
     const data = await r.json();
-    const card = document.getElementById("drv-nvidia-card");
-    if (!data.ok || !data.has_nvidia) { card.style.display = "none"; return; }
-
-    const installed = esc(data.InstalledVersion || "—");
-    const latest    = esc(data.LatestVersion || "");
-    const gpuName   = esc(data.Name || "NVIDIA GPU");
-    const source    = data.UpdateSource || "none";
-    const hasUpdate = data.UpdateAvailable === true;
-
-    const unableToVerify = !hasUpdate && source === "none";
-    const statusBadge = hasUpdate
-      ? '<span style="background:#ff7043;color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">Update Available</span>'
-      : unableToVerify
-        ? '<span style="background:#ffd740;color:#1a1a2e;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">Unable to Verify</span>'
-        : '<span style="background:#00e5a0;color:#1a1a2e;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600">Up to Date</span>';
-
-    const latestRow = latest
-      ? `<div style="display:flex;justify-content:space-between;margin-top:6px">
-           <span style="color:#6b7a90">Latest Version</span>
-           <span style="color:${hasUpdate ? '#ff7043' : '#00e5a0'};font-weight:600">${latest}</span>
-         </div>` : "";
-
-    const sourceLabel = source === "nvidia_api" ? "NVIDIA API"
-                      : source === "installer2_cache" ? "Local Cache"
-                      : source === "windows_update" ? "Windows Update"
-                      : "";
-    const sourceRow = sourceLabel
-      ? `<div style="display:flex;justify-content:space-between;margin-top:6px">
-           <span style="color:#6b7a90">Detected via</span>
-           <span style="color:#8a8aaa">${sourceLabel}</span>
-         </div>` : "";
-
-    const updateBtn = hasUpdate
-      ? `<button onclick="drvOpenNvidiaApp(event)" style="margin-top:12px;width:100%;padding:8px 16px;
-           background:linear-gradient(135deg,#76b900,#5a9e00);color:#fff;border:none;border-radius:6px;
-           cursor:pointer;font-weight:600;font-size:12px">🟢 Update via NVIDIA App</button>`
-      : "";
-
-    card.innerHTML = `
-      <div style="background:var(--card);border:1px solid ${hasUpdate ? '#ff7043' : 'var(--border)'};
-        border-radius:10px;padding:16px 20px;margin-bottom:16px;
-        ${hasUpdate ? 'box-shadow:0 0 12px rgba(255,112,67,0.15)' : ''}">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-          <div style="display:flex;align-items:center;gap:10px">
-            <span style="font-size:20px">🎮</span>
-            <span style="font-weight:600;color:#e0e0e0">${gpuName}</span>
-          </div>
-          ${statusBadge}
-        </div>
-        <div style="display:flex;justify-content:space-between;margin-top:6px">
-          <span style="color:#6b7a90">Installed Version</span>
-          <span style="color:#e0e0e0;font-weight:500">${installed}</span>
-        </div>
-        ${latestRow}
-        ${sourceRow}
-        ${updateBtn}
-      </div>`;
-    card.style.display = "";
+    if (!data.ok || !data.has_nvidia) return;  // no NVIDIA GPU — keep the empty state
+    // A scan may have started or finished while this request was in flight.
+    // Never overwrite real scan results with the single-GPU preview.
+    if (allDrivers.length) return;
+    // Map the status payload onto the shape buildDriverCard() expects so the
+    // GPU renders identically to a scanned driver entry, in the same grid.
+    // (buildDriverCard escapes every field, so raw values are passed here.)
+    allDrivers = [{
+      name: data.Name || "NVIDIA GPU",
+      version: data.InstalledVersion || "",
+      date: "",
+      category: "Display",
+      manufacturer: "NVIDIA",
+      status: data.UpdateAvailable === true ? "update_available" : "up_to_date",
+      latest_version: data.LatestVersion || null,
+      latest_date: null,
+      download_url: data.UpdateAvailable === true ? "nvidia-app:" : "",
+      low_priority: false,
+      category_note: "",
+    }];
+    updateDriverStats();
+    renderGrid();
   } catch(e) {
     console.error("Failed to load NVIDIA status:", e);
   }
@@ -1560,7 +1525,7 @@ function buildDriverCard(d, i) {
          ℹ ${escHtml(d.category_note)}
        </div>` : "";
   return `
-    <div class="driver-card ${d.status}${isLow?" low-priority":""}" style="animation-delay:${Math.min(i*18,400)}ms">
+    <div class="driver-card ${d.status}${isLow?" low-priority":""}" data-driver-name="${escHtml(d.name)}" data-driver-status="${escHtml(d.status)}" style="animation-delay:${Math.min(i*18,400)}ms">
       <div class="card-top">
         <div class="card-name">${escHtml(d.name)}</div>
         ${badge}

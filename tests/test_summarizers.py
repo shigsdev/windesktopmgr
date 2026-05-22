@@ -194,6 +194,53 @@ class TestSummarizeDrivers:
         assert "Update via NVIDIA App" in result["actions"]
         assert "Open Windows Update" in result["actions"]
 
+    def test_low_priority_only_update_is_not_a_warning(self):
+        """Regression for the 2026-05-22 'go to Windows Update but nothing
+        is there' bug. A lone low-priority Monitor driver update (an
+        *optional* WU driver update not shown on the main WU page) must NOT
+        raise a warning or tell the user to Open Windows Update.
+        """
+        drivers = [
+            _driver("HP Pavilion 22cw Monitor", "update_available", "Monitor", low_priority=True),
+            _driver("Intel Chipset", "up_to_date", "Chipset"),
+        ]
+        result = wdm.summarize_drivers(drivers)
+        assert result["status"] == "ok", "low-priority-only updates must not be a warning"
+        assert "Open Windows Update" not in result["actions"], (
+            "must not send the user to the main Windows Update page for an "
+            "optional driver update that isn't shown there"
+        )
+        # It should still be surfaced — as an info note, not a warning.
+        levels = [i["level"] for i in result["insights"]]
+        assert "info" in levels and "warning" not in levels
+        assert "no action needed" in result["headline"].lower()
+
+    def test_low_priority_update_alongside_important_still_warns(self):
+        """A low-priority Monitor update sitting next to a real (important)
+        update must not dilute the warning — the count and advice reflect
+        the important updates only.
+        """
+        drivers = [
+            _driver("Intel Ethernet", "update_available", "Network", download_url="ms-settings:windowsupdate"),
+            _driver("Generic Monitor", "update_available", "Monitor", low_priority=True),
+        ]
+        result = wdm.summarize_drivers(drivers)
+        assert result["status"] == "critical"  # Network update escalates
+        # Headline counts the 1 important update, not 2.
+        assert result["headline"].startswith("1 update")
+        assert "Open Windows Update" in result["actions"]
+
+    def test_low_priority_update_does_not_count_in_attention_headline(self):
+        """The 'N update(s) need attention' headline must exclude low-priority
+        updates — they need no attention."""
+        drivers = [
+            _driver("Monitor A", "update_available", "Monitor", low_priority=True),
+            _driver("Monitor B", "update_available", "Monitor", low_priority=True),
+        ]
+        result = wdm.summarize_drivers(drivers)
+        assert "need attention" not in result["headline"]
+        assert "2 optional" in result["headline"]
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # summarize_bsod
