@@ -893,6 +893,13 @@ class TestGetUpdateHistory:
         start, count = searcher.QueryHistory.call_args[0]
         assert start == 0 and count == 150
 
+    def test_timeout_returns_empty_list(self, mocker):
+        """A cold Windows Update Agent that exceeds the 60s worker-thread
+        budget must degrade to [] (Updates tab shows nothing) rather than
+        hang the request — restores the cap the old PS subprocess had."""
+        mocker.patch("windesktopmgr._wu_run", side_effect=TimeoutError("WU history query exceeded 60s"))
+        assert wdm.get_update_history() == []
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # get_process_list
