@@ -25,6 +25,7 @@ Each PS test group covers:
 import json
 import os
 import subprocess
+import time
 import types
 from datetime import datetime, timedelta, timezone
 
@@ -71,6 +72,63 @@ def _mock_wmi(mocker, classes=None):
 
     mocker.patch("windesktopmgr.wmi.WMI", return_value=mock_conn)
     return mock_conn
+
+
+# ── Windows Update COM mock helpers ─────────────────────────────────────────
+# get_windows_update_drivers / get_update_history / check_dell_bios_update's
+# WU method drive the Microsoft.Update.Session COM object in-process via
+# win32com (backlog #28 Batch G) — no PowerShell subprocess. These helpers
+# build fake COM objects so the tests stay OS-independent.
+
+
+class _FakeWuColl:
+    """Fake COM collection — .Count and .Item(i), like the real
+    IUpdateCollection / IUpdateHistoryEntryCollection / ICategoryCollection."""
+
+    def __init__(self, items):
+        self._items = list(items)
+
+    @property
+    def Count(self):
+        return len(self._items)
+
+    def Item(self, i):
+        return self._items[i]
+
+
+def _fake_wu_update(**props):
+    """Fake COM IUpdate. Only the supplied properties exist — reading any
+    other raises AttributeError, exactly as a real COM update does for a
+    property its interface doesn't support (e.g. DriverVersion on a
+    non-driver update)."""
+    return types.SimpleNamespace(**props)
+
+
+def _fake_wu_history(title="", date=None, result_code=0, categories=None):
+    """Fake COM IUpdateHistoryEntry (Categories is itself a fake collection)."""
+    cats = _FakeWuColl([types.SimpleNamespace(Name=c) for c in (categories or [])])
+    return types.SimpleNamespace(Title=title, Date=date, ResultCode=result_code, Categories=cats)
+
+
+def _mock_wu(mocker, driver_updates=None, history=None):
+    """Patch the Windows Update COM layer (win32com + pythoncom).
+
+    driver_updates: list of property-dicts → searcher.Search().Updates
+    history:        list of _fake_wu_history(...) → searcher.QueryHistory()
+    Returns (dispatch_mock, searcher_mock) for call assertions.
+    """
+    mocker.patch("windesktopmgr.pythoncom.CoInitialize")
+    searcher = mocker.MagicMock()
+    if driver_updates is not None:
+        items = [_fake_wu_update(**d) for d in driver_updates]
+        searcher.Search.return_value = types.SimpleNamespace(Updates=_FakeWuColl(items))
+    if history is not None:
+        searcher.GetTotalHistoryCount.return_value = len(history)
+        searcher.QueryHistory.return_value = _FakeWuColl(history)
+    session = mocker.MagicMock()
+    session.CreateUpdateSearcher.return_value = searcher
+    dispatch = mocker.patch("windesktopmgr.win32com.client.Dispatch", return_value=session)
+    return dispatch, searcher
 
 
 def _mock_rem_run(mocker, stdout="", returncode=0, stderr="", side_effect=None):
@@ -200,42 +258,56 @@ class TestGetInstalledDrivers:
 
 
 class TestGetWindowsUpdateDrivers:
-    SAMPLE = json.dumps(
-        [
-            {
-                "Title": "Intel - Display - 31.0.101.5186",
-                "Description": "Intel display driver",
-                "DriverModel": "Intel UHD Graphics",
-                "DriverVersion": "31.0.101.5186",
-                "DriverManufacturer": "Intel Corporation",
-            },
-        ]
-    )
+    """get_windows_update_drivers() — in-process win32com (backlog #28 Batch G)."""
+
+    SAMPLE = [
+        {
+            "Title": "Intel - Display - 31.0.101.5186",
+            "Description": "Intel display driver",
+            "DriverModel": "Intel UHD Graphics",
+            "DriverVersion": "31.0.101.5186",
+            "DriverManufacturer": "Intel Corporation",
+        },
+    ]
 
     def setup_method(self):
         wdm._wu_driver_cache = None
 
     def test_happy_path_returns_dict(self, mocker):
-        _mock_run(mocker, stdout=self.SAMPLE)
+        _mock_wu(mocker, driver_updates=self.SAMPLE)
         result = wdm.get_windows_update_drivers()
         assert isinstance(result, dict)
         assert len(result) == 1
+        assert result["intel - display - 31.0.101.5186"]["DriverVersion"] == "31.0.101.5186"
 
     def test_result_is_cached(self, mocker):
-        m = _mock_run(mocker, stdout=self.SAMPLE)
+        dispatch, _ = _mock_wu(mocker, driver_updates=self.SAMPLE)
         wdm.get_windows_update_drivers()
         wdm.get_windows_update_drivers()
-        assert m.call_count == 1  # second call hits cache
+        assert dispatch.call_count == 1  # second call hits the module cache
 
-    def test_empty_output_returns_empty_dict(self, mocker):
-        _mock_run(mocker, stdout="")
-        result = wdm.get_windows_update_drivers()
-        assert result == {}
+    def test_empty_search_returns_empty_dict(self, mocker):
+        _mock_wu(mocker, driver_updates=[])
+        assert wdm.get_windows_update_drivers() == {}
 
-    def test_malformed_json_returns_none(self, mocker):
-        _mock_run(mocker, stdout="<html>error page</html>")
-        result = wdm.get_windows_update_drivers()
-        assert result is None
+    def test_search_uses_driver_criteria(self, mocker):
+        _, searcher = _mock_wu(mocker, driver_updates=self.SAMPLE)
+        wdm.get_windows_update_drivers()
+        criteria = searcher.Search.call_args[0][0]
+        assert "Type='Driver'" in criteria and "IsInstalled=0" in criteria
+
+    def test_missing_driver_version_handled(self, mocker):
+        """A non-driver-class update has no DriverVersion COM property —
+        _wu_prop must return '' for it, not raise."""
+        _mock_wu(mocker, driver_updates=[{"Title": "Some Monitor INF"}])
+        row = wdm.get_windows_update_drivers()["some monitor inf"]
+        assert row["DriverVersion"] == "" and row["DriverManufacturer"] == ""
+
+    def test_com_error_returns_none(self, mocker):
+        """A COM failure → None (never {}), so a transient failure isn't cached."""
+        mocker.patch("windesktopmgr._wu_search_drivers", side_effect=Exception("COM error"))
+        assert wdm.get_windows_update_drivers() is None
+        assert wdm._wu_driver_cache is None
 
     def test_timeout_returns_none_and_does_not_poison_cache(self, mocker):
         """A WU search timeout must NOT be cached. Caching {} would make every
@@ -245,37 +317,28 @@ class TestGetWindowsUpdateDrivers:
         the 2026-05-21 review finding.
         """
         # First call times out.
-        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=120))
+        mocker.patch("windesktopmgr._wu_search_drivers", side_effect=TimeoutError("WU search exceeded 120s"))
         result = wdm.get_windows_update_drivers()
         assert result is None, "timeout is a failure — return None, not a misleading empty dict"
         assert wdm._wu_driver_cache is None, "timeout must not poison the module cache"
 
         # Second call: WU is responsive again — must re-query, not serve a
         # stale poisoned cache entry.
-        m = _mock_run(mocker, stdout=self.SAMPLE)
+        mocker.patch("windesktopmgr._wu_search_drivers", return_value=self.SAMPLE)
         result2 = wdm.get_windows_update_drivers()
         assert isinstance(result2, dict) and len(result2) == 1
-        assert m.called, "after a timeout the next call must re-query, not hit a poisoned cache"
 
-    def test_command_searches_for_drivers(self, mocker):
-        m = _mock_run(mocker, stdout=self.SAMPLE)
-        wdm.get_windows_update_drivers()
-        cmd = m.call_args[0][0][-1]
-        assert "Driver" in cmd
-
-    def test_single_object_normalised(self, mocker):
-        single = json.dumps(
-            {
-                "Title": "Dell - BIOS - 2.3.1",
-                "Description": "",
-                "DriverModel": "",
-                "DriverVersion": "2.3.1",
-                "DriverManufacturer": "Dell",
-            }
+    def test_wu_search_drivers_times_out_on_slow_search(self, mocker):
+        """_wu_search_drivers runs the blocking COM Search() in a worker
+        thread and raises TimeoutError if it exceeds the budget."""
+        mocker.patch("windesktopmgr.pythoncom.CoInitialize")
+        slow_searcher = types.SimpleNamespace(
+            Search=lambda criteria: (time.sleep(3), types.SimpleNamespace(Updates=_FakeWuColl([])))[1]
         )
-        _mock_run(mocker, stdout=single)
-        result = wdm.get_windows_update_drivers()
-        assert len(result) == 1
+        session = types.SimpleNamespace(CreateUpdateSearcher=lambda: slow_searcher)
+        mocker.patch("windesktopmgr.win32com.client.Dispatch", return_value=session)
+        with pytest.raises(TimeoutError):
+            wdm._wu_search_drivers(timeout_s=0.2)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -771,57 +834,64 @@ class TestGetNetworkData:
 
 
 class TestGetUpdateHistory:
-    SAMPLE = json.dumps(
-        [
-            {
-                "Title": "2024-12 Cumulative Update for Windows 11 (KB5048667)",
-                "Date": "2024-12-10T03:00:00+00:00",
-                "ResultCode": 2,
-                "Categories": "Security Updates",
-                "KB": "KB5048667",
-            },
-            {
-                "Title": "Intel - Display - 31.0.101.5186",
-                "Date": "2024-11-20T10:00:00+00:00",
-                "ResultCode": 4,
-                "Categories": "Drivers",
-                "KB": "",
-            },
+    """get_update_history() — in-process win32com QueryHistory (backlog #28)."""
+
+    def _sample(self):
+        return [
+            _fake_wu_history(
+                title="2024-12 Cumulative Update for Windows 11 (KB5048667)",
+                date=datetime(2024, 12, 10, 3, 0, tzinfo=timezone.utc),
+                result_code=2,
+                categories=["Security Updates"],
+            ),
+            _fake_wu_history(
+                title="Intel - Display - 31.0.101.5186",
+                date=datetime(2024, 11, 20, 10, 0, tzinfo=timezone.utc),
+                result_code=4,
+                categories=["Drivers"],
+            ),
         ]
-    )
 
     def test_happy_path_returns_list(self, mocker):
-        _mock_run(mocker, stdout=self.SAMPLE)
+        _mock_wu(mocker, history=self._sample())
         result = wdm.get_update_history()
         assert isinstance(result, list)
         assert len(result) == 2
 
+    def test_fields_parsed(self, mocker):
+        _mock_wu(mocker, history=self._sample())
+        first = wdm.get_update_history()[0]
+        assert first["KB"] == "KB5048667"
+        assert first["Categories"] == "Security Updates"
+        assert first["ResultCode"] == 2
+        assert first["result"] == wdm.RESULT_CODES.get(2, "Unknown")
+        assert first["Date"].startswith("2024-12-10")
+
     def test_failed_updates_flagged(self, mocker):
-        _mock_run(mocker, stdout=self.SAMPLE)
+        _mock_wu(mocker, history=self._sample())
         result = wdm.get_update_history()
-        failed = [u for u in result if u.get("ResultCode") == 4]
-        assert len(failed) == 1
+        assert len([u for u in result if u.get("ResultCode") == 4]) == 1
 
-    def test_empty_output_returns_empty_list(self, mocker):
-        _mock_run(mocker, stdout="")
-        result = wdm.get_update_history()
-        assert result == []
+    def test_empty_history_returns_empty_list(self, mocker):
+        _mock_wu(mocker, history=[])
+        assert wdm.get_update_history() == []
 
-    def test_malformed_json_returns_empty_list(self, mocker):
-        _mock_run(mocker, stdout="<Error/>")
-        result = wdm.get_update_history()
-        assert result == []
+    def test_com_error_returns_empty_list(self, mocker):
+        mocker.patch("windesktopmgr.pythoncom.CoInitialize")
+        mocker.patch("windesktopmgr.win32com.client.Dispatch", side_effect=Exception("COM error"))
+        assert wdm.get_update_history() == []
 
-    def test_timeout_returns_empty_list(self, mocker):
-        _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=60))
-        result = wdm.get_update_history()
-        assert result == []
-
-    def test_command_uses_update_session(self, mocker):
-        m = _mock_run(mocker, stdout=self.SAMPLE)
+    def test_uses_update_session_com_object(self, mocker):
+        dispatch, _ = _mock_wu(mocker, history=[])
         wdm.get_update_history()
-        cmd = m.call_args[0][0][-1]
-        assert "Microsoft.Update.Session" in cmd
+        assert dispatch.call_args[0][0] == "Microsoft.Update.Session"
+
+    def test_history_query_capped_at_150(self, mocker):
+        _, searcher = _mock_wu(mocker, history=[])
+        searcher.GetTotalHistoryCount.return_value = 500
+        wdm.get_update_history()
+        start, count = searcher.QueryHistory.call_args[0]
+        assert start == 0 and count == 150
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2365,21 +2435,32 @@ class TestWorkerTaskDoneSafety:
 
 
 class TestCheckDellBiosUpdate:
-    """Tests for check_dell_bios_update — DCU method calls exe directly (Batch D),
-    catalog and WU methods still use PowerShell."""
+    """Tests for check_dell_bios_update — DCU method calls dcu-cli.exe directly
+    (Batch D), the catalog method uses PowerShell, and the Method-3 WU check
+    reuses get_windows_update_drivers() (in-process win32com, Batch G)."""
 
     # Sample XML that matches the BIOS version regex in the DCU parser
     DCU_XML_TEMPLATE = '<update type="BIOS" name="BIOS Update" version="{ver}"/>'
 
-    def _mock_deps(self, mocker, tmp_path, *, dcu_xml=None, ps_side_effects=None, service_tag="9T46D14"):
-        """Mock WMI, filesystem, and subprocess for check_dell_bios_update.
+    def _mock_deps(
+        self, mocker, tmp_path, *, dcu_xml=None, ps_side_effects=None, wu_drivers=None, service_tag="9T46D14"
+    ):
+        """Mock WMI, filesystem, subprocess, and the WU COM layer.
 
         Args:
-            dcu_xml: XML content for DCU scan output file. None = DCU not installed.
-            ps_side_effects: list of (stdout, rc) for catalog/WU PowerShell calls.
+            dcu_xml: XML content for the DCU scan output file. None = DCU not installed.
+            ps_side_effects: list of (stdout, rc) for the catalog PowerShell call.
+            wu_drivers: dict returned by get_windows_update_drivers() for the
+                Method-3 WU check ({} = no WU updates, the default).
         """
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
         _mock_wmi(mocker, {"Win32_BIOS": [_wmi_obj(SerialNumber=service_tag)]})
+        # Method 3 reuses get_windows_update_drivers() — mock it directly
+        # rather than feeding a PowerShell response.
+        mocker.patch(
+            "windesktopmgr.get_windows_update_drivers",
+            return_value=wu_drivers if wu_drivers is not None else {},
+        )
 
         _real_exists = os.path.exists
         run_responses = []
@@ -2407,7 +2488,7 @@ class TestCheckDellBiosUpdate:
         return m
 
     def test_returns_required_keys(self, mocker, tmp_path):
-        self._mock_deps(mocker, tmp_path, ps_side_effects=[("", 0), ("NO_BIOS_IN_WU", 0)])
+        self._mock_deps(mocker, tmp_path, ps_side_effects=[("", 0)])
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         for key in (
             "checked_at",
@@ -2459,26 +2540,33 @@ class TestCheckDellBiosUpdate:
         assert result["latest_version"] == "2.23.0"
 
     def test_wu_fallback(self, mocker, tmp_path):
-        wu_out = json.dumps({"Title": "Dell BIOS Update 2.24.0", "Version": "2.24.0"})
-        self._mock_deps(mocker, tmp_path, ps_side_effects=[("", 0), (wu_out, 0)])
+        """Methods 1 & 2 miss; Method 3 reuses get_windows_update_drivers()
+        and picks a BIOS/Firmware update out of the WU driver list."""
+        self._mock_deps(
+            mocker,
+            tmp_path,
+            ps_side_effects=[("", 0)],
+            wu_drivers={"dell bios update 2.24.0": {"Title": "Dell BIOS Update 2.24.0"}},
+        )
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["source"] == "windows_update"
         assert result["update_available"] is True
+        assert result["latest_version"] == "2.24.0"
 
     def test_all_methods_fail_returns_unknown(self, mocker, tmp_path):
-        self._mock_deps(mocker, tmp_path, ps_side_effects=[("", 0), ("NO_BIOS_IN_WU", 0)])
+        self._mock_deps(mocker, tmp_path, ps_side_effects=[("", 0)])
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["source"] == "unknown"
         assert result["latest_version"] is None
 
     def test_service_tag_populated(self, mocker, tmp_path):
-        self._mock_deps(mocker, tmp_path, ps_side_effects=[("", 0), ("NO_BIOS_IN_WU", 0)], service_tag="ABC1234")
+        self._mock_deps(mocker, tmp_path, ps_side_effects=[("", 0)], service_tag="ABC1234")
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["service_tag"] == "ABC1234"
         assert "ABC1234" in result["download_url"]
 
     def test_service_tag_empty_fallback_url(self, mocker, tmp_path):
-        self._mock_deps(mocker, tmp_path, ps_side_effects=[("", 0), ("NO_BIOS_IN_WU", 0)], service_tag="")
+        self._mock_deps(mocker, tmp_path, ps_side_effects=[("", 0)], service_tag="")
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert "dell.com" in result["download_url"]
 
@@ -2504,10 +2592,12 @@ class TestCheckDellBiosUpdate:
         assert result["source"] == "dell_catalog"
 
     def test_subprocess_timeout_handled(self, mocker, tmp_path):
-        """All subprocess calls (DCU + catalog + WU) time out — returns unknown."""
+        """The catalog subprocess times out and the WU check finds nothing —
+        returns unknown without crashing."""
         _real_exists = os.path.exists
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
         _mock_wmi(mocker, {"Win32_BIOS": [_wmi_obj(SerialNumber="9T46D14")]})
+        mocker.patch("windesktopmgr.get_windows_update_drivers", return_value={})
         mocker.patch("os.path.exists", side_effect=lambda p: False if "CommandUpdate" in p else _real_exists(p))
         m = mocker.patch("windesktopmgr.subprocess.run")
         m.side_effect = subprocess.TimeoutExpired("powershell", 60)
@@ -2627,18 +2717,20 @@ class TestGetSystemTimelineCredHelperCall:
 
 class TestCheckDellBiosCommandContent:
     """Command-content tests for check_dell_bios_update.
-    DCU method now calls exe directly (Batch D); catalog/WU still use PS."""
+    DCU calls dcu-cli.exe directly (Batch D); the catalog uses PowerShell;
+    the WU check reuses get_windows_update_drivers() (win32com, Batch G)."""
 
     def _mock_no_dcu(self, mocker, tmp_path):
-        """Mock deps with DCU not installed — only catalog + WU PS calls."""
+        """Mock deps with DCU not installed — catalog uses PS, WU uses COM."""
         _real_exists = os.path.exists
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
         _mock_wmi(mocker, {"Win32_BIOS": [_wmi_obj(SerialNumber="9T46D14")]})
+        mocker.patch("windesktopmgr.get_windows_update_drivers", return_value={})
         mocker.patch("os.path.exists", side_effect=lambda p: False if "CommandUpdate" in p else _real_exists(p))
         m = mocker.patch("windesktopmgr.subprocess.run")
+        # Only the catalog call is a subprocess now — the WU check is COM.
         m.side_effect = [
             type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": "NO_BIOS_IN_WU", "returncode": 0, "stderr": ""})(),
         ]
         return m
 
@@ -2653,12 +2745,6 @@ class TestCheckDellBiosCommandContent:
         wdm.check_dell_bios_update("XPS8960", "2.22.0")
         cmd = m.call_args_list[0][0][0][-1]
         assert "dell.com" in cmd.lower() or "CatalogPC" in cmd
-
-    def test_wu_command_searches_pending_updates(self, mocker, tmp_path):
-        m = self._mock_no_dcu(mocker, tmp_path)
-        wdm.check_dell_bios_update("XPS8960", "2.22.0")
-        cmd = m.call_args_list[1][0][0][-1]
-        assert "IsInstalled" in cmd or "BIOS" in cmd or "Firmware" in cmd
 
     def test_dcu_calls_exe_not_powershell(self, mocker, tmp_path):
         """Regression: Batch D — DCU uses direct exe, no PS wrapper."""
