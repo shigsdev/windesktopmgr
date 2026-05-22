@@ -122,7 +122,7 @@ def reset_globals():
     wdm.HEADLESS_MODE = False
 
     # Driver scan state
-    wdm._dell_cache = None
+    wdm._wu_driver_cache = None
     wdm._scan_results = None
     wdm._scan_status = {"status": "idle", "progress": 0, "message": "Ready to scan"}
 

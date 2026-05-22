@@ -168,7 +168,7 @@ EVENT_CACHE_FILE = os.path.join(APP_DIR, "event_id_cache.json")
 BSOD_CACHE_FILE = os.path.join(APP_DIR, "bsod_code_cache.json")
 
 # ─── Driver checker state ─────────────────────────────────────────────────────
-_dell_cache = None
+_wu_driver_cache = None
 _scan_results = None
 _scan_status = {"status": "idle", "progress": 0, "message": "Ready to scan"}
 
@@ -1007,6 +1007,25 @@ def get_nvidia_update_info() -> dict | None:
             if alt_result and alt_result.get("version"):
                 latest = alt_result["version"]
                 source = "nvidia_api"
+                # The alt branch succeeding where the primary failed is a
+                # strong signal that _detect_nvidia_driver_branch() guessed
+                # wrong. Log it so a branch-detection regression is visible
+                # instead of being silently papered over by the retry.
+                primary = "Studio" if is_studio else "Game Ready"
+                alt = "Game Ready" if is_studio else "Studio"
+                print(
+                    f"[NVIDIA] branch detection picked {primary} but only the "
+                    f"{alt} API returned a driver — branch detection may be wrong"
+                )
+    else:
+        # GPU not in _NVIDIA_PFID_MAP — the API can't be queried at all, so
+        # detection silently falls back to the offline-only Methods 2/3.
+        # Log it so an unlisted GPU is diagnosable from the console instead
+        # of looking like "no update available".
+        print(
+            f"[NVIDIA] no PFID mapping for GPU {name!r} — skipping API, "
+            f"using offline fallbacks (Installer2 cache / Windows Update) only"
+        )
 
     # Method 2: Installer2 Cache (offline fallback) — pure Python via winreg
     if not latest:
@@ -1046,7 +1065,7 @@ def get_nvidia_update_info() -> dict | None:
     # Method 3: Windows Update pending driver list — catches NVIDIA updates
     # that the public API hasn't published yet (e.g., NVIDIA App notified the
     # user before the AjaxDriverService API was updated).  Uses the existing
-    # _dell_cache if a scan has run, otherwise makes a fresh WU query.
+    # _wu_driver_cache if a scan has run, otherwise makes a fresh WU query.
     if not latest:
         try:
             wu = get_windows_update_drivers()
@@ -1088,9 +1107,9 @@ def get_windows_update_drivers() -> dict | None:
     Use Windows Update API via PowerShell to find available driver updates.
     Returns a dict keyed by driver title (lowercase) -> update info, or None on failure.
     """
-    global _dell_cache
-    if _dell_cache is not None:
-        return _dell_cache
+    global _wu_driver_cache
+    if _wu_driver_cache is not None:
+        return _wu_driver_cache
 
     ps = r"""
 $Session = New-Object -ComObject Microsoft.Update.Session
@@ -1124,12 +1143,12 @@ try {
         for u in updates:
             title = u.get("Title", "").lower()
             lookup[title] = u
-        _dell_cache = lookup
+        _wu_driver_cache = lookup
         print(f"[WU] Found {len(lookup)} driver update(s) via Windows Update")
         return lookup
     except subprocess.TimeoutExpired:
         # A timeout is transient — do NOT cache it. Caching {} here used to
-        # poison the cache: every later call hit the `_dell_cache is not None`
+        # poison the cache: every later call hit the `_wu_driver_cache is not None`
         # short-circuit at the top and returned {} forever, permanently
         # disabling Windows Update driver detection (and the NVIDIA Method 3
         # fallback) until the process restarted. Leave the cache unpopulated
@@ -1137,11 +1156,11 @@ try {
         # signal the generic except path uses — so run_scan() marks drivers
         # "unknown" rather than falsely "up to date".
         print("[WU error] Windows Update driver search timed out (120s)")
-        _dell_cache = None
+        _wu_driver_cache = None
         return None
     except Exception as e:
         print(f"[WU error] {e}")
-        _dell_cache = None
+        _wu_driver_cache = None
         return None
 
 
@@ -1180,8 +1199,8 @@ def find_wu_match(name: str, wu_updates: dict | None) -> dict | None:
 
 
 def run_scan():
-    global _scan_results, _scan_status, _dell_cache
-    _dell_cache = None
+    global _scan_results, _scan_status, _wu_driver_cache
+    _wu_driver_cache = None
     _scan_status = {"status": "scanning", "progress": 10, "message": "Enumerating installed drivers via WMI…"}
     installed = get_installed_drivers()
     _scan_status = {

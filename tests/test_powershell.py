@@ -213,7 +213,7 @@ class TestGetWindowsUpdateDrivers:
     )
 
     def setup_method(self):
-        wdm._dell_cache = None
+        wdm._wu_driver_cache = None
 
     def test_happy_path_returns_dict(self, mocker):
         _mock_run(mocker, stdout=self.SAMPLE)
@@ -239,7 +239,7 @@ class TestGetWindowsUpdateDrivers:
 
     def test_timeout_returns_none_and_does_not_poison_cache(self, mocker):
         """A WU search timeout must NOT be cached. Caching {} would make every
-        later call short-circuit on the `_dell_cache is not None` guard and
+        later call short-circuit on the `_wu_driver_cache is not None` guard and
         return {} forever, permanently disabling WU driver detection (and the
         NVIDIA Method 3 fallback) until the process restarts. Regression for
         the 2026-05-21 review finding.
@@ -248,7 +248,7 @@ class TestGetWindowsUpdateDrivers:
         _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=120))
         result = wdm.get_windows_update_drivers()
         assert result is None, "timeout is a failure — return None, not a misleading empty dict"
-        assert wdm._dell_cache is None, "timeout must not poison the module cache"
+        assert wdm._wu_driver_cache is None, "timeout must not poison the module cache"
 
         # Second call: WU is responsive again — must re-query, not serve a
         # stale poisoned cache entry.
@@ -3719,8 +3719,10 @@ class TestGetNvidiaUpdateInfo:
         assert result["UpdateAvailable"] is False
         assert result["UpdateSource"] == "none"
 
-    def test_unknown_gpu_skips_api_tries_cache(self, mocker):
-        """GPU not in pfid map → skip API, try Installer2 only."""
+    def test_unknown_gpu_skips_api_tries_cache(self, mocker, capsys):
+        """GPU not in pfid map → skip API, try Installer2 only, and log a
+        diagnostic so an unlisted GPU is visible in the console rather than
+        silently looking like 'no update available' (2026-05-21 review)."""
         gpu = {"name": "NVIDIA Quadro P2000", "installed": "560.00", "win_ver": "31.0.15.6000"}
         self._mock_gpu(mocker, gpu=gpu)
         api_mock = self._mock_api(mocker)
@@ -3731,6 +3733,27 @@ class TestGetNvidiaUpdateInfo:
         assert result["UpdateAvailable"] is False
         # API should NOT be called since pfid is not in the map
         api_mock.assert_not_called()
+        # The unlisted GPU must be logged with its name.
+        out = capsys.readouterr().out
+        assert "no PFID mapping" in out
+        assert "Quadro P2000" in out
+
+    def test_alt_branch_success_logs_branch_misdetection(self, mocker, capsys):
+        """When the alt branch succeeds where the primary failed, a warning
+        must be logged — branch misdetection should be visible, not silently
+        papered over by the retry (2026-05-21 review)."""
+        self._mock_gpu(mocker)  # _detect_nvidia_driver_branch → True (Studio)
+
+        def _side_effect(pfid, *, studio=True):
+            if studio:
+                return None
+            return {"version": "596.49", "url": "", "date": "", "name": "Game Ready"}
+
+        mocker.patch("windesktopmgr._query_nvidia_api", side_effect=_side_effect)
+        wdm.get_nvidia_update_info()
+        out = capsys.readouterr().out
+        assert "branch detection" in out
+        assert "Studio" in out and "Game Ready" in out
 
     def test_primary_branch_fails_falls_back_to_alt_branch(self, mocker):
         """Primary branch API returns None → tries the other branch.
