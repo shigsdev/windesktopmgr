@@ -4,8 +4,8 @@
 **Scope:** Every `subprocess.run("powershell" | "dism" | "netsh" | …)` call site across the three primary modules.
 **Regenerate:** `python scripts/audit_ps_sites.py` dumps the raw TSV the tables below are built from.
 
-> **[#28 CLOSE-OUT — 2026-05-22, in progress]** Migrating the remaining
-> viable PowerShell sites off `subprocess`.
+> **[#28 CLOSE-OUT — 2026-05-22, ✅ SHIPPED]** All viable PowerShell sites
+> migrated off `subprocess powershell`.
 > - **Batch G** (PR #42/#43): 3 Windows-Update sites → in-process `win32com`
 >   (`get_windows_update_drivers`, `get_update_history`, `check_dell_bios_update`
 >   WU method).
@@ -14,13 +14,17 @@
 > - **PR 1b**: 7 more sites → `wmi` / `psutil` / `win32api` / `shutil` / `netsh`
 >   direct (`get_thermals` ×3, `_lookup_startup_via_fileinfo` ×2,
 >   `get_system_timeline`, and `homenet.py` `_get_orbi_ssid`).
->
 > - **PR 2**: 2 more sites → `winreg` / `pathlib` / `Schedule.Service` COM
 >   (`get_startup_items` enumeration + `toggle_startup_item` action endpoint).
+> - **PR 3 (final)**: 1 more site → `urllib.request` + `expand.exe` (OS tool,
+>   not PowerShell) + `xml.etree.ElementTree`
+>   (`check_dell_bios_update` Dell public catalog XML — Method 2).
 >
-> The headline counts and per-site tables below are therefore stale: 15
-> `windesktopmgr.py` sites migrated (60 → 45 PS sites) and 1 in `homenet.py`
-> (11 → 10); total 74 → 59. Re-run `audit_ps_sites.py` for the live inventory.
+> The headline counts and per-site tables below are stale: 16
+> `windesktopmgr.py` sites migrated (60 → 44 PS sites) and 1 in `homenet.py`
+> (11 → 10); total 74 → 58. Remaining sites are all **KEEP** class (no
+> realistic Python replacement) — `dism`, `netsh wlan`, `route`, `shutdown`,
+> `gpresult`, etc. Re-run `audit_ps_sites.py` for the live inventory.
 
 ## Headline numbers
 
