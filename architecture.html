@@ -193,7 +193,7 @@
       <button type="button" onclick="exportPDF()" title="Open the browser print dialog — choose 'Save as PDF'" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--yellow);border:none;cursor:pointer;border-right:1px solid var(--border)">Export PDF</button>
       <button type="button" onclick="exportHTML()" title="Download a self-contained copy of this diagram" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--blue);border:none;cursor:pointer">Export HTML</button>
     </div>
-    <div class="badge" style="color:var(--green);border-color:#00e67633">2,237 tests · 86% coverage</div>
+    <div class="badge" style="color:var(--green);border-color:#00e67633">2,244 tests · 86% coverage</div>
     <div class="badge">
       <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
     </div>
@@ -723,7 +723,7 @@
           </div>
           <div class="fs-chip">
             <div class="fs-title">scripts/post_restart_check.py</div>
-            <div class="fs-sub">Restart + /api/selftest + log scan · ~200 lines · dev.py verify target</div>
+            <div class="fs-sub">Restart + /api/selftest + dashboard/idle-poll/CPU-thread-budget checks + log scan · ~440 lines · dev.py verify target · waits for background lookup queues to drain before sampling CPU</div>
           </div>
           <div class="fs-chip" style="border-color:#00e5a033">
             <div class="fs-title" style="color:#00e5a0">scripts/post_deploy_topology_check.py</div>
@@ -773,7 +773,7 @@
 
   <!-- ── LAYER 7: TEST SUITE ──────────────────────────────────── -->
   <div class="row row-tests" id="layer-tests">
-    <div class="row-label">🧪 Test Suite — 2,237 tests · pytest · 86% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
+    <div class="row-label">🧪 Test Suite — 2,244 tests · pytest · 86% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
       <div class="test-chip">
         <div class="test-title">test_routes.py</div>
@@ -842,6 +842,10 @@
       <div class="test-chip">
         <div class="test-title">test_post_update_check.py</div>
         <div class="test-sub">47 tests · WMI mocks · state roundtrip · subprocess timeouts · SMTP + keyring · backlog prepend · orchestrator</div>
+      </div>
+      <div class="test-chip">
+        <div class="test-title">test_post_restart_check.py</div>
+        <div class="test-sub">7 tests · background-queue drain wait · in-flight blocking · timeout + unreachable fallback · CPU-sample ordering</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_metrics_history.py</div>
@@ -1109,7 +1113,7 @@
           <div style="flex:0 0 auto;min-width:120px;background:#ff80ab0a;border:1px solid #ff80ab44;border-radius:8px;padding:10px 12px;text-align:center">
             <div style="font-size:16px;margin-bottom:4px">🧪</div>
             <div style="color:var(--pink);font-weight:700;font-size:10px">3. PYTEST</div>
-            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">2,237 tests · 86% cov · ~60s</div>
+            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">2,244 tests · 86% cov · ~60s</div>
           </div>
           <div style="display:flex;align-items:center;padding:0 4px;color:var(--pink);font-size:14px">→</div>
 
@@ -1251,7 +1255,7 @@
 
 
 <div class="footer">
-  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 2,237 tests · ~21,480 lines</span>
+  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 2,244 tests · ~21,480 lines</span>
   <span>github.com/shigsdev/windesktopmgr · Updated 2026-05-18</span>
 </div>
 
