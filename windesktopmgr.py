@@ -2267,10 +2267,34 @@ def _extract_exe_from_command(command: str) -> str:
     return os.path.splitext(exe_name)[0].lower()
 
 
+def _exe_version_info(path: str) -> dict:
+    """Read an executable's version resource — FileDescription, CompanyName,
+    ProductName, FileVersion — via ``win32api``, replacing a PowerShell
+    ``Get-Item .VersionInfo`` call. Returns ``{}`` if the file has no version
+    resource or cannot be read.
+    """
+    try:
+        # String fields live under a language/codepage block; the translation
+        # table lists the (lang, codepage) pairs the resource provides.
+        langs = win32api.GetFileVersionInfo(path, r"\VarFileInfo\Translation")
+        lang, codepage = langs[0] if langs else (0x0409, 1200)
+    except Exception:  # noqa: BLE001 — no version resource / unreadable
+        return {}
+    info: dict = {}
+    for field in ("FileDescription", "CompanyName", "ProductName", "FileVersion"):
+        try:
+            info[field] = (
+                win32api.GetFileVersionInfo(path, f"\\StringFileInfo\\{lang:04X}{codepage:04X}\\{field}") or ""
+            )
+        except Exception:  # noqa: BLE001 — this field absent from the resource
+            info[field] = ""
+    return info
+
+
 def _lookup_startup_via_fileinfo(command: str, name: str) -> dict | None:
     """
     Read Windows file version info for the executable — publisher, description,
-    version — using PowerShell Get-Item. Completely offline.
+    version — in-process via win32api. Completely offline, no PowerShell.
     """
     # Extract exe path from command
     cmd = command.strip()
@@ -2281,27 +2305,11 @@ def _lookup_startup_via_fileinfo(command: str, name: str) -> dict | None:
         exe_path = cmd.split()[0] if cmd else ""
 
     if not exe_path or not exe_path.lower().endswith(".exe"):
-        # Try to find it on PATH via Get-Command (PS 5.1-compatible — no ?. operator)
+        # Resolve the exe on PATH — shutil.which replaces a Get-Command call.
         base = _extract_exe_from_command(command)
         if base:
-            exe_name = base + ".exe"
-            safe_name = re.sub(r"[^a-zA-Z0-9\-_. ]", "", exe_name)
-            # Explicit `exit 0` is critical: Get-Command leaves $? = $false when
-            # the exe is missing, even with -EA SilentlyContinue, and PowerShell
-            # exits with code 1. That produced a warning for every unknown process.
-            ps_find = (
-                f'$ErrorActionPreference="SilentlyContinue"; '
-                f'$c = Get-Command "{safe_name}" -EA SilentlyContinue; '
-                f"if ($c) {{ $c.Source }}; exit 0"
-            )
             try:
-                r0 = subprocess.run(
-                    ["powershell", "-NonInteractive", "-Command", ps_find],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                found = r0.stdout.strip()
+                found = shutil.which(base + ".exe") or shutil.which(base)
                 if found:
                     exe_path = found
             except Exception:  # noqa: BLE001
@@ -2310,32 +2318,15 @@ def _lookup_startup_via_fileinfo(command: str, name: str) -> dict | None:
     if not exe_path:
         return None
 
-    ps = f"""
-try {{
-    $f = Get-Item "{exe_path}" -EA Stop
-    $v = $f.VersionInfo
-    [PSCustomObject]@{{
-        FileDescription  = $v.FileDescription
-        CompanyName      = $v.CompanyName
-        ProductName      = $v.ProductName
-        FileVersion      = $v.FileVersion
-        FileName         = $f.Name
-    }} | ConvertTo-Json
-}} catch {{ }}
-"""
+    data = _exe_version_info(exe_path)
+    if not data:
+        return None
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=10
-        )
-        raw = r.stdout.strip()
-        if not raw:
-            return None
-        data = json.loads(raw)
         desc = (data.get("FileDescription") or "").strip()
         company = (data.get("CompanyName") or "").strip()
         product = (data.get("ProductName") or "").strip()
         version = (data.get("FileVersion") or "").strip()
-        fname = (data.get("FileName") or name).strip()
+        fname = (os.path.basename(exe_path) or name).strip()
 
         if not desc and not company:
             return None
@@ -5406,112 +5397,87 @@ TEMP_CRIT_C = 95
 
 
 def get_thermals() -> dict:
-    # CPU temps via WMI MSAcpi_ThermalZoneTemperature
-    ps_temps = r"""
-$results = @()
-try {
-    $zones = Get-WmiObject -Namespace "root\wmi" -Class MSAcpi_ThermalZoneTemperature -EA Stop
-    foreach ($z in $zones) {
-        $celsius = [math]::Round($z.CurrentTemperature / 10 - 273.15, 1)
-        $results += [PSCustomObject]@{
-            Name    = $z.InstanceName -replace ".*_","" -replace "\\.*",""
-            TempC   = $celsius
-            Source  = "WMI_ThermalZone"
-        }
-    }
-} catch {}
-# CPU package temp via OpenHardwareMonitor WMI if available
-try {
-    $ohm = Get-WmiObject -Namespace "root\OpenHardwareMonitor" -Class Sensor -EA Stop |
-           Where-Object { $_.SensorType -eq "Temperature" }
-    foreach ($s in $ohm) {
-        $results += [PSCustomObject]@{
-            Name    = $s.Name
-            TempC   = [math]::Round($s.Value, 1)
-            Source  = "OpenHardwareMonitor"
-        }
-    }
-} catch {}
-# LibreHardwareMonitor WMI
-try {
-    $lhm = Get-WmiObject -Namespace "root\LibreHardwareMonitor" -Class Sensor -EA Stop |
-           Where-Object { $_.SensorType -eq "Temperature" }
-    foreach ($s in $lhm) {
-        $results += [PSCustomObject]@{
-            Name    = $s.Name
-            TempC   = [math]::Round($s.Value, 1)
-            Source  = "LibreHardwareMonitor"
-        }
-    }
-} catch {}
-$results | ConvertTo-Json -Depth 2
-"""
-    # CPU utilisation and power
-    ps_perf = r"""
-$cpu  = [math]::Round((Get-WmiObject Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average, 1)
-$mem  = Get-WmiObject Win32_OperatingSystem
-$memUsedMB  = [math]::Round(($mem.TotalVisibleMemorySize - $mem.FreePhysicalMemory) / 1024, 0)
-$memTotalMB = [math]::Round($mem.TotalVisibleMemorySize / 1024, 0)
-$battery = $null
-try {
-    $b = Get-WmiObject Win32_Battery -EA Stop | Select-Object -First 1
-    if ($b) { $battery = [PSCustomObject]@{ Status=$b.BatteryStatus; Charge=$b.EstimatedChargeRemaining } }
-} catch {}
-[PSCustomObject]@{
-    CPUPct      = $cpu
-    MemUsedMB   = $memUsedMB
-    MemTotalMB  = $memTotalMB
-    Battery     = $battery
-} | ConvertTo-Json -Depth 3
-"""
-    # Fan speeds via WMI
-    ps_fans = r"""
-try {
-    Get-WmiObject -Namespace "root\wmi" -Class Win32_Fan -EA Stop |
-    Select-Object Name, ActiveCooling, DesiredSpeed |
-    ConvertTo-Json -Depth 2
-} catch { "[]" }
-"""
+    """CPU temperatures, utilisation, and fan speeds — fully in-process
+    (backlog #28 close-out): thermal zones + OHM/LHM sensors via the ``wmi``
+    package, CPU/memory/battery via ``psutil``. No PowerShell subprocess.
+    """
+    temps: list = []
+    fans: list = []
     try:
-        r1 = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps_temps], capture_output=True, text=True, timeout=20
-        )
-        temps_raw = json.loads(r1.stdout.strip() or "[]")
-        temps = temps_raw if isinstance(temps_raw, list) else ([temps_raw] if temps_raw else [])
-
-        r2 = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps_perf], capture_output=True, text=True, timeout=15
-        )
-        perf = json.loads(r2.stdout.strip() or "{}")
-
-        r3 = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps_fans], capture_output=True, text=True, timeout=10
-        )
-        fans_raw = json.loads(r3.stdout.strip() or "[]")
-        fans = fans_raw if isinstance(fans_raw, list) else ([fans_raw] if fans_raw else [])
-
-        # Annotate temperatures
-        for t in temps:
-            c = t.get("TempC", 0)
-            t["status"] = "critical" if c >= TEMP_CRIT_C else "warning" if c >= TEMP_WARN_C else "ok"
-
-        has_rich = any(t.get("Source") in ("OpenHardwareMonitor", "LibreHardwareMonitor") for t in temps)
-
-        return {
-            "temps": temps,
-            "perf": perf,
-            "fans": fans,
-            "has_rich": has_rich,
-            "note": ""
-            if has_rich
-            else (
-                "Install LibreHardwareMonitor for detailed CPU/GPU per-core temperatures. "
-                "Run it once as Administrator to register its WMI provider."
-            ),
-        }
-    except Exception as e:
+        pythoncom.CoInitialize()
+        # CPU temps — MSAcpi_ThermalZoneTemperature lives in root\wmi and
+        # reports decikelvin (value / 10 - 273.15 = Celsius). InstanceName
+        # is trimmed the same way the old PS -replace pair did.
+        try:
+            for z in wmi.WMI(namespace="root\\wmi").MSAcpi_ThermalZoneTemperature():
+                inst = z.InstanceName or ""
+                name = inst.split("_")[-1].split("\\")[0] if inst else "ThermalZone"
+                temps.append(
+                    {
+                        "Name": name,
+                        "TempC": round(z.CurrentTemperature / 10 - 273.15, 1),
+                        "Source": "WMI_ThermalZone",
+                    }
+                )
+        except Exception:  # noqa: BLE001 — no thermal-zone provider
+            pass
+        # Rich per-sensor temps — only present when OpenHardwareMonitor /
+        # LibreHardwareMonitor is running and has registered its WMI provider.
+        for ns, label in (
+            ("root\\OpenHardwareMonitor", "OpenHardwareMonitor"),
+            ("root\\LibreHardwareMonitor", "LibreHardwareMonitor"),
+        ):
+            try:
+                for s in wmi.WMI(namespace=ns).Sensor():
+                    if s.SensorType == "Temperature":
+                        temps.append({"Name": s.Name, "TempC": round(s.Value, 1), "Source": label})
+            except Exception:  # noqa: BLE001 — namespace absent (tool not running)
+                pass
+        # Fan speeds — Win32_Fan; almost always empty on consumer hardware.
+        try:
+            for f in wmi.WMI().Win32_Fan():
+                fans.append({"Name": f.Name, "ActiveCooling": f.ActiveCooling, "DesiredSpeed": f.DesiredSpeed})
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception as e:  # noqa: BLE001 — COM / WMI setup failure
         print(f"[Thermals] error: {e}")
         return {"temps": [], "perf": {}, "fans": [], "has_rich": False, "note": str(e)}
+
+    # CPU utilisation / memory / battery via psutil — no WMI, no subprocess.
+    try:
+        vm = psutil.virtual_memory()
+        battery = None
+        b = psutil.sensors_battery()
+        if b is not None:
+            # Match the old Win32_Battery shape: Status 2 = on AC, 1 = discharging.
+            battery = {"Status": 2 if b.power_plugged else 1, "Charge": round(b.percent)}
+        perf = {
+            "CPUPct": round(psutil.cpu_percent(interval=0.3), 1),
+            "MemUsedMB": round((vm.total - vm.available) / (1024 * 1024)),
+            "MemTotalMB": round(vm.total / (1024 * 1024)),
+            "Battery": battery,
+        }
+    except Exception:  # noqa: BLE001
+        perf = {}
+
+    # Annotate temperatures with status thresholds.
+    for t in temps:
+        c = t.get("TempC", 0)
+        t["status"] = "critical" if c >= TEMP_CRIT_C else "warning" if c >= TEMP_WARN_C else "ok"
+
+    has_rich = any(t.get("Source") in ("OpenHardwareMonitor", "LibreHardwareMonitor") for t in temps)
+    return {
+        "temps": temps,
+        "perf": perf,
+        "fans": fans,
+        "has_rich": has_rich,
+        "note": ""
+        if has_rich
+        else (
+            "Install LibreHardwareMonitor for detailed CPU/GPU per-core temperatures. "
+            "Run it once as Administrator to register its WMI provider."
+        ),
+    }
 
 
 def summarize_thermals(data: dict) -> dict:
@@ -6321,29 +6287,13 @@ def get_system_timeline(days: int = 30) -> list:
         print(f"[Timeline] BSOD query error: {e}")
 
     # ── 2. Windows Updates ────────────────────────────────────────────────────
-    ps_upd = r"""
-try {
-    $sess = New-Object -ComObject Microsoft.Update.Session
-    $src  = $sess.CreateUpdateSearcher()
-    $n    = $src.GetTotalHistoryCount()
-    $hist = $src.QueryHistory(0, [Math]::Min($n, 200))
-    $hist | Where-Object { $_.ResultCode -eq 2 } | ForEach-Object {
-        [PSCustomObject]@{
-            Title = $_.Title
-            Date  = $_.Date.ToString('o')
-            KB    = if ($_.Title -match 'KB(\d+)') { "KB$($Matches[1])" } else { "" }
-        }
-    } | ConvertTo-Json -Depth 2
-} catch { "[]" }
-"""
+    # Reuse get_update_history() — already an in-process win32com QueryHistory
+    # (backlog #28). The old PowerShell here was a duplicate of that COM call;
+    # filter the shared history to succeeded installs (ResultCode == 2).
     try:
-        r = subprocess.run(
-            ["powershell", "-NonInteractive", "-Command", ps_upd], capture_output=True, text=True, timeout=25
-        )
-        upd_list = json.loads(r.stdout.strip() or "[]")
-        if isinstance(upd_list, dict):
-            upd_list = [upd_list]
-        for u in upd_list:
+        for u in get_update_history():
+            if u.get("ResultCode") != 2:
+                continue
             ts = _parse_ts(u.get("Date", ""))
             if ts < cutoff:
                 continue

@@ -1812,25 +1812,20 @@ def _get_orbi_ssid() -> str:
     except Exception:
         pass
 
-    # Fall back: look for saved Wi-Fi profiles that might be Orbi
+    # Fall back: parse `netsh wlan show profiles` directly — no PowerShell
+    # wrapper. Each saved profile is an "All User Profile : <name>" line.
     try:
         r = subprocess.run(
-            [
-                "powershell",
-                "-NonInteractive",
-                "-Command",
-                (
-                    "$profiles = netsh wlan show profiles | "
-                    "Select-String 'All User Profile\\s+:' | "
-                    "ForEach-Object { ($_ -replace '.*:\\s*','').Trim() }; "
-                    "$profiles -join '|'"
-                ),
-            ],
+            ["netsh", "wlan", "show", "profiles"],
             capture_output=True,
             text=True,
             timeout=10,
         )
-        profiles = [p.strip() for p in r.stdout.strip().split("|") if p.strip()]
+        profiles = [
+            m.group(1).strip()
+            for line in r.stdout.splitlines()
+            if (m := re.match(r"\s*All User Profile\s*:\s*(.+)", line))
+        ]
         if len(profiles) == 1:
             return profiles[0]  # Only one profile — likely the Orbi
     except Exception:

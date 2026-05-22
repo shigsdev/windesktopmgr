@@ -1111,24 +1111,66 @@ class TestKillProcess:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-class TestGetThermals:
-    TEMPS = json.dumps(
-        [
-            {"Name": "CPU Package", "TempC": 55.2, "Source": "LibreHardwareMonitor"},
-            {"Name": "GPU Core", "TempC": 48.0, "Source": "LibreHardwareMonitor"},
-        ]
-    )
-    PERF = json.dumps({"CPUPct": 12.5, "MemUsedMB": 16384, "MemTotalMB": 32768, "Battery": None})
-    FANS = json.dumps([])
+def _mock_wmi_by_namespace(mocker, by_ns=None):
+    """Patch windesktopmgr.wmi.WMI() to return a fake connection whose WMI
+    class methods depend on the ``namespace`` kwarg the caller passed.
 
-    def _make_mock(self, mocker, temps=None, perf=None, fans=None):
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = [
-            type("R", (), {"stdout": temps or self.TEMPS, "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": perf or self.PERF, "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": fans or self.FANS, "returncode": 0, "stderr": ""})(),
-        ]
-        return m
+    ``by_ns`` maps a namespace string (or ``""`` for the default root\\cimv2
+    connection created via ``wmi.WMI()`` with no args) to a dict of
+    {class_name: [_wmi_obj, ...]}. get_thermals() opens three distinct
+    namespaces: ``root\\wmi`` for thermal zones, ``root\\OpenHardwareMonitor``
+    / ``root\\LibreHardwareMonitor`` for rich sensors, and the default
+    namespace for ``Win32_Fan``.
+
+    Returns the mock ``wmi.WMI`` so call assertions (namespace kwarg) work.
+    """
+    by_ns = by_ns or {}
+
+    def _factory(*args, **kwargs):
+        ns = kwargs.get("namespace", "")
+        classes = by_ns.get(ns, {})
+        conn = mocker.MagicMock()
+        for name, data in classes.items():
+            setattr(conn, name, mocker.MagicMock(return_value=data))
+        return conn
+
+    return mocker.patch("windesktopmgr.wmi.WMI", side_effect=_factory)
+
+
+class TestGetThermals:
+    """get_thermals() is fully in-process (backlog #28): thermal zones +
+    OHM/LHM sensors via the ``wmi`` package, CPU/memory/battery via psutil.
+    No PowerShell subprocess — tests mock wmi.WMI, psutil and pythoncom."""
+
+    # root\wmi thermal-zone objects: decikelvin (value/10 - 273.15 = C).
+    # 55.2 C -> (55.2 + 273.15) * 10 = 3283.5
+    ZONE_OBJS = [
+        _wmi_obj(InstanceName="ACPI\\ThermalZone\\TZ00_0", CurrentTemperature=3283),
+    ]
+    # OHM/LHM rich sensors.
+    LHM_SENSORS = [
+        _wmi_obj(SensorType="Temperature", Name="CPU Package", Value=55.2),
+        _wmi_obj(SensorType="Temperature", Name="GPU Core", Value=48.0),
+        _wmi_obj(SensorType="Load", Name="CPU Total", Value=12.5),  # filtered out
+    ]
+
+    def _make_mock(self, mocker, zones=None, lhm=None, fans=None, cpu_pct=12.5):
+        """Mock the WMI namespaces + psutil + pythoncom for get_thermals()."""
+        mocker.patch("windesktopmgr.pythoncom.CoInitialize")
+        wmi_mock = _mock_wmi_by_namespace(
+            mocker,
+            {
+                "root\\wmi": {"MSAcpi_ThermalZoneTemperature": zones if zones is not None else []},
+                "root\\OpenHardwareMonitor": {"Sensor": []},
+                "root\\LibreHardwareMonitor": {"Sensor": lhm if lhm is not None else list(self.LHM_SENSORS)},
+                "": {"Win32_Fan": fans if fans is not None else []},
+            },
+        )
+        mocker.patch("windesktopmgr.psutil.cpu_percent", return_value=cpu_pct)
+        vm = types.SimpleNamespace(total=32768 * 1024 * 1024, available=16384 * 1024 * 1024)
+        mocker.patch("windesktopmgr.psutil.virtual_memory", return_value=vm)
+        mocker.patch("windesktopmgr.psutil.sensors_battery", return_value=None)
+        return wmi_mock
 
     def test_happy_path_keys(self, mocker):
         self._make_mock(mocker)
@@ -1144,14 +1186,14 @@ class TestGetThermals:
             assert t["status"] in ("ok", "warning", "critical")
 
     def test_critical_temp_flagged(self, mocker):
-        hot = json.dumps([{"Name": "CPU Package", "TempC": 95.0, "Source": "LibreHardwareMonitor"}])
-        self._make_mock(mocker, temps=hot)
+        hot = [_wmi_obj(SensorType="Temperature", Name="CPU Package", Value=95.0)]
+        self._make_mock(mocker, lhm=hot)
         result = wdm.get_thermals()
         assert result["temps"][0]["status"] == "critical"
 
     def test_warning_temp_flagged(self, mocker):
-        warm = json.dumps([{"Name": "CPU Package", "TempC": 85.0, "Source": "LibreHardwareMonitor"}])
-        self._make_mock(mocker, temps=warm)
+        warm = [_wmi_obj(SensorType="Temperature", Name="CPU Package", Value=85.0)]
+        self._make_mock(mocker, lhm=warm)
         result = wdm.get_thermals()
         assert result["temps"][0]["status"] == "warning"
 
@@ -1161,28 +1203,37 @@ class TestGetThermals:
         assert result["has_rich"] is True
 
     def test_has_rich_false_when_only_wmi(self, mocker):
-        wmi_temps = json.dumps([{"Name": "ACPI zone", "TempC": 40.0, "Source": "WMI_ThermalZone"}])
-        self._make_mock(mocker, temps=wmi_temps)
+        # Only a root\wmi thermal zone, no OHM/LHM sensors.
+        self._make_mock(mocker, zones=list(self.ZONE_OBJS), lhm=[])
         result = wdm.get_thermals()
         assert result["has_rich"] is False
+        assert result["temps"][0]["Source"] == "WMI_ThermalZone"
 
-    def test_empty_temps_output_returns_fallback(self, mocker):
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = subprocess.TimeoutExpired(cmd="powershell", timeout=20)
+    def test_zone_temp_converted_from_decikelvin(self, mocker):
+        self._make_mock(mocker, zones=list(self.ZONE_OBJS), lhm=[])
+        result = wdm.get_thermals()
+        # 3283 / 10 - 273.15 = 55.15 -> rounded to 55.2 (one decimal place)
+        assert result["temps"][0]["TempC"] == 55.2
+
+    def test_wmi_failure_returns_fallback(self, mocker):
+        mocker.patch("windesktopmgr.pythoncom.CoInitialize", side_effect=RuntimeError("COM init failed"))
         result = wdm.get_thermals()
         assert result["temps"] == []
+        assert result["perf"] == {}
+        assert result["has_rich"] is False
 
-    def test_temps_command_uses_wmi_thermalzone(self, mocker):
-        m = self._make_mock(mocker)
+    def test_temps_query_uses_root_wmi_namespace(self, mocker):
+        wmi_mock = self._make_mock(mocker)
         wdm.get_thermals()
-        cmd = m.call_args_list[0][0][0][-1]
-        assert "MSAcpi_ThermalZoneTemperature" in cmd
+        namespaces = [c.kwargs.get("namespace", "") for c in wmi_mock.call_args_list]
+        assert "root\\wmi" in namespaces
 
-    def test_perf_command_uses_win32_processor(self, mocker):
-        m = self._make_mock(mocker)
-        wdm.get_thermals()
-        cmd = m.call_args_list[1][0][0][-1]
-        assert "Win32_Processor" in cmd
+    def test_perf_uses_psutil_cpu_percent(self, mocker):
+        self._make_mock(mocker)
+        cpu = mocker.patch("windesktopmgr.psutil.cpu_percent", return_value=42.0)
+        result = wdm.get_thermals()
+        assert cpu.called
+        assert result["perf"]["CPUPct"] == 42.0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1891,11 +1942,12 @@ class TestGetSystemTimeline:
     Timeline pulls from 5 sources — BSOD, Windows Update history, services, boot, creds.
 
     After Batch F (win32evtlog migration), 4 of the 5 are routed through
-    ``_query_event_log_xpath``. Only the Windows Update source still shells out
-    to PowerShell (``Microsoft.Update.Session`` — Batch G candidate).
+    ``_query_event_log_xpath``. The Windows Update source is now an in-process
+    call to ``get_update_history()`` (backlog #28 close-out) — no PowerShell
+    subprocess anywhere in this function.
 
-    Tests mock the helper directly and the lone remaining PS call via
-    ``subprocess.run``.
+    Tests mock ``_query_event_log_xpath`` for the event-log sources and
+    ``get_update_history`` directly for the update source.
     """
 
     _NOW = datetime.now(timezone.utc)
@@ -1920,14 +1972,22 @@ class TestGetSystemTimeline:
             "Message": "Problem signature: stop code 0x0000009F",
         },
     ]
-    UPDATE_EVTS = json.dumps(
-        [
-            {"Title": "2026-03 Cumulative Update (KB5055523)", "Date": _UPDATE, "KB": "KB5055523"},
-        ]
-    )
+    # get_update_history() shape: {Title, Date (ISO8601), ResultCode (int),
+    # Categories, KB, result}. ResultCode 2 = succeeded; the timeline keeps
+    # only succeeded installs.
+    UPDATE_HISTORY = [
+        {
+            "Title": "2026-03 Cumulative Update (KB5055523)",
+            "Date": _UPDATE,
+            "ResultCode": 2,
+            "Categories": "Security Updates",
+            "KB": "KB5055523",
+            "result": "Succeeded",
+        },
+    ]
 
     def _make_mock(self, mocker, bsod=None, upd=None, svc=None, boot=None, cred=None):
-        """Mock the 4 event-log calls + 1 remaining Windows Update PS call."""
+        """Mock the 4 event-log calls + the in-process get_update_history() call."""
         helper = mocker.patch("windesktopmgr._query_event_log_xpath")
         helper.side_effect = [
             bsod if bsod is not None else list(self.BSOD_ROWS),  # 1. BSOD
@@ -1935,9 +1995,11 @@ class TestGetSystemTimeline:
             boot if boot is not None else [],  # 4. boot
             cred if cred is not None else [],  # 5. creds
         ]
-        ps = mocker.patch("windesktopmgr.subprocess.run")
-        ps.return_value = type("R", (), {"stdout": upd or self.UPDATE_EVTS, "returncode": 0, "stderr": ""})()
-        return helper, ps
+        upd_hist = mocker.patch(
+            "windesktopmgr.get_update_history",
+            return_value=upd if upd is not None else list(self.UPDATE_HISTORY),
+        )
+        return helper, upd_hist
 
     def test_returns_list(self, mocker):
         self._make_mock(mocker)
@@ -1991,10 +2053,28 @@ class TestGetSystemTimeline:
         bsods = [e for e in result if e["type"] == "bsod"]
         assert len(bsods) == 0
 
+    def test_only_succeeded_updates_included(self, mocker):
+        """ResultCode != 2 entries (failed / in-progress) are filtered out."""
+        mixed = [
+            dict(self.UPDATE_HISTORY[0]),  # ResultCode 2 — kept
+            {
+                "Title": "Failed Update (KB9999999)",
+                "Date": self._UPDATE,
+                "ResultCode": 4,  # Failed — dropped
+                "Categories": "Security Updates",
+                "KB": "KB9999999",
+                "result": "Failed",
+            },
+        ]
+        self._make_mock(mocker, upd=mixed)
+        result = wdm.get_system_timeline()
+        updates = [e for e in result if e["category"] == "update"]
+        assert len(updates) == 1
+        assert "KB5055523" in updates[0]["detail"]
+
     def test_all_sources_empty_returns_empty_list(self, mocker):
         helper = mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
-        ps = mocker.patch("windesktopmgr.subprocess.run")
-        ps.return_value = type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})()
+        mocker.patch("windesktopmgr.get_update_history", return_value=[])
         result = wdm.get_system_timeline()
         assert result == []
         # Helper called 4 times: BSOD, services, boot, cred
@@ -2009,13 +2089,21 @@ class TestGetSystemTimeline:
             [],  # boot
             [],  # creds
         ]
-        ps = mocker.patch("windesktopmgr.subprocess.run")
-        ps.return_value = type("R", (), {"stdout": self.UPDATE_EVTS, "returncode": 0, "stderr": ""})()
+        mocker.patch("windesktopmgr.get_update_history", return_value=list(self.UPDATE_HISTORY))
         result = wdm.get_system_timeline()
         updates = [e for e in result if e["type"] == "update"]
         assert len(updates) == 1
 
-    # ── command-content / helper-call regression guards ──────────────────────
+    def test_update_history_error_does_not_crash(self, mocker):
+        """If get_update_history() raises, BSOD events still come through."""
+        helper = mocker.patch("windesktopmgr._query_event_log_xpath")
+        helper.side_effect = [list(self.BSOD_ROWS), [], [], []]
+        mocker.patch("windesktopmgr.get_update_history", side_effect=RuntimeError("WUA cold"))
+        result = wdm.get_system_timeline()
+        bsods = [e for e in result if e["type"] == "bsod"]
+        assert len(bsods) == 2
+
+    # ── helper-call regression guards ────────────────────────────────────────
 
     def test_bsod_helper_queries_event_ids_41_1001_6008(self, mocker):
         helper, _ = self._make_mock(mocker)
@@ -2027,11 +2115,10 @@ class TestGetSystemTimeline:
         for eid in ("41", "1001", "6008"):
             assert f"EventID={eid}" in xpath, f"missing EventID={eid} in xpath: {xpath}"
 
-    def test_update_command_uses_update_session(self, mocker):
-        _, ps = self._make_mock(mocker)
+    def test_update_source_calls_get_update_history(self, mocker):
+        _, upd_hist = self._make_mock(mocker)
         wdm.get_system_timeline()
-        cmd = ps.call_args[0][0][-1]
-        assert "Microsoft.Update.Session" in cmd
+        assert upd_hist.called
 
     def test_service_helper_queries_event_id_7036(self, mocker):
         helper, _ = self._make_mock(mocker)
@@ -2047,14 +2134,12 @@ class TestGetSystemTimeline:
         assert args[0] == "System"
         assert "EventID=6013" in args[1]
 
-    def test_no_powershell_for_event_log_sources(self, mocker):
-        """Regression guard — event-log sources must NOT invoke PowerShell."""
-        _, ps = self._make_mock(mocker)
+    def test_no_powershell_anywhere(self, mocker):
+        """Regression guard — the timeline must NOT invoke PowerShell at all."""
+        self._make_mock(mocker)
+        ps = mocker.patch("windesktopmgr.subprocess.run")
         wdm.get_system_timeline()
-        # The ONLY legitimate PS call is the Microsoft.Update.Session one
-        assert ps.call_count == 1
-        cmd = ps.call_args[0][0][-1]
-        assert "Get-WinEvent" not in cmd
+        assert ps.call_count == 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2675,22 +2760,29 @@ class TestGetDiskHealthIOSampling:
 
 
 class TestGetThermsFansCommand:
-    """Command-content test for fans sub-command (3rd subprocess call)."""
+    """Fans now come from wmi.WMI().Win32_Fan() — no PowerShell. Asserts the
+    Win32_Fan WMI class is queried and its data flows into the result."""
 
-    def _make_mock(self, mocker):
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = [
-            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": "{}", "returncode": 0, "stderr": ""})(),
-            type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})(),
-        ]
-        return m
-
-    def test_fans_command_uses_win32_fan(self, mocker):
-        m = self._make_mock(mocker)
-        wdm.get_thermals()
-        cmd = m.call_args_list[2][0][0][-1]
-        assert "Win32_Fan" in cmd
+    def test_fans_query_uses_win32_fan(self, mocker):
+        mocker.patch("windesktopmgr.pythoncom.CoInitialize")
+        fan = _wmi_obj(Name="System Fan", ActiveCooling=True, DesiredSpeed=2400)
+        default_conn = mocker.MagicMock()
+        default_conn.Win32_Fan = mocker.MagicMock(return_value=[fan])
+        _mock_wmi_by_namespace(
+            mocker,
+            {
+                "root\\wmi": {"MSAcpi_ThermalZoneTemperature": []},
+                "root\\OpenHardwareMonitor": {"Sensor": []},
+                "root\\LibreHardwareMonitor": {"Sensor": []},
+                "": {"Win32_Fan": [fan]},
+            },
+        )
+        mocker.patch("windesktopmgr.psutil.cpu_percent", return_value=5.0)
+        vm = types.SimpleNamespace(total=8 * 1024 * 1024 * 1024, available=4 * 1024 * 1024 * 1024)
+        mocker.patch("windesktopmgr.psutil.virtual_memory", return_value=vm)
+        mocker.patch("windesktopmgr.psutil.sensors_battery", return_value=None)
+        result = wdm.get_thermals()
+        assert result["fans"] == [{"Name": "System Fan", "ActiveCooling": True, "DesiredSpeed": 2400}]
 
 
 class TestGetSystemTimelineCredHelperCall:
@@ -2702,8 +2794,7 @@ class TestGetSystemTimelineCredHelperCall:
 
     def _make_mock(self, mocker):
         helper = mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
-        ps = mocker.patch("windesktopmgr.subprocess.run")
-        ps.return_value = type("R", (), {"stdout": "[]", "returncode": 0, "stderr": ""})()
+        mocker.patch("windesktopmgr.get_update_history", return_value=[])
         return helper
 
     def test_cred_helper_queries_event_ids_4625_and_4648(self, mocker):
@@ -2904,56 +2995,52 @@ class TestLookupViaWindowsProvider:
 
 
 class TestLookupStartupViaFileinfo:
-    FILE_INFO = json.dumps(
-        {
-            "FileDescription": "Microsoft OneDrive",
-            "CompanyName": "Microsoft Corporation",
-            "ProductName": "Microsoft OneDrive",
-            "FileVersion": "25.001.0112.0001",
-            "FileName": "OneDrive.exe",
-        }
-    )
+    """_lookup_startup_via_fileinfo() is fully in-process (backlog #28):
+    exe path resolution via shutil.which, version info via the _exe_version_info
+    helper (win32api.GetFileVersionInfo). Tests mock those two — no PowerShell."""
+
+    FILE_INFO = {
+        "FileDescription": "Microsoft OneDrive",
+        "CompanyName": "Microsoft Corporation",
+        "ProductName": "Microsoft OneDrive",
+        "FileVersion": "25.001.0112.0001",
+    }
 
     def test_happy_path_returns_enrichment(self, mocker):
-        _mock_run(mocker, stdout=self.FILE_INFO)
+        mocker.patch("windesktopmgr._exe_version_info", return_value=dict(self.FILE_INFO))
         result = wdm._lookup_startup_via_fileinfo(
             r'"C:\Program Files\Microsoft OneDrive\OneDrive.exe" /background', "OneDrive"
         )
         assert result is not None
         assert result["publisher"] == "Microsoft Corporation"
 
-    def test_exe_path_injected_into_get_item(self, mocker):
-        m = _mock_run(mocker, stdout=self.FILE_INFO)
+    def test_exe_path_passed_to_version_info(self, mocker):
+        info = mocker.patch("windesktopmgr._exe_version_info", return_value=dict(self.FILE_INFO))
         wdm._lookup_startup_via_fileinfo(r'"C:\Windows\system32\notepad.exe"', "Notepad")
-        cmd = m.call_args[0][0][-1]
-        assert "Get-Item" in cmd
-        assert "notepad.exe" in cmd.lower()
+        # The quoted exe path is extracted from the command and read directly.
+        path = info.call_args[0][0]
+        assert "notepad.exe" in path.lower()
 
-    def test_no_exe_path_triggers_get_command(self, mocker):
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = [
-            type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})(),
-        ]
+    def test_no_exe_path_resolves_via_shutil_which(self, mocker):
+        which = mocker.patch("windesktopmgr.shutil.which", return_value=None)
         result = wdm._lookup_startup_via_fileinfo("somename", "somename")
         assert result is None
-        cmd = m.call_args_list[0][0][0][-1]
-        assert "Get-Command" in cmd
+        # shutil.which replaces the old Get-Command PS call for bare names.
+        assert which.called
 
-    def test_empty_output_returns_none(self, mocker):
-        _mock_run(mocker, stdout="")
+    def test_empty_version_info_returns_none(self, mocker):
+        mocker.patch("windesktopmgr._exe_version_info", return_value={})
         result = wdm._lookup_startup_via_fileinfo(r'"C:\Program Files\App\app.exe"', "App")
         assert result is None
 
-    def test_timeout_returns_none(self, mocker):
-        _mock_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 10))
-        result = wdm._lookup_startup_via_fileinfo(r'"C:\Program Files\App\app.exe"', "App")
+    def test_which_failure_returns_none(self, mocker):
+        mocker.patch("windesktopmgr.shutil.which", side_effect=OSError("PATH error"))
+        result = wdm._lookup_startup_via_fileinfo("someapp", "App")
         assert result is None
 
     def test_empty_desc_and_company_returns_none(self, mocker):
-        empty = json.dumps(
-            {"FileDescription": "", "CompanyName": "", "ProductName": "", "FileVersion": "1.0", "FileName": "x.exe"}
-        )
-        _mock_run(mocker, stdout=empty)
+        empty = {"FileDescription": "", "CompanyName": "", "ProductName": "", "FileVersion": "1.0"}
+        mocker.patch("windesktopmgr._exe_version_info", return_value=empty)
         result = wdm._lookup_startup_via_fileinfo(r'"C:\app.exe"', "App")
         assert result is None
 
