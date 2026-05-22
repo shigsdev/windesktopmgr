@@ -7281,68 +7281,118 @@ def check_dell_bios_update(board_product: str, current_version: str) -> dict:
         print("[BIOS] DCU not found")
 
     # ── Method 2: Dell public catalog XML ──────────────────────────────────────
-    # Dell publishes a complete catalog at a stable URL — parse it with PowerShell
+    # Pure-Python: urllib downloads the catalog, expand.exe (a Windows OS tool
+    # — not PowerShell) extracts the .cab, ElementTree parses the XML. The
+    # PowerShell heredoc this replaces was the last `subprocess powershell`
+    # call in check_dell_bios_update (backlog #28 close-out).
     if not result["latest_version"]:
-        ps_catalog = r"""
-try {
-    $cab  = [System.IO.Path]::GetTempPath() + "DellCatalog.cab"
-    $dir  = [System.IO.Path]::GetTempPath() + "DellCatalog"
-    # Download the catalog (small ~2MB cab file)
-    $wc = New-Object System.Net.WebClient
-    $wc.Headers.Add("User-Agent", "Mozilla/5.0")
-    $wc.DownloadFile("https://downloads.dell.com/catalog/CatalogPC.cab", $cab)
-    # Expand the CAB
-    if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
-    New-Item $dir -ItemType Directory -Force | Out-Null
-    expand.exe $cab $dir\CatalogPC.xml | Out-Null
-    # Parse XML for XPS 8960 BIOS
-    $xml = [xml](Get-Content "$dir\CatalogPC.xml" -Raw)
-    $bios = $xml.Manifest.SoftwareComponent | Where-Object {
-        $_.componentType.value -eq "BIOS" -and
-        ($_.SupportedSystems.Brand.Model.name -like "*8960*" -or
-         $_.SupportedSystems.Brand.Model.systemID -like "*0BC0*")
-    } | Sort-Object -Property releaseDate -Descending | Select-Object -First 1
-    if ($bios) {
-        [PSCustomObject]@{
-            Version     = $bios.dellVersion
-            ReleaseDate = $bios.releaseDate
-            Name        = $bios.name.Display."#cdata-section"
-            Path        = "https://downloads.dell.com/" + $bios.path
-        } | ConvertTo-Json
-    }
-    # Cleanup
-    Remove-Item $cab,$dir -Recurse -Force -ErrorAction SilentlyContinue
-} catch {
-    Write-Output "CATALOG_ERROR: $_"
-}
-"""
+        import tempfile
+        import urllib.request
+        import xml.etree.ElementTree as ET
+
+        cab_path = os.path.join(tempfile.gettempdir(), "DellCatalog.cab")
+        xml_dir = os.path.join(tempfile.gettempdir(), "DellCatalog")
+        xml_path = os.path.join(xml_dir, "CatalogPC.xml")
         try:
-            r2 = subprocess.run(
-                ["powershell", "-NonInteractive", "-Command", ps_catalog], capture_output=True, text=True, timeout=90
+            # Fetch the catalog (~2 MB). Cap the read at 16 MB so a hostile
+            # endpoint can't OOM us.
+            req = urllib.request.Request(
+                "https://downloads.dell.com/catalog/CatalogPC.cab",
+                headers={"User-Agent": "Mozilla/5.0"},
             )
-            out2 = r2.stdout.strip()
-            if out2 and out2.startswith("{"):
-                data2 = json.loads(out2)
-                ver2 = data2.get("Version", "")
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                cab_bytes = resp.read(16_777_216)
+            if not cab_bytes:
+                raise RuntimeError("empty catalog download")
+            with open(cab_path, "wb") as f:
+                f.write(cab_bytes)
+            os.makedirs(xml_dir, exist_ok=True)
+            # No CAB extractor in the Python stdlib — use the OS's expand.exe
+            # (not PowerShell). One light subprocess call, no PS process spawn.
+            subprocess.run(
+                ["expand.exe", cab_path, xml_path],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            # XML element matching is case-INSENSITIVE here because the old
+            # PowerShell relied on PS's case-insensitive property access
+            # (`$_.componentType.value` vs the actual `ComponentType` element);
+            # ElementTree is case-sensitive by default. The `{*}` namespace
+            # wildcard handles the catalog's default xmlns.
+            def _findall_ci(parent, name):
+                t = name.lower()
+                return [c for c in parent.iter() if c.tag.rsplit("}", 1)[-1].lower() == t]
+
+            def _find_child_ci(parent, name):
+                t = name.lower()
+                for c in parent:
+                    if c.tag.rsplit("}", 1)[-1].lower() == t:
+                        return c
+                return None
+
+            # ruff S314: the XML source is the trusted Dell catalog over HTTPS
+            # (fixed URL, 16 MB read cap above), and the catalog schema has no
+            # external entities — adding a `defusedxml` dep for one parse is
+            # disproportionate.
+            tree = ET.parse(xml_path)  # noqa: S314
+            root = tree.getroot()
+            best = None
+            best_date = ""
+            for sc in _findall_ci(root, "SoftwareComponent"):
+                ct = _find_child_ci(sc, "ComponentType")
+                if ct is None or (ct.get("value") or "").upper() != "BIOS":
+                    continue
+                # Match on Model name *8960* OR systemID *0BC0* (XPS 8960).
+                matched = False
+                for m in _findall_ci(sc, "Model"):
+                    mname = (m.get("name") or "").lower()
+                    sysid = (m.get("systemID") or "").lower()
+                    if "8960" in mname or "0bc0" in sysid:
+                        matched = True
+                        break
+                if not matched:
+                    continue
+                rdate = sc.get("releaseDate", "")
+                if best is None or rdate > best_date:
+                    best = sc
+                    best_date = rdate
+
+            if best is not None:
+                ver2 = best.get("dellVersion") or best.get("vendorVersion") or ""
                 if ver2:
+                    # Name/Display CDATA → element.text on the Display child.
+                    name_text = ""
+                    name_el = _find_child_ci(best, "Name")
+                    if name_el is not None:
+                        disp = _find_child_ci(name_el, "Display")
+                        if disp is not None and disp.text:
+                            name_text = disp.text.strip()
+                    rel_path = best.get("path", "")
                     result["latest_version"] = ver2
-                    result["latest_date"] = data2.get("ReleaseDate", "")
-                    result["release_notes"] = data2.get("Name", "")[:200]
-                    result["download_url"] = data2.get("Path", result["download_url"])
+                    result["latest_date"] = best_date
+                    result["release_notes"] = name_text[:200]
+                    if rel_path:
+                        result["download_url"] = f"https://downloads.dell.com/{rel_path}"
                     result["source"] = "dell_catalog"
                     result["update_available"] = _ver_gt(ver2, current_version)
                     result["error"] = None
                     print(f"[BIOS] Catalog found version: {ver2}")
-            elif out2.startswith("CATALOG_ERROR"):
-                if result["error"]:
-                    result["error"] += f" | {out2}"
-                else:
-                    result["error"] = out2
-        except Exception as e2:
+        except Exception as e2:  # noqa: BLE001
             if result["error"]:
                 result["error"] += f" | Catalog: {e2}"
             else:
                 result["error"] = f"Catalog: {e2}"
+        finally:
+            # Best-effort cleanup.
+            try:
+                if os.path.exists(cab_path):
+                    os.remove(cab_path)
+                if os.path.exists(xml_dir):
+                    shutil.rmtree(xml_dir, ignore_errors=True)
+            except Exception:  # noqa: BLE001
+                pass
 
     # ── Method 3: Windows Update pending BIOS check ────────────────────────────
     # Reuses get_windows_update_drivers() — the WU "available drivers" search

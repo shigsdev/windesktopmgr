@@ -2915,23 +2915,62 @@ class TestWorkerTaskDoneSafety:
 
 class TestCheckDellBiosUpdate:
     """Tests for check_dell_bios_update — DCU method calls dcu-cli.exe directly
-    (Batch D), the catalog method uses PowerShell, and the Method-3 WU check
-    reuses get_windows_update_drivers() (in-process win32com, Batch G)."""
+    (Batch D); the catalog method is pure Python (urllib + expand.exe + ET parse,
+    backlog #28 close-out); Method-3 WU reuses get_windows_update_drivers()
+    (in-process win32com, Batch G)."""
 
     # Sample XML that matches the BIOS version regex in the DCU parser
     DCU_XML_TEMPLATE = '<update type="BIOS" name="BIOS Update" version="{ver}"/>'
 
+    # Minimal catalog XML matching the production parser's case-insensitive
+    # lookups: SoftwareComponent + ComponentType=BIOS + Model name *8960*.
+    CATALOG_XML_8960 = """<Manifest xmlns="openmanage/cm/dm">
+  <SoftwareComponent releaseDate="2026-01-15" dellVersion="2.23.0" path="FOLDER01/bios.exe">
+    <Name><Display>XPS 8960 BIOS Update</Display></Name>
+    <ComponentType value="BIOS" />
+    <SupportedSystems>
+      <Brand>
+        <Model name="XPS 8960" systemID="0BC0" />
+      </Brand>
+    </SupportedSystems>
+  </SoftwareComponent>
+</Manifest>"""
+
+    # An empty catalog (no SoftwareComponent matches) — exercises the
+    # "catalog ran fine, found nothing" branch.
+    CATALOG_XML_EMPTY = '<Manifest xmlns="openmanage/cm/dm"></Manifest>'
+
     def _mock_deps(
-        self, mocker, tmp_path, *, dcu_xml=None, ps_side_effects=None, wu_drivers=None, service_tag="9T46D14"
+        self,
+        mocker,
+        tmp_path,
+        *,
+        dcu_xml=None,
+        catalog_xml=None,
+        catalog_fail=False,
+        wu_drivers=None,
+        service_tag="9T46D14",
     ):
-        """Mock WMI, filesystem, subprocess, and the WU COM layer.
+        """Mock WMI, filesystem, the catalog HTTP+CAB+ET path, and the WU COM layer.
 
         Args:
-            dcu_xml: XML content for the DCU scan output file. None = DCU not installed.
-            ps_side_effects: list of (stdout, rc) for the catalog PowerShell call.
+            dcu_xml: XML for the DCU scan output. None = DCU not installed.
+            catalog_xml: Catalog XML string to feed the ET.parse mock. If both
+                this and ``catalog_fail`` are unset, defaults to CATALOG_XML_EMPTY
+                so the catalog runs but matches nothing.
+            catalog_fail: If True, make urlopen raise ``URLError`` — exercises the
+                "download failed" branch (Catalog never produces a result).
             wu_drivers: dict returned by get_windows_update_drivers() for the
                 Method-3 WU check ({} = no WU updates, the default).
+            service_tag: Win32_BIOS.SerialNumber returned by the WMI mock.
+
+        Returns:
+            The ``subprocess.run`` mock so call_args_list can be inspected for
+            DCU/expand.exe arguments.
         """
+        import urllib.error
+        import xml.etree.ElementTree as ET
+
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
         _mock_wmi(mocker, {"Win32_BIOS": [_wmi_obj(SerialNumber=service_tag)]})
         # Method 3 reuses get_windows_update_drivers() — mock it directly
@@ -2940,6 +2979,26 @@ class TestCheckDellBiosUpdate:
             "windesktopmgr.get_windows_update_drivers",
             return_value=wu_drivers if wu_drivers is not None else {},
         )
+
+        # ── Method 2 mocks: urllib download + ET.parse ─────────────────────
+        # The production code does ``import urllib.request`` and ``import xml
+        # .etree.ElementTree as ET`` LOCALLY inside check_dell_bios_update. A
+        # local import just rebinds to the module already cached in
+        # sys.modules, so patching the module's own attribute works fine.
+        if catalog_fail:
+            mocker.patch(
+                "urllib.request.urlopen",
+                side_effect=urllib.error.URLError("dns"),
+            )
+        else:
+            fake_resp = mocker.MagicMock()
+            fake_resp.__enter__ = mocker.MagicMock(return_value=fake_resp)
+            fake_resp.__exit__ = mocker.MagicMock(return_value=False)
+            fake_resp.read.return_value = b"FAKE_CAB"
+            mocker.patch("urllib.request.urlopen", return_value=fake_resp)
+            xml_blob = catalog_xml if catalog_xml is not None else self.CATALOG_XML_EMPTY
+            tree = ET.ElementTree(ET.fromstring(xml_blob))  # noqa: S314 — test fixture, inline literal
+            mocker.patch("xml.etree.ElementTree.parse", return_value=tree)
 
         _real_exists = os.path.exists
         run_responses = []
@@ -2958,16 +3017,20 @@ class TestCheckDellBiosUpdate:
         else:
             mocker.patch("os.path.exists", side_effect=lambda p: False if "CommandUpdate" in p else _real_exists(p))
 
-        for out, rc in ps_side_effects or []:
-            run_responses.append(type("R", (), {"stdout": out, "returncode": rc, "stderr": ""})())
+        # The catalog path still spawns ONE subprocess: expand.exe (Windows OS
+        # tool, not PowerShell). Mock it as a no-op success.
+        if not catalog_fail:
+            run_responses.append(type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})())
 
         m = mocker.patch("windesktopmgr.subprocess.run")
         if run_responses:
             m.side_effect = run_responses
+        else:
+            m.return_value = type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})()
         return m
 
     def test_returns_required_keys(self, mocker, tmp_path):
-        self._mock_deps(mocker, tmp_path, ps_side_effects=[("", 0)])
+        self._mock_deps(mocker, tmp_path)
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         for key in (
             "checked_at",
@@ -3005,18 +3068,14 @@ class TestCheckDellBiosUpdate:
         assert "powershell" not in cmd
 
     def test_catalog_fallback(self, mocker, tmp_path):
-        catalog_out = json.dumps(
-            {
-                "Version": "2.23.0",
-                "ReleaseDate": "2026-01-15",
-                "Name": "XPS 8960 BIOS Update",
-                "Path": "https://downloads.dell.com/bios.exe",
-            }
-        )
-        self._mock_deps(mocker, tmp_path, ps_side_effects=[(catalog_out, 0)])
+        """Method 1 misses, Method 2 (catalog XML) finds the XPS 8960 BIOS."""
+        self._mock_deps(mocker, tmp_path, catalog_xml=self.CATALOG_XML_8960)
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["source"] == "dell_catalog"
         assert result["latest_version"] == "2.23.0"
+        assert result["latest_date"] == "2026-01-15"
+        assert result["download_url"] == "https://downloads.dell.com/FOLDER01/bios.exe"
+        assert "XPS 8960 BIOS Update" in result["release_notes"]
 
     def test_wu_fallback(self, mocker, tmp_path):
         """Methods 1 & 2 miss; Method 3 reuses get_windows_update_drivers()
@@ -3024,7 +3083,6 @@ class TestCheckDellBiosUpdate:
         self._mock_deps(
             mocker,
             tmp_path,
-            ps_side_effects=[("", 0)],
             wu_drivers={"dell bios update 2.24.0": {"Title": "Dell BIOS Update 2.24.0"}},
         )
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
@@ -3033,19 +3091,19 @@ class TestCheckDellBiosUpdate:
         assert result["latest_version"] == "2.24.0"
 
     def test_all_methods_fail_returns_unknown(self, mocker, tmp_path):
-        self._mock_deps(mocker, tmp_path, ps_side_effects=[("", 0)])
+        self._mock_deps(mocker, tmp_path)
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["source"] == "unknown"
         assert result["latest_version"] is None
 
     def test_service_tag_populated(self, mocker, tmp_path):
-        self._mock_deps(mocker, tmp_path, ps_side_effects=[("", 0)], service_tag="ABC1234")
+        self._mock_deps(mocker, tmp_path, service_tag="ABC1234")
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["service_tag"] == "ABC1234"
         assert "ABC1234" in result["download_url"]
 
     def test_service_tag_empty_fallback_url(self, mocker, tmp_path):
-        self._mock_deps(mocker, tmp_path, ps_side_effects=[("", 0)], service_tag="")
+        self._mock_deps(mocker, tmp_path, service_tag="")
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert "dell.com" in result["download_url"]
 
@@ -3071,15 +3129,12 @@ class TestCheckDellBiosUpdate:
         assert result["source"] == "dell_catalog"
 
     def test_subprocess_timeout_handled(self, mocker, tmp_path):
-        """The catalog subprocess times out and the WU check finds nothing —
-        returns unknown without crashing."""
-        _real_exists = os.path.exists
-        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
-        _mock_wmi(mocker, {"Win32_BIOS": [_wmi_obj(SerialNumber="9T46D14")]})
-        mocker.patch("windesktopmgr.get_windows_update_drivers", return_value={})
-        mocker.patch("os.path.exists", side_effect=lambda p: False if "CommandUpdate" in p else _real_exists(p))
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        m.side_effect = subprocess.TimeoutExpired("powershell", 60)
+        """The catalog HTTP download fails (URLError) and the WU check finds
+        nothing — returns unknown without crashing. After the backlog #28
+        migration the catalog path is no longer a PowerShell subprocess, so
+        the failure surface that used to be ``TimeoutExpired`` is now a
+        urllib error on the urlopen call."""
+        self._mock_deps(mocker, tmp_path, catalog_fail=True)
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["source"] == "unknown"
 
@@ -3202,22 +3257,49 @@ class TestGetSystemTimelineCredHelperCall:
 
 class TestCheckDellBiosCommandContent:
     """Command-content tests for check_dell_bios_update.
-    DCU calls dcu-cli.exe directly (Batch D); the catalog uses PowerShell;
+    DCU calls dcu-cli.exe directly (Batch D); after backlog #28 the catalog
+    path is pure Python (urllib + expand.exe + ET parse) — NOT PowerShell;
     the WU check reuses get_windows_update_drivers() (win32com, Batch G)."""
 
+    EMPTY_CATALOG_XML = '<Manifest xmlns="openmanage/cm/dm"></Manifest>'
+
     def _mock_no_dcu(self, mocker, tmp_path):
-        """Mock deps with DCU not installed — catalog uses PS, WU uses COM."""
+        """Mock deps with DCU not installed.
+
+        After backlog #28 the catalog path is NOT a PS subprocess — it's
+        ``urllib.request.urlopen`` (downloads CatalogPC.cab), one ``expand.exe``
+        subprocess, and ``xml.etree.ElementTree.parse``. Mock all three so the
+        catalog branch runs end-to-end without hitting the network and finds
+        no matching SoftwareComponent.
+
+        Returns:
+            A dict with ``urlopen``, ``et_parse``, and ``subprocess_run`` mocks
+            so call_args_list can be inspected.
+        """
+        import xml.etree.ElementTree as ET
+
         _real_exists = os.path.exists
         mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
         _mock_wmi(mocker, {"Win32_BIOS": [_wmi_obj(SerialNumber="9T46D14")]})
         mocker.patch("windesktopmgr.get_windows_update_drivers", return_value={})
         mocker.patch("os.path.exists", side_effect=lambda p: False if "CommandUpdate" in p else _real_exists(p))
-        m = mocker.patch("windesktopmgr.subprocess.run")
-        # Only the catalog call is a subprocess now — the WU check is COM.
-        m.side_effect = [
-            type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})(),
-        ]
-        return m
+
+        # Fake CAB download — content doesn't need to be a real CAB because
+        # expand.exe is also mocked.
+        fake_resp = mocker.MagicMock()
+        fake_resp.__enter__ = mocker.MagicMock(return_value=fake_resp)
+        fake_resp.__exit__ = mocker.MagicMock(return_value=False)
+        fake_resp.read.return_value = b"FAKE_CAB"
+        urlopen_mock = mocker.patch("urllib.request.urlopen", return_value=fake_resp)
+
+        # ET.parse → minimal in-memory tree with no SoftwareComponents.
+        tree = ET.ElementTree(ET.fromstring(self.EMPTY_CATALOG_XML))  # noqa: S314 — test fixture
+        et_parse_mock = mocker.patch("xml.etree.ElementTree.parse", return_value=tree)
+
+        # The only subprocess in the catalog path is expand.exe.
+        sub_mock = mocker.patch("windesktopmgr.subprocess.run")
+        sub_mock.return_value = type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})()
+        return {"urlopen": urlopen_mock, "et_parse": et_parse_mock, "subprocess_run": sub_mock}
 
     def test_service_tag_from_wmi(self, mocker, tmp_path):
         """Service tag comes from wmi.WMI().Win32_BIOS(), not subprocess."""
@@ -3226,10 +3308,32 @@ class TestCheckDellBiosCommandContent:
         assert result["service_tag"] == "9T46D14"
 
     def test_catalog_command_references_dell_downloads(self, mocker, tmp_path):
-        m = self._mock_no_dcu(mocker, tmp_path)
+        """After backlog #28 the catalog download is urllib, not a PS heredoc.
+        Assert urlopen was called with a Request whose URL points at the
+        canonical Dell catalog endpoint."""
+        mocks = self._mock_no_dcu(mocker, tmp_path)
         wdm.check_dell_bios_update("XPS8960", "2.22.0")
-        cmd = m.call_args_list[0][0][0][-1]
-        assert "dell.com" in cmd.lower() or "CatalogPC" in cmd
+        assert mocks["urlopen"].called, "urlopen should be called to fetch CatalogPC.cab"
+        # First positional arg may be a string URL or a urllib Request object.
+        first_arg = mocks["urlopen"].call_args_list[0][0][0]
+        url = first_arg.full_url if hasattr(first_arg, "full_url") else first_arg
+        assert "downloads.dell.com/catalog/CatalogPC.cab" in url
+
+    def test_catalog_uses_expand_exe_not_powershell(self, mocker, tmp_path):
+        """Regression for backlog #28 close-out: the catalog path's only
+        subprocess is expand.exe — no PowerShell process is ever spawned by
+        check_dell_bios_update."""
+        mocks = self._mock_no_dcu(mocker, tmp_path)
+        wdm.check_dell_bios_update("XPS8960", "2.22.0")
+        # Exactly one subprocess call (expand.exe). DCU is absent, catalog is
+        # the only remaining subprocess in the flow.
+        assert mocks["subprocess_run"].call_count >= 1
+        for call in mocks["subprocess_run"].call_args_list:
+            cmd = call[0][0]
+            assert cmd[0].lower().endswith("expand.exe"), f"unexpected subprocess: {cmd!r}"
+            # Sanity: no PS anywhere in the arg list.
+            for piece in cmd:
+                assert "powershell" not in str(piece).lower()
 
     def test_dcu_calls_exe_not_powershell(self, mocker, tmp_path):
         """Regression: Batch D — DCU uses direct exe, no PS wrapper."""
