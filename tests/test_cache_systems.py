@@ -497,93 +497,109 @@ class TestSaveStartupCache:
 
 
 class TestLookupStartupViaFileinfo:
+    """_lookup_startup_via_fileinfo() is fully in-process (backlog #28):
+    exe path resolution via shutil.which, version info via the _exe_version_info
+    helper (win32api.GetFileVersionInfo). Tests mock shutil.which and
+    _exe_version_info — no PowerShell subprocess."""
+
     def test_returns_parsed_result(self, mocker):
-        ps_output = json.dumps(
-            {
+        mocker.patch(
+            "windesktopmgr._exe_version_info",
+            return_value={
                 "FileDescription": "Google Chrome",
                 "CompanyName": "Google LLC",
                 "ProductName": "Google Chrome",
                 "FileVersion": "120.0.6099.130",
-                "FileName": "chrome.exe",
-            }
+            },
         )
-        _mock_run(mocker, stdout=ps_output)
         result = wdm._lookup_startup_via_fileinfo('"C:\\Program Files\\Google\\Chrome\\chrome.exe"', "Chrome")
         assert result is not None
         assert result["source"] == "file_version_info"
         assert "Google" in result["publisher"]
+        assert result["version"] == "120.0.6099.130"
 
-    def test_empty_output_returns_none(self, mocker):
-        _mock_run(mocker, stdout="")
+    def test_empty_version_info_returns_none(self, mocker):
+        """No version resource on the file → _exe_version_info returns {}."""
+        mocker.patch("windesktopmgr._exe_version_info", return_value={})
         result = wdm._lookup_startup_via_fileinfo('"C:\\test.exe"', "Test")
         assert result is None
 
     def test_no_desc_no_company_returns_none(self, mocker):
-        ps_output = json.dumps(
-            {"FileDescription": "", "CompanyName": "", "ProductName": "", "FileVersion": "", "FileName": "test.exe"}
+        mocker.patch(
+            "windesktopmgr._exe_version_info",
+            return_value={"FileDescription": "", "CompanyName": "", "ProductName": "", "FileVersion": ""},
         )
-        _mock_run(mocker, stdout=ps_output)
         result = wdm._lookup_startup_via_fileinfo('"C:\\test.exe"', "Test")
         assert result is None
 
     def test_system_path_gets_keep(self, mocker):
-        ps_output = json.dumps(
-            {
+        mocker.patch(
+            "windesktopmgr._exe_version_info",
+            return_value={
                 "FileDescription": "Windows Security",
                 "CompanyName": "Microsoft Corporation",
                 "ProductName": "Windows Security",
                 "FileVersion": "1.0",
-                "FileName": "SecurityHealth.exe",
-            }
+            },
         )
-        _mock_run(mocker, stdout=ps_output)
         result = wdm._lookup_startup_via_fileinfo('"C:\\Windows\\System32\\SecurityHealth.exe"', "SecurityHealth")
         assert result is not None
         assert result["recommendation"] == "keep"
         assert result["safe_to_disable"] is False
 
     def test_microsoft_non_system_gets_optional(self, mocker):
-        ps_output = json.dumps(
-            {
+        mocker.patch(
+            "windesktopmgr._exe_version_info",
+            return_value={
                 "FileDescription": "Microsoft Teams",
                 "CompanyName": "Microsoft Corporation",
                 "ProductName": "Microsoft Teams",
                 "FileVersion": "1.0",
-                "FileName": "Teams.exe",
-            }
+            },
         )
-        _mock_run(mocker, stdout=ps_output)
         result = wdm._lookup_startup_via_fileinfo('"C:\\Users\\test\\AppData\\Teams.exe"', "Teams")
         assert result is not None
         assert result["recommendation"] == "optional"
         assert result["safe_to_disable"] is True
 
     def test_third_party_gets_optional(self, mocker):
-        ps_output = json.dumps(
-            {
+        mocker.patch(
+            "windesktopmgr._exe_version_info",
+            return_value={
                 "FileDescription": "Spotify",
                 "CompanyName": "Spotify Ltd",
                 "ProductName": "Spotify",
                 "FileVersion": "1.0",
-                "FileName": "Spotify.exe",
-            }
+            },
         )
-        _mock_run(mocker, stdout=ps_output)
         result = wdm._lookup_startup_via_fileinfo('"C:\\Users\\test\\AppData\\Spotify.exe"', "Spotify")
         assert result is not None
         assert result["recommendation"] == "optional"
         assert "Spotify" in result["reason"]
 
-    def test_timeout_returns_none(self, mocker):
-        _mock_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 10))
-        result = wdm._lookup_startup_via_fileinfo('"C:\\test.exe"', "Test")
+    def test_which_failure_returns_none(self, mocker):
+        """If shutil.which raises while resolving a bare command name, the
+        lookup falls back gracefully (no exe path → None, no crash). This is
+        the in-process equivalent of the old PS-timeout safe-fallback test."""
+        mocker.patch("windesktopmgr.shutil.which", side_effect=OSError("PATH error"))
+        result = wdm._lookup_startup_via_fileinfo("someapp", "SomeApp")
         assert result is None
 
-    def test_non_exe_tries_get_command(self, mocker):
-        """When path doesn't end in .exe, should try Get-Command to find it."""
-        m = _mock_run(mocker, stdout="")
+    def test_non_exe_resolves_via_shutil_which(self, mocker):
+        """When the command isn't a path ending in .exe, the exe is resolved
+        on PATH via shutil.which (replacing the old Get-Command PS call)."""
+        which = mocker.patch("windesktopmgr.shutil.which", return_value="C:\\apps\\someapp.exe")
+        info = mocker.patch("windesktopmgr._exe_version_info", return_value={})
         wdm._lookup_startup_via_fileinfo("someapp", "SomeApp")
-        assert m.called
+        assert which.called
+        # The resolved path flows into _exe_version_info.
+        assert info.call_args[0][0] == "C:\\apps\\someapp.exe"
+
+    def test_non_exe_unresolvable_returns_none(self, mocker):
+        """shutil.which finds nothing → no exe path → None, no exception."""
+        mocker.patch("windesktopmgr.shutil.which", return_value=None)
+        result = wdm._lookup_startup_via_fileinfo("someapp", "SomeApp")
+        assert result is None
 
 
 class TestLookupStartupViaWeb:

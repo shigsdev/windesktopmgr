@@ -178,25 +178,11 @@ class TestGetDiskHealthSnapshot:
                 assert "Letter" in d or "Name" in d or "DriveLetter" in d or "DeviceID" in d
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# get_thermals
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-class TestGetThermalsSnapshot:
-    def test_parses_real_output(self, mocker):
-        _mock_single_ps(mocker, "ps_thermals.json")
-        result = wdm.get_thermals()
-        assert isinstance(result, dict)
-        # Should have some thermal data structure
-        assert len(result) > 0
-
-    def test_result_matches_expected_structure(self, mocker):
-        _mock_single_ps(mocker, "ps_thermals.json")
-        expected = load_fixture("parsed/parsed_get_thermals.json")
-        result = wdm.get_thermals()
-        # Verify same top-level keys
-        assert set(result.keys()) == set(expected.keys())
+# get_thermals no longer has a PS-output snapshot test — it was ported from
+# three PowerShell subprocess calls to the in-process ``wmi`` package (thermal
+# zones + OHM/LHM sensors) and ``psutil`` (CPU/memory/battery) (backlog #28
+# close-out), so there is no PS stdout to snapshot. Its behaviour is covered
+# by TestGetThermals in test_powershell.py with fake WMI + psutil mocks.
 
 
 # ══════════════════════════════════════════════════════════════════════════════

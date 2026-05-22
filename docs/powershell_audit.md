@@ -11,10 +11,13 @@
 >   WU method).
 > - **PR 1a**: 3 more `windesktopmgr.py` sites → `winreg` / `win32evtlog`
 >   (`fix_fast_startup`, `warranty_data` microcode + BSOD/WHEA/KP41 counts).
+> - **PR 1b**: 7 more sites → `wmi` / `psutil` / `win32api` / `shutil` / `netsh`
+>   direct (`get_thermals` ×3, `_lookup_startup_via_fileinfo` ×2,
+>   `get_system_timeline`, and `homenet.py` `_get_orbi_ssid`).
 >
-> The headline counts and per-site tables below are therefore **6 sites stale**
-> for `windesktopmgr.py` (60 → 54 PS sites; total 74 → 68). Re-run
-> `audit_ps_sites.py` for the live inventory.
+> The headline counts and per-site tables below are therefore stale: 13
+> `windesktopmgr.py` sites migrated (60 → 47 PS sites) and 1 in `homenet.py`
+> (11 → 10); total 74 → 61. Re-run `audit_ps_sites.py` for the live inventory.
 
 ## Headline numbers
 

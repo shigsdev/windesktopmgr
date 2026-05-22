@@ -73,8 +73,14 @@ class TestDiskDataE2E:
 
 
 class TestThermalsDataE2E:
+    """get_thermals() is fully in-process (wmi + psutil, backlog #28) — no
+    PowerShell subprocess to mock. Mock the function directly with its
+    captured parsed fixture, consistent with how this file mocks
+    check_dell_bios_update."""
+
     def test_returns_200_with_real_fixture(self, client, mocker):
-        _mock_single_ps(mocker, "ps_thermals.json")
+        expected = load_fixture("parsed/parsed_get_thermals.json")
+        mocker.patch("windesktopmgr.get_thermals", return_value=expected)
         resp = client.get("/api/thermals/data")
         assert resp.status_code == 200
         data = resp.get_json()
@@ -82,8 +88,8 @@ class TestThermalsDataE2E:
         assert len(data) > 0
 
     def test_keys_match_expected(self, client, mocker):
-        _mock_single_ps(mocker, "ps_thermals.json")
         expected = load_fixture("parsed/parsed_get_thermals.json")
+        mocker.patch("windesktopmgr.get_thermals", return_value=expected)
         resp = client.get("/api/thermals/data")
         data = resp.get_json()
         assert set(data.keys()) == set(expected.keys())
@@ -305,8 +311,14 @@ class TestCredentialsHealthE2E:
 
 
 class TestTimelineDataE2E:
+    """get_system_timeline() no longer shells out to PowerShell — its event-log
+    sources use win32evtlog and its update source calls get_update_history()
+    in-process (backlog #28). Mock the function directly with its captured
+    parsed fixture, consistent with how this file mocks check_dell_bios_update."""
+
     def test_returns_200_with_real_fixture(self, client, mocker):
-        _mock_single_ps(mocker, "ps_timeline.json")
+        events = load_fixture("parsed/parsed_get_system_timeline.json")
+        mocker.patch("windesktopmgr.get_system_timeline", return_value=events)
         resp = client.get("/api/timeline/data")
         assert resp.status_code == 200
         data = resp.get_json()
@@ -314,6 +326,7 @@ class TestTimelineDataE2E:
         assert "events" in data
         assert "days" in data
         assert "total" in data
+        assert data["total"] == len(events)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
