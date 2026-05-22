@@ -168,7 +168,7 @@ EVENT_CACHE_FILE = os.path.join(APP_DIR, "event_id_cache.json")
 BSOD_CACHE_FILE = os.path.join(APP_DIR, "bsod_code_cache.json")
 
 # ─── Driver checker state ─────────────────────────────────────────────────────
-_dell_cache = None
+_wu_driver_cache = None
 _scan_results = None
 _scan_status = {"status": "idle", "progress": 0, "message": "Ready to scan"}
 
@@ -532,12 +532,19 @@ def _win_to_nvidia_version(win_ver: str) -> str:
 
     Windows: 32.0.15.9174  →  NVIDIA: 591.74
     Formula: concatenate parts[2]+parts[3], drop first char, insert dot before last 2.
+
+    The conversion is only defined for the canonical NVIDIA form, where
+    parts[2]+parts[3] is exactly 6 digits ("15" + "9174" → "159174"). Any
+    other shape — a non-NVIDIA driver version, a malformed string — is
+    returned unchanged rather than run through the formula, which would
+    otherwise emit a garbage version (e.g. "32.0.1.23" → ".23") that could
+    misfire update detection.
     """
     parts = win_ver.split(".")
     if len(parts) < 4:
         return win_ver
     raw = parts[2] + parts[3]  # e.g. "159174"
-    if len(raw) < 3:
+    if not raw.isdigit() or len(raw) != 6:
         return win_ver
     raw = raw[1:]  # drop first char → "59174"
     return raw[:-2] + "." + raw[-2:]  # "591.74"
@@ -881,8 +888,14 @@ def _query_nvidia_api(pfid: int, *, studio: bool = True) -> dict | None:
 
         url = _NVIDIA_DRIVER_API + "?" + urllib.parse.urlencode(params)
         req = urllib.request.Request(url, headers={"User-Agent": "WinDesktopMgr/1.0"})
+        # Cap the read so a hijacked endpoint, compromised DNS, or a broken
+        # proxy can't OOM the process with an unbounded response body.
+        # NVIDIA's single-driver payload is ~2 KB; 1 MiB is a generous
+        # ceiling. A truncated body fails json.loads and falls through to
+        # the except handler → None (same as any other API failure).
+        max_body = 1_048_576
         with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode())
+            data = json.loads(resp.read(max_body).decode())
         if data.get("Success") != "1" or not data.get("IDS"):
             return None
         info = data["IDS"][0].get("downloadInfo", {})
@@ -909,12 +922,19 @@ def _query_nvidia_api(pfid: int, *, studio: bool = True) -> dict | None:
 # fallbacks are even slower to change.
 _nvidia_update_cache: dict = {"data": None, "ts": None}
 _NVIDIA_UPDATE_CACHE_TTL = timedelta(minutes=10)
+# get_nvidia_update_info() is called concurrently from the dashboard
+# fan-out's ThreadPoolExecutor, run_scan()'s daemon thread, and the
+# /api/nvidia/status route. The lock makes the (data, ts) pair read and
+# written atomically so a reader never sees fresh data paired with a stale
+# timestamp (or None), which would otherwise misfire the TTL check.
+_nvidia_update_cache_lock = threading.Lock()
 
 
 def _reset_nvidia_update_cache() -> None:
     """Test helper — clear the NVIDIA update cache between tests."""
-    _nvidia_update_cache["data"] = None
-    _nvidia_update_cache["ts"] = None
+    with _nvidia_update_cache_lock:
+        _nvidia_update_cache["data"] = None
+        _nvidia_update_cache["ts"] = None
 
 
 def get_nvidia_update_info() -> dict | None:
@@ -931,18 +951,47 @@ def get_nvidia_update_info() -> dict | None:
     Returns dict with InstalledVersion, LatestVersion, UpdateAvailable, Name
     or None if no NVIDIA GPU found.
     """
-    # Check cache first
-    if _nvidia_update_cache["data"] is not None and _nvidia_update_cache["ts"] is not None:
-        age = datetime.now() - _nvidia_update_cache["ts"]
-        if age < _NVIDIA_UPDATE_CACHE_TTL:
-            return _nvidia_update_cache["data"]
-
+    # Always read the current installed driver version first. It's cheap
+    # (nvidia-smi + WMI, ~300 ms) compared to the expensive API + Windows
+    # Update fan-out the cache is protecting (~5 s+).
+    #
+    # We need this BEFORE consulting the cache so we can detect the
+    # "user just installed the new driver" case. Without this check the
+    # cache would keep serving ``UpdateAvailable: True`` (with the OLD
+    # InstalledVersion) for up to 10 minutes after the install, leaving
+    # the dashboard concern and Driver Manager NVIDIA card stuck on
+    # "Update Available" until the TTL expired. The cache key is now
+    # tied to the installed version, so a version bump invalidates
+    # immediately.
     gpu = _get_nvidia_gpu_info()
     if not gpu:
         return None
 
     installed = gpu["installed"]
     name = gpu["name"]
+
+    # No usable installed-version string. _get_nvidia_gpu_info() can return a
+    # GPU dict with installed="" when nvidia-smi is absent AND WMI yields no
+    # DriverVersion. Without a version we can't tell update-vs-current, and
+    # caching a result keyed on "" would either falsely cache-hit forever or
+    # — if the version flickers back on a later WMI read — force the full
+    # ~5 s API + Windows Update recompute on every call. Bail out instead;
+    # the /api/nvidia/status route treats None as "no NVIDIA card to show".
+    if not installed:
+        return None
+
+    # Cache hit — only when the installed version still matches what was
+    # cached. A mismatch means the user updated the driver since the last
+    # check; recompute so the UI clears immediately on the next refresh.
+    # Read the (data, ts) pair under the lock so a concurrent writer can't
+    # hand us fresh data with a stale timestamp.
+    with _nvidia_update_cache_lock:
+        cached = _nvidia_update_cache["data"]
+        cached_ts = _nvidia_update_cache["ts"]
+    if cached is not None and cached_ts is not None and cached.get("InstalledVersion") == installed:
+        age = datetime.now() - cached_ts
+        if age < _NVIDIA_UPDATE_CACHE_TTL:
+            return cached
     latest = ""
     source = "none"
 
@@ -965,6 +1014,25 @@ def get_nvidia_update_info() -> dict | None:
             if alt_result and alt_result.get("version"):
                 latest = alt_result["version"]
                 source = "nvidia_api"
+                # The alt branch succeeding where the primary failed is a
+                # strong signal that _detect_nvidia_driver_branch() guessed
+                # wrong. Log it so a branch-detection regression is visible
+                # instead of being silently papered over by the retry.
+                primary = "Studio" if is_studio else "Game Ready"
+                alt = "Game Ready" if is_studio else "Studio"
+                print(
+                    f"[NVIDIA] branch detection picked {primary} but only the "
+                    f"{alt} API returned a driver — branch detection may be wrong"
+                )
+    else:
+        # GPU not in _NVIDIA_PFID_MAP — the API can't be queried at all, so
+        # detection silently falls back to the offline-only Methods 2/3.
+        # Log it so an unlisted GPU is diagnosable from the console instead
+        # of looking like "no update available".
+        print(
+            f"[NVIDIA] no PFID mapping for GPU {name!r} — skipping API, "
+            f"using offline fallbacks (Installer2 cache / Windows Update) only"
+        )
 
     # Method 2: Installer2 Cache (offline fallback) — pure Python via winreg
     if not latest:
@@ -1004,7 +1072,7 @@ def get_nvidia_update_info() -> dict | None:
     # Method 3: Windows Update pending driver list — catches NVIDIA updates
     # that the public API hasn't published yet (e.g., NVIDIA App notified the
     # user before the AjaxDriverService API was updated).  Uses the existing
-    # _dell_cache if a scan has run, otherwise makes a fresh WU query.
+    # _wu_driver_cache if a scan has run, otherwise makes a fresh WU query.
     if not latest:
         try:
             wu = get_windows_update_drivers()
@@ -1032,9 +1100,11 @@ def get_nvidia_update_info() -> dict | None:
         "UpdateSource": source,
     }
 
-    # Cache the result for 10 minutes
-    _nvidia_update_cache["data"] = result
-    _nvidia_update_cache["ts"] = datetime.now()
+    # Cache the result for 10 minutes. Write the (data, ts) pair under the
+    # lock so concurrent readers always see a consistent snapshot.
+    with _nvidia_update_cache_lock:
+        _nvidia_update_cache["data"] = result
+        _nvidia_update_cache["ts"] = datetime.now()
 
     return result
 
@@ -1044,9 +1114,9 @@ def get_windows_update_drivers() -> dict | None:
     Use Windows Update API via PowerShell to find available driver updates.
     Returns a dict keyed by driver title (lowercase) -> update info, or None on failure.
     """
-    global _dell_cache
-    if _dell_cache is not None:
-        return _dell_cache
+    global _wu_driver_cache
+    if _wu_driver_cache is not None:
+        return _wu_driver_cache
 
     ps = r"""
 $Session = New-Object -ComObject Microsoft.Update.Session
@@ -1080,16 +1150,24 @@ try {
         for u in updates:
             title = u.get("Title", "").lower()
             lookup[title] = u
-        _dell_cache = lookup
+        _wu_driver_cache = lookup
         print(f"[WU] Found {len(lookup)} driver update(s) via Windows Update")
         return lookup
     except subprocess.TimeoutExpired:
+        # A timeout is transient — do NOT cache it. Caching {} here used to
+        # poison the cache: every later call hit the `_wu_driver_cache is not None`
+        # short-circuit at the top and returned {} forever, permanently
+        # disabling Windows Update driver detection (and the NVIDIA Method 3
+        # fallback) until the process restarted. Leave the cache unpopulated
+        # so the next call retries, and return None — the same "failure"
+        # signal the generic except path uses — so run_scan() marks drivers
+        # "unknown" rather than falsely "up to date".
         print("[WU error] Windows Update driver search timed out (120s)")
-        _dell_cache = {}
-        return {}
+        _wu_driver_cache = None
+        return None
     except Exception as e:
         print(f"[WU error] {e}")
-        _dell_cache = None
+        _wu_driver_cache = None
         return None
 
 
@@ -1128,8 +1206,8 @@ def find_wu_match(name: str, wu_updates: dict | None) -> dict | None:
 
 
 def run_scan():
-    global _scan_results, _scan_status, _dell_cache
-    _dell_cache = None
+    global _scan_results, _scan_status, _wu_driver_cache
+    _wu_driver_cache = None
     _scan_status = {"status": "scanning", "progress": 10, "message": "Enumerating installed drivers via WMI…"}
     installed = get_installed_drivers()
     _scan_status = {

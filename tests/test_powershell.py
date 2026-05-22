@@ -213,7 +213,7 @@ class TestGetWindowsUpdateDrivers:
     )
 
     def setup_method(self):
-        wdm._dell_cache = None
+        wdm._wu_driver_cache = None
 
     def test_happy_path_returns_dict(self, mocker):
         _mock_run(mocker, stdout=self.SAMPLE)
@@ -237,10 +237,25 @@ class TestGetWindowsUpdateDrivers:
         result = wdm.get_windows_update_drivers()
         assert result is None
 
-    def test_timeout_returns_empty_dict(self, mocker):
+    def test_timeout_returns_none_and_does_not_poison_cache(self, mocker):
+        """A WU search timeout must NOT be cached. Caching {} would make every
+        later call short-circuit on the `_wu_driver_cache is not None` guard and
+        return {} forever, permanently disabling WU driver detection (and the
+        NVIDIA Method 3 fallback) until the process restarts. Regression for
+        the 2026-05-21 review finding.
+        """
+        # First call times out.
         _mock_run(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=120))
         result = wdm.get_windows_update_drivers()
-        assert result == {}
+        assert result is None, "timeout is a failure — return None, not a misleading empty dict"
+        assert wdm._wu_driver_cache is None, "timeout must not poison the module cache"
+
+        # Second call: WU is responsive again — must re-query, not serve a
+        # stale poisoned cache entry.
+        m = _mock_run(mocker, stdout=self.SAMPLE)
+        result2 = wdm.get_windows_update_drivers()
+        assert isinstance(result2, dict) and len(result2) == 1
+        assert m.called, "after a timeout the next call must re-query, not hit a poisoned cache"
 
     def test_command_searches_for_drivers(self, mocker):
         m = _mock_run(mocker, stdout=self.SAMPLE)
@@ -3551,6 +3566,34 @@ class TestQueryNvidiaApi:
         assert wdm._query_nvidia_api(1022, studio=True) is None
         assert wdm._query_nvidia_api(1022, studio=False) is None
 
+    def test_response_read_is_size_capped(self, mocker):
+        """The response body read must be bounded so a hijacked endpoint or
+        broken proxy can't OOM the process. Regression for the 2026-05-21
+        review finding — resp.read() was previously unbounded.
+        """
+        mock_resp = mocker.MagicMock()
+        mock_resp.read.return_value = self.GOOD_RESPONSE
+        mock_resp.__enter__ = mocker.MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = mocker.MagicMock(return_value=False)
+        mocker.patch("urllib.request.urlopen", return_value=mock_resp)
+        wdm._query_nvidia_api(1022, studio=True)
+        # read() must be called with an explicit positive byte limit.
+        mock_resp.read.assert_called_once()
+        args, _kwargs = mock_resp.read.call_args
+        assert args, "resp.read() called with no size limit — body is unbounded"
+        assert isinstance(args[0], int) and args[0] > 0
+
+    def test_oversized_body_fails_gracefully(self, mocker):
+        """A body that survives the cap but is not valid JSON (e.g. a
+        truncated multi-MB response) must fall through to None, not raise.
+        """
+        mock_resp = mocker.MagicMock()
+        mock_resp.read.return_value = b'{"Success":"1","IDS":[{"downloadInfo"'  # truncated
+        mock_resp.__enter__ = mocker.MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = mocker.MagicMock(return_value=False)
+        mocker.patch("urllib.request.urlopen", return_value=mock_resp)
+        assert wdm._query_nvidia_api(1022, studio=True) is None
+
 
 class TestWinToNvidiaVersion:
     """Tests for _win_to_nvidia_version() — Windows→NVIDIA version conversion."""
@@ -3570,6 +3613,21 @@ class TestWinToNvidiaVersion:
     def test_three_digit_part3(self):
         # e.g. 32.0.16.5770 → "165770" → drop first → "65770" → "657.70"
         assert wdm._win_to_nvidia_version("32.0.16.5770") == "657.70"
+
+    def test_too_few_digits_passthrough(self):
+        """raw shorter than the canonical 6 digits → returned unchanged.
+        Regression for the 2026-05-21 review: the old `len(raw) < 3` guard
+        let "32.0.1.23" (raw "123") through and emitted the garbage ".23".
+        """
+        assert wdm._win_to_nvidia_version("32.0.1.23") == "32.0.1.23"
+
+    def test_too_many_digits_passthrough(self):
+        """raw longer than 6 digits → returned unchanged, no garbage."""
+        assert wdm._win_to_nvidia_version("32.0.150.96490") == "32.0.150.96490"
+
+    def test_non_numeric_segments_passthrough(self):
+        """Non-digit version segments → returned unchanged."""
+        assert wdm._win_to_nvidia_version("32.0.1a.bcde") == "32.0.1a.bcde"
 
 
 class TestGetNvidiaUpdateInfo:
@@ -3676,8 +3734,10 @@ class TestGetNvidiaUpdateInfo:
         assert result["UpdateAvailable"] is False
         assert result["UpdateSource"] == "none"
 
-    def test_unknown_gpu_skips_api_tries_cache(self, mocker):
-        """GPU not in pfid map → skip API, try Installer2 only."""
+    def test_unknown_gpu_skips_api_tries_cache(self, mocker, capsys):
+        """GPU not in pfid map → skip API, try Installer2 only, and log a
+        diagnostic so an unlisted GPU is visible in the console rather than
+        silently looking like 'no update available' (2026-05-21 review)."""
         gpu = {"name": "NVIDIA Quadro P2000", "installed": "560.00", "win_ver": "31.0.15.6000"}
         self._mock_gpu(mocker, gpu=gpu)
         api_mock = self._mock_api(mocker)
@@ -3688,6 +3748,27 @@ class TestGetNvidiaUpdateInfo:
         assert result["UpdateAvailable"] is False
         # API should NOT be called since pfid is not in the map
         api_mock.assert_not_called()
+        # The unlisted GPU must be logged with its name.
+        out = capsys.readouterr().out
+        assert "no PFID mapping" in out
+        assert "Quadro P2000" in out
+
+    def test_alt_branch_success_logs_branch_misdetection(self, mocker, capsys):
+        """When the alt branch succeeds where the primary failed, a warning
+        must be logged — branch misdetection should be visible, not silently
+        papered over by the retry (2026-05-21 review)."""
+        self._mock_gpu(mocker)  # _detect_nvidia_driver_branch → True (Studio)
+
+        def _side_effect(pfid, *, studio=True):
+            if studio:
+                return None
+            return {"version": "596.49", "url": "", "date": "", "name": "Game Ready"}
+
+        mocker.patch("windesktopmgr._query_nvidia_api", side_effect=_side_effect)
+        wdm.get_nvidia_update_info()
+        out = capsys.readouterr().out
+        assert "branch detection" in out
+        assert "Studio" in out and "Game Ready" in out
 
     def test_primary_branch_fails_falls_back_to_alt_branch(self, mocker):
         """Primary branch API returns None → tries the other branch.
@@ -3805,6 +3886,106 @@ class TestGetNvidiaUpdateInfo:
         wdm._reset_nvidia_update_cache()
         wdm.get_nvidia_update_info()
         assert api_mock.call_count == 2
+
+    def test_cache_invalidates_when_installed_version_changes(self, mocker):
+        """Regression for 2026-05-20 "NVIDIA driver stuck on Update Available"
+        bug. When the user installs the new driver, the cached
+        InstalledVersion no longer matches the actual installed version.
+        The cache must invalidate and recompute so the UI clears
+        immediately on the next dashboard refresh -- not 10 minutes later
+        when the TTL happens to expire.
+        """
+        # First call: cache populated with InstalledVersion=591.74 and an
+        # update from 595.79. (Update Available state.)
+        self._mock_gpu(mocker)
+        api_mock = self._mock_api(mocker, result=self.API_RESULT)
+        r1 = wdm.get_nvidia_update_info()
+        assert r1["InstalledVersion"] == "591.74"
+        assert r1["UpdateAvailable"] is True
+        assert api_mock.call_count == 1
+
+        # User installs 595.79. Same nvidia-smi/WMI now reports the newer
+        # version. The cache still has the stale 591.74 entry but its TTL
+        # has not elapsed.
+        updated_gpu = {
+            "name": "NVIDIA GeForce RTX 4060 Ti",
+            "installed": "595.79",
+            "win_ver": "32.0.15.9579",
+        }
+        mocker.patch("windesktopmgr._get_nvidia_gpu_info", return_value=updated_gpu)
+
+        # Second call: must NOT serve the stale "Update Available" cache.
+        # The API now returns 595.79 as latest (matches installed) -> no
+        # update available.
+        api_mock2 = mocker.patch(
+            "windesktopmgr._query_nvidia_api",
+            return_value={"version": "595.79", "url": "", "date": "", "name": "Studio"},
+        )
+        r2 = wdm.get_nvidia_update_info()
+        assert r2["InstalledVersion"] == "595.79"
+        assert r2["UpdateAvailable"] is False, (
+            "Cache must invalidate when installed version changes — "
+            "otherwise the dashboard stays stuck on Update Available "
+            "after the user runs the install."
+        )
+        # API was called fresh (cache was invalidated, not served).
+        assert api_mock2.call_count == 1
+
+    def test_cache_still_hit_when_installed_version_unchanged(self, mocker):
+        """The version-aware cache must not over-invalidate. When the
+        installed version is the same as cached, the second call must
+        still skip the expensive API/WU calls and serve from cache.
+
+        Counterpart to test_cache_invalidates_when_installed_version_changes:
+        that test proves a version *change* recomputes; this proves a
+        version *match* does not. The ``is`` assertion verifies the exact
+        cached object is handed back — not a recomputed-but-equal dict —
+        so a regression that always recomputed would fail here.
+        """
+        self._mock_gpu(mocker)
+        api_mock = self._mock_api(mocker, result=self.API_RESULT)
+        r1 = wdm.get_nvidia_update_info()
+        r2 = wdm.get_nvidia_update_info()
+        # Same object identity -> genuinely served from cache, not recomputed.
+        assert r1 is r2
+        # API only called once -- second call hit the cache despite the
+        # new pre-cache GPU read.
+        assert api_mock.call_count == 1
+
+    def test_empty_installed_version_returns_none(self, mocker):
+        """Regression for the 2026-05-21 review finding. When
+        _get_nvidia_gpu_info() yields a GPU dict with no usable installed
+        version (nvidia-smi absent + WMI returned no DriverVersion),
+        get_nvidia_update_info() must bail out with None rather than run —
+        and cache — a result keyed on an empty string. A cached "" entry
+        caused a full ~5s API+WU recompute on every call whenever a later
+        WMI read flickered the real version back.
+        """
+        blank_gpu = {"name": "NVIDIA GeForce RTX 4060 Ti", "installed": "", "win_ver": ""}
+        self._mock_gpu(mocker, gpu=blank_gpu)
+        api_mock = self._mock_api(mocker, result=self.API_RESULT)
+        result = wdm.get_nvidia_update_info()
+        assert result is None
+        # The expensive API path must be skipped entirely.
+        api_mock.assert_not_called()
+        # Nothing cached -- a later call with a real version recomputes clean.
+        assert wdm._nvidia_update_cache["data"] is None
+
+    def test_concurrent_calls_are_thread_safe(self, mocker):
+        """get_nvidia_update_info() is called concurrently by the dashboard
+        fan-out, run_scan(), and /api/nvidia/status. The cache lock must
+        keep the (data, ts) pair consistent — 12 parallel callers must all
+        get a valid, identical result and none may raise.
+        """
+        import concurrent.futures
+
+        self._mock_gpu(mocker)
+        self._mock_api(mocker, result=self.API_RESULT)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as ex:
+            results = list(ex.map(lambda _: wdm.get_nvidia_update_info(), range(12)))
+        assert all(r is not None for r in results)
+        assert all(r["InstalledVersion"] == "591.74" for r in results)
+        assert all(r["UpdateAvailable"] is True for r in results)
 
 
 class TestLookupNvidiaPfid:

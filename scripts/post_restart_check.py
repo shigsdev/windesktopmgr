@@ -145,6 +145,62 @@ IDLE_SAMPLE_WINDOW_S = 3.0  # how long to sample
 CPU_THRESHOLD_PCT = 25.0  # sustained CPU% on the tray pythonw
 THREAD_THRESHOLD = 60  # thread count on the tray pythonw
 
+# Background-lookup status endpoints. The selftest that runs just before the
+# CPU-budget check exercises every tab, flooding these queues with stop-code,
+# event-ID, and startup/process/service enrichment lookups. They drain over a
+# couple of minutes via rate-limited network calls; the CPU sample must wait
+# for the drain or it measures queue work, not the idle baseline.
+QUEUE_STATUS_ENDPOINTS = (
+    "/api/bsod/cache",
+    "/api/events/cache",
+    "/api/startup/lookup-status",
+    "/api/processes/lookup-status",
+    "/api/services/lookup-status",
+)
+QUEUE_DRAIN_TIMEOUT_S = 120  # max wait for background queues to empty
+QUEUE_DRAIN_POLL_INTERVAL_S = 3.0
+
+
+def wait_for_background_queues(host: str, timeout_s: int = QUEUE_DRAIN_TIMEOUT_S) -> bool:
+    """Block until the tray's background-lookup queues are drained.
+
+    The CPU-budget check samples a 2 s window immediately after the full
+    selftest. The selftest floods the BSOD / event-ID / startup / process /
+    service lookup queues, which take a couple of minutes to drain via
+    rate-limited network calls. Sampling CPU during that drain produces
+    false positives — 70-90 % of one core that settles to ~0 % once the
+    queues empty. Waiting here means the sample reflects a genuinely idle
+    tray.
+
+    Returns True if every queue drained within ``timeout_s``. Returns False
+    on timeout, or immediately if no status endpoint is reachable — the
+    caller samples anyway, since a permanently stuck queue is itself worth
+    surfacing.
+    """
+    print(f"  {DIM}waiting for background lookup queues to drain{RESET} ", end="", flush=True)
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        outstanding = 0
+        reachable = False
+        for endpoint in QUEUE_STATUS_ENDPOINTS:
+            data = _get_json(f"{host}{endpoint}", timeout=5)
+            if data is None:
+                continue
+            reachable = True
+            outstanding += int(data.get("queue_pending", 0) or 0)
+            outstanding += int(data.get("in_flight", 0) or 0)
+        if not reachable:
+            print(f"{YELLOW}status endpoints unreachable — skipping wait{RESET}")
+            return False
+        if outstanding == 0:
+            elapsed = timeout_s - (deadline - time.time())
+            print(f"{GREEN}drained{RESET} ({elapsed:.1f}s)")
+            return True
+        print(".", end="", flush=True)
+        time.sleep(QUEUE_DRAIN_POLL_INTERVAL_S)
+    print(f"{YELLOW}still draining after {timeout_s}s — sampling anyway{RESET}")
+    return False
+
 
 def check_idle_poll_rate(host: str) -> bool:
     """Catch runaway /api/scan/status pollers (the 2026-04-18 CPU incident).
@@ -219,6 +275,10 @@ def check_tray_resource_budget(host: str) -> bool:
     if tray is None:
         print(f"  {YELLOW}skipped — no listener found on port {port}{RESET}")
         return True
+
+    # Wait for the post-selftest background lookup queues to drain first, so
+    # the CPU sample below reflects an idle tray rather than queue-drain work.
+    wait_for_background_queues(host)
 
     try:
         cpu = tray.cpu_percent(interval=2.0)
