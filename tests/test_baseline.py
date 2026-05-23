@@ -953,6 +953,326 @@ class TestEntryDriftHistory:
         assert kinds == ["added", "changed", "removed"]
 
 
+# ══════════════════════════════════════════════════════════════════════
+# Cross-surface timeline + correlation (backlog #44)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _hist_entry(ts: str, *, startup=None, services=None, tasks=None):
+    """Build a fake baseline_history.json entry. Categories default to
+    empty add/remove/change lists; callers fill in only what they need."""
+
+    def _block(items):
+        items = items or {}
+        return {
+            "added": items.get("added") or [],
+            "removed": items.get("removed") or [],
+            "changed": items.get("changed") or [],
+        }
+
+    return {
+        "timestamp": ts,
+        "drift": {
+            "startup": _block(startup),
+            "services": _block(services),
+            "tasks": _block(tasks),
+        },
+    }
+
+
+class TestCorrelateDriftEvents:
+    """Pure correlator: flatten history into a sorted event stream and
+    cluster multi-category bursts within a sliding window. The function
+    is the heart of backlog #44 — same input must always produce the
+    same output (no I/O, no clock reads)."""
+
+    def test_empty_history_returns_empty(self):
+        assert baseline.correlate_drift_events([]) == []
+
+    def test_malformed_entries_are_skipped(self):
+        # None, missing-timestamp, unparseable-timestamp, drift-not-a-dict
+        history = [
+            None,
+            {"timestamp": "not-an-iso", "drift": {}},
+            {"drift": {"services": {"added": [{"key": "X"}]}}},  # no timestamp
+            {"timestamp": "2026-05-22T10:00:00", "drift": "not-a-dict"},
+        ]
+        assert baseline.correlate_drift_events(history) == []
+
+    def test_single_event_emits_lone(self):
+        history = [
+            _hist_entry(
+                "2026-05-22T10:00:00",
+                services={"added": [{"key": "svc.X", "name": "X Service"}]},
+            )
+        ]
+        timeline = baseline.correlate_drift_events(history)
+        assert len(timeline) == 1
+        assert timeline[0]["type"] == "event"
+        assert timeline[0]["category"] == "services"
+        assert timeline[0]["kind"] == "added"
+        assert timeline[0]["name"] == "X Service"
+        assert timeline[0]["severity"] == "info"
+
+    def test_same_category_burst_stays_ungrouped(self):
+        # Five services changed at one moment should NOT cluster — the
+        # correlation signal is cross-surface, not same-surface volume.
+        history = [
+            _hist_entry(
+                "2026-05-22T10:00:00",
+                services={
+                    "added": [
+                        {"key": "svc.A", "name": "A"},
+                        {"key": "svc.B", "name": "B"},
+                        {"key": "svc.C", "name": "C"},
+                    ],
+                    "changed": [
+                        {"key": "svc.D", "name": "D"},
+                        {"key": "svc.E", "name": "E"},
+                    ],
+                },
+            )
+        ]
+        timeline = baseline.correlate_drift_events(history)
+        assert all(item["type"] == "event" for item in timeline)
+        assert len(timeline) == 5
+
+    def test_three_category_simultaneous_burst_clusters_as_critical(self):
+        # Single drift-check entry that hit all three surfaces — the
+        # canonical install / malware signature.
+        history = [
+            _hist_entry(
+                "2026-05-22T10:00:00",
+                startup={"added": [{"key": "Run\\Foo", "name": "Foo"}]},
+                services={"added": [{"key": "svc.Bar", "name": "Bar"}]},
+                tasks={"added": [{"key": "\\Path\\Baz", "name": "Baz"}]},
+            )
+        ]
+        timeline = baseline.correlate_drift_events(history)
+        assert len(timeline) == 1
+        cluster = timeline[0]
+        assert cluster["type"] == "cluster"
+        assert cluster["severity"] == "critical"
+        assert sorted(cluster["categories"]) == ["services", "startup", "tasks"]
+        assert cluster["event_count"] == 3
+        # Same-timestamp events have zero span.
+        assert cluster["span_seconds"] == 0
+        # Each contained event keeps its own metadata.
+        names = {ev["name"] for ev in cluster["events"]}
+        assert names == {"Foo", "Bar", "Baz"}
+
+    def test_two_category_burst_is_warning(self):
+        history = [
+            _hist_entry(
+                "2026-05-22T10:00:00",
+                services={"added": [{"key": "svc.X", "name": "X"}]},
+                tasks={"added": [{"key": "\\T", "name": "T"}]},
+            )
+        ]
+        timeline = baseline.correlate_drift_events(history)
+        assert len(timeline) == 1
+        assert timeline[0]["type"] == "cluster"
+        assert timeline[0]["severity"] == "warning"
+        assert len(timeline[0]["categories"]) == 2
+
+    def test_window_boundary_inclusive(self):
+        # Two entries exactly window_seconds apart should still cluster.
+        history = [
+            _hist_entry(
+                "2026-05-22T10:00:00",
+                services={"added": [{"key": "svc.X", "name": "X"}]},
+            ),
+            _hist_entry(
+                "2026-05-22T10:05:00",  # +300 s
+                tasks={"added": [{"key": "\\T", "name": "T"}]},
+            ),
+        ]
+        timeline = baseline.correlate_drift_events(history, window_seconds=300)
+        assert len(timeline) == 1
+        assert timeline[0]["type"] == "cluster"
+        assert sorted(timeline[0]["categories"]) == ["services", "tasks"]
+
+    def test_window_boundary_exclusive_keeps_events_lone(self):
+        # 301 s apart with a 300 s window → no cluster, two lone events.
+        history = [
+            _hist_entry(
+                "2026-05-22T10:00:00",
+                services={"added": [{"key": "svc.X", "name": "X"}]},
+            ),
+            _hist_entry(
+                "2026-05-22T10:05:01",  # +301 s
+                tasks={"added": [{"key": "\\T", "name": "T"}]},
+            ),
+        ]
+        timeline = baseline.correlate_drift_events(history, window_seconds=300)
+        assert len(timeline) == 2
+        assert all(item["type"] == "event" for item in timeline)
+
+    def test_timeline_is_newest_first(self):
+        history = [
+            _hist_entry("2026-05-22T08:00:00", services={"added": [{"key": "A", "name": "A"}]}),
+            _hist_entry("2026-05-22T09:00:00", services={"added": [{"key": "B", "name": "B"}]}),
+            _hist_entry("2026-05-22T10:00:00", services={"added": [{"key": "C", "name": "C"}]}),
+        ]
+        timeline = baseline.correlate_drift_events(history, window_seconds=60)
+        # Three lone events, newest first.
+        assert [item["name"] for item in timeline] == ["C", "B", "A"]
+
+    def test_changed_events_carry_delta(self):
+        history = [
+            _hist_entry(
+                "2026-05-22T10:00:00",
+                services={
+                    "changed": [
+                        {
+                            "key": "Spooler",
+                            "name": "Print Spooler",
+                            "delta": ["image_path", "start_mode"],
+                        }
+                    ]
+                },
+            )
+        ]
+        timeline = baseline.correlate_drift_events(history)
+        assert len(timeline) == 1
+        ev = timeline[0]
+        assert ev["kind"] == "changed"
+        assert ev["delta"] == ["image_path", "start_mode"]
+        # Summary text mentions the delta fields.
+        assert "image_path" in ev["summary"]
+
+    def test_idempotent_pure_function(self):
+        history = [
+            _hist_entry(
+                "2026-05-22T10:00:00",
+                startup={"added": [{"key": "Run\\X", "name": "X"}]},
+                services={"added": [{"key": "svc.Y", "name": "Y"}]},
+            )
+        ]
+        t1 = baseline.correlate_drift_events(history, window_seconds=60)
+        t2 = baseline.correlate_drift_events(history, window_seconds=60)
+        assert t1 == t2
+
+    def test_internal_ts_field_stripped_from_output(self):
+        # `_ts` is the internal sort key; it must NOT leak through to the
+        # JSON the API returns (datetime objects aren't JSON-serializable).
+        history = [
+            _hist_entry(
+                "2026-05-22T10:00:00",
+                services={"added": [{"key": "svc.X", "name": "X"}]},
+            )
+        ]
+        timeline = baseline.correlate_drift_events(history)
+        assert "_ts" not in timeline[0]
+
+
+class TestCorrelationAlert:
+    """correlation_alert() returns a single dict (or None) describing the
+    MOST-RECENT cluster crossing the threshold — drives the warning-level
+    dashboard concern for backlog #44."""
+
+    def test_no_history_no_alert(self):
+        assert baseline.correlation_alert([]) is None
+
+    def test_lone_events_no_alert(self):
+        history = [_hist_entry("2026-05-22T10:00:00", services={"added": [{"key": "X", "name": "X"}]})]
+        assert baseline.correlation_alert(history) is None
+
+    def test_two_categories_below_default_threshold(self):
+        history = [
+            _hist_entry(
+                "2026-05-22T10:00:00",
+                services={"added": [{"key": "X", "name": "X"}]},
+                tasks={"added": [{"key": "T", "name": "T"}]},
+            )
+        ]
+        # Default min_categories=3 → 2-cat cluster doesn't trip.
+        assert baseline.correlation_alert(history) is None
+
+    def test_three_categories_within_60s_trips_alert(self):
+        history = [
+            _hist_entry(
+                "2026-05-22T10:00:00",
+                startup={"added": [{"key": "R\\X", "name": "X"}]},
+                services={"added": [{"key": "svc.X", "name": "X"}]},
+                tasks={"added": [{"key": "\\X", "name": "X"}]},
+            )
+        ]
+        alert = baseline.correlation_alert(history)
+        assert alert is not None
+        assert sorted(alert["categories"]) == ["services", "startup", "tasks"]
+        assert alert["event_count"] == 3
+        assert alert["severity"] == "critical"
+
+    def test_alert_picks_most_recent_cluster(self):
+        history = [
+            # Old cluster (last week).
+            _hist_entry(
+                "2026-05-15T08:00:00",
+                startup={"added": [{"key": "old1", "name": "old1"}]},
+                services={"added": [{"key": "old2", "name": "old2"}]},
+                tasks={"added": [{"key": "old3", "name": "old3"}]},
+            ),
+            # Newer cluster (today).
+            _hist_entry(
+                "2026-05-22T10:00:00",
+                startup={"added": [{"key": "new1", "name": "new1"}]},
+                services={"added": [{"key": "new2", "name": "new2"}]},
+                tasks={"added": [{"key": "new3", "name": "new3"}]},
+            ),
+        ]
+        alert = baseline.correlation_alert(history)
+        # Should describe the newer cluster, not the older one.
+        assert alert["started_at"] == "2026-05-22T10:00:00"
+
+
+class TestBaselineTimelineRoute:
+    """GET /api/baseline/timeline — backlog #44 route."""
+
+    def test_returns_empty_timeline_when_no_history(self, client, baseline_tmp):
+        resp = client.get("/api/baseline/timeline")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["timeline"] == []
+        # Default window is 300 s.
+        assert data["window_seconds"] == 300
+
+    def test_honours_window_query_param(self, client, baseline_tmp):
+        resp = client.get("/api/baseline/timeline?window=900")
+        assert resp.status_code == 200
+        assert resp.get_json()["window_seconds"] == 900
+
+    def test_clamps_window_to_safe_range(self, client, baseline_tmp):
+        # < 10 s → 10
+        r1 = client.get("/api/baseline/timeline?window=0")
+        assert r1.get_json()["window_seconds"] == 10
+        # > 24h → 86400
+        r2 = client.get("/api/baseline/timeline?window=999999")
+        assert r2.get_json()["window_seconds"] == 86400
+
+    def test_garbage_window_falls_back_to_default(self, client, baseline_tmp):
+        resp = client.get("/api/baseline/timeline?window=banana")
+        assert resp.get_json()["window_seconds"] == 300
+
+    def test_returns_clustered_timeline_for_real_history(self, client, baseline_tmp):
+        # Append a 3-category burst that should cluster as critical.
+        baseline._append_history(
+            _hist_entry(
+                "2026-05-22T10:00:00",
+                startup={"added": [{"key": "R\\X", "name": "X"}]},
+                services={"added": [{"key": "svc.X", "name": "X"}]},
+                tasks={"added": [{"key": "\\X", "name": "X"}]},
+            )
+        )
+        resp = client.get("/api/baseline/timeline?window=60")
+        assert resp.status_code == 200
+        timeline = resp.get_json()["timeline"]
+        assert len(timeline) == 1
+        assert timeline[0]["type"] == "cluster"
+        assert timeline[0]["severity"] == "critical"
+
+
 # ── Drift investigator (decision support: why did this change?) ────
 
 
@@ -1879,3 +2199,49 @@ class TestBaselineDashboardConcern:
         self._mock_collectors(mocker)
         resp = client.get("/api/dashboard/summary")
         assert not any("baseline drift" in c.get("title", "").lower() for c in resp.get_json().get("concerns", []))
+
+    def test_cross_surface_cluster_emits_warning_concern(self, client, baseline_tmp, mocker):
+        """Backlog #44: when the most-recent cluster touches ≥3 categories
+        within 60 s, a SEPARATE warning-level "Cross-surface" concern fires
+        on top of the existing info-level drift concern."""
+        # 3-category simultaneous burst within the last 24h.
+        ts = (datetime.now() - timedelta(minutes=30)).isoformat(timespec="seconds")
+        baseline._append_history(
+            {
+                "timestamp": ts,
+                "total_changes": 3,
+                "drift": {
+                    "startup": {"added": [{"key": "R\\Foo", "name": "Foo"}], "removed": [], "changed": []},
+                    "services": {"added": [{"key": "svc.Bar", "name": "Bar"}], "removed": [], "changed": []},
+                    "tasks": {"added": [{"key": "\\Baz", "name": "Baz"}], "removed": [], "changed": []},
+                },
+            }
+        )
+        self._mock_collectors(mocker)
+        resp = client.get("/api/dashboard/summary")
+        concerns = resp.get_json().get("concerns", [])
+        cluster_concerns = [c for c in concerns if "cross-surface" in c.get("title", "").lower()]
+        assert cluster_concerns, f"no cross-surface concern emitted; got: {[c.get('title') for c in concerns]}"
+        assert cluster_concerns[0]["level"] == "warning"
+        assert cluster_concerns[0]["tab"] == "baseline"
+
+    def test_two_category_cluster_does_not_emit_cross_surface_concern(self, client, baseline_tmp, mocker):
+        """Only ≥3-category clusters cross the threshold. A 2-category
+        cluster still fires the info-level "drift detected" concern but
+        not the warning-level cross-surface one."""
+        ts = (datetime.now() - timedelta(minutes=30)).isoformat(timespec="seconds")
+        baseline._append_history(
+            {
+                "timestamp": ts,
+                "total_changes": 2,
+                "drift": {
+                    "startup": {"added": [], "removed": [], "changed": []},
+                    "services": {"added": [{"key": "svc.X", "name": "X"}], "removed": [], "changed": []},
+                    "tasks": {"added": [{"key": "\\T", "name": "T"}], "removed": [], "changed": []},
+                },
+            }
+        )
+        self._mock_collectors(mocker)
+        resp = client.get("/api/dashboard/summary")
+        concerns = resp.get_json().get("concerns", [])
+        assert not any("cross-surface" in c.get("title", "").lower() for c in concerns)
