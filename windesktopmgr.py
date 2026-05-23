@@ -5,6 +5,7 @@ Reads from Windows Event Log and existing SystemHealthDiag HTML reports.
 """
 
 import glob
+import hashlib
 import json
 import locale
 import os
@@ -8712,6 +8713,15 @@ def events_query():
 
 @app.route("/api/summary/<tab>", methods=["POST"])
 def get_summary(tab: str):
+    """Compute the per-tab summary.
+
+    Backlog #29: defensive ETag / If-None-Match support against the
+    2026-04-20 flood pattern (an old browser tab fires the same payload
+    ~100×/sec). Server still computes the response (so cache stays
+    fresh against backend state changes) but on a hit we return ``304
+    Not Modified`` with zero body bytes — saves the per-call payload
+    (~500-5000 B per tab × N redundant calls).
+    """
     data = request.get_json() or {}
     fn_map = {
         "drivers": lambda: summarize_drivers(data.get("results", [])),
@@ -8734,7 +8744,26 @@ def get_summary(tab: str):
     fn = fn_map.get(tab)
     if not fn:
         return jsonify({"error": "Unknown tab"}), 404
-    return jsonify(fn())
+    result = fn()
+    # Strong ETag from the canonical JSON of (tab, result). Strong is
+    # safe here: ``json.dumps(sort_keys=True)`` is fully deterministic,
+    # and the summarizers are pure functions of their inputs + module
+    # state, so equal ETag → equivalent response bytes. 16 hex chars
+    # (64 bits of SHA-256) is plenty to avoid collisions between any
+    # two adjacent responses on the same tab.
+    canon = json.dumps(result, sort_keys=True, separators=(",", ":"), default=str)
+    etag = '"' + hashlib.sha256(f"{tab}:{canon}".encode()).hexdigest()[:16] + '"'
+    inm = request.headers.get("If-None-Match", "")
+    if inm and inm == etag:
+        # RFC 7232: 304 must include any header that would have been
+        # sent on a 200 response and is relevant to caching — that's
+        # ETag here. Body MUST be empty.
+        resp = make_response("", 304)
+        resp.headers["ETag"] = etag
+        return resp
+    resp = jsonify(result)
+    resp.headers["ETag"] = etag
+    return resp
 
 
 @app.route("/api/processes/list")

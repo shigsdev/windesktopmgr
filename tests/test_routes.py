@@ -2080,6 +2080,112 @@ class TestSummaryRoute:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# POST /api/summary/<tab> — ETag / If-None-Match / 304 (backlog #29)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSummaryRouteEtag:
+    """Server-side ETag + 304 contract for /api/summary/<tab> (backlog #29).
+
+    Defends against the 2026-04-20 flood pattern: an old browser tab that
+    keeps firing identical payload bursts now gets zero-body 304 responses
+    instead of full re-serialized summaries. Pairs with the JS-side 1-second
+    identical-payload debounce in templates/index.html.
+    """
+
+    # The simplest two payloads to drive the matrix: empty updates list
+    # → deterministic summary, no module-state plumbing required.
+    _PAYLOAD_A = {"items": []}
+    _PAYLOAD_B = {"items": [{"KB": "KB123", "Date": "2026-01-01"}]}
+
+    def test_200_response_carries_etag_header(self, client):
+        resp = client.post("/api/summary/updates", json=self._PAYLOAD_A)
+        assert resp.status_code == 200
+        etag = resp.headers.get("ETag")
+        assert etag, "200 response must set ETag header"
+        # Strong ETag wrapping: a quoted 16-hex-char string.
+        assert etag.startswith('"') and etag.endswith('"')
+        assert len(etag) == 18  # 16 hex chars + 2 quotes
+
+    def test_if_none_match_with_matching_etag_returns_304_no_body(self, client):
+        first = client.post("/api/summary/updates", json=self._PAYLOAD_A)
+        assert first.status_code == 200
+        etag = first.headers["ETag"]
+
+        second = client.post(
+            "/api/summary/updates",
+            json=self._PAYLOAD_A,
+            headers={"If-None-Match": etag},
+        )
+        assert second.status_code == 304
+        # 304 body MUST be empty (RFC 7232).
+        assert second.data == b""
+        # ETag header is echoed back so the client can keep its cache key.
+        assert second.headers.get("ETag") == etag
+
+    def test_if_none_match_with_stale_etag_returns_200_with_fresh_etag(self, client):
+        resp = client.post(
+            "/api/summary/updates",
+            json=self._PAYLOAD_A,
+            headers={"If-None-Match": '"deadbeefdeadbeef"'},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json() is not None
+        assert resp.headers.get("ETag") != '"deadbeefdeadbeef"'
+
+    def test_different_payloads_produce_different_etags(self, client):
+        r1 = client.post("/api/summary/updates", json=self._PAYLOAD_A)
+        r2 = client.post("/api/summary/updates", json=self._PAYLOAD_B)
+        assert r1.headers["ETag"] != r2.headers["ETag"]
+
+    def test_same_payload_different_tab_produces_different_etag(self, client):
+        # Both tabs accept {"items": []} via /api/summary/updates and
+        # /api/summary/startup. The tab name is folded into the hash, so
+        # an identical payload across tabs must still produce distinct
+        # ETags — otherwise a client could replay one tab's cache key
+        # against another tab and get a spurious 304.
+        r_updates = client.post("/api/summary/updates", json={"items": []})
+        r_startup = client.post("/api/summary/startup", json={"items": []})
+        assert r_updates.status_code == 200
+        assert r_startup.status_code == 200
+        assert r_updates.headers["ETag"] != r_startup.headers["ETag"]
+
+    def test_same_payload_repeated_etag_is_stable(self, client):
+        """Same input → same ETag across calls. This is what makes the
+        If-None-Match path useful — if ETags drifted between identical
+        calls, the 304 fast-path would never fire."""
+        r1 = client.post("/api/summary/updates", json=self._PAYLOAD_A)
+        r2 = client.post("/api/summary/updates", json=self._PAYLOAD_A)
+        assert r1.headers["ETag"] == r2.headers["ETag"]
+
+    def test_etag_tracks_response_content_not_request_payload(self, client, mocker):
+        """ETag is derived from the response body, not the request payload.
+        If a summarizer's output changes (e.g. backing state mutated) for
+        the same request payload, the ETag must change too — otherwise
+        a stale 304 could mask a real update."""
+        # First call: real summarizer.
+        r0 = client.post("/api/summary/updates", json=self._PAYLOAD_A)
+        etag0 = r0.headers["ETag"]
+
+        # Patch the summarizer to return something different for the
+        # same input — simulating backing state having mutated between
+        # calls.
+        mocker.patch("windesktopmgr.summarize_updates", return_value={"status": "ok", "headline": "mutated"})
+        r1 = client.post("/api/summary/updates", json=self._PAYLOAD_A)
+        assert r1.status_code == 200
+        assert r1.headers["ETag"] != etag0, (
+            "ETag must reflect response content — equal input + mutated state must yield a new ETag"
+        )
+
+    def test_unknown_tab_does_not_set_etag(self, client):
+        """Unknown-tab 404s shouldn't carry ETag headers — there is no
+        meaningful resource to cache. Mostly a contract sanity check."""
+        resp = client.post("/api/summary/nonexistent_tab", json={})
+        assert resp.status_code == 404
+        assert "ETag" not in resp.headers
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Server startup configuration
 # ══════════════════════════════════════════════════════════════════════════════
 
