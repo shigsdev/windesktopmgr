@@ -834,6 +834,211 @@ def entry_drift_history(category: str, key: str, window: timedelta | None = None
 
 
 # ══════════════════════════════════════════════════════════════════════
+# UNIFIED CROSS-SURFACE TIMELINE + CORRELATION (backlog #44)
+# ══════════════════════════════════════════════════════════════════════
+#
+# Today the Baseline tab shows three independent per-category drift lists.
+# That makes single-surface changes easy to scan but hides the security-
+# relevant pattern: a single install / Windows Update / malware event
+# typically touches multiple surfaces within seconds. The user has to
+# mentally join three lists and squint at timestamps to see that.
+#
+# correlate_drift_events() flattens all history entries into one
+# chronologically-sorted event stream and groups events that span
+# multiple categories within a sliding window into a single "cluster".
+# Lone events and same-category bursts stay ungrouped (per spec).
+# Severity hint scales with cluster category-count — the 3-category
+# cluster is the canonical malware-install signature.
+
+
+def _severity_for_categories(category_count: int) -> str:
+    """Severity hint for a cluster based on how many categories it touches.
+
+    1 = info (single-surface, often benign Windows Update churn)
+    2 = warning (worth a look)
+    3 = critical (install / malware fingerprint)
+    """
+    if category_count >= 3:
+        return "critical"
+    if category_count == 2:
+        return "warning"
+    return "info"
+
+
+def _event_summary(ev: dict) -> str:
+    """One-line text summary of a single change event for the timeline UI."""
+    name = ev.get("name") or ev.get("key") or "(unknown)"
+    kind = ev.get("kind", "")
+    cat = ev.get("category", "")
+    if kind == "changed":
+        delta = ev.get("delta") or []
+        if delta:
+            return f"{cat} changed: {name} ({', '.join(delta)})"
+        return f"{cat} changed: {name}"
+    if kind == "added":
+        return f"{cat} added: {name}"
+    if kind == "removed":
+        return f"{cat} removed: {name}"
+    return f"{cat} {kind}: {name}"
+
+
+def _flatten_history_events(history: list) -> list:
+    """Expand history entries into individual change events.
+
+    Each event carries its category, kind, key, name, delta (if changed),
+    and the entry's timestamp (which is shared across every event from
+    the same drift-check moment — that's how single-entry multi-category
+    changes still surface as a cluster).
+    """
+    out: list[dict] = []
+    if not isinstance(history, list):
+        return out
+    for entry in history:
+        if not isinstance(entry, dict):
+            continue
+        ts_str = entry.get("timestamp") or ""
+        try:
+            ts = datetime.fromisoformat(ts_str)
+        except (ValueError, TypeError):
+            continue
+        drift = entry.get("drift") or {}
+        if not isinstance(drift, dict):
+            continue
+        for cat in ("startup", "services", "tasks"):
+            cat_drift = drift.get(cat) or {}
+            if not isinstance(cat_drift, dict):
+                continue
+            for kind in ("added", "removed", "changed"):
+                items = cat_drift.get(kind) or []
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    key = item.get("key") or item.get("name") or "(unknown)"
+                    ev = {
+                        "timestamp": ts_str,
+                        "_ts": ts,  # internal sort key, stripped before return
+                        "category": cat,
+                        "kind": kind,
+                        "key": key,
+                        "name": item.get("name") or key,
+                        "delta": list(item.get("delta") or []) if kind == "changed" else [],
+                    }
+                    ev["summary"] = _event_summary(ev)
+                    out.append(ev)
+    return out
+
+
+def correlate_drift_events(history: list, window_seconds: int = 300) -> list:
+    """Flatten drift history into a sorted event stream + group multi-category
+    bursts within ``window_seconds`` into clusters.
+
+    Returns a list of timeline items, newest-first. Each item is either:
+
+      Lone event::
+
+          {"type": "event", "timestamp": "<iso>", "category": "...",
+           "kind": "added|removed|changed", "key": "...", "name": "...",
+           "delta": [...], "summary": "...", "severity": "info"}
+
+      Multi-category cluster::
+
+          {"type": "cluster", "started_at": "<iso>", "ended_at": "<iso>",
+           "span_seconds": float, "categories": ["startup","services",...],
+           "category_counts": {"startup": N, "services": N, "tasks": N},
+           "event_count": N, "severity": "warning|critical",
+           "events": [<event dict>, ...]}
+
+    A "cluster" requires ≥2 events spanning ≥2 categories within the
+    window. Single-category bursts and lone events stay ungrouped — the
+    correlation signal we care about is cross-surface coincidence.
+
+    The function is pure: same ``history`` + ``window_seconds`` ⇒ same
+    output. Safe to call from the dashboard fan-out (no I/O, just a
+    sliding window over a list).
+    """
+    window_seconds = max(1, int(window_seconds))
+
+    events = _flatten_history_events(history)
+    # Sort ASCENDING for the sliding-window walk; reverse at the end so
+    # the UI gets newest-first.
+    events.sort(key=lambda e: e["_ts"])
+
+    # Greedy sliding window. Anchor a tentative cluster at events[i];
+    # walk forward while the next event's timestamp - anchor.timestamp
+    # stays within the window. Each event belongs to exactly one group.
+    groups: list[list[dict]] = []
+    i = 0
+    n = len(events)
+    while i < n:
+        anchor_ts = events[i]["_ts"]
+        j = i + 1
+        while j < n and (events[j]["_ts"] - anchor_ts).total_seconds() <= window_seconds:
+            j += 1
+        groups.append(events[i:j])
+        i = j
+
+    # Emit each group as either a cluster (≥2 events spanning ≥2 cats)
+    # or as individual lone events.
+    timeline: list[dict] = []
+    for group in groups:
+        unique_cats = sorted({ev["category"] for ev in group})
+        if len(group) >= 2 and len(unique_cats) >= 2:
+            cat_counts: dict[str, int] = {}
+            for ev in group:
+                cat_counts[ev["category"]] = cat_counts.get(ev["category"], 0) + 1
+            span = (group[-1]["_ts"] - group[0]["_ts"]).total_seconds()
+            timeline.append(
+                {
+                    "type": "cluster",
+                    "started_at": group[0]["timestamp"],
+                    "ended_at": group[-1]["timestamp"],
+                    "span_seconds": span,
+                    "categories": unique_cats,
+                    "category_counts": cat_counts,
+                    "event_count": len(group),
+                    "severity": _severity_for_categories(len(unique_cats)),
+                    "events": [{k: v for k, v in ev.items() if k != "_ts"} for ev in group],
+                }
+            )
+        else:
+            for ev in group:
+                item = {k: v for k, v in ev.items() if k != "_ts"}
+                item["type"] = "event"
+                item["severity"] = "info"
+                timeline.append(item)
+
+    # Newest first for the UI.
+    timeline.reverse()
+    return timeline
+
+
+def correlation_alert(history: list, *, window_seconds: int = 60, min_categories: int = 3) -> dict | None:
+    """Return an alert dict if the MOST-RECENT cluster crosses
+    ``min_categories`` categories within ``window_seconds``; else None.
+
+    Drives the warning-level dashboard concern for the "≥3 categories
+    within 60 s" malware-install signature. Distinct from the existing
+    info-level "drift detected in last 24h" concern — that one fires on
+    *any* drift; this one fires on the cross-surface coincidence.
+    """
+    timeline = correlate_drift_events(history, window_seconds=window_seconds)
+    for item in timeline:  # already newest-first
+        if item.get("type") == "cluster" and len(item.get("categories") or []) >= min_categories:
+            return {
+                "categories": item["categories"],
+                "category_counts": item["category_counts"],
+                "event_count": item["event_count"],
+                "span_seconds": item["span_seconds"],
+                "started_at": item["started_at"],
+                "ended_at": item["ended_at"],
+                "severity": item["severity"],
+            }
+    return None
+
+
+# ══════════════════════════════════════════════════════════════════════
 # DRIFT INVESTIGATOR -- "why did this change happen?" decision support
 # ══════════════════════════════════════════════════════════════════════
 #

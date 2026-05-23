@@ -9236,6 +9236,44 @@ def baseline_entry_history_route():
     return jsonify({"ok": True, "category": category, "key": key, "events": events})
 
 
+@app.route("/api/baseline/timeline")
+def baseline_timeline_route():
+    """Unified cross-surface change timeline (backlog #44).
+
+    Flattens the per-category drift history into one chronologically-sorted
+    stream of change events and clusters multi-category bursts within the
+    requested window. Lone events and same-category bursts stay
+    ungrouped. Cluster severity scales with the number of categories
+    touched — a single burst that hits startup + services + tasks is the
+    canonical install / malware fingerprint.
+
+    Query params:
+      - window: seconds, default 300 (5 min). Clamped to [10, 86400].
+
+    Response::
+
+        {"ok": true, "window_seconds": <int>, "timeline": [<items>, ...]}
+
+    Items are either ``{"type": "event", ...}`` or
+    ``{"type": "cluster", "events": [...], "categories": [...], ...}``.
+    Newest first. See ``baseline.correlate_drift_events`` for the
+    exact item shape.
+    """
+    import baseline
+
+    try:
+        window = int(request.args.get("window", "300"))
+    except (TypeError, ValueError):
+        window = 300
+    # Clamp: <10 s is finer than the timestamp resolution (`isoformat`
+    # rounded to seconds), >24 h is pointless — anything that far apart
+    # isn't correlated.
+    window = max(10, min(window, 86400))
+    history = baseline.load_history()
+    timeline = baseline.correlate_drift_events(history, window_seconds=window)
+    return jsonify({"ok": True, "window_seconds": window, "timeline": timeline})
+
+
 # Maps a drift category to the Windows console that edits it. No user
 # input reaches the command line -- the category is validated against
 # this whitelist, so there's no injection surface.
@@ -11199,6 +11237,31 @@ def _compute_dashboard_summary() -> dict:
                     "title": f"System baseline drift detected ({total} change(s) in 24h)",
                     "detail": detail,
                     "action": "Review baseline drift",
+                    "action_fn": "switchTab('baseline')",
+                }
+            )
+
+        # Backlog #44 cross-surface correlation concern. Distinct from
+        # the info-level "drift detected" concern above — that one fires
+        # on ANY drift; this one fires on the security-relevant pattern
+        # where the most-recent cluster touched ≥3 categories within
+        # 60 s. That's the canonical install / malware fingerprint and
+        # warrants warning-level attention even if the underlying drift
+        # count is small.
+        history_all = baseline.load_history()
+        alert = baseline.correlation_alert(history_all, window_seconds=60, min_categories=3)
+        if alert:
+            cat_label = ", ".join(alert["categories"])
+            span = alert["span_seconds"]
+            span_label = f"{int(span)} s" if span >= 1 else "simultaneously"
+            concerns.append(
+                {
+                    "level": "warning",
+                    "tab": "baseline",
+                    "icon": "🚨",
+                    "title": f"Cross-surface baseline drift cluster ({alert['event_count']} events, {span_label})",
+                    "detail": f"Touched {len(alert['categories'])} categories: {cat_label}. Review the Change Timeline.",
+                    "action": "Review change timeline",
                     "action_fn": "switchTab('baseline')",
                 }
             )
