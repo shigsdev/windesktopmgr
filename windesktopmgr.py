@@ -9569,6 +9569,73 @@ def cloudcopy_discard_route():
     return jsonify(result)
 
 
+# ── Baseline cluster examine + accept-all (backlog #50) ──────────────
+
+
+@app.route("/api/baseline/cluster-context", methods=["GET"])
+def baseline_cluster_context_route():
+    """Gather contextual signals (Windows Updates + BIOS audit) inside
+    a cluster's time window. Powers the Examine modal on the cross-
+    surface timeline (#44).
+
+    Query params:
+      - started_at: ISO timestamp of the cluster's first event
+      - ended_at:   ISO timestamp of the cluster's last event
+      - window:     seconds to expand the window on each side
+                    (default 300 = 5min)
+    """
+    import baseline
+
+    started_at = (request.args.get("started_at") or "").strip()
+    ended_at = (request.args.get("ended_at") or "").strip()
+    if not started_at or not ended_at:
+        return jsonify({"ok": False, "error": "started_at and ended_at required"}), 400
+    try:
+        window = int(request.args.get("window", "300"))
+    except (TypeError, ValueError):
+        window = 300
+    window = max(0, min(window, 86400))  # 0..24h
+    result = baseline.gather_cluster_context(started_at, ended_at, window_seconds=window)
+    status = 200 if result.get("ok") else 400
+    return jsonify(result), status
+
+
+@app.route("/api/baseline/accept-cluster", methods=["POST"])
+def baseline_accept_cluster_route():
+    """Bulk-accept every change in a cluster.
+
+    Body::
+        {
+          "events": [
+            {"category": "startup|services|tasks",
+             "key": "...",
+             "kind": "added|removed|changed",
+             "current_value": {...} | null},
+            ...
+          ],
+          "confirm_token": "ACCEPT N CHANGES"
+        }
+
+    The confirm_token must equal the literal string ``"ACCEPT <N>
+    CHANGES"`` where N matches ``len(events)`` exactly. Mirrors the
+    PR #22 router-reboot type-to-confirm guard so a stray POST can't
+    flip a baseline by mistake.
+    """
+    import baseline
+
+    data = request.get_json() or {}
+    events = data.get("events")
+    confirm = (data.get("confirm_token") or "").strip()
+    if not isinstance(events, list):
+        return jsonify({"ok": False, "error": "events list required"}), 400
+    expected = f"ACCEPT {len(events)} CHANGES"
+    if confirm != expected:
+        return jsonify({"ok": False, "error": f"confirm_token must equal {expected!r}"}), 400
+    result = baseline.accept_cluster_events(events)
+    status = 200 if result.get("ok") else 207  # 207 Multi-Status when partial-success
+    return jsonify(result), status
+
+
 @app.route("/api/baseline/timeline")
 def baseline_timeline_route():
     """Unified cross-surface change timeline (backlog #44).
