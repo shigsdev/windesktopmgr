@@ -632,6 +632,7 @@
       <button class="page-tab" data-page="remediation">🔧 Remediation</button>
       <button class="page-tab" data-page="homenet">🏠 Home Network</button>
       <button class="page-tab" data-page="baseline">📐 Baseline</button>
+      <button class="page-tab" data-page="backup">📦 Backup</button>
       <button class="page-tab" data-page="logs">📜 Logs</button>
       <button class="page-tab" data-page="architecture">🏗 Architecture</button>
     </div>
@@ -1340,6 +1341,11 @@ document.querySelectorAll(".page-tab").forEach(btn => {
       // useful if it's current, and the compute is slow enough that
       // caching across visits would serve stale data.
       loadBaseline();
+    } else if (page === "backup") {
+      // Force-reload on every visit -- File History health can change
+      // when a drive is plugged/unplugged, and the call is fast (no
+      // subprocess; pure user-space XML parse + a few stat() calls).
+      loadBackup();
     } else if (page === "logs") {
       if (!_tabLoaded["logs"])           { _tabLoaded["logs"]           = true; logLoad(); }
     } else if (page === "architecture") {
@@ -6655,6 +6661,169 @@ async function loadBaselineTimeline() {
   body.innerHTML = html;
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// BACKUP TAB — Sections 1+2 (PR-1 of backlog #47)
+// Read-only inventory of Windows backups + File History; Sections 3 (#46)
+// and 4 (#11) are placeholders until those ship.
+// ══════════════════════════════════════════════════════════════════════════
+
+function bk_humanBytes(n) {
+  if (n === null || n === undefined || isNaN(n)) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  let v = Number(n);
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return v.toFixed(i === 0 ? 0 : 2) + " " + units[i];
+}
+
+function bk_pillStyle(level) {
+  const map = {
+    ok:       { bg: "rgba(46,204,113,0.15)", fg: "var(--green)",  border: "var(--green)" },
+    info:     { bg: "var(--surface)",         fg: "var(--cyan)",   border: "var(--cyan)" },
+    warning:  { bg: "rgba(243,156,18,0.15)",  fg: "var(--orange)", border: "var(--orange)" },
+    critical: { bg: "rgba(231,76,60,0.18)",   fg: "var(--red)",    border: "var(--red)" }
+  };
+  return map[level] || map.info;
+}
+
+function bk_setStatusPill(elId, level, label) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  const s = bk_pillStyle(level);
+  el.style.background = s.bg;
+  el.style.color = s.fg;
+  el.style.borderColor = s.border;
+  el.textContent = label;
+}
+
+async function loadBackup() {
+  const overall = document.getElementById("bk-overall");
+  const s1body = document.getElementById("bk-sec1-body");
+  const s2body = document.getElementById("bk-sec2-body");
+  if (s1body) s1body.innerHTML = '<div style="color:var(--muted);padding:8px">Loading…</div>';
+  if (s2body) s2body.innerHTML = '<div style="color:var(--muted);padding:8px">Loading…</div>';
+  bk_setStatusPill("bk-sec1-status", "info", "loading…");
+  bk_setStatusPill("bk-sec2-status", "info", "loading…");
+
+  // 3 parallel fetches: summary (for overall banner) + Section 1 detail + Section 2 detail
+  let summary, wb, fh;
+  try {
+    const [rS, rW, rF] = await Promise.all([
+      fetch("/api/backup/summary"),
+      fetch("/api/backup/windows-backups"),
+      fetch("/api/backup/file-history"),
+    ]);
+    summary = await rS.json();
+    wb = await rW.json();
+    fh = await rF.json();
+  } catch (e) {
+    if (s1body) s1body.innerHTML = `<div style="color:var(--red);padding:8px">Fetch failed: ${escHtml(e.message)}</div>`;
+    return;
+  }
+
+  // ── Overall banner ────────────────────────────────────────────────
+  if (overall && summary && summary.overall_health) {
+    const lvl = summary.overall_health.level || "info";
+    const s = bk_pillStyle(lvl);
+    overall.style.display = "block";
+    overall.style.borderLeftColor = s.border;
+    overall.innerHTML = `
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:18px">${lvl === "critical" ? "🚨" : (lvl === "warning" ? "⚠️" : (lvl === "ok" ? "✅" : "ℹ️"))}</span>
+        <div style="flex:1">
+          <div style="font-weight:700;color:${s.fg};text-transform:uppercase;font-size:10px;margin-bottom:2px">${escHtml(lvl)}</div>
+          <div style="font-size:12px;color:var(--text)">${escHtml(summary.overall_health.reason || "")}</div>
+        </div>
+      </div>`;
+  }
+
+  // ── Section 1: Windows backups ───────────────────────────────────
+  if (s1body) {
+    if (!wb.has_cache) {
+      bk_setStatusPill("bk-sec1-status", "info", "not yet scanned");
+      s1body.innerHTML = `
+        <div style="padding:10px 0;line-height:1.55">
+          <p style="margin:0 0 8px 0">WindowsImageBackup catalogue reads require elevation, so we cache the catalogue to <code>backup_cache.json</code>. No scan has been run yet.</p>
+          <p style="margin:0 0 8px 0;color:var(--muted);font-size:11px">A "Scan now" button (with UAC prompt) lands in PR-2 of this feature, alongside the cleanup / delete-old-version actions.</p>
+          <p style="margin:0;color:var(--muted);font-size:11px">For now you can seed the cache manually: open an elevated PowerShell, run <code>wbadmin get versions</code>, save the structured output to <code>backup_cache.json</code> in the app dir.</p>
+        </div>`;
+    } else {
+      bk_setStatusPill("bk-sec1-status", wb.version_count > 0 ? "info" : "warning", `${wb.version_count} version(s)`);
+      const total = bk_humanBytes(wb.total_size_bytes);
+      const scannedAt = wb.scanned_at ? new Date(wb.scanned_at).toLocaleString() : "—";
+      const ageH = wb.cache_age_seconds == null ? "" : ` (${Math.floor(wb.cache_age_seconds / 3600)}h ago)`;
+      const rows = (wb.versions || []).map(v => `
+        <tr>
+          <td style="padding:6px 10px;border-bottom:1px solid var(--border);font-family:var(--font-mono);font-size:11px">${escHtml(v.version_id || "")}</td>
+          <td style="padding:6px 10px;border-bottom:1px solid var(--border);font-size:11px">${escHtml(v.backup_time || "")}</td>
+          <td style="padding:6px 10px;border-bottom:1px solid var(--border);font-size:11px">${escHtml(v.target || "")}</td>
+          <td style="padding:6px 10px;border-bottom:1px solid var(--border);font-size:11px;text-align:right">${bk_humanBytes(v.size_bytes)}</td>
+          <td style="padding:6px 10px;border-bottom:1px solid var(--border);font-size:11px">${escHtml(Array.isArray(v.can_recover) ? v.can_recover.join(", ") : (v.can_recover || ""))}</td>
+        </tr>`).join("");
+      s1body.innerHTML = `
+        <div style="display:flex;gap:24px;flex-wrap:wrap;padding:8px 0 12px 0;color:var(--muted);font-size:11px">
+          <div><strong style="color:var(--text-bright)">${wb.version_count}</strong> version(s)</div>
+          <div><strong style="color:var(--text-bright)">${total}</strong> total</div>
+          <div>Last scan: <strong style="color:var(--text-bright)">${escHtml(scannedAt)}</strong>${escHtml(ageH)}</div>
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead><tr style="text-align:left;color:var(--muted);font-weight:600">
+            <th style="padding:6px 10px;border-bottom:1px solid var(--border)">Version ID</th>
+            <th style="padding:6px 10px;border-bottom:1px solid var(--border)">Backup time</th>
+            <th style="padding:6px 10px;border-bottom:1px solid var(--border)">Target</th>
+            <th style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right">Size</th>
+            <th style="padding:6px 10px;border-bottom:1px solid var(--border)">Can recover</th>
+          </tr></thead>
+          <tbody>${rows || `<tr><td colspan="5" style="padding:14px;color:var(--muted);text-align:center">No versions catalogued.</td></tr>`}</tbody>
+        </table>`;
+    }
+  }
+
+  // ── Section 2: File History ───────────────────────────────────────
+  if (s2body) {
+    if (!fh.configured) {
+      bk_setStatusPill("bk-sec2-status", "info", "not configured");
+      s2body.innerHTML = `<div style="padding:10px 0;color:var(--muted)">File History is not configured on this machine. Configure it from Control Panel → System and Security → File History to enable.</div>`;
+    } else {
+      const cfg = fh.config || {};
+      const target = cfg.target || {};
+      const health = fh.health || {};
+      bk_setStatusPill("bk-sec2-status", health.level || "info", (health.level || "info").toUpperCase());
+      const enabled = cfg.enabled ? '<span style="color:var(--green);font-weight:600">ENABLED</span>' : '<span style="color:var(--muted)">DISABLED</span>';
+      const targetExistsLabel = fh.target_path_exists === null
+        ? "—"
+        : (fh.target_path_exists ? '<span style="color:var(--green)">reachable</span>' : '<span style="color:var(--red)">unreachable</span>');
+      const storeExistsLabel = fh.target_backup_store_exists === null
+        ? "—"
+        : (fh.target_backup_store_exists ? '<span style="color:var(--green)">present</span>' : '<span style="color:var(--red)">missing</span>');
+      const catalogLabel = fh.catalog_exists
+        ? `${bk_humanBytes(fh.catalog_size_bytes)} · last write ${fh.catalog_mtime || "—"} (${fh.catalog_age_days?.toFixed?.(1) || "?"} days ago)`
+        : "(not present)";
+      const stagingRatio = fh.staging_usage_ratio == null ? "" : ` (${(fh.staging_usage_ratio * 100).toFixed(1)}%)`;
+      const folderCount = (cfg.user_folders || []).length + (cfg.libraries || []).reduce((sum, lib) => sum + (lib.folders || []).length, 0);
+      const healthStyle = bk_pillStyle(health.level || "info");
+      s2body.innerHTML = `
+        <div style="padding:10px 0">
+          <div style="padding:10px 14px;border-left:3px solid ${healthStyle.border};background:var(--surface);border-radius:6px;margin-bottom:12px">
+            <div style="font-weight:600;color:${healthStyle.fg};margin-bottom:2px">${escHtml((health.level || "info").toUpperCase())}</div>
+            <div style="font-size:12px;color:var(--text)">${escHtml(health.reason || "")}</div>
+          </div>
+          <div style="display:grid;grid-template-columns:140px 1fr;gap:6px 16px;font-size:12px">
+            <div style="color:var(--muted)">Status</div><div>${enabled}</div>
+            <div style="color:var(--muted)">Target</div><div>${escHtml(target.name || "—")} · <code>${escHtml(target.url || "")}</code> (${escHtml(target.drive_type || "—")})</div>
+            <div style="color:var(--muted)">Target reachable</div><div>${targetExistsLabel}</div>
+            <div style="color:var(--muted)">Backup store on target</div><div>${storeExistsLabel} (<code>${escHtml(target.backup_store_path || "")}</code>)</div>
+            <div style="color:var(--muted)">Frequency</div><div>${cfg.frequency_seconds ? Math.round(cfg.frequency_seconds / 60) + " min" : "—"}</div>
+            <div style="color:var(--muted)">Retention</div><div>${escHtml(cfg.retention_policy || "—")}${cfg.retention_min_age_months ? ` · keep at least ${cfg.retention_min_age_months} mo` : ""}</div>
+            <div style="color:var(--muted)">Catalog</div><div>${catalogLabel}</div>
+            <div style="color:var(--muted)">Staging</div><div>${bk_humanBytes(fh.staging_usage_bytes)} across ${fh.staging_file_count} file(s)${stagingRatio}</div>
+            <div style="color:var(--muted)">Folders watched</div><div>${folderCount} folder(s) across ${(cfg.libraries || []).length} libraries + ${(cfg.user_folders || []).length} user folders</div>
+          </div>
+        </div>`;
+    }
+  }
+}
+
 async function loadBaseline() {
   const loading    = document.getElementById("bl-loading");
   const nobaseline = document.getElementById("bl-nobaseline");
@@ -9813,6 +9982,72 @@ function renderSystemInfo(d, upgrades) {
         </div>
       </div>
     </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       PAGE: BACKUP (backlog #47)
+       4 sections (collapsible):
+         1. Windows backups (WindowsImageBackup, read-only PR-1; UAC scan + cleanup in PR-2)
+         2. File History (live, no-elevation read of Config1.xml under user profile)
+         3. OneDrive -> iCloud replicator (#46) -- placeholder until that ships
+         4. Custom backup solution (#11) -- placeholder until that ships
+  ══════════════════════════════════════════ -->
+  <div id="page-backup" style="display:none">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <div style="font-size:22px">📦</div>
+      <div style="flex:1">
+        <div style="font-size:18px;font-weight:700;color:var(--text-bright)">Backup &amp; File Protection</div>
+        <div style="font-size:11px;color:var(--muted)">Visibility into what Windows is already backing up + cleanup tools for old snapshots.</div>
+      </div>
+      <button onclick="loadBackup()" title="Refresh" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:8px 10px;border-radius:6px;cursor:pointer;font-size:11px">↻ Refresh</button>
+    </div>
+
+    <!-- Overall-health banner (mirrors baseline pattern). Filled by loadBackup(). -->
+    <div id="bk-overall" style="display:none;padding:12px 16px;border-radius:10px;margin-bottom:14px;border:1px solid var(--border);border-left:4px solid var(--cyan);background:var(--card);font-size:12px;color:var(--text)"></div>
+
+    <!-- Section 1: WindowsImageBackup ───────────────────────────────── -->
+    <details id="bk-sec1" open style="margin-bottom:14px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:0">
+      <summary style="cursor:pointer;padding:12px 16px;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px">
+        <span style="font-size:14px;font-weight:700;color:var(--text-bright)">1. Windows Backups (<code>WindowsImageBackup</code>)</span>
+        <span id="bk-sec1-status" class="bk-status-pill" style="font-size:10px;padding:2px 8px;border-radius:10px;background:var(--surface);color:var(--muted);border:1px solid var(--border)">loading…</span>
+      </summary>
+      <div style="padding:0 16px 16px 16px;font-size:12px;color:var(--text)">
+        <div id="bk-sec1-body"></div>
+      </div>
+    </details>
+
+    <!-- Section 2: File History ─────────────────────────────────────── -->
+    <details id="bk-sec2" open style="margin-bottom:14px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:0">
+      <summary style="cursor:pointer;padding:12px 16px;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px">
+        <span style="font-size:14px;font-weight:700;color:var(--text-bright)">2. File History</span>
+        <span id="bk-sec2-status" class="bk-status-pill" style="font-size:10px;padding:2px 8px;border-radius:10px;background:var(--surface);color:var(--muted);border:1px solid var(--border)">loading…</span>
+      </summary>
+      <div style="padding:0 16px 16px 16px;font-size:12px;color:var(--text)">
+        <div id="bk-sec2-body"></div>
+      </div>
+    </details>
+
+    <!-- Section 3: OneDrive -> iCloud (placeholder for backlog #46) ─── -->
+    <details id="bk-sec3" style="margin-bottom:14px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:0;opacity:0.7">
+      <summary style="cursor:pointer;padding:12px 16px;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px">
+        <span style="font-size:14px;font-weight:700;color:var(--text-bright)">3. OneDrive → iCloud replicator</span>
+        <span class="bk-status-pill" style="font-size:10px;padding:2px 8px;border-radius:10px;background:var(--surface);color:var(--cyan);border:1px solid var(--cyan)">Backlog #46 — coming next</span>
+      </summary>
+      <div style="padding:0 16px 16px 16px;font-size:12px;color:var(--muted)">
+        One-way replicator: pushes OneDrive contents into iCloud Drive so the same files are reachable from iPhone / iPad / Mac. Source-wins overwrite, files-only (no Photos.app library integration), manual + optional schedule. Configurable exclusion rules (folders / extensions / filename globs). Crash-safe resume from <code>cloudcopy_state.json</code>. See backlog #46 for the locked V1 spec.
+      </div>
+    </details>
+
+    <!-- Section 4: Custom backup solution (placeholder for backlog #11) -->
+    <details id="bk-sec4" style="margin-bottom:14px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:0;opacity:0.7">
+      <summary style="cursor:pointer;padding:12px 16px;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px">
+        <span style="font-size:14px;font-weight:700;color:var(--text-bright)">4. Custom backup solution</span>
+        <span class="bk-status-pill" style="font-size:10px;padding:2px 8px;border-radius:10px;background:var(--surface);color:var(--muted);border:1px solid var(--border)">Backlog #11 — future</span>
+      </summary>
+      <div style="padding:0 16px 16px 16px;font-size:12px;color:var(--muted)">
+        Managed backup with explicit drive-selection + retention policy + disk-space impact tracking. Designed after the 2.4 TB WindowsImageBackup growth surprise. See backlog #11 for full scope.
+      </div>
+    </details>
   </div>
 
   <!-- ══════════════════════════════════════════
