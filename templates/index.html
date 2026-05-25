@@ -7061,8 +7061,15 @@ function cc_renderListEditor(elId, items, placeholder) {
       <code style="flex:1;background:var(--surface);padding:2px 6px;border-radius:3px">${escHtml(s)}</code>
       <button onclick="cc_removeItem('${elId}', ${i})" style="background:transparent;border:1px solid var(--red);color:var(--red);padding:0 6px;border-radius:3px;cursor:pointer;font-size:10px">×</button>
     </li>`).join("");
-  const adder = document.getElementById(elId + "-add-input");
-  if (adder) adder.placeholder = placeholder || "";
+  // Bug-fix 2026-05-25: only set placeholder when the caller supplied
+  // one (initial render from loadCloudCopy). Follow-up renders (after
+  // add/remove) call us with 2 args, in which case we MUST leave the
+  // input's placeholder alone -- otherwise the example text the user
+  // relied on to learn what to type vanishes after the first add.
+  if (placeholder !== undefined) {
+    const adder = document.getElementById(elId + "-add-input");
+    if (adder) adder.placeholder = placeholder;
+  }
 }
 
 // elId -> rules-key mapping. Used by add/remove so the call sites don't
@@ -7075,17 +7082,33 @@ const _CC_ELID_TO_KEY = {
 
 function cc_addItem(elId, key) {
   const adder = document.getElementById(elId + "-add-input");
-  if (!adder || !adder.value.trim()) return;
+  if (!adder) return;
+  // Bug-fix 2026-05-25 (second pass): visible feedback when the user
+  // clicks + (or hits Enter) with an empty input. The original code
+  // silently returned, which felt to the user like "the button does
+  // nothing." Now we focus the input + briefly flash its border red +
+  // swap the placeholder to an explicit "Type something first" hint.
+  if (!adder.value.trim()) {
+    adder.focus();
+    adder.style.borderColor = "var(--red)";
+    const originalPlaceholder = adder.placeholder;
+    adder.placeholder = "Type a value first, then click +";
+    setTimeout(() => {
+      adder.style.borderColor = "";
+      adder.placeholder = originalPlaceholder;
+    }, 1800);
+    return;
+  }
   if (!_ccRules) return;
   _ccRules[key] = _ccRules[key] || [];
   _ccRules[key].push(adder.value.trim());
   adder.value = "";
   cc_renderListEditor(elId, _ccRules[key]);
-  // Bug-fix 2026-05-25: persist on EVERY add. The original code
-  // relied on the call-site adding "; cc_saveRules();" after each
-  // cc_addItem call, but the symmetric cc_removeItem never did --
-  // user clicked × and the deletion looked like it worked but came
-  // back on reload. Centralising the save here lets cc_removeItem
+  // Bug-fix 2026-05-25 (first pass): persist on EVERY add. The
+  // original code relied on the call-site adding "; cc_saveRules();"
+  // after each cc_addItem call, but the symmetric cc_removeItem never
+  // did -- user clicked × and the deletion looked like it worked but
+  // came back on reload. Centralising the save here lets cc_removeItem
   // mirror the contract.
   cc_saveRules();
 }
@@ -7478,9 +7501,13 @@ async function loadCloudCopy() {
       <button id="cc-start-btn" onclick="cc_startCopy()" style="background:var(--cyan);border:none;color:#000;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700">▶ Start copy</button>
     </div>`;
 
-  cc_renderListEditor("cc-folders", _ccRules.exclude_folders || [], "folder name");
-  cc_renderListEditor("cc-extensions", _ccRules.exclude_extensions || [], ".ext");
-  cc_renderListEditor("cc-globs", _ccRules.exclude_filename_globs || [], "glob pattern");
+  // Initial-render placeholders show CONCRETE examples so the user has
+  // something to imitate. (Original "folder name" / ".ext" / "glob
+  // pattern" was too abstract -- user didn't realise they had to type
+  // a value before clicking + and the empty click silently no-op'd.)
+  cc_renderListEditor("cc-folders", _ccRules.exclude_folders || [], "e.g. Backup Data");
+  cc_renderListEditor("cc-extensions", _ccRules.exclude_extensions || [], "e.g. .iso");
+  cc_renderListEditor("cc-globs", _ccRules.exclude_filename_globs || [], "e.g. ~$*");
 
   // PR-2: check for an active session (resume-state route returns
   // active_session_id when a worker is running) OR a crashed session.
