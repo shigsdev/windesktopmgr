@@ -9282,6 +9282,126 @@ def backup_summary_route():
     return jsonify(backup.summarize_backup())
 
 
+# ── Backup tab — elevated actions (PR-2 of #47) ─────────────────────
+
+
+@app.route("/api/backup/scan", methods=["POST"])
+def backup_scan_route():
+    """Launch the elevated catalog scan via ShellExecuteW("runas").
+
+    Returns ``{ok: True, session_id: "<hex>"}`` once the UAC prompt has
+    been accepted and the helper is running; the UI then polls
+    ``/api/backup/scan-status`` until the helper writes a result file.
+
+    Refuses cleanly when the UAC prompt is declined or the helper can't
+    be located.
+    """
+    import backup
+
+    result = backup.request_elevated_action("scan_catalog", {})
+    status = 200 if result.get("ok") else 502
+    return jsonify(result), status
+
+
+@app.route("/api/backup/scan-status")
+def backup_scan_status_route():
+    """Poll endpoint -- returns ``{state: pending|done|missing}``."""
+    import backup
+
+    session_id = (request.args.get("session_id") or "").strip()
+    if not session_id:
+        return jsonify({"state": "missing", "error": "session_id required"}), 400
+    return jsonify(backup.get_scan_status(session_id))
+
+
+@app.route("/api/backup/scan-cleanup", methods=["POST"])
+def backup_scan_cleanup_route():
+    """Tray housekeeping: drop the request/result files for a finished
+    session. The UI calls this after rendering the result so a future
+    poll doesn't pick up stale state."""
+    import backup
+
+    data = request.get_json() or {}
+    session_id = (data.get("session_id") or "").strip()
+    if not session_id:
+        return jsonify({"ok": False, "error": "session_id required"}), 400
+    backup.cleanup_session_files(session_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/backup/delete-version", methods=["POST"])
+def backup_delete_version_route():
+    """Delete a specific WindowsImageBackup version via the elevated
+    helper. Requires a TYPE-TO-CONFIRM body field that exactly matches
+    the version_id -- mirrors the PR #22 router-reboot guard so a stray
+    POST can't trigger an irreversible delete.
+
+    Body::
+        {"version_id": "05/24/2026-04:00", "confirm_token": "05/24/2026-04:00"}
+    """
+    import backup
+
+    data = request.get_json() or {}
+    version_id = (data.get("version_id") or "").strip()
+    confirm = (data.get("confirm_token") or "").strip()
+    if not version_id:
+        return jsonify({"ok": False, "error": "version_id required"}), 400
+    if confirm != version_id:
+        return jsonify({"ok": False, "error": "confirm_token must equal version_id (defense-in-depth)"}), 400
+
+    # Validate against the current cached catalog BEFORE we even spawn
+    # the UAC prompt -- saves the user a click if the request is bad.
+    cache = backup.load_windows_backup_cache()
+    ok, err = backup.validate_delete_version_request(version_id, cache.get("versions") or [])
+    if not ok:
+        return jsonify({"ok": False, "error": err}), 400
+
+    result = backup.request_elevated_action("delete_version", {"version_id": version_id})
+    status = 200 if result.get("ok") else 502
+    return jsonify(result), status
+
+
+@app.route("/api/backup/file-history-cleanup", methods=["POST"])
+def backup_fh_cleanup_route():
+    """Run ``fhmanagew.exe -cleanup <days>`` via the elevated helper.
+
+    Body::
+        {"days": 90, "confirm_token": "CLEANUP 90"}
+
+    The confirm_token convention is the literal string "CLEANUP <days>"
+    so a stray POST with default ``days=0`` (which would WIPE all but
+    the newest version) can't fire without an explicit match.
+    """
+    import backup
+
+    data = request.get_json() or {}
+    days = data.get("days")
+    try:
+        days = int(days)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "days must be an integer"}), 400
+    confirm = (data.get("confirm_token") or "").strip()
+    expected = f"CLEANUP {days}"
+    if confirm != expected:
+        return jsonify({"ok": False, "error": f"confirm_token must equal {expected!r}"}), 400
+
+    ok, err = backup.validate_fh_cleanup_request(days)
+    if not ok:
+        return jsonify({"ok": False, "error": err}), 400
+
+    result = backup.request_elevated_action("fh_cleanup", {"days": days})
+    status = 200 if result.get("ok") else 502
+    return jsonify(result), status
+
+
+@app.route("/api/backup/actions-history")
+def backup_actions_history_route():
+    """Return the append-only audit log of elevated actions."""
+    import backup
+
+    return jsonify({"ok": True, "entries": backup.load_actions_history()})
+
+
 @app.route("/api/baseline/timeline")
 def baseline_timeline_route():
     """Unified cross-surface change timeline (backlog #44).
