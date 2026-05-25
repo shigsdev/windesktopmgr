@@ -39,3 +39,24 @@ repos:
         pass_filenames: false
         files: 'templates/index\.html$'
         stages: [pre-commit]
+
+      - id: check-repo-secrets
+        name: check-repo-secrets (no embedded creds / token shapes in staged files)
+        # Python regex scanner -- catches GitHub PATs, AWS keys, OpenAI/Stripe sk-,
+        # Slack tokens, npm tokens, PEM private-key headers, and embedded user:pass@
+        # creds in git remote URLs. Secrets are redacted in output (the literal
+        # string "<REDACTED>" replaces the match) so the terminal / CI log never
+        # replays the leaked value. See docs/security/git-credentials.md.
+        entry: python scripts/check_repo_secrets.py --staged
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+
+  - repo: https://github.com/gitleaks/gitleaks
+    # Second layer: gitleaks's upstream rule pack (hundreds of additional
+    # token shapes). Our local scanner is the fast first line; gitleaks is
+    # the comprehensive sweep. Both must pass.
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
