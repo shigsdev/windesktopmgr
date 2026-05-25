@@ -2326,6 +2326,61 @@ class TestGatherClusterContext:
         assert result["ok"] is True
         assert result["bios_audit_changes"] == []
 
+    def test_utc_timestamps_are_converted_to_local_before_filter(self, baseline_tmp, mocker):
+        """Regression for the 2026-05-25 timezone bug: Update Session +
+        Event Log return UTC timestamps. The cluster window is in naive
+        LOCAL time. Without converting, a UTC event timestamped during
+        the cluster window was silently discarded because the naive
+        comparison was off by the local UTC offset (4 h on EDT).
+
+        Synthesise a Get-HotFix entry whose UTC representation maps to
+        a LOCAL moment 2 minutes into the cluster window. Assertion:
+        the entry IS in the filtered result.
+        """
+        # Cluster: 14:00..14:05 local (naive).
+        cluster_start = datetime(2026, 5, 22, 14, 0, 0)
+        cluster_end = datetime(2026, 5, 22, 14, 5, 0)
+        # Build a UTC string for the moment "local 14:02" -- by
+        # subtracting the local UTC offset.
+        local_offset = datetime.now().astimezone().utcoffset()
+        utc_moment = cluster_start + timedelta(minutes=2) - local_offset
+        utc_repr = utc_moment.isoformat() + "+00:00"
+        mocker.patch.object(
+            baseline,
+            "_recent_windows_updates",
+            return_value=[{"id": "KB-tz", "description": "tz regression", "installed": utc_repr}],
+        )
+        result = baseline.gather_cluster_context(
+            cluster_start.isoformat(timespec="seconds"),
+            cluster_end.isoformat(timespec="seconds"),
+            window_seconds=60,
+        )
+        assert result["totals"]["windows_updates"] == 1, (
+            f"UTC->local conversion broke; got {result['windows_updates']!r}"
+        )
+
+    def test_parse_to_naive_local_helper(self):
+        """Direct unit test of the helper. Cheap insurance against
+        future regressions."""
+        # Naive in -> naive out unchanged.
+        ts = baseline._parse_to_naive_local("2026-05-22T14:00:00")
+        assert ts == datetime(2026, 5, 22, 14, 0, 0)
+        # UTC Z suffix -> converted to local.
+        ts2 = baseline._parse_to_naive_local("2026-05-22T18:00:00Z")
+        # If local is UTC-4 (EDT) this becomes 14:00. We can't hardcode
+        # because tests must work in any tz; just verify the offset is
+        # the local one.
+        local_offset = datetime.now().astimezone().utcoffset()
+        expected = datetime(2026, 5, 22, 18, 0, 0) + local_offset
+        assert ts2 == expected
+        # +00:00 suffix should be equivalent to Z.
+        ts3 = baseline._parse_to_naive_local("2026-05-22T18:00:00+00:00")
+        assert ts3 == ts2
+        # Empty / garbage / None -> None.
+        assert baseline._parse_to_naive_local("") is None
+        assert baseline._parse_to_naive_local("not-iso") is None
+        assert baseline._parse_to_naive_local(None) is None
+
 
 class TestAcceptClusterEvents:
     """Bulk accept_drift_entry over a list of events. Per-event failures
