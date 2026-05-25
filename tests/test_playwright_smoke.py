@@ -40,7 +40,9 @@ pytestmark = pytest.mark.playwright
 
 BASE_URL = "http://localhost:5000"
 
-# Tab IDs from templates/index.html -- kept in sync with the actual nav
+# Tab IDs from templates/index.html -- kept in sync with the actual nav.
+# Adding a new tab? Add it here too so the parametrised smoke + the
+# new-in-2026-05-25 visibility-after-switch test cover it.
 TAB_IDS = [
     "dashboard",
     "processes",
@@ -61,6 +63,7 @@ TAB_IDS = [
     "remediation",
     "nlq",
     "baseline",
+    "backup",
 ]
 
 
@@ -125,6 +128,55 @@ class TestTabNavigationSmoke:
         # ads from embedded help links). Only fail on app-level issues.
         actionable = [e for e in errors if "favicon" not in e.lower()]
         assert not actionable, f"console errors after switchTab({tab_id}): {actionable}"
+
+    @pytest.mark.parametrize("tab_id", TAB_IDS)
+    def test_tab_switch_makes_target_page_visible(self, loaded_page, tab_id):
+        """Added 2026-05-25 after the Backup-tab empty-viewport bug.
+
+        Console-error-free wasn't enough -- the old switchTab had a
+        hardcoded array of page IDs that the show/hide loop iterated.
+        When the Backup tab landed (and "backup" wasn't in the array)
+        clicking it ran loadBackup() cleanly but never UN-HID
+        ``#page-backup``, leaving an empty viewport with zero JS errors.
+
+        This test asserts the postcondition the show/hide loop is
+        supposed to maintain: after ``switchTab(X)``, the
+        ``#page-X`` div has a non-"none" display value AND every
+        other ``#page-*`` div is hidden.
+        """
+        page, _errors = loaded_page
+        page.evaluate(f"switchTab({tab_id!r})")
+        page.wait_for_timeout(300)
+
+        # Skip tabs whose page-X id intentionally doesn't exist (e.g.
+        # NLQ uses a different DOM convention). The test gates on the
+        # element being present in the page first.
+        target_present = page.evaluate(f"!!document.getElementById('page-{tab_id}')")
+        if not target_present:
+            pytest.skip(f"no #page-{tab_id} div (tab uses different DOM)")
+
+        target_display = page.evaluate(f"document.getElementById('page-{tab_id}').style.display")
+        assert target_display != "none", (
+            f"#page-{tab_id} is still display:none after switchTab({tab_id!r}) -- "
+            f"the show/hide loop likely missed this tab id"
+        )
+
+        # Also verify ALL OTHER page-* divs are hidden. Catches the
+        # opposite bug: "I switched to Backup but Dashboard is also
+        # still visible".  Note: arrow functions don't have their own
+        # `arguments` object, so we pass the target id via Playwright's
+        # evaluate(fn, arg) parameter convention.
+        visible_others = page.evaluate(
+            """(targetId) => {
+                return Array.from(document.querySelectorAll('[id^="page-"]'))
+                    .filter(el => el.id !== 'page-' + targetId && el.style.display !== 'none')
+                    .map(el => el.id);
+            }""",
+            tab_id,
+        )
+        assert visible_others == [], (
+            f"after switchTab({tab_id!r}) these other pages were ALSO visible: {visible_others}"
+        )
 
 
 # ── Concern action-button handler resolution (backlog #26 primary win) ─

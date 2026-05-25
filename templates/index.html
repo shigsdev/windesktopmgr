@@ -1294,7 +1294,14 @@ document.querySelectorAll(".page-tab").forEach(btn => {
     const page = btn.dataset.page;
     // Stop home network polling when leaving the tab
     if (page !== "homenet" && typeof _hnStopPolling === "function") _hnStopPolling();
-    ["dashboard","drivers","bsod","startup","disk","network","updates","events","processes","thermals","services","health-history","timeline","memory","bios","credentials","sysinfo","remediation","homenet","baseline","logs","architecture"].forEach(function(p) {
+    // Iterate the actual nav buttons (data-page attribute) rather than
+    // a duplicated string array. The old approach silently broke when
+    // a new tab landed in the markup but the dev forgot to update the
+    // hardcoded list (caught 2026-05-25 on the Backup tab — clicking
+    // it left an empty viewport because "backup" wasn't in the array).
+    document.querySelectorAll(".page-tab").forEach(function(t) {
+      var p = t.dataset.page;
+      if (!p) return;
       var el = document.getElementById("page-" + p);
       if (el) el.style.display = (p === page) ? "" : "none";
     });
