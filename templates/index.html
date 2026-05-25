@@ -6603,10 +6603,16 @@ function bl_reloadTimeline() { return loadBaselineTimeline(); }
 
 window._blClusterStash = [];
 
-async function bl_examineCluster(idx) {
+async function bl_examineCluster(idx, windowSeconds) {
   const cluster = (window._blClusterStash || [])[idx];
   if (!cluster) { alert("Cluster data not available -- refresh the timeline."); return; }
-  const url = `/api/baseline/cluster-context?started_at=${encodeURIComponent(cluster.started_at)}&ended_at=${encodeURIComponent(cluster.ended_at)}&window=300`;
+  // Default to ±15min instead of ±5min: the cluster TIMESTAMP marks
+  // when drift was DETECTED, not when the changes actually happened.
+  // Changes typically land 5-15 min before the drift check runs. ±5min
+  // misses them; ±15min usually catches them. User can widen further
+  // via the in-modal selector.
+  const ws = Number(windowSeconds) || 900;
+  const url = `/api/baseline/cluster-context?started_at=${encodeURIComponent(cluster.started_at)}&ended_at=${encodeURIComponent(cluster.ended_at)}&window=${ws}`;
   let data;
   try {
     const r = await fetch(url);
@@ -6658,8 +6664,21 @@ async function bl_examineCluster(idx) {
       <div style="font-size:16px;font-weight:700;color:var(--text-bright)">🔍 What happened around ${escHtml(new Date(cluster.started_at).toLocaleString())}?</div>
       <button onclick="document.body.removeChild(document.getElementById('bl-examine-overlay'))" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer">Close</button>
     </div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:14px">
-      Cluster window: ${escHtml(win.started_at)} → ${escHtml(win.ended_at)} · expanded by ±${win.seconds || 0}s (probe: ${escHtml(win.expanded_started)} → ${escHtml(win.expanded_ended)})
+    <div style="display:flex;align-items:center;gap:10px;font-size:11px;color:var(--muted);margin-bottom:10px;flex-wrap:wrap">
+      <span>Cluster window: ${escHtml(win.started_at)} → ${escHtml(win.ended_at)}</span>
+      <span>·</span>
+      <span>look back ±</span>
+      <select onchange="bl_examineCluster(${idx}, this.value)" style="background:var(--surface);border:1px solid var(--border);color:var(--text);padding:3px 6px;border-radius:4px;font-size:11px">
+        <option value="300"${ws === 300 ? " selected" : ""}>5 min</option>
+        <option value="900"${ws === 900 ? " selected" : ""}>15 min</option>
+        <option value="3600"${ws === 3600 ? " selected" : ""}>1 hour</option>
+        <option value="14400"${ws === 14400 ? " selected" : ""}>4 hours</option>
+        <option value="86400"${ws === 86400 ? " selected" : ""}>24 hours</option>
+      </select>
+      <span style="color:var(--muted);font-size:10px">(probe: ${escHtml(win.expanded_started)} → ${escHtml(win.expanded_ended)})</span>
+    </div>
+    <div style="font-size:10px;color:var(--muted);margin-bottom:14px;padding:6px 10px;background:var(--surface);border-radius:4px;line-height:1.4">
+      💡 The cluster timestamp marks when DRIFT was DETECTED (you opened the Baseline tab). The actual changes typically happen 5–15 minutes earlier. If the default 15-min window finds nothing, widen the look-back.
     </div>
     ${noSignalNote}
     <div style="margin-bottom:16px">
