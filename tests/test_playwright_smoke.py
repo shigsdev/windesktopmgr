@@ -301,6 +301,71 @@ class TestCloudCopyListEditorPersists:
         )
         page.wait_for_timeout(800)
 
+    def test_plus_with_empty_input_gives_visible_feedback(self, loaded_page):
+        """User report 2026-05-25: clicking + with an empty input felt
+        like 'the button does nothing.' Original code silently returned.
+        Now an empty click must focus the input AND swap the placeholder
+        to a hint AND flash the border red -- any of those three is
+        enough to make the click feel responsive."""
+        page, _ = loaded_page
+        self._open_backup_tab(page)
+        inp = page.locator("#cc-folders-add-input")
+        inp.evaluate("el => el.blur()")  # start unfocused
+        # Click + with empty input
+        page.evaluate(
+            """() => {
+                const inp = document.getElementById('cc-folders-add-input');
+                inp.value = '';
+                inp.nextElementSibling.click();
+            }"""
+        )
+        page.wait_for_timeout(200)
+        # Visible feedback assertions: input focused + placeholder swapped.
+        is_focused = page.evaluate("document.activeElement.id === 'cc-folders-add-input'")
+        placeholder = page.evaluate("document.getElementById('cc-folders-add-input').placeholder")
+        assert is_focused, "empty + click should focus the input so the user knows where to type"
+        assert "type" in placeholder.lower() or "first" in placeholder.lower(), (
+            f"empty + click should swap placeholder to a hint; got {placeholder!r}"
+        )
+        # Border color check is best-effort (browser CSS computed-value
+        # quirks); the focus + placeholder change are the primary signal.
+        # (Don't assert exact red value to avoid false positives.)
+
+    def test_placeholder_survives_add(self, loaded_page):
+        """User report 2026-05-25: 'folder name' placeholder vanished
+        after the first add. Original cc_renderListEditor called with 2
+        args set placeholder to empty string. After fix: placeholder
+        only changes when explicitly supplied -- post-add renders leave
+        it alone."""
+        page, _ = loaded_page
+        self._open_backup_tab(page)
+        inp = page.locator("#cc-folders-add-input")
+
+        # The initial placeholder is the example text set by loadCloudCopy.
+        initial_placeholder = inp.evaluate("el => el.placeholder")
+        assert "e.g." in initial_placeholder, (
+            f"initial render should put an example placeholder; got {initial_placeholder!r}"
+        )
+
+        # Add an item, then check the placeholder hasn't been clobbered.
+        marker = "PWTestPlaceholderSurvival"
+        inp.fill(marker)
+        page.evaluate("""() => document.getElementById('cc-folders-add-input').nextElementSibling.click()""")
+        page.wait_for_timeout(800)
+        after_add_placeholder = inp.evaluate("el => el.placeholder")
+        assert after_add_placeholder == initial_placeholder, (
+            f"placeholder was clobbered after add: {initial_placeholder!r} -> {after_add_placeholder!r}"
+        )
+
+        # Cleanup the marker.
+        page.evaluate(
+            f"""() => {{
+                const idx = _ccRules.exclude_folders.indexOf({marker!r});
+                if (idx >= 0) cc_removeItem('cc-folders', idx);
+            }}"""
+        )
+        page.wait_for_timeout(800)
+
 
 # ── Concern action-button handler resolution (backlog #26 primary win) ─
 
