@@ -7029,9 +7029,201 @@ async function loadBackup() {
     }
   }
 
+  // Section 3 -- OneDrive -> iCloud rule editor (backlog #46 PR-1).
+  // Loads independently of sections 1+2; failures don't cascade.
+  loadCloudCopy();
+
   // Also load the actions-history panel below (best-effort -- a slow
   // history fetch shouldn't block the section renders above).
   loadBackupActionsHistory();
+}
+
+// ── Section 3 — OneDrive -> iCloud replicator (backlog #46 PR-1) ─────
+// Rule editor + preview only. No actual copying happens in PR-1; the
+// Start button is stubbed with a "coming in PR-2" tooltip.
+
+let _ccRules = null;  // Cache the current rules dict between edits.
+
+function cc_renderListEditor(elId, items, placeholder) {
+  // Renders a small editable list. The user adds items by typing in
+  // an input + clicking +; removes via the × per row.
+  const ul = document.getElementById(elId);
+  if (!ul) return;
+  ul.innerHTML = (items || []).map((s, i) => `
+    <li style="display:flex;align-items:center;gap:6px;padding:3px 0;font-size:11px">
+      <code style="flex:1;background:var(--surface);padding:2px 6px;border-radius:3px">${escHtml(s)}</code>
+      <button onclick="cc_removeItem('${elId}', ${i})" style="background:transparent;border:1px solid var(--red);color:var(--red);padding:0 6px;border-radius:3px;cursor:pointer;font-size:10px">×</button>
+    </li>`).join("");
+  const adder = document.getElementById(elId + "-add-input");
+  if (adder) adder.placeholder = placeholder || "";
+}
+
+function cc_addItem(elId, key) {
+  const adder = document.getElementById(elId + "-add-input");
+  if (!adder || !adder.value.trim()) return;
+  if (!_ccRules) return;
+  _ccRules[key] = _ccRules[key] || [];
+  _ccRules[key].push(adder.value.trim());
+  adder.value = "";
+  cc_renderListEditor(elId, _ccRules[key]);
+}
+
+function cc_removeItem(elId, idx) {
+  // Derive the rules-key from the elId convention.
+  const keyMap = {
+    "cc-folders": "exclude_folders",
+    "cc-extensions": "exclude_extensions",
+    "cc-globs": "exclude_filename_globs",
+  };
+  const key = keyMap[elId];
+  if (!key || !_ccRules) return;
+  _ccRules[key].splice(idx, 1);
+  cc_renderListEditor(elId, _ccRules[key]);
+}
+
+async function cc_saveRules() {
+  if (!_ccRules) return;
+  // Pull the personal-vault toggle from the DOM (it lives outside the
+  // three list-editors).
+  const pvToggle = document.getElementById("cc-include-vault");
+  if (pvToggle) _ccRules.include_personal_vault = !!pvToggle.checked;
+  const statusEl = document.getElementById("cc-save-status");
+  if (statusEl) statusEl.textContent = "saving…";
+  try {
+    const r = await fetch("/api/cloudcopy/rules", {
+      method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({rules: _ccRules}),
+    });
+    const data = await r.json();
+    if (!data.ok) {
+      if (statusEl) statusEl.textContent = "error: " + (data.error || "save failed");
+      return;
+    }
+    if (statusEl) statusEl.textContent = "saved";
+    setTimeout(() => { if (statusEl) statusEl.textContent = ""; }, 2500);
+  } catch (e) {
+    if (statusEl) statusEl.textContent = "error: " + e.message;
+  }
+}
+
+async function cc_preview() {
+  const out = document.getElementById("cc-preview-body");
+  if (!out) return;
+  out.innerHTML = '<div style="color:var(--muted);padding:8px">Walking OneDrive (this may take a few seconds)…</div>';
+  // Save rules first so preview reflects what's on screen.
+  await cc_saveRules();
+  let data;
+  try {
+    const r = await fetch("/api/cloudcopy/preview");
+    data = await r.json();
+  } catch (e) {
+    out.innerHTML = `<div style="color:var(--red);padding:8px">Preview failed: ${escHtml(e.message)}</div>`;
+    return;
+  }
+  const incBytes = bk_humanBytes(data.included_bytes);
+  const capNote = data.file_cap_hit ? ' <span style="color:var(--orange);font-size:10px">(walker stopped at 50,000 files — counts are lower bounds)</span>' : "";
+  const includedSample = (data.included_sample || []).map(s =>
+    `<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px"><span style="color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${escHtml(s.rel_path)}</span><span style="color:var(--muted);margin-left:8px">${bk_humanBytes(s.size)}</span></div>`
+  ).join("") || '<div style="color:var(--muted);padding:4px">(none)</div>';
+  const excludedSample = (data.excluded_sample || []).map(s =>
+    `<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:10px"><span style="color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${escHtml(s.rel_path)}</span><span style="color:var(--orange);margin-left:8px;font-size:9px">${escHtml(s.reason)}</span></div>`
+  ).join("") || '<div style="color:var(--muted);padding:4px">(none)</div>';
+  out.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;font-size:11px">
+      <div>
+        <div style="font-weight:600;color:var(--green);margin-bottom:6px">✅ Would copy: ${data.included_count.toLocaleString()} files · ${incBytes}${capNote}</div>
+        <div style="font-size:10px;color:var(--muted);margin-bottom:4px">First ${(data.included_sample || []).length} sample paths:</div>
+        <div style="max-height:200px;overflow-y:auto;border:1px solid var(--border);padding:6px;border-radius:4px;background:var(--surface)">${includedSample}</div>
+      </div>
+      <div>
+        <div style="font-weight:600;color:var(--orange);margin-bottom:6px">⏭ Excluded: ${data.excluded_count.toLocaleString()} files</div>
+        <div style="font-size:10px;color:var(--muted);margin-bottom:4px">First ${(data.excluded_sample || []).length} sample paths + reasons:</div>
+        <div style="max-height:200px;overflow-y:auto;border:1px solid var(--border);padding:6px;border-radius:4px;background:var(--surface)">${excludedSample}</div>
+      </div>
+    </div>
+    <div style="margin-top:10px;font-size:10px;color:var(--muted);font-family:var(--font-mono)">
+      Source: ${escHtml(data.source_root)} → Destination: ${escHtml(data.destination_root)}<br>
+      Walked at ${escHtml(data.walked_at)}
+    </div>`;
+}
+
+async function loadCloudCopy() {
+  const body = document.getElementById("bk-sec3-body");
+  if (!body) return;
+  body.innerHTML = '<div style="color:var(--muted);padding:8px">Loading rules…</div>';
+  let data;
+  try {
+    const r = await fetch("/api/cloudcopy/rules");
+    data = await r.json();
+  } catch (e) {
+    body.innerHTML = `<div style="color:var(--red);padding:8px">Failed: ${escHtml(e.message)}</div>`;
+    return;
+  }
+  _ccRules = data.rules || {};
+  bk_setStatusPill("bk-sec3-status", "info", "PR-1: rules + preview");
+
+  // Top: a small explainer + the Start button (stubbed until PR-2).
+  body.innerHTML = `
+    <div style="padding:10px 0 14px 0;color:var(--text);font-size:12px;line-height:1.5">
+      <div style="margin-bottom:6px">One-way replicator: pushes everything under <code>OneDrive</code> into <code>iCloudDrive/OneDrive-Mirror/</code>. Default = mirror everything; configure exclusion rules below to strike out what you don't want.</div>
+      <div style="color:var(--muted);font-size:11px">Personal Vault is excluded by default (encrypted at rest by OneDrive; copying it sideways defeats the protection). Toggle below to override.</div>
+    </div>
+
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border);margin-bottom:12px">
+      <div style="font-size:11px;color:var(--muted)">
+        <label style="cursor:pointer">
+          <input type="checkbox" id="cc-include-vault" ${_ccRules.include_personal_vault ? "checked" : ""} onchange="cc_saveRules()" style="margin-right:6px">
+          Include Personal Vault (NOT recommended — overrides default protection)
+        </label>
+      </div>
+      <button onclick="cc_preview()" style="background:var(--cyan);border:none;color:#000;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700">🔍 Preview what would be copied</button>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:14px">
+
+      <div>
+        <div style="font-size:12px;font-weight:700;color:var(--text-bright);margin-bottom:6px">Exclude folders</div>
+        <div style="font-size:10px;color:var(--muted);margin-bottom:6px">Match by folder NAME (any depth, case-insensitive).</div>
+        <ul id="cc-folders" style="list-style:none;padding:0;margin:0 0 6px 0;max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;background:var(--surface);padding:6px"></ul>
+        <div style="display:flex;gap:4px">
+          <input id="cc-folders-add-input" type="text" placeholder="Backup Data" style="flex:1;padding:3px 6px;font-size:11px;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:3px">
+          <button onclick="cc_addItem('cc-folders', 'exclude_folders'); cc_saveRules();" style="background:var(--cyan);border:none;color:#000;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:11px;font-weight:700">+</button>
+        </div>
+      </div>
+
+      <div>
+        <div style="font-size:12px;font-weight:700;color:var(--text-bright);margin-bottom:6px">Exclude extensions</div>
+        <div style="font-size:10px;color:var(--muted);margin-bottom:6px">Must include the dot. Case-insensitive.</div>
+        <ul id="cc-extensions" style="list-style:none;padding:0;margin:0 0 6px 0;max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;background:var(--surface);padding:6px"></ul>
+        <div style="display:flex;gap:4px">
+          <input id="cc-extensions-add-input" type="text" placeholder=".iso" style="flex:1;padding:3px 6px;font-size:11px;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:3px">
+          <button onclick="cc_addItem('cc-extensions', 'exclude_extensions'); cc_saveRules();" style="background:var(--cyan);border:none;color:#000;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:11px;font-weight:700">+</button>
+        </div>
+      </div>
+
+      <div>
+        <div style="font-size:12px;font-weight:700;color:var(--text-bright);margin-bottom:6px">Exclude filename globs</div>
+        <div style="font-size:10px;color:var(--muted);margin-bottom:6px">Use * and ? wildcards. Match filename only.</div>
+        <ul id="cc-globs" style="list-style:none;padding:0;margin:0 0 6px 0;max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;background:var(--surface);padding:6px"></ul>
+        <div style="display:flex;gap:4px">
+          <input id="cc-globs-add-input" type="text" placeholder="~$*" style="flex:1;padding:3px 6px;font-size:11px;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:3px">
+          <button onclick="cc_addItem('cc-globs', 'exclude_filename_globs'); cc_saveRules();" style="background:var(--cyan);border:none;color:#000;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:11px;font-weight:700">+</button>
+        </div>
+      </div>
+
+    </div>
+
+    <div id="cc-preview-body" style="margin-bottom:12px"></div>
+
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:10px;border-top:1px solid var(--border)">
+      <div style="font-size:10px;color:var(--muted)">Save status: <span id="cc-save-status"></span></div>
+      <button disabled title="Coming in #46 PR-2 — copy engine + crash-safe resume" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:6px 14px;border-radius:6px;cursor:not-allowed;font-size:11px">▶ Start copy (PR-2)</button>
+    </div>`;
+
+  cc_renderListEditor("cc-folders", _ccRules.exclude_folders || [], "folder name");
+  cc_renderListEditor("cc-extensions", _ccRules.exclude_extensions || [], ".ext");
+  cc_renderListEditor("cc-globs", _ccRules.exclude_filename_globs || [], "glob pattern");
 }
 
 async function loadBackupActionsHistory() {
@@ -10299,14 +10491,14 @@ function renderSystemInfo(d, upgrades) {
       </div>
     </details>
 
-    <!-- Section 3: OneDrive -> iCloud (placeholder for backlog #46) ─── -->
-    <details id="bk-sec3" style="margin-bottom:14px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:0;opacity:0.7">
+    <!-- Section 3: OneDrive -> iCloud (#46 PR-1 — rule editor + preview) -->
+    <details id="bk-sec3" open style="margin-bottom:14px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:0">
       <summary style="cursor:pointer;padding:12px 16px;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px">
         <span style="font-size:14px;font-weight:700;color:var(--text-bright)">3. OneDrive → iCloud replicator</span>
-        <span class="bk-status-pill" style="font-size:10px;padding:2px 8px;border-radius:10px;background:var(--surface);color:var(--cyan);border:1px solid var(--cyan)">Backlog #46 — coming next</span>
+        <span id="bk-sec3-status" class="bk-status-pill" style="font-size:10px;padding:2px 8px;border-radius:10px;background:var(--surface);color:var(--muted);border:1px solid var(--border)">loading…</span>
       </summary>
-      <div style="padding:0 16px 16px 16px;font-size:12px;color:var(--muted)">
-        One-way replicator: pushes OneDrive contents into iCloud Drive so the same files are reachable from iPhone / iPad / Mac. Source-wins overwrite, files-only (no Photos.app library integration), manual + optional schedule. Configurable exclusion rules (folders / extensions / filename globs). Crash-safe resume from <code>cloudcopy_state.json</code>. See backlog #46 for the locked V1 spec.
+      <div style="padding:0 16px 16px 16px;font-size:12px;color:var(--text)">
+        <div id="bk-sec3-body"></div>
       </div>
     </details>
 

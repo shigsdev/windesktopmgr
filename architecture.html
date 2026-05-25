@@ -193,7 +193,7 @@
       <button type="button" onclick="exportPDF()" title="Open the browser print dialog — choose 'Save as PDF'" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--yellow);border:none;cursor:pointer;border-right:1px solid var(--border)">Export PDF</button>
       <button type="button" onclick="exportHTML()" title="Download a self-contained copy of this diagram" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--blue);border:none;cursor:pointer">Export HTML</button>
     </div>
-    <div class="badge" style="color:var(--green);border-color:#00e67633">2,422 tests · 86% coverage</div>
+    <div class="badge" style="color:var(--green);border-color:#00e67633">2,481 tests · 86% coverage</div>
     <div class="badge">
       <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
     </div>
@@ -346,6 +346,11 @@
         <div class="route-chip"><span class="method">POST</span>/api/backup/delete-version</div>
         <div class="route-chip"><span class="method">POST</span>/api/backup/file-history-cleanup</div>
         <div class="route-chip"><span class="method">GET</span>/api/backup/actions-history</div>
+        <div class="route-chip"><span class="method">GET</span>/api/cloudcopy/rules</div>
+        <div class="route-chip"><span class="method">PUT</span>/api/cloudcopy/rules</div>
+        <div class="route-chip"><span class="method">GET</span>/api/cloudcopy/preview</div>
+        <div class="route-chip"><span class="method">GET</span>/api/cloudcopy/history</div>
+        <div class="route-chip"><span class="method">GET</span>/api/cloudcopy/resume-state</div>
         <div class="route-chip" id="rt-creds"><span class="method">GET</span>/api/credentials/health</div>
         <div class="route-chip"><span class="method">POST</span>/api/credentials/resume-onedrive</div>
         <div class="route-chip"><span class="method">POST</span>/api/credentials/resume-brokers</div>
@@ -712,6 +717,10 @@
             <div class="fs-sub">Backup tab (#47 PR-1+2) · ~640 lines · File History live-read + health probes · WindowsImageBackup cache reader + wbadmin parser · elevated-helper launcher (ShellExecuteW + UAC) · safety validators (most-recent + only-version guards) · combined health summary · actions audit log · dashboard concern (critical when FH target missing)</div>
           </div>
           <div class="fs-chip">
+            <div class="fs-title">cloudcopy.py</div>
+            <div class="fs-sub">OneDrive → iCloud replicator (#46 PR-1) · ~430 lines · DEFAULT_RULES (Personal Vault excluded) · load/save/validate_rules · is_excluded (folders + extensions + globs) · walk_source (os.scandir, no placeholder materialisation) · preview (counts + samples + cap-hit signal) · history + resume-state placeholders for PR-2</div>
+          </div>
+          <div class="fs-chip">
             <div class="fs-title">applogging.py</div>
             <div class="fs-sub">RotatingFileHandler · ~212 lines · 10MB × 5 backups · /api/logs source</div>
           </div>
@@ -787,7 +796,7 @@
 
   <!-- ── LAYER 7: TEST SUITE ──────────────────────────────────── -->
   <div class="row row-tests" id="layer-tests">
-    <div class="row-label">🧪 Test Suite — 2,422 tests · pytest · 86% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
+    <div class="row-label">🧪 Test Suite — 2,481 tests · pytest · 86% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
       <div class="test-chip">
         <div class="test-title">test_routes.py</div>
@@ -872,6 +881,10 @@
       <div class="test-chip">
         <div class="test-title">test_backup.py</div>
         <div class="test-sub">85 tests · File History XML parser · target/store probe (critical when missing) · catalog freshness · staging usage · cache reader · combined summary (worst-wins) · wbadmin output parser · delete-version + FH-cleanup safety validators · actions-history persistence + cap · scan-status result-file reader (path-traversal guards) · ShellExecuteW launch (UAC accept + deny) · 9 routes · dashboard concern wiring</div>
+      </div>
+      <div class="test-chip">
+        <div class="test-title">test_cloudcopy.py</div>
+        <div class="test-sub">59 tests · DEFAULT_RULES schema · load_rules (no-file / malformed / partial-merge) · validate_rules (5 negative shapes + positive) · save round-trip · is_excluded across all 3 dimensions + Personal Vault + folder-prune at directory level + deterministic ordering · preview counts match real synthetic tree · 5 routes (GET/PUT rules, GET preview with sample-size clamp, GET history, GET resume-state)</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_check_repo_secrets.py</div>
@@ -1135,7 +1148,7 @@
           <div style="flex:0 0 auto;min-width:120px;background:#ff80ab0a;border:1px solid #ff80ab44;border-radius:8px;padding:10px 12px;text-align:center">
             <div style="font-size:16px;margin-bottom:4px">🧪</div>
             <div style="color:var(--pink);font-weight:700;font-size:10px">3. PYTEST</div>
-            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">2,422 tests · 86% cov · ~60s</div>
+            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">2,481 tests · 86% cov · ~60s</div>
           </div>
           <div style="display:flex;align-items:center;padding:0 4px;color:var(--pink);font-size:14px">→</div>
 
@@ -1277,7 +1290,7 @@
 
 
 <div class="footer">
-  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 2,422 tests · ~21,480 lines</span>
+  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 2,481 tests · ~21,480 lines</span>
   <span>github.com/shigsdev/windesktopmgr · Updated 2026-05-18</span>
 </div>
 
