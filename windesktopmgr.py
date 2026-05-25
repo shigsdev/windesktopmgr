@@ -9468,15 +9468,105 @@ def cloudcopy_history_route():
 @app.route("/api/cloudcopy/resume-state", methods=["GET"])
 def cloudcopy_resume_state_route():
     """Return the in-progress session state if a crashed session is
-    detected, else ``{has_crashed: False}``. PR-1 always returns
-    no-crash; PR-2 wires this to the per-file commit log so the user
-    sees a "Resume previous run?" banner after a tray restart."""
+    detected, else ``{has_crashed: False}``. PR-2 wires this to the
+    per-file commit log -- the user sees a "Resume previous run?"
+    banner after a tray restart."""
     import cloudcopy
 
     state = cloudcopy.load_resume_state()
-    if not state:
-        return jsonify({"ok": True, "has_crashed": False})
-    return jsonify({"ok": True, "has_crashed": True, "state": state})
+    active = cloudcopy.get_active_session_id()
+    # If a session is currently active, the state file belongs to it
+    # (not to a crashed run). Distinguish so the UI doesn't show a
+    # spurious "Resume" banner during a normal in-progress copy.
+    if not state or (active and active == state.get("session_id")):
+        return jsonify({"ok": True, "has_crashed": False, "active_session_id": active})
+    return jsonify({"ok": True, "has_crashed": True, "state": state, "active_session_id": active})
+
+
+# PR-2: actual copy engine routes.
+
+
+@app.route("/api/cloudcopy/run", methods=["POST"])
+def cloudcopy_run_route():
+    """Start a new copy session.
+
+    Body::
+        {"confirm_token": "START CLOUD COPY"}
+
+    Type-to-confirm gate (mirrors PR #22 router-reboot pattern). The
+    literal string "START CLOUD COPY" must match exactly so a stray
+    POST can't trigger a long-running write operation.
+
+    Returns ``{ok: true, session_id: "<hex>"}`` on launch, or 400/409
+    with an error string on validation / concurrency failure.
+    """
+    import cloudcopy
+
+    data = request.get_json() or {}
+    confirm = (data.get("confirm_token") or "").strip()
+    if confirm != "START CLOUD COPY":
+        return jsonify({"ok": False, "error": "confirm_token must equal 'START CLOUD COPY'"}), 400
+    result = cloudcopy.start_copy_session()
+    if not result.get("ok"):
+        # 409 Conflict for "another session is active"; 400 for everything else.
+        status = 409 if "active" in (result.get("error") or "") else 400
+        return jsonify(result), status
+    return jsonify(result)
+
+
+@app.route("/api/cloudcopy/status", methods=["GET"])
+def cloudcopy_status_route():
+    """Live progress for the active session (or its history row if it
+    just finished)."""
+    import cloudcopy
+
+    session_id = (request.args.get("session_id") or "").strip()
+    if not session_id:
+        return jsonify({"state": "missing", "error": "session_id required"}), 400
+    return jsonify(cloudcopy.get_status(session_id))
+
+
+@app.route("/api/cloudcopy/cancel", methods=["POST"])
+def cloudcopy_cancel_route():
+    """Co-operative cancel of the active session. Worker drains its
+    in-progress file then exits cleanly with a 'cancelled' history
+    entry."""
+    import cloudcopy
+
+    data = request.get_json() or {}
+    session_id = (data.get("session_id") or "").strip()
+    if not session_id:
+        return jsonify({"ok": False, "error": "session_id required"}), 400
+    accepted = cloudcopy.request_cancel(session_id)
+    if not accepted:
+        return jsonify({"ok": False, "error": "session id does not match active session"}), 404
+    return jsonify({"ok": True})
+
+
+@app.route("/api/cloudcopy/resume", methods=["POST"])
+def cloudcopy_resume_route():
+    """Continue a crashed session from its last-committed cursor. Re-
+    validates source + destination + rules-hash before resuming so the
+    rest of the session honours the same rule snapshot the original
+    used."""
+    import cloudcopy
+
+    result = cloudcopy.resume_crashed_session()
+    if not result.get("ok"):
+        return jsonify(result), 400
+    return jsonify(result)
+
+
+@app.route("/api/cloudcopy/discard-crashed", methods=["POST"])
+def cloudcopy_discard_route():
+    """Write a 'discarded' history entry + clear the orphan state
+    file. User chose Discard on the crashed-session banner."""
+    import cloudcopy
+
+    result = cloudcopy.discard_crashed_session()
+    if not result.get("ok"):
+        return jsonify(result), 400
+    return jsonify(result)
 
 
 @app.route("/api/baseline/timeline")

@@ -7155,6 +7155,227 @@ async function cc_preview() {
     </div>`;
 }
 
+// ── PR-2: copy engine + crash-safe resume ────────────────────────
+//
+// Start: prompt type-to-confirm -> POST /run -> poll /status every 2s
+// Cancel: POST /cancel with session_id -> worker drains current file
+// Resume: detected on tab load via /resume-state -> banner -> /resume
+// Discard: banner -> /discard-crashed
+
+let _ccActiveSession = null;
+let _ccPollTimer = null;
+
+function cc_humanBytes(n) {
+  if (n === null || n === undefined || isNaN(n)) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0, v = Number(n);
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return v.toFixed(i === 0 ? 0 : 2) + " " + units[i];
+}
+
+function cc_setStartButton(enabled, label) {
+  const btn = document.getElementById("cc-start-btn");
+  if (!btn) return;
+  btn.disabled = !enabled;
+  btn.textContent = label || (enabled ? "▶ Start copy" : "⏳ Running…");
+  btn.style.cursor = enabled ? "pointer" : "not-allowed";
+  btn.style.background = enabled ? "var(--cyan)" : "var(--surface)";
+  btn.style.color = enabled ? "#000" : "var(--muted)";
+}
+
+async function cc_startCopy() {
+  // Save rules first so the session uses the current screen state.
+  await cc_saveRules();
+  const confirm = window.prompt(
+    "Start the OneDrive → iCloud copy?\n\n" +
+    "Source: " + (_ccRules?.source_root || "C:\\Users\\…\\OneDrive") + "\n" +
+    "Destination: " + (_ccRules?.destination_root || "C:\\Users\\…\\iCloudDrive\\OneDrive-Mirror") + "\n\n" +
+    "This is a long-running write operation. To confirm, type exactly:\n" +
+    "    START CLOUD COPY",
+    ""
+  );
+  if (confirm === null) return;
+  if (confirm !== "START CLOUD COPY") { alert("Cancelled: confirmation didn't match."); return; }
+
+  cc_setStartButton(false, "⏳ Starting…");
+  let launch;
+  try {
+    const r = await fetch("/api/cloudcopy/run", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({confirm_token: "START CLOUD COPY"}),
+    });
+    launch = await r.json();
+  } catch (e) {
+    alert("Launch failed: " + e.message);
+    cc_setStartButton(true);
+    return;
+  }
+  if (!launch.ok) {
+    alert("Launch refused: " + (launch.error || "unknown"));
+    cc_setStartButton(true);
+    return;
+  }
+  _ccActiveSession = launch.session_id;
+  cc_startStatusPoll();
+}
+
+function cc_startStatusPoll() {
+  if (_ccPollTimer) clearInterval(_ccPollTimer);
+  _ccPollTimer = setInterval(cc_pollStatus, 2000);
+  cc_pollStatus();
+}
+
+function cc_stopStatusPoll() {
+  if (_ccPollTimer) clearInterval(_ccPollTimer);
+  _ccPollTimer = null;
+}
+
+async function cc_pollStatus() {
+  if (!_ccActiveSession) { cc_stopStatusPoll(); return; }
+  const statusEl = document.getElementById("cc-run-status");
+  if (!statusEl) { cc_stopStatusPoll(); return; }
+  let data;
+  try {
+    const r = await fetch("/api/cloudcopy/status?session_id=" + encodeURIComponent(_ccActiveSession));
+    data = await r.json();
+  } catch (e) {
+    statusEl.style.display = "block";
+    statusEl.innerHTML = `<span style="color:var(--red)">Status fetch failed: ${escHtml(e.message)}</span>`;
+    return;
+  }
+
+  if (data.state === "running" || data.state === "starting") {
+    statusEl.style.display = "block";
+    const pct = (data.percent || 0).toFixed(1);
+    statusEl.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px">
+        <div style="font-weight:700;color:var(--cyan)">⏳ Copying… ${pct}%</div>
+        <button onclick="cc_cancelCopy()" style="background:transparent;border:1px solid var(--red);color:var(--red);padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px">Cancel</button>
+      </div>
+      <div style="background:var(--surface);height:6px;border-radius:3px;overflow:hidden;margin-bottom:8px">
+        <div style="background:var(--cyan);height:100%;width:${pct}%"></div>
+      </div>
+      <div style="font-size:11px;color:var(--muted);display:flex;gap:16px;flex-wrap:wrap">
+        <span>📄 ${data.cursor || 0} / ${data.total || 0} files</span>
+        <span>✅ ${data.files_completed || 0} copied</span>
+        <span>⏭ ${data.files_skipped || 0} skipped (unchanged)</span>
+        ${(data.files_failed || 0) > 0 ? `<span style="color:var(--red)">❌ ${data.files_failed} failed</span>` : ""}
+        <span>💾 ${cc_humanBytes(data.bytes_copied)} copied</span>
+      </div>`;
+    return;
+  }
+
+  if (data.state === "finished") {
+    cc_stopStatusPoll();
+    _ccActiveSession = null;
+    const h = data.history || {};
+    const ok = h.status === "completed" || h.status === "completed_truncated";
+    const color = ok ? "var(--green)" : (h.status === "cancelled" ? "var(--orange)" : "var(--red)");
+    statusEl.style.display = "block";
+    statusEl.style.borderLeftColor = color;
+    statusEl.innerHTML = `
+      <div style="font-weight:700;color:${color};margin-bottom:4px">${ok ? "✅" : (h.status === "cancelled" ? "⏸" : "❌")} Session ${escHtml(h.status || "ended")}</div>
+      <div style="font-size:11px;color:var(--text)">
+        ${h.files_completed_count || 0} copied, ${h.files_skipped_count || 0} skipped, ${h.files_failed_count || 0} failed · ${cc_humanBytes(h.bytes_copied)} written
+        ${h.cap_hit ? ' · <span style="color:var(--orange)">50 GB session cap hit -- click Start again to continue</span>' : ""}
+      </div>`;
+    cc_setStartButton(true);
+    return;
+  }
+
+  if (data.state === "missing") {
+    cc_stopStatusPoll();
+    _ccActiveSession = null;
+    statusEl.style.display = "block";
+    statusEl.innerHTML = `<span style="color:var(--orange)">Session not found (may have finished between polls).</span>`;
+    cc_setStartButton(true);
+    return;
+  }
+}
+
+async function cc_cancelCopy() {
+  if (!_ccActiveSession) return;
+  if (!window.confirm("Cancel the copy? Files already copied stay; the in-progress file is rolled back.")) return;
+  try {
+    await fetch("/api/cloudcopy/cancel", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({session_id: _ccActiveSession}),
+    });
+  } catch (e) {
+    alert("Cancel request failed: " + e.message);
+  }
+  // Don't stop polling -- the worker drains its current file then writes the
+  // "cancelled" history row, and the next poll picks that up.
+}
+
+async function cc_renderResumeBanner() {
+  const banner = document.getElementById("cc-resume-banner");
+  if (!banner) return;
+  let data;
+  try {
+    const r = await fetch("/api/cloudcopy/resume-state");
+    data = await r.json();
+  } catch {
+    banner.style.display = "none";
+    return;
+  }
+  if (!data.has_crashed) {
+    banner.style.display = "none";
+    return;
+  }
+  const s = data.state || {};
+  const total = (s.plan || []).length;
+  const cursor = s.cursor || 0;
+  const pct = total ? ((cursor / total) * 100).toFixed(1) : 0;
+  banner.style.display = "block";
+  banner.innerHTML = `
+    <div style="display:flex;align-items:flex-start;gap:10px">
+      <div style="font-size:18px">⚠️</div>
+      <div style="flex:1">
+        <div style="font-weight:700;color:var(--orange);margin-bottom:4px">Previous run crashed</div>
+        <div style="color:var(--text);font-size:11px;margin-bottom:6px">
+          Crashed at file ${cursor.toLocaleString()} / ${total.toLocaleString()} (${pct}%, ${cc_humanBytes(s.bytes_copied)} copied) · started ${escHtml(s.started_at || "—")}
+        </div>
+        <div style="color:var(--muted);font-size:10px;margin-bottom:8px">
+          Resume continues from the same cursor using the same rule snapshot. Discard writes a "discarded" history entry + clears the state.
+        </div>
+        <div style="display:flex;gap:8px">
+          <button onclick="cc_resume()" style="background:var(--cyan);border:none;color:#000;padding:6px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">▶ Resume</button>
+          <button onclick="cc_discard()" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:6px 12px;border-radius:4px;cursor:pointer;font-size:11px">Discard</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function cc_resume() {
+  let data;
+  try {
+    const r = await fetch("/api/cloudcopy/resume", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+    data = await r.json();
+  } catch (e) {
+    alert("Resume failed: " + e.message);
+    return;
+  }
+  if (!data.ok) { alert("Resume refused: " + (data.error || "unknown")); return; }
+  document.getElementById("cc-resume-banner").style.display = "none";
+  _ccActiveSession = data.session_id;
+  cc_setStartButton(false, "⏳ Resuming…");
+  cc_startStatusPoll();
+}
+
+async function cc_discard() {
+  if (!window.confirm("Discard the crashed session? This writes a 'discarded' history entry and clears the state file. The next Start begins from scratch.")) return;
+  try {
+    await fetch("/api/cloudcopy/discard-crashed", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+  } catch (e) {
+    alert("Discard failed: " + e.message);
+    return;
+  }
+  document.getElementById("cc-resume-banner").style.display = "none";
+}
+
 async function loadCloudCopy() {
   const body = document.getElementById("bk-sec3-body");
   if (!body) return;
@@ -7223,14 +7444,45 @@ async function loadCloudCopy() {
 
     <div id="cc-preview-body" style="margin-bottom:12px"></div>
 
+    <!-- Resume banner (PR-2) -- only visible when a crashed session is detected.
+         Populated by cc_renderResumeBanner() at the bottom of loadCloudCopy. -->
+    <div id="cc-resume-banner" style="display:none;padding:10px 14px;background:var(--card);border:1px solid var(--orange);border-left:4px solid var(--orange);border-radius:8px;margin-bottom:12px;font-size:12px"></div>
+
+    <!-- Live status (PR-2) -- only visible while a session is running. -->
+    <div id="cc-run-status" style="display:none;padding:10px 14px;background:var(--card);border:1px solid var(--cyan);border-left:4px solid var(--cyan);border-radius:8px;margin-bottom:12px;font-size:12px"></div>
+
+    <!-- Schedule status (PR-3 placeholder) -- DEFAULT OFF -->
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-top:1px solid var(--border);font-size:11px;color:var(--muted)">
+      <span>📅 Scheduled run: <strong style="color:var(--muted)">disabled by default</strong> · ${_ccRules.schedule_enabled ? "ENABLED at " + escHtml(_ccRules.schedule_time || "02:00") : "click below to enable"}</span>
+      <button disabled title="Schedule toggle ships in #46 PR-3 (kept OFF by default per user spec)" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:not-allowed;font-size:11px">Schedule (PR-3)</button>
+    </div>
+
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:10px;border-top:1px solid var(--border)">
       <div style="font-size:10px;color:var(--muted)">Save status: <span id="cc-save-status"></span></div>
-      <button disabled title="Coming in #46 PR-2 — copy engine + crash-safe resume" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:6px 14px;border-radius:6px;cursor:not-allowed;font-size:11px">▶ Start copy (PR-2)</button>
+      <button id="cc-start-btn" onclick="cc_startCopy()" style="background:var(--cyan);border:none;color:#000;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700">▶ Start copy</button>
     </div>`;
 
   cc_renderListEditor("cc-folders", _ccRules.exclude_folders || [], "folder name");
   cc_renderListEditor("cc-extensions", _ccRules.exclude_extensions || [], ".ext");
   cc_renderListEditor("cc-globs", _ccRules.exclude_filename_globs || [], "glob pattern");
+
+  // PR-2: check for an active session (resume-state route returns
+  // active_session_id when a worker is running) OR a crashed session.
+  try {
+    const r = await fetch("/api/cloudcopy/resume-state");
+    const rs = await r.json();
+    if (rs.active_session_id) {
+      // Pick up the in-flight session from a prior tab visit.
+      _ccActiveSession = rs.active_session_id;
+      cc_setStartButton(false, "⏳ Running…");
+      cc_startStatusPoll();
+    } else if (rs.has_crashed) {
+      // Surface the resume banner.
+      cc_renderResumeBanner();
+    }
+  } catch {
+    // Resume-state probe is best-effort; not fatal if it fails.
+  }
 }
 
 async function loadBackupActionsHistory() {
