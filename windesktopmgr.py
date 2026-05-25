@@ -9402,6 +9402,83 @@ def backup_actions_history_route():
     return jsonify({"ok": True, "entries": backup.load_actions_history()})
 
 
+# ── Backup tab Section 3 — OneDrive -> iCloud replicator (PR-1 of #46) ──
+
+
+@app.route("/api/cloudcopy/rules", methods=["GET"])
+def cloudcopy_get_rules_route():
+    """Return the user-configured exclusion rules, or DEFAULT_RULES if
+    none have been saved yet. Always shape-complete so the UI never has
+    to null-check."""
+    import cloudcopy
+
+    return jsonify({"ok": True, "rules": cloudcopy.load_rules()})
+
+
+@app.route("/api/cloudcopy/rules", methods=["PUT"])
+def cloudcopy_put_rules_route():
+    """Persist a user-edited rule set.
+
+    Body: ``{"rules": {...}}`` -- shape must match DEFAULT_RULES.
+    Returns ``{ok, error}`` -- 400 on validation failure, 500 on disk error.
+    """
+    import cloudcopy
+
+    data = request.get_json() or {}
+    incoming = data.get("rules")
+    if not isinstance(incoming, dict):
+        return jsonify({"ok": False, "error": "body must be {rules: {...}}"}), 400
+    ok, err = cloudcopy.validate_rules(incoming)
+    if not ok:
+        return jsonify({"ok": False, "error": err}), 400
+    ok, err = cloudcopy.save_rules(incoming)
+    if not ok:
+        return jsonify({"ok": False, "error": err}), 500
+    return jsonify({"ok": True})
+
+
+@app.route("/api/cloudcopy/preview", methods=["GET"])
+def cloudcopy_preview_route():
+    """Walk the OneDrive source root with the current rules and return
+    counts + samples of what would be copied. Read-only -- no files
+    are touched.
+
+    Optional query params:
+      sample_size: default 50, capped at 200
+    """
+    import cloudcopy
+
+    try:
+        sample = int(request.args.get("sample_size", "50"))
+    except (TypeError, ValueError):
+        sample = 50
+    sample = max(1, min(sample, 200))
+    return jsonify(cloudcopy.preview(sample_size=sample))
+
+
+@app.route("/api/cloudcopy/history", methods=["GET"])
+def cloudcopy_history_route():
+    """Return past copy-session history. Empty in PR-1; PR-2's copy
+    engine starts recording entries."""
+    import cloudcopy
+
+    return jsonify({"ok": True, "entries": cloudcopy.load_history()})
+
+
+@app.route("/api/cloudcopy/resume-state", methods=["GET"])
+def cloudcopy_resume_state_route():
+    """Return the in-progress session state if a crashed session is
+    detected, else ``{has_crashed: False}``. PR-1 always returns
+    no-crash; PR-2 wires this to the per-file commit log so the user
+    sees a "Resume previous run?" banner after a tray restart."""
+    import cloudcopy
+
+    state = cloudcopy.load_resume_state()
+    if not state:
+        return jsonify({"ok": True, "has_crashed": False})
+    return jsonify({"ok": True, "has_crashed": True, "state": state})
+
+
 @app.route("/api/baseline/timeline")
 def baseline_timeline_route():
     """Unified cross-surface change timeline (backlog #44).
