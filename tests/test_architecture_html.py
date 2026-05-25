@@ -58,9 +58,15 @@ TEST_FILES = [
     "test_alerts.py",
     "test_metrics_history.py",
     "test_post_update_check.py",
+    "test_post_restart_check.py",
+    "test_post_deploy_topology_check.py",
     "test_gpu.py",
     "test_network_metrics.py",
     "test_baseline.py",
+    "test_backup.py",
+    "test_check_repo_secrets.py",
+    "test_report.py",
+    "test_playwright_smoke.py",
 ]
 
 

@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -83,6 +84,338 @@ _FH_CATALOG_STALE_DAYS = 7
 _FH_STAGING_WARN_RATIO = 0.95
 
 _file_lock = threading.Lock()
+
+# Request / result file naming for the elevated helper (PR-2).
+# Lives in APP_DIR so both the unelevated tray AND the elevated helper
+# can read + write them; APP_DIR is user-owned so no privilege issue.
+_REQUEST_FILE_TPL = "backup_request_{session}.json"
+_RESULT_FILE_TPL = "backup_result_{session}.json"
+
+# Allowed actions for the elevated helper. Keep tight + validated --
+# anything not in this set is rejected before launch.
+_ALLOWED_ACTIONS: set[str] = {
+    "scan_catalog",  # wbadmin get versions + walk WindowsImageBackup for sizes
+    "delete_version",  # wbadmin delete backup -version:<id> -quiet
+    "fh_cleanup",  # fhmanagew.exe -cleanup <days>
+}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# wbadmin output parser  (pure function -- testable without elevation)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def parse_wbadmin_versions(stdout: str) -> list[dict]:
+    """Parse the multi-block output of ``wbadmin get versions``.
+
+    Microsoft's wbadmin emits a fixed-key text block per version,
+    separated by blank lines.  Real output captured against a Win11
+    machine with WindowsImageBackup populated::
+
+        Backup time: 5/24/2026 4:00 AM
+        Backup target: 1394/USB Disk labeled WD Passport(E:)
+        Version identifier: 05/24/2026-04:00
+        Can recover: Volume(s), File(s), Application(s), Bare Metal Recovery, System State
+        Snapshot ID: {abc-123-...}
+
+    Returns a list of dicts with ``version_id``, ``backup_time``,
+    ``target``, ``can_recover`` (list of capability strings),
+    ``snapshot_id`` (optional). ``size_bytes`` is left as None here --
+    the elevated helper probes the on-disk folder to fill that in.
+
+    Tolerant to unknown keys, blank lines, and the Microsoft preamble
+    ("Backup time", "wbadmin 1.0", copyright lines, etc.).
+    """
+    out: list[dict] = []
+    if not stdout:
+        return out
+
+    current: dict = {}
+
+    def _flush():
+        if current.get("version_id"):
+            out.append(
+                {
+                    "version_id": current.get("version_id", ""),
+                    "backup_time": current.get("backup_time", ""),
+                    "target": current.get("target", ""),
+                    "can_recover": current.get("can_recover", []),
+                    "snapshot_id": current.get("snapshot_id", ""),
+                    "size_bytes": None,
+                }
+            )
+
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            # Blank line = block boundary. Flush + reset.
+            _flush()
+            current = {}
+            continue
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip().lower()
+        value = value.strip()
+        if key == "version identifier":
+            current["version_id"] = value
+        elif key == "backup time":
+            current["backup_time"] = value
+        elif key == "backup target":
+            current["target"] = value
+        elif key == "can recover":
+            # Comma-separated, but each item may contain internal spaces.
+            current["can_recover"] = [v.strip() for v in value.split(",") if v.strip()]
+        elif key == "snapshot id":
+            current["snapshot_id"] = value
+        # Anything else (preamble like "wbadmin 1.0 - Backup command-line tool")
+        # is silently ignored.
+
+    # Final flush in case the output didn't end with a blank line.
+    _flush()
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Actions history  (append-only audit log for elevated actions)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def load_actions_history() -> list[dict]:
+    """Return the append-only log of past elevated actions, newest first.
+
+    Each entry: ``{session_id, action, params, started_at, ended_at,
+    status, returncode, stdout_tail, stderr_tail, bytes_freed_estimate}``.
+    Tail fields cap at ~500 chars each so a runaway subprocess log can't
+    bloat the file unbounded.
+    """
+    with _file_lock:
+        if not os.path.exists(BACKUP_ACTIONS_HISTORY_FILE):
+            return []
+        try:
+            with open(BACKUP_ACTIONS_HISTORY_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, list):
+                return []
+            # Newest first for UI display.
+            return sorted(data, key=lambda e: e.get("started_at", ""), reverse=True)
+        except (OSError, json.JSONDecodeError):
+            return []
+
+
+def _atomic_write_json(path: str, payload) -> bool:
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def append_action_history(entry: dict, max_entries: int = 200) -> bool:
+    """Append one action-history entry. Caps the file at ``max_entries``
+    rows to prevent unbounded growth.  Returns True on success."""
+    with _file_lock:
+        # Load directly (avoid recursing through load_actions_history's lock).
+        existing: list = []
+        if os.path.exists(BACKUP_ACTIONS_HISTORY_FILE):
+            try:
+                with open(BACKUP_ACTIONS_HISTORY_FILE, encoding="utf-8") as f:
+                    raw = json.load(f)
+                if isinstance(raw, list):
+                    existing = raw
+            except (OSError, json.JSONDecodeError):
+                existing = []
+        existing.append(entry)
+        if len(existing) > max_entries:
+            existing = existing[-max_entries:]
+        return _atomic_write_json(BACKUP_ACTIONS_HISTORY_FILE, existing)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Safety guards for destructive actions  (pure validators -- no I/O)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def validate_delete_version_request(version_id: str, current_versions: list[dict]) -> tuple[bool, str]:
+    """Return ``(ok, error_message)``.
+
+    Refuses when:
+      - ``version_id`` is empty / not a string
+      - ``version_id`` doesn't exist in the current catalog
+      - ``version_id`` IS the most recent version (always keep >=1)
+      - Catalog has only one entry (can't delete the last one)
+    """
+    if not isinstance(version_id, str) or not version_id.strip():
+        return (False, "version_id must be a non-empty string")
+    if not current_versions:
+        return (False, "catalog is empty -- nothing to delete")
+    ids = [v.get("version_id", "") for v in current_versions]
+    if version_id not in ids:
+        return (False, f"version_id {version_id!r} not found in catalog")
+    if len(current_versions) == 1:
+        return (False, "refusing to delete the only remaining backup version")
+    # The catalog is ordered newest-first in our parser; the most recent
+    # version is index 0. (Same semantics as wbadmin: it lists newest
+    # first.)
+    if ids[0] == version_id:
+        return (False, "refusing to delete the most-recent backup version")
+    return (True, "")
+
+
+def validate_fh_cleanup_request(days: int) -> tuple[bool, str]:
+    """File History cleanup arg: ``-cleanup <N>`` where N is days.
+
+    ``fhmanagew`` accepts 0 (keep only latest) through arbitrary large
+    values. We cap at 365 to refuse "year-old or older" deletions which
+    are almost certainly a typo (the user typed 3650 meaning ~10 years
+    when they meant 365). Negative values are nonsense.
+    """
+    if not isinstance(days, int) or isinstance(days, bool):
+        return (False, "days must be an integer")
+    if days < 0:
+        return (False, "days must be >= 0 (0 keeps only the newest version)")
+    if days > 3650:
+        return (False, "days > 3650 (>~10 years) refused -- specify a smaller window")
+    return (True, "")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Elevated-helper launcher  (ShellExecuteW + UAC prompt)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _session_id() -> str:
+    """Short hex session id for request/result file naming. 12 hex chars
+    is plenty since we only need to uniquely-name files for the in-flight
+    session window (~1 minute)."""
+    import secrets
+
+    return secrets.token_hex(6)
+
+
+def request_elevated_action(action: str, params: dict | None = None) -> dict:
+    """Write a request file and launch the elevated helper via UAC.
+
+    Returns ``{"ok": True, "session_id": "<hex>"}`` on launch success
+    (user clicked Yes on the UAC prompt and the elevated process
+    started), or ``{"ok": False, "error": "..."}`` otherwise.
+
+    The tray polls ``get_scan_status(session_id)`` until the helper
+    writes a result file. UAC interaction blocks this call -- the
+    Flask route timeout (180 s in this app) is the upper bound.
+
+    Action whitelist guard: any action not in ``_ALLOWED_ACTIONS`` is
+    refused before launch, so the elevated helper only ever sees one
+    of the known-safe verbs even if a future caller fat-fingers.
+    """
+    if action not in _ALLOWED_ACTIONS:
+        return {"ok": False, "error": f"unknown action {action!r}"}
+
+    session = _session_id()
+    request_path = os.path.join(APP_DIR, _REQUEST_FILE_TPL.format(session=session))
+    helper_path = os.path.join(APP_DIR, "scripts", "backup_helper_elevated.py")
+    if not os.path.exists(helper_path):
+        return {"ok": False, "error": f"elevated helper not found at {helper_path}"}
+
+    payload = {
+        "session_id": session,
+        "action": action,
+        "params": params or {},
+        "queued_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    if not _atomic_write_json(request_path, payload):
+        return {"ok": False, "error": "failed to write request file"}
+
+    # ShellExecuteW with "runas" triggers the UAC prompt. Returns >32 on
+    # success, <=32 on failure. We map the documented error codes back
+    # to user-readable strings.
+    try:
+        import ctypes
+    except ImportError:
+        return {"ok": False, "error": "ctypes unavailable (non-Windows host?)"}
+
+    # SW_HIDE = 0 (no console window for the helper).
+    rc = ctypes.windll.shell32.ShellExecuteW(
+        None,
+        "runas",
+        sys.executable,
+        f'"{helper_path}" --request "{request_path}"',
+        None,
+        0,
+    )
+    # See https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shellexecutew
+    # for the full error-code table.
+    if rc <= 32:
+        rc_map = {
+            0: "out of memory",
+            2: "FILE_NOT_FOUND",
+            3: "PATH_NOT_FOUND",
+            5: "ACCESS_DENIED (UAC prompt declined?)",
+            8: "OUT_OF_MEMORY",
+            11: "BAD_FORMAT",
+            27: "NO_ASSOCIATION",
+            31: "DDE_FAIL",
+            32: "DLL_NOT_FOUND",
+        }
+        # Clean up the orphaned request file since the helper never
+        # picked it up.
+        try:
+            os.remove(request_path)
+        except OSError:
+            pass
+        return {"ok": False, "error": f"ShellExecuteW failed: rc={rc} ({rc_map.get(rc, 'unknown')})"}
+
+    return {"ok": True, "session_id": session}
+
+
+def get_scan_status(session_id: str) -> dict:
+    """Read the helper's result file for ``session_id``.
+
+    Returns one of:
+      - ``{"state": "pending", "session_id": ...}`` -- helper still running
+      - ``{"state": "done", "session_id": ..., "result": {...}}`` -- completed
+      - ``{"state": "missing", "error": "..."}`` -- bad session id
+
+    The "done" payload's ``result.ok`` tells whether the action itself
+    succeeded; ``state: done`` only means the helper exited cleanly.
+    """
+    if not session_id or "/" in session_id or "\\" in session_id:
+        # Defence in depth: refuse any session_id with path separators
+        # so a crafted query string can't read arbitrary files.
+        return {"state": "missing", "error": "invalid session_id"}
+    result_path = os.path.join(APP_DIR, _RESULT_FILE_TPL.format(session=session_id))
+    if not os.path.exists(result_path):
+        return {"state": "pending", "session_id": session_id}
+    try:
+        with open(result_path, encoding="utf-8") as f:
+            result = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        return {"state": "missing", "error": f"result file unreadable: {e}"}
+    return {"state": "done", "session_id": session_id, "result": result}
+
+
+def cleanup_session_files(session_id: str) -> None:
+    """Remove the request + result files for a completed session. Called
+    by the route AFTER the UI has consumed the result so a stale file
+    can't confuse a future poll on the same session id (unlikely but
+    safe-by-default)."""
+    if not session_id or "/" in session_id or "\\" in session_id:
+        return
+    for tpl in (_REQUEST_FILE_TPL, _RESULT_FILE_TPL):
+        p = os.path.join(APP_DIR, tpl.format(session=session_id))
+        try:
+            if os.path.exists(p):
+                os.remove(p)
+        except OSError:
+            pass
 
 
 # ══════════════════════════════════════════════════════════════════════

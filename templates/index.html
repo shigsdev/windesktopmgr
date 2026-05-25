@@ -6696,6 +6696,189 @@ function bk_setStatusPill(elId, level, label) {
   el.textContent = label;
 }
 
+// ── Elevated actions (PR-2 of #47) ─────────────────────────────────
+// All three actions (scan / delete / fh-cleanup) follow the same
+// pattern: POST to launch the helper -> store the session_id ->
+// poll /api/backup/scan-status every 2s -> render the outcome and
+// re-fetch the tab data once the helper exits.
+
+async function bk_pollUntilDone(sessionId, statusEl, maxSeconds = 900) {
+  // Helper for all three actions. Polls scan-status, updates a status
+  // element with progress, returns the final result dict.
+  const start = Date.now();
+  let last = null;
+  while (true) {
+    const r = await fetch("/api/backup/scan-status?session_id=" + encodeURIComponent(sessionId));
+    last = await r.json();
+    if (last.state === "done") break;
+    if (last.state === "missing") {
+      if (statusEl) statusEl.textContent = "Status file missing -- did the helper crash?";
+      break;
+    }
+    const elapsed = Math.round((Date.now() - start) / 1000);
+    if (statusEl) statusEl.textContent = `Running... ${elapsed}s elapsed`;
+    if (elapsed > maxSeconds) {
+      if (statusEl) statusEl.textContent = `Timed out after ${maxSeconds}s (helper may still finish; refresh later)`;
+      break;
+    }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  // Best-effort cleanup of the result + request files.
+  fetch("/api/backup/scan-cleanup", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({session_id: sessionId}),
+  }).catch(() => {});
+  return last;
+}
+
+function bk_showActionResult(label, result, ok) {
+  // Lightweight inline banner above the section bodies. Auto-dismissing
+  // toast would be nicer but a persistent banner is more honest -- the
+  // user can see what happened until they click ↻ Refresh.
+  const overall = document.getElementById("bk-overall");
+  if (!overall) return;
+  const colorBorder = ok ? "var(--green)" : "var(--red)";
+  const icon = ok ? "✅" : "❌";
+  overall.style.display = "block";
+  overall.style.borderLeftColor = colorBorder;
+  const errLine = result.error ? `<div style="color:var(--red);font-size:11px;margin-top:4px">Error: ${escHtml(result.error)}</div>` : "";
+  const runLine = result.run && result.run.elapsed_seconds ? `<div style="color:var(--muted);font-size:10px;margin-top:2px">subprocess elapsed: ${result.run.elapsed_seconds}s, rc=${result.run.returncode}</div>` : "";
+  overall.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px">
+      <span style="font-size:18px">${icon}</span>
+      <div style="flex:1">
+        <div style="font-weight:700;font-size:12px;color:var(--text-bright)">${escHtml(label)}: ${ok ? "completed" : "failed"}</div>
+        ${errLine}
+        ${runLine}
+      </div>
+    </div>`;
+}
+
+async function bk_scanCatalog() {
+  // Launches the UAC prompt -> on Yes, polls the helper -> refreshes
+  // the tab when done. No type-to-confirm needed: scan is read-only.
+  const overall = document.getElementById("bk-overall");
+  if (overall) {
+    overall.style.display = "block";
+    overall.style.borderLeftColor = "var(--cyan)";
+    overall.innerHTML = `<div style="font-size:12px">⏳ Requesting elevation (UAC prompt should appear)... if denied, the scan won't start.</div>`;
+  }
+  let launch;
+  try {
+    const r = await fetch("/api/backup/scan", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+    launch = await r.json();
+  } catch (e) {
+    bk_showActionResult("Scan", {error: e.message}, false);
+    return;
+  }
+  if (!launch.ok) {
+    bk_showActionResult("Scan", launch, false);
+    return;
+  }
+  const status = await bk_pollUntilDone(launch.session_id);
+  const result = (status && status.result) || {ok: false, error: "no result"};
+  bk_showActionResult("Scan", result, !!result.ok);
+  if (result.ok) loadBackup();
+}
+
+async function bk_deleteVersion(versionId) {
+  // Type-to-confirm: user must paste the version_id back verbatim.
+  // Same defense-in-depth as PR #22 router reboot.
+  if (!versionId) return;
+  const typed = window.prompt(
+    `Delete WindowsImageBackup version ${versionId}?\n\n` +
+    `This calls 'wbadmin delete backup -version:<id>' under UAC and is irreversible.\n` +
+    `The most-recent version is protected by a server-side rail.\n\n` +
+    `To confirm, type the version ID back verbatim:`,
+    ""
+  );
+  if (typed === null) return;  // cancelled
+  if (typed !== versionId) {
+    alert(`Cancelled: typed value didn't match the version ID.`);
+    return;
+  }
+  const overall = document.getElementById("bk-overall");
+  if (overall) {
+    overall.style.display = "block";
+    overall.style.borderLeftColor = "var(--cyan)";
+    overall.innerHTML = `<div style="font-size:12px">⏳ Deleting ${escHtml(versionId)} (UAC prompt should appear)...</div>`;
+  }
+  let launch;
+  try {
+    const r = await fetch("/api/backup/delete-version", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({version_id: versionId, confirm_token: versionId}),
+    });
+    launch = await r.json();
+  } catch (e) {
+    bk_showActionResult("Delete version", {error: e.message}, false);
+    return;
+  }
+  if (!launch.ok) {
+    bk_showActionResult("Delete version", launch, false);
+    return;
+  }
+  const status = await bk_pollUntilDone(launch.session_id);
+  const result = (status && status.result) || {ok: false, error: "no result"};
+  bk_showActionResult(`Delete version ${versionId}`, result, !!result.ok);
+  if (result.ok) loadBackup();
+}
+
+async function bk_fhCleanup() {
+  const raw = window.prompt(
+    "File History cleanup: delete versions older than N days.\n\n" +
+    "Examples: 365 keeps the last year. 0 keeps only the newest version.\n" +
+    "Calls 'fhmanagew.exe -cleanup <N>' under UAC.\n\n" +
+    "Enter days (0-3650):",
+    "365"
+  );
+  if (raw === null) return;
+  const days = parseInt(raw.trim(), 10);
+  if (isNaN(days) || days < 0 || days > 3650) {
+    alert(`Invalid: must be 0-3650.`);
+    return;
+  }
+  const confirm = window.prompt(
+    `Confirm: this will delete File History versions older than ${days} days.\n\n` +
+    `To proceed, type exactly: CLEANUP ${days}`,
+    ""
+  );
+  if (confirm === null) return;
+  const expected = `CLEANUP ${days}`;
+  if (confirm !== expected) {
+    alert(`Cancelled: confirmation didn't match "${expected}".`);
+    return;
+  }
+  const overall = document.getElementById("bk-overall");
+  if (overall) {
+    overall.style.display = "block";
+    overall.style.borderLeftColor = "var(--cyan)";
+    overall.innerHTML = `<div style="font-size:12px">⏳ Running fhmanagew -cleanup ${days} (UAC prompt should appear)...</div>`;
+  }
+  let launch;
+  try {
+    const r = await fetch("/api/backup/file-history-cleanup", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({days: days, confirm_token: expected}),
+    });
+    launch = await r.json();
+  } catch (e) {
+    bk_showActionResult("File History cleanup", {error: e.message}, false);
+    return;
+  }
+  if (!launch.ok) {
+    bk_showActionResult("File History cleanup", launch, false);
+    return;
+  }
+  const status = await bk_pollUntilDone(launch.session_id);
+  const result = (status && status.result) || {ok: false, error: "no result"};
+  bk_showActionResult(`File History cleanup (${days}d)`, result, !!result.ok);
+  if (result.ok) loadBackup();
+}
+
 async function loadBackup() {
   const overall = document.getElementById("bk-overall");
   const s1body = document.getElementById("bk-sec1-body");
@@ -6739,28 +6922,46 @@ async function loadBackup() {
 
   // ── Section 1: Windows backups ───────────────────────────────────
   if (s1body) {
+    // Header bar with the Scan-now button is always present (regardless
+    // of cache state) so the user has a clear path to populate or refresh.
+    const scanBar = `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 0 10px 0;border-bottom:1px solid var(--border);margin-bottom:10px">
+        <div style="font-size:11px;color:var(--muted)">Requires elevation (UAC prompt). Reads the catalogue + walks <code>WindowsImageBackup</code> for sizes.</div>
+        <button onclick="bk_scanCatalog()" style="background:var(--cyan);border:none;color:#000;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700">🔍 Scan now</button>
+      </div>`;
     if (!wb.has_cache) {
       bk_setStatusPill("bk-sec1-status", "info", "not yet scanned");
       s1body.innerHTML = `
+        ${scanBar}
         <div style="padding:10px 0;line-height:1.55">
           <p style="margin:0 0 8px 0">WindowsImageBackup catalogue reads require elevation, so we cache the catalogue to <code>backup_cache.json</code>. No scan has been run yet.</p>
-          <p style="margin:0 0 8px 0;color:var(--muted);font-size:11px">A "Scan now" button (with UAC prompt) lands in PR-2 of this feature, alongside the cleanup / delete-old-version actions.</p>
-          <p style="margin:0;color:var(--muted);font-size:11px">For now you can seed the cache manually: open an elevated PowerShell, run <code>wbadmin get versions</code>, save the structured output to <code>backup_cache.json</code> in the app dir.</p>
+          <p style="margin:0;color:var(--muted);font-size:11px">Click <strong>Scan now</strong> above to populate. Windows will prompt for permission; the elevated helper runs <code>wbadmin get versions</code> and writes the cache.</p>
         </div>`;
     } else {
       bk_setStatusPill("bk-sec1-status", wb.version_count > 0 ? "info" : "warning", `${wb.version_count} version(s)`);
       const total = bk_humanBytes(wb.total_size_bytes);
       const scannedAt = wb.scanned_at ? new Date(wb.scanned_at).toLocaleString() : "—";
       const ageH = wb.cache_age_seconds == null ? "" : ` (${Math.floor(wb.cache_age_seconds / 3600)}h ago)`;
-      const rows = (wb.versions || []).map(v => `
+      const versions = wb.versions || [];
+      // Index 0 = newest = always disabled (safety: keep >=1 version).
+      const rows = versions.map((v, i) => {
+        const isNewest = i === 0;
+        const disabledTip = isNewest ? 'title="Most-recent version cannot be deleted -- always keep at least one"' : "";
+        const btn = isNewest
+          ? `<span style="color:var(--muted);font-size:10px">🛡 keep</span>`
+          : `<button onclick="bk_deleteVersion(${JSON.stringify(v.version_id || "").replace(/"/g, "&quot;")})" style="background:transparent;border:1px solid var(--red);color:var(--red);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:10px">🗑 Delete</button>`;
+        return `
         <tr>
           <td style="padding:6px 10px;border-bottom:1px solid var(--border);font-family:var(--font-mono);font-size:11px">${escHtml(v.version_id || "")}</td>
           <td style="padding:6px 10px;border-bottom:1px solid var(--border);font-size:11px">${escHtml(v.backup_time || "")}</td>
           <td style="padding:6px 10px;border-bottom:1px solid var(--border);font-size:11px">${escHtml(v.target || "")}</td>
           <td style="padding:6px 10px;border-bottom:1px solid var(--border);font-size:11px;text-align:right">${bk_humanBytes(v.size_bytes)}</td>
           <td style="padding:6px 10px;border-bottom:1px solid var(--border);font-size:11px">${escHtml(Array.isArray(v.can_recover) ? v.can_recover.join(", ") : (v.can_recover || ""))}</td>
-        </tr>`).join("");
+          <td style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right" ${disabledTip}>${btn}</td>
+        </tr>`;
+      }).join("");
       s1body.innerHTML = `
+        ${scanBar}
         <div style="display:flex;gap:24px;flex-wrap:wrap;padding:8px 0 12px 0;color:var(--muted);font-size:11px">
           <div><strong style="color:var(--text-bright)">${wb.version_count}</strong> version(s)</div>
           <div><strong style="color:var(--text-bright)">${total}</strong> total</div>
@@ -6773,8 +6974,9 @@ async function loadBackup() {
             <th style="padding:6px 10px;border-bottom:1px solid var(--border)">Target</th>
             <th style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right">Size</th>
             <th style="padding:6px 10px;border-bottom:1px solid var(--border)">Can recover</th>
+            <th style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right">Action</th>
           </tr></thead>
-          <tbody>${rows || `<tr><td colspan="5" style="padding:14px;color:var(--muted);text-align:center">No versions catalogued.</td></tr>`}</tbody>
+          <tbody>${rows || `<tr><td colspan="6" style="padding:14px;color:var(--muted);text-align:center">No versions catalogued.</td></tr>`}</tbody>
         </table>`;
     }
   }
@@ -6819,8 +7021,78 @@ async function loadBackup() {
             <div style="color:var(--muted)">Staging</div><div>${bk_humanBytes(fh.staging_usage_bytes)} across ${fh.staging_file_count} file(s)${stagingRatio}</div>
             <div style="color:var(--muted)">Folders watched</div><div>${folderCount} folder(s) across ${(cfg.libraries || []).length} libraries + ${(cfg.user_folders || []).length} user folders</div>
           </div>
+          <div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:8px">
+            <div style="font-size:11px;color:var(--muted)">Cleanup runs <code>fhmanagew.exe -cleanup &lt;days&gt;</code> under UAC. <strong>0</strong> = keep only newest.</div>
+            <button onclick="bk_fhCleanup()" style="background:transparent;border:1px solid var(--orange);color:var(--orange);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:11px">🧹 Cleanup old versions</button>
+          </div>
         </div>`;
     }
+  }
+
+  // Also load the actions-history panel below (best-effort -- a slow
+  // history fetch shouldn't block the section renders above).
+  loadBackupActionsHistory();
+}
+
+async function loadBackupActionsHistory() {
+  // Renders into a dynamic panel appended below Section 4. Lazy-creates
+  // the panel on first call so unrelated pages don't have to know about
+  // it.
+  let panel = document.getElementById("bk-actions-history");
+  if (!panel) {
+    const sec4 = document.getElementById("bk-sec4");
+    if (!sec4) return;
+    panel = document.createElement("details");
+    panel.id = "bk-actions-history";
+    panel.style.cssText = "margin-bottom:14px;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:0";
+    panel.open = false;
+    panel.innerHTML = `
+      <summary style="cursor:pointer;padding:12px 16px;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px">
+        <span style="font-size:14px;font-weight:700;color:var(--text-bright)">📜 Actions history</span>
+        <span style="font-size:10px;padding:2px 8px;border-radius:10px;background:var(--surface);color:var(--muted);border:1px solid var(--border)" id="bk-actions-count">loading…</span>
+      </summary>
+      <div id="bk-actions-body" style="padding:0 16px 16px 16px;font-size:11px"></div>`;
+    sec4.parentNode.insertBefore(panel, sec4.nextSibling);
+  }
+  const body = document.getElementById("bk-actions-body");
+  const count = document.getElementById("bk-actions-count");
+  try {
+    const r = await fetch("/api/backup/actions-history");
+    const data = await r.json();
+    const entries = data.entries || [];
+    if (count) count.textContent = `${entries.length} entr${entries.length === 1 ? "y" : "ies"}`;
+    if (!entries.length) {
+      body.innerHTML = '<div style="color:var(--muted);padding:8px">No elevated actions recorded yet. Scan, delete, or cleanup operations will appear here once they run.</div>';
+      return;
+    }
+    body.innerHTML = `
+      <table style="width:100%;border-collapse:collapse;font-size:11px">
+        <thead><tr style="text-align:left;color:var(--muted);font-weight:600">
+          <th style="padding:6px 10px;border-bottom:1px solid var(--border)">When</th>
+          <th style="padding:6px 10px;border-bottom:1px solid var(--border)">Action</th>
+          <th style="padding:6px 10px;border-bottom:1px solid var(--border)">Status</th>
+          <th style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right">RC</th>
+          <th style="padding:6px 10px;border-bottom:1px solid var(--border);text-align:right">Bytes freed</th>
+          <th style="padding:6px 10px;border-bottom:1px solid var(--border)">Notes</th>
+        </tr></thead>
+        <tbody>
+          ${entries.map(e => {
+            const statusColor = e.status === "completed" ? "var(--green)" : "var(--red)";
+            const ended = e.ended_at ? new Date(e.ended_at).toLocaleString() : "—";
+            const note = e.error ? escHtml(e.error) : escHtml((e.stderr_tail || "").slice(0, 200));
+            return `<tr>
+              <td style="padding:5px 10px;border-bottom:1px solid var(--border);font-family:var(--font-mono);font-size:10px">${escHtml(ended)}</td>
+              <td style="padding:5px 10px;border-bottom:1px solid var(--border)">${escHtml(e.action || "")}</td>
+              <td style="padding:5px 10px;border-bottom:1px solid var(--border);color:${statusColor};font-weight:600">${escHtml(e.status || "")}</td>
+              <td style="padding:5px 10px;border-bottom:1px solid var(--border);text-align:right">${e.returncode == null ? "—" : escHtml(String(e.returncode))}</td>
+              <td style="padding:5px 10px;border-bottom:1px solid var(--border);text-align:right">${e.bytes_freed_estimate ? bk_humanBytes(e.bytes_freed_estimate) : "—"}</td>
+              <td style="padding:5px 10px;border-bottom:1px solid var(--border);color:var(--muted);font-size:10px">${note}</td>
+            </tr>`;
+          }).join("")}
+        </tbody>
+      </table>`;
+  } catch (e) {
+    if (body) body.innerHTML = `<div style="color:var(--red);padding:8px">Failed to load: ${escHtml(e.message)}</div>`;
   }
 }
 
