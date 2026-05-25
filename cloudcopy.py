@@ -52,9 +52,12 @@ Public API (PR-1 surface):
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import os
+import subprocess
 import threading
+import uuid
 from collections.abc import Iterator
 from datetime import datetime
 
@@ -135,13 +138,21 @@ DEFAULT_RULES: dict = {
     # user doesn't have to configure them on first run.
     "source_root": None,
     "destination_root": None,
+    # Schedule (PR-3). DEFAULT OFF (user-confirmed 2026-05-25): no
+    # Windows Task Scheduler entry is created until the user explicitly
+    # clicks Enable on the Section 3 toggle. PR-2 ships the schema
+    # field but no scheduler wiring -- PR-3 lights it up.
+    "schedule_enabled": False,
+    "schedule_time": "02:00",  # 24h HH:MM, ignored until schedule_enabled=True
 }
 
 
 # ── Persistence ─────────────────────────────────────────────────────
 
 
-_file_lock = threading.Lock()
+# RLock (reentrant) -- _append_history acquires the lock then calls
+# load_history() which would also want it. Lock would deadlock.
+_file_lock = threading.RLock()
 
 
 def _atomic_write_json(path: str, payload) -> bool:
@@ -227,7 +238,30 @@ def validate_rules(rules: dict) -> tuple[bool, str]:
         v = rules.get(key)
         if v is not None and not isinstance(v, str):
             return (False, f"{key} must be a string or null")
+    se = rules.get("schedule_enabled")
+    if se is not None and not isinstance(se, bool):
+        return (False, "schedule_enabled must be a bool")
+    st = rules.get("schedule_time")
+    if st is not None and (not isinstance(st, str) or not _is_valid_hhmm(st)):
+        return (False, "schedule_time must be a 24h HH:MM string")
     return (True, "")
+
+
+def _is_valid_hhmm(s: str) -> bool:
+    """Strict HH:MM validation -- 00:00 through 23:59, BOTH zero-padded.
+
+    Rejects "2:00", "23:5", etc to keep the persisted format stable
+    (Windows Task Scheduler is picky about time strings and the UI's
+    HH:MM input element produces zero-padded output).
+    """
+    parts = s.split(":")
+    if len(parts) != 2 or len(parts[0]) != 2 or len(parts[1]) != 2:
+        return False
+    try:
+        h, m = int(parts[0]), int(parts[1])
+    except ValueError:
+        return False
+    return 0 <= h <= 23 and 0 <= m <= 59
 
 
 def save_rules(rules: dict) -> tuple[bool, str]:
@@ -464,10 +498,12 @@ def load_history() -> list[dict]:
 
 
 def load_resume_state() -> dict | None:
-    """PR-1 placeholder. Returns the in-progress state if a crashed
-    session is detected, else None. PR-2 writes this file as part of
-    the per-file atomic commit; PR-1 always returns None because we
-    don't run any sessions yet."""
+    """Returns the in-progress state if a crashed session is detected,
+    else None. State file is written atomically AFTER each file's
+    destination-side atomic-rename completes, so the worst-case after
+    a crash is "one file half-copied and skipped"; on resume that
+    file's destination hash won't match the source hash and the file
+    gets retried automatically."""
     with _file_lock:
         if not os.path.exists(STATE_FILE):
             return None
@@ -477,3 +513,498 @@ def load_resume_state() -> dict | None:
             return data if isinstance(data, dict) else None
         except (OSError, json.JSONDecodeError):
             return None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Copy engine + crash-safe resume (PR-2 of #46)
+# ══════════════════════════════════════════════════════════════════════
+#
+# Single-threaded. PR-3 will add ThreadPoolExecutor + schedule.
+#
+# Per-file atomic commit:
+#   1. Read source -> hash + size  (skip-check via dest stat first)
+#   2. Copy source -> dest.tmp     (in chunks; sized for crash visibility)
+#   3. fsync(dest.tmp) + close
+#   4. os.replace(dest.tmp, dest)  -- atomic on Windows
+#   5. Update state file (atomic .tmp + replace)
+#   6. Advance cursor
+#
+# Worst case after crash:
+#   - .tmp file in dest tree  -> resume cleans it before continuing
+#   - file half-copied + state cursor still pointing to it -> resume
+#     re-runs that file (skip-check fails since hashes differ)
+#   - state file half-written -> impossible (atomic-rename)
+
+
+# Module-level worker-thread state. Only one session at a time.
+_active_session_id: str | None = None
+_active_session_lock = threading.Lock()
+_cancel_flag = threading.Event()
+
+# Soft session bytes cap (default 50 GB). Hard-coded for V1; PR-3 may
+# move to rules.
+SESSION_BYTES_CAP = 50 * 1024 * 1024 * 1024
+
+# Per-file copy timeout in seconds. Materialising a Files-On-Demand
+# placeholder over a slow connection can take a while; cap at 5 min so
+# one slow file doesn't stall the whole session.
+PER_FILE_TIMEOUT_S = 300
+
+# Chunk size for copies. 1 MB is a reasonable tradeoff between syscall
+# overhead and memory footprint; small enough that a hash of the chunk
+# can be computed cheaply.
+_COPY_CHUNK = 1024 * 1024
+
+
+def _rules_hash(rules: dict) -> str:
+    """Stable SHA-256 of the rules dict (sort_keys for determinism).
+    Used at resume time to detect "rules changed while a session was
+    running" so we don't silently apply a different rule set to half
+    a session."""
+    canon = json.dumps(rules, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canon.encode()).hexdigest()[:16]
+
+
+def _hash_file(path: str) -> str:
+    """SHA-256 of a file's contents. Returns "" on read error."""
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            while True:
+                buf = f.read(_COPY_CHUNK)
+                if not buf:
+                    break
+                h.update(buf)
+        return h.hexdigest()
+    except OSError:
+        return ""
+
+
+def _materialise_placeholder(path: str) -> None:
+    """For OneDrive Files-On-Demand: ``attrib +p`` pins the file so it
+    is materialised on disk (downloaded if it was a placeholder). Same
+    trick used by the SystemHealthDiag.py path-fix in March 2026.
+
+    Best-effort: failures are swallowed because (a) the file may not
+    BE a placeholder, (b) attrib may not exist on certain Windows
+    flavours, (c) the underlying read in _hash_file will surface a
+    "real" error if the file genuinely can't be read.
+    """
+    try:
+        subprocess.run(
+            ["attrib", "+p", path],
+            capture_output=True,
+            timeout=PER_FILE_TIMEOUT_S,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+
+
+def _atomic_copy(src: str, dst: str) -> tuple[bool, int, str]:
+    """Copy ``src`` -> ``dst.tmp`` -> ``dst`` with fsync between.
+    Returns ``(ok, bytes_copied, error_message)``.
+
+    Creates parent directories of dst if missing. Caller is responsible
+    for any source materialisation (we just open the file).
+    """
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    tmp = dst + ".tmp"
+    copied = 0
+    try:
+        with open(src, "rb") as r, open(tmp, "wb") as w:
+            while True:
+                buf = r.read(_COPY_CHUNK)
+                if not buf:
+                    break
+                w.write(buf)
+                copied += len(buf)
+            w.flush()
+            try:
+                os.fsync(w.fileno())
+            except OSError:
+                # fsync may fail on certain network drives; soldier on
+                # since the OS will still flush eventually.
+                pass
+        os.replace(tmp, dst)
+        return (True, copied, "")
+    except OSError as e:
+        # Clean up the partial .tmp so a future run doesn't see it.
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        return (False, copied, str(e))
+
+
+def _needs_copy(src_stat, dst_path: str) -> tuple[bool, str]:
+    """Decide whether to copy this file. Returns ``(copy?, reason)``.
+
+    Skip when size + mtime + content-hash all match. Hash comparison
+    is the expensive part (reads both files); we only compute it when
+    size + mtime are both equal.
+    """
+    if not os.path.exists(dst_path):
+        return (True, "dest missing")
+    try:
+        dst_stat = os.stat(dst_path)
+    except OSError:
+        return (True, "dest stat failed")
+    if dst_stat.st_size != src_stat.st_size:
+        return (True, "size differs")
+    # mtime granularity is 1s on FAT, much finer on NTFS. Use a small
+    # tolerance to absorb cross-filesystem mtime drift.
+    if abs(dst_stat.st_mtime - src_stat.st_mtime) > 1.0:
+        return (True, "mtime differs")
+    # Size + mtime match -> probably the same content. Skip without
+    # the expensive hash compare; correctness loss is "the user
+    # rewrote the file and somehow preserved size + mtime", which is
+    # extraordinarily unlikely outside deliberate tampering.
+    return (False, "size+mtime match")
+
+
+def _save_state(state: dict) -> bool:
+    """Atomic write of the in-progress state. Stamps last_updated_at
+    each time."""
+    state["last_updated_at"] = datetime.now().isoformat(timespec="seconds")
+    return _atomic_write_json(STATE_FILE, state)
+
+
+def _clear_state() -> None:
+    """Remove the state file on clean session end."""
+    try:
+        if os.path.exists(STATE_FILE):
+            os.remove(STATE_FILE)
+    except OSError:
+        pass
+
+
+def _append_history(entry: dict, cap: int = 200) -> bool:
+    """Append one history row, newest-first capped."""
+    with _file_lock:
+        existing = load_history()
+        existing.append(entry)
+        if len(existing) > cap:
+            existing = existing[-cap:]
+        return _atomic_write_json(HISTORY_FILE, existing)
+
+
+def _build_plan(source_root: str, rules: dict) -> list[dict]:
+    """Walk the source and build the full plan -- list of INCLUDED files
+    (excluded entries are skipped here so the plan is the work-to-do)."""
+    plan: list[dict] = []
+    for entry in walk_source(source_root, rules, file_cap=None):
+        if entry["excluded"]:
+            continue
+        plan.append(
+            {
+                "rel_path": entry["rel_path"],
+                "size": entry["size"],
+                "mtime": entry["mtime"],
+            }
+        )
+    return plan
+
+
+def request_cancel(session_id: str) -> bool:
+    """Co-operative cancel via flag. Worker checks the flag between
+    files. Returns True if the cancel was accepted (session id matched
+    the active one)."""
+    with _active_session_lock:
+        if _active_session_id != session_id:
+            return False
+        _cancel_flag.set()
+        return True
+
+
+def _run_copy_inner(
+    session_id: str,
+    rules: dict,
+    source_root: str,
+    dest_root: str,
+    resume_from: dict | None = None,
+) -> dict:
+    """The actual copy loop. Always writes a history entry on exit
+    (success / cancel / error) and clears the state file on clean
+    completion. Resume path: takes ``resume_from`` (the loaded state
+    dict) and starts at its cursor; build_plan is SKIPPED so we honour
+    the snapshot the original session captured (rules may have changed
+    in the meantime; we don't care)."""
+    global _active_session_id
+    started_at = datetime.now().isoformat(timespec="seconds")
+
+    if resume_from:
+        state = resume_from
+        plan = state.get("plan") or []
+        cursor = state.get("cursor", 0)
+        bytes_copied = state.get("bytes_copied", 0)
+        files_completed = state.get("files_completed", [])
+        files_skipped = state.get("files_skipped", [])
+        files_failed = state.get("files_failed", [])
+        # Resumes carry the original started_at so the history shows the
+        # full elapsed time.
+        started_at = state.get("started_at", started_at)
+    else:
+        plan = _build_plan(source_root, rules)
+        cursor = 0
+        bytes_copied = 0
+        files_completed = []
+        files_skipped = []
+        files_failed = []
+        state = {
+            "session_id": session_id,
+            "started_at": started_at,
+            "rules_hash": _rules_hash(rules),
+            "source_root": source_root,
+            "dest_root": dest_root,
+            "plan": plan,
+            "cursor": cursor,
+            "bytes_copied": bytes_copied,
+            "files_completed": files_completed,
+            "files_skipped": files_skipped,
+            "files_failed": files_failed,
+        }
+        _save_state(state)
+
+    total_files = len(plan)
+    status = "completed"
+    cap_hit = False
+
+    while cursor < total_files:
+        if _cancel_flag.is_set():
+            status = "cancelled"
+            break
+        if bytes_copied >= SESSION_BYTES_CAP:
+            cap_hit = True
+            status = "completed_truncated"
+            break
+
+        entry = plan[cursor]
+        rel = entry["rel_path"]
+        # Normalise to OS separator for the actual filesystem calls.
+        rel_os = rel.replace("/", os.sep)
+        src = os.path.join(source_root, rel_os)
+        dst = os.path.join(dest_root, rel_os)
+
+        try:
+            # Materialise placeholder (best-effort) + stat source.
+            _materialise_placeholder(src)
+            src_stat = os.stat(src)
+            need, _reason = _needs_copy(src_stat, dst)
+            if not need:
+                files_skipped.append(cursor)
+            else:
+                ok, n, err = _atomic_copy(src, dst)
+                if ok:
+                    # Mirror source mtime onto destination so future
+                    # skip-checks succeed.
+                    try:
+                        os.utime(dst, (src_stat.st_atime, src_stat.st_mtime))
+                    except OSError:
+                        pass
+                    files_completed.append(cursor)
+                    bytes_copied += n
+                else:
+                    files_failed.append({"index": cursor, "rel_path": rel, "error": err})
+        except OSError as e:
+            files_failed.append({"index": cursor, "rel_path": rel, "error": str(e)})
+
+        cursor += 1
+        state["cursor"] = cursor
+        state["bytes_copied"] = bytes_copied
+        state["files_completed"] = files_completed
+        state["files_skipped"] = files_skipped
+        state["files_failed"] = files_failed
+        _save_state(state)
+
+    ended_at = datetime.now().isoformat(timespec="seconds")
+    entry = {
+        "session_id": session_id,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "status": status,
+        "files_planned": total_files,
+        "files_completed_count": len(files_completed),
+        "files_skipped_count": len(files_skipped),
+        "files_failed_count": len(files_failed),
+        "bytes_copied": bytes_copied,
+        "cap_hit": cap_hit,
+        "source_root": source_root,
+        "dest_root": dest_root,
+        "resumed_from_session_id": (resume_from or {}).get("session_id") if resume_from else None,
+        "errors": files_failed[:20],  # only the first 20 errors in history (cap log size)
+    }
+    _append_history(entry)
+    _clear_state()
+    return entry
+
+
+def start_copy_session(rules: dict | None = None) -> dict:
+    """Spawn a worker thread to run a new copy session. Returns
+    ``{ok, session_id, error}``. Refuses if another session is already
+    active (one at a time in V1)."""
+    global _active_session_id
+    with _active_session_lock:
+        if _active_session_id is not None:
+            return {"ok": False, "error": f"another session is active: {_active_session_id}"}
+        rules = rules if rules is not None else load_rules()
+        source = rules.get("source_root") or DEFAULT_SOURCE_ROOT
+        dest = rules.get("destination_root") or DEFAULT_DESTINATION_ROOT
+        if not source or not os.path.isdir(source):
+            return {"ok": False, "error": f"source root does not exist: {source}"}
+        try:
+            os.makedirs(dest, exist_ok=True)
+        except OSError as e:
+            return {"ok": False, "error": f"could not create destination root: {e}"}
+        session_id = uuid.uuid4().hex[:12]
+        _active_session_id = session_id
+        _cancel_flag.clear()
+
+    def _worker():
+        global _active_session_id
+        try:
+            _run_copy_inner(session_id, rules, source, dest)
+        except Exception as e:  # noqa: BLE001
+            _log.error("cloudcopy worker crashed: %s", e)
+            _append_history(
+                {
+                    "session_id": session_id,
+                    "started_at": datetime.now().isoformat(timespec="seconds"),
+                    "ended_at": datetime.now().isoformat(timespec="seconds"),
+                    "status": "errored",
+                    "error": str(e),
+                }
+            )
+        finally:
+            with _active_session_lock:
+                if _active_session_id == session_id:
+                    _active_session_id = None
+                _cancel_flag.clear()
+
+    t = threading.Thread(target=_worker, daemon=True, name=f"cloudcopy-{session_id}")
+    t.start()
+    return {"ok": True, "session_id": session_id}
+
+
+def get_status(session_id: str) -> dict:
+    """Return live progress for the active session, or ``{state:
+    "missing"}`` if the session id doesn't match the active one."""
+    if not session_id or "/" in session_id or "\\" in session_id:
+        return {"state": "missing", "error": "invalid session id"}
+    with _active_session_lock:
+        if _active_session_id == session_id:
+            state = load_resume_state()
+            if state is None:
+                # Edge case: worker started but no state written yet
+                return {"state": "starting", "session_id": session_id}
+            total = len(state.get("plan", []))
+            cursor = state.get("cursor", 0)
+            return {
+                "state": "running",
+                "session_id": session_id,
+                "cursor": cursor,
+                "total": total,
+                "percent": (cursor / total * 100.0) if total else 100.0,
+                "bytes_copied": state.get("bytes_copied", 0),
+                "files_completed": len(state.get("files_completed", [])),
+                "files_skipped": len(state.get("files_skipped", [])),
+                "files_failed": len(state.get("files_failed", [])),
+            }
+    # Not the active session -- look in history.
+    for h in load_history():
+        if h.get("session_id") == session_id:
+            return {"state": "finished", "session_id": session_id, "history": h}
+    return {"state": "missing", "session_id": session_id}
+
+
+def resume_crashed_session() -> dict:
+    """Re-validate the orphan state file and continue the copy.
+
+    Validates: source root still exists, dest root still creatable,
+    rules-hash hasn't changed (refuse otherwise so half a session
+    doesn't run under different rules).
+    """
+    global _active_session_id
+    state = load_resume_state()
+    if not state:
+        return {"ok": False, "error": "no crashed session to resume"}
+    with _active_session_lock:
+        if _active_session_id is not None:
+            return {"ok": False, "error": f"another session is active: {_active_session_id}"}
+        # Validate source / dest are reachable.
+        source = state.get("source_root", "")
+        dest = state.get("dest_root", "")
+        if not source or not os.path.isdir(source):
+            return {"ok": False, "error": f"source root missing: {source!r}"}
+        try:
+            os.makedirs(dest, exist_ok=True)
+        except OSError as e:
+            return {"ok": False, "error": f"destination not creatable: {e}"}
+        # Validate rules-hash still matches what's in the state file.
+        current_rules = load_rules()
+        current_hash = _rules_hash(current_rules)
+        if state.get("rules_hash") != current_hash:
+            return {
+                "ok": False,
+                "error": (
+                    "rules changed since the crashed session started -- "
+                    "click 'Discard' instead and re-run with the new rules"
+                ),
+            }
+        # All checks pass; spawn the worker.
+        session_id = state.get("session_id") or uuid.uuid4().hex[:12]
+        _active_session_id = session_id
+        _cancel_flag.clear()
+
+    def _worker():
+        global _active_session_id
+        try:
+            _run_copy_inner(session_id, current_rules, source, dest, resume_from=state)
+        except Exception as e:  # noqa: BLE001
+            _log.error("cloudcopy resume crashed: %s", e)
+        finally:
+            with _active_session_lock:
+                if _active_session_id == session_id:
+                    _active_session_id = None
+                _cancel_flag.clear()
+
+    t = threading.Thread(target=_worker, daemon=True, name=f"cloudcopy-resume-{session_id}")
+    t.start()
+    return {"ok": True, "session_id": session_id, "resumed": True}
+
+
+def discard_crashed_session() -> dict:
+    """User chose Discard on the crashed-session banner. Write a
+    cancelled history entry + clear the state file."""
+    state = load_resume_state()
+    if not state:
+        return {"ok": False, "error": "no crashed session to discard"}
+    _append_history(
+        {
+            "session_id": state.get("session_id"),
+            "started_at": state.get("started_at"),
+            "ended_at": datetime.now().isoformat(timespec="seconds"),
+            "status": "discarded",
+            "files_planned": len(state.get("plan", [])),
+            "files_completed_count": len(state.get("files_completed", [])),
+            "bytes_copied": state.get("bytes_copied", 0),
+            "discarded_by_user": True,
+        }
+    )
+    _clear_state()
+    return {"ok": True}
+
+
+def get_active_session_id() -> str | None:
+    """Test-friendly accessor for the module-level active session."""
+    with _active_session_lock:
+        return _active_session_id
+
+
+def _reset_module_state_for_tests() -> None:
+    """Test-only: clear the module's active-session + cancel state."""
+    global _active_session_id
+    with _active_session_lock:
+        _active_session_id = None
+        _cancel_flag.clear()
