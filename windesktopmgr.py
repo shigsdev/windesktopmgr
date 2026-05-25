@@ -9236,6 +9236,52 @@ def baseline_entry_history_route():
     return jsonify({"ok": True, "category": category, "key": key, "events": events})
 
 
+# ── Backup tab (backlog #47) ─────────────────────────────────────────
+
+
+@app.route("/api/backup/windows-backups")
+def backup_windows_backups_route():
+    """Section 1: WindowsImageBackup inventory.
+
+    Returns the cached catalog from `backup_cache.json` (populated by
+    the elevated helper in PR-2) or a `has_cache=False` placeholder if
+    no scan has been run yet. PR-1 is read-only -- the cache is either
+    pre-seeded manually or via the future Scan-with-UAC endpoint.
+    """
+    import backup
+
+    return jsonify(backup.load_windows_backup_cache())
+
+
+@app.route("/api/backup/file-history")
+def backup_file_history_route():
+    """Section 2: File History live state.
+
+    Reads Config1.xml under %LOCALAPPDATA% (no elevation needed) and
+    probes the configured target drive + backup-store folder + catalog
+    freshness + staging area for health signals. The most common silent
+    failure is "configured + enabled but the target backup-store folder
+    on the target drive is missing" -- bubbles up as a critical health
+    verdict.
+    """
+    import backup
+
+    return jsonify(backup.get_file_history_state())
+
+
+@app.route("/api/backup/summary")
+def backup_summary_route():
+    """Combined health summary across Sections 1 + 2.
+
+    Used by the Backup tab's status header AND by the dashboard
+    concern fan-out (so the dashboard doesn't have to parse two
+    separate endpoints).
+    """
+    import backup
+
+    return jsonify(backup.summarize_backup())
+
+
 @app.route("/api/baseline/timeline")
 def baseline_timeline_route():
     """Unified cross-surface change timeline (backlog #44).
@@ -11266,6 +11312,47 @@ def _compute_dashboard_summary() -> dict:
                 }
             )
     except Exception:  # noqa: BLE001 -- baseline is best-effort
+        pass
+
+    # Backup health concerns (backlog #47). Fires when File History is
+    # configured + enabled but the target backup store is unreachable
+    # (silent-failure mode that wastes the user's mental "I'm backed up"
+    # reassurance) or when the WindowsImageBackup catalog is empty.
+    # Best-effort: NEVER block dashboard rendering on this.
+    try:
+        import backup as backup_mod
+
+        backup_summary = backup_mod.summarize_backup()
+        overall = backup_summary.get("overall_health") or {}
+        level = overall.get("level", "info")
+        if level in ("warning", "critical"):
+            fh = backup_summary.get("file_history") or {}
+            wb = backup_summary.get("windows_backups") or {}
+            # Detail line shows both surfaces so the user sees the full
+            # picture from the concern card without opening the tab.
+            fh_label = fh.get("health", {}).get("reason", "")
+            wb_label = wb.get("health", {}).get("reason", "")
+            detail_parts = []
+            if fh_label and (fh.get("health", {}).get("level") in ("warning", "critical")):
+                detail_parts.append(f"File History: {fh_label}")
+            if wb_label and (wb.get("health", {}).get("level") in ("warning", "critical")):
+                detail_parts.append(f"WindowsImageBackup: {wb_label}")
+            concerns.append(
+                {
+                    "level": level,
+                    "tab": "backup",
+                    "icon": "📦",
+                    "title": (
+                        "Backup health: critical -- target unreachable or store missing"
+                        if level == "critical"
+                        else "Backup health: warning"
+                    ),
+                    "detail": " · ".join(detail_parts) or overall.get("reason", ""),
+                    "action": "Review backups",
+                    "action_fn": "switchTab('backup')",
+                }
+            )
+    except Exception:  # noqa: BLE001 -- backup health is best-effort
         pass
 
     # BIOS audit-trail concerns: logged changes + collection errors in the last 24h

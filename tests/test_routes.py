@@ -1714,6 +1714,22 @@ class TestDashboardSummaryRoute:
             },
         )
 
+        # Backup health (backlog #47) — same reasoning. Default OK so the
+        # clean-state test doesn't fire the new "Backup health: critical"
+        # concern from the dev machine's real (broken) File History config.
+        import backup as _bk
+
+        mocker.patch.object(
+            _bk,
+            "summarize_backup",
+            return_value={
+                "ok": True,
+                "windows_backups": {"has_cache": False, "version_count": 0, "health": {"level": "info", "reason": ""}},
+                "file_history": {"configured": False, "enabled": False, "health": {"level": "info", "reason": ""}},
+                "overall_health": {"level": "info", "reason": ""},
+            },
+        )
+
     def test_returns_200_with_structure(self, client, mocker):
         self._mock_dashboard_deps(mocker)
         resp = client.get("/api/dashboard/summary")
