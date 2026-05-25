@@ -179,6 +179,129 @@ class TestTabNavigationSmoke:
         )
 
 
+# ── Backup tab Section 3 — exclusion-list editor persistence ──────
+#
+# Bug history: PR-1 of #46 wired the + button to call cc_addItem +
+# cc_saveRules but the symmetric × button only called cc_removeItem.
+# User clicked × to delete a rule, list visually updated, refreshed
+# the page, and the deleted rule was back. Added 2026-05-25.
+
+
+class TestCloudCopyListEditorPersists:
+    """Section 3 exclusion-list editors -- both + and × must round-trip
+    to the server. Visual update alone isn't enough; the rules file
+    must reflect the change on the next page load."""
+
+    def _open_backup_tab(self, page):
+        page.evaluate("switchTab('backup')")
+        # Give loadCloudCopy time to fetch + render.
+        for _ in range(20):
+            page.wait_for_timeout(300)
+            ready = page.evaluate(
+                "typeof _ccRules === 'object' && _ccRules !== null && Array.isArray(_ccRules.exclude_folders)"
+            )
+            if ready:
+                break
+
+    def _server_folders(self, page):
+        return page.evaluate(
+            """async () => {
+                const r = await fetch('/api/cloudcopy/rules');
+                const d = await r.json();
+                return d.rules.exclude_folders;
+            }"""
+        )
+
+    def test_add_via_plus_button_persists_to_server(self, loaded_page):
+        page, _ = loaded_page
+        self._open_backup_tab(page)
+        marker = "PWTestAddViaPlus"
+        # Make sure the marker doesn't already exist (test pollution).
+        before = self._server_folders(page)
+        assert marker not in before, "marker already on server -- previous test didn't clean up"
+
+        page.locator("#cc-folders-add-input").fill(marker)
+        page.evaluate(
+            """() => {
+                const inp = document.getElementById('cc-folders-add-input');
+                inp.nextElementSibling.click();
+            }"""
+        )
+        # cc_saveRules is async; give the PUT time to land.
+        page.wait_for_timeout(800)
+
+        after = self._server_folders(page)
+        assert marker in after, f"+ click did not persist; server still has {after!r}"
+
+        # Cleanup -- remove the marker we added.
+        page.evaluate(
+            f"""() => {{
+                const ul = document.getElementById('cc-folders');
+                const idx = _ccRules.exclude_folders.indexOf({marker!r});
+                if (idx >= 0) {{
+                    cc_removeItem('cc-folders', idx);
+                }}
+            }}"""
+        )
+        page.wait_for_timeout(800)
+
+    def test_remove_via_x_button_persists_to_server(self, loaded_page):
+        page, _ = loaded_page
+        self._open_backup_tab(page)
+
+        # First add a marker we can safely remove. This guarantees the
+        # × test doesn't accidentally remove a real user rule.
+        marker = "PWTestRemoveMe"
+        page.locator("#cc-folders-add-input").fill(marker)
+        page.evaluate(
+            """() => {
+                const inp = document.getElementById('cc-folders-add-input');
+                inp.nextElementSibling.click();
+            }"""
+        )
+        page.wait_for_timeout(800)
+        # Sanity: marker is on the server.
+        assert marker in self._server_folders(page)
+
+        # Now click the × button next to the marker.
+        page.evaluate(
+            f"""() => {{
+                const ul = document.getElementById('cc-folders');
+                const lis = Array.from(ul.querySelectorAll('li'));
+                const li = lis.find(el => el.textContent.includes({marker!r}));
+                if (li) li.querySelector('button').click();
+            }}"""
+        )
+        page.wait_for_timeout(800)
+
+        server_after = self._server_folders(page)
+        assert marker not in server_after, (
+            f"× click did not persist; server still has marker in {server_after!r} -- "
+            f"this is the bug the user reported 2026-05-25"
+        )
+
+    def test_enter_key_in_input_adds_and_persists(self, loaded_page):
+        """Enter in the add-input is the natural keyboard UX. Equivalent
+        to clicking +."""
+        page, _ = loaded_page
+        self._open_backup_tab(page)
+        marker = "PWTestEnterKey"
+        inp = page.locator("#cc-folders-add-input")
+        inp.fill(marker)
+        inp.press("Enter")
+        page.wait_for_timeout(800)
+        assert marker in self._server_folders(page), "Enter did not add"
+
+        # Cleanup
+        page.evaluate(
+            f"""() => {{
+                const idx = _ccRules.exclude_folders.indexOf({marker!r});
+                if (idx >= 0) cc_removeItem('cc-folders', idx);
+            }}"""
+        )
+        page.wait_for_timeout(800)
+
+
 # ── Concern action-button handler resolution (backlog #26 primary win) ─
 
 

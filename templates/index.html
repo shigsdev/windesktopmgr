@@ -7065,6 +7065,14 @@ function cc_renderListEditor(elId, items, placeholder) {
   if (adder) adder.placeholder = placeholder || "";
 }
 
+// elId -> rules-key mapping. Used by add/remove so the call sites don't
+// have to repeat the rules-key.
+const _CC_ELID_TO_KEY = {
+  "cc-folders": "exclude_folders",
+  "cc-extensions": "exclude_extensions",
+  "cc-globs": "exclude_filename_globs",
+};
+
 function cc_addItem(elId, key) {
   const adder = document.getElementById(elId + "-add-input");
   if (!adder || !adder.value.trim()) return;
@@ -7073,19 +7081,27 @@ function cc_addItem(elId, key) {
   _ccRules[key].push(adder.value.trim());
   adder.value = "";
   cc_renderListEditor(elId, _ccRules[key]);
+  // Bug-fix 2026-05-25: persist on EVERY add. The original code
+  // relied on the call-site adding "; cc_saveRules();" after each
+  // cc_addItem call, but the symmetric cc_removeItem never did --
+  // user clicked × and the deletion looked like it worked but came
+  // back on reload. Centralising the save here lets cc_removeItem
+  // mirror the contract.
+  cc_saveRules();
 }
 
 function cc_removeItem(elId, idx) {
-  // Derive the rules-key from the elId convention.
-  const keyMap = {
-    "cc-folders": "exclude_folders",
-    "cc-extensions": "exclude_extensions",
-    "cc-globs": "exclude_filename_globs",
-  };
-  const key = keyMap[elId];
+  const key = _CC_ELID_TO_KEY[elId];
   if (!key || !_ccRules) return;
   _ccRules[key].splice(idx, 1);
   cc_renderListEditor(elId, _ccRules[key]);
+  // Bug-fix 2026-05-25: persist removals to the server. Original PR-1
+  // code only updated _ccRules + the DOM without calling cc_saveRules,
+  // so the next page reload brought the "deleted" item back. User
+  // reported "the dropdown buttons for exclusions don't work" --
+  // confirmed by a Playwright probe that showed the server's rules
+  // were unchanged after a × click.
+  cc_saveRules();
 }
 
 async function cc_saveRules() {
@@ -7415,8 +7431,8 @@ async function loadCloudCopy() {
         <div style="font-size:10px;color:var(--muted);margin-bottom:6px">Match by folder NAME (any depth, case-insensitive).</div>
         <ul id="cc-folders" style="list-style:none;padding:0;margin:0 0 6px 0;max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;background:var(--surface);padding:6px"></ul>
         <div style="display:flex;gap:4px">
-          <input id="cc-folders-add-input" type="text" placeholder="Backup Data" style="flex:1;padding:3px 6px;font-size:11px;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:3px">
-          <button onclick="cc_addItem('cc-folders', 'exclude_folders'); cc_saveRules();" style="background:var(--cyan);border:none;color:#000;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:11px;font-weight:700">+</button>
+          <input id="cc-folders-add-input" type="text" placeholder="Backup Data" onkeydown="if(event.key==='Enter'){event.preventDefault();cc_addItem('cc-folders','exclude_folders');}" style="flex:1;padding:3px 6px;font-size:11px;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:3px">
+          <button onclick="cc_addItem('cc-folders', 'exclude_folders')" style="background:var(--cyan);border:none;color:#000;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:11px;font-weight:700">+</button>
         </div>
       </div>
 
@@ -7425,8 +7441,8 @@ async function loadCloudCopy() {
         <div style="font-size:10px;color:var(--muted);margin-bottom:6px">Must include the dot. Case-insensitive.</div>
         <ul id="cc-extensions" style="list-style:none;padding:0;margin:0 0 6px 0;max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;background:var(--surface);padding:6px"></ul>
         <div style="display:flex;gap:4px">
-          <input id="cc-extensions-add-input" type="text" placeholder=".iso" style="flex:1;padding:3px 6px;font-size:11px;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:3px">
-          <button onclick="cc_addItem('cc-extensions', 'exclude_extensions'); cc_saveRules();" style="background:var(--cyan);border:none;color:#000;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:11px;font-weight:700">+</button>
+          <input id="cc-extensions-add-input" type="text" placeholder=".iso" onkeydown="if(event.key==='Enter'){event.preventDefault();cc_addItem('cc-extensions','exclude_extensions');}" style="flex:1;padding:3px 6px;font-size:11px;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:3px">
+          <button onclick="cc_addItem('cc-extensions', 'exclude_extensions')" style="background:var(--cyan);border:none;color:#000;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:11px;font-weight:700">+</button>
         </div>
       </div>
 
@@ -7435,8 +7451,8 @@ async function loadCloudCopy() {
         <div style="font-size:10px;color:var(--muted);margin-bottom:6px">Use * and ? wildcards. Match filename only.</div>
         <ul id="cc-globs" style="list-style:none;padding:0;margin:0 0 6px 0;max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;background:var(--surface);padding:6px"></ul>
         <div style="display:flex;gap:4px">
-          <input id="cc-globs-add-input" type="text" placeholder="~$*" style="flex:1;padding:3px 6px;font-size:11px;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:3px">
-          <button onclick="cc_addItem('cc-globs', 'exclude_filename_globs'); cc_saveRules();" style="background:var(--cyan);border:none;color:#000;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:11px;font-weight:700">+</button>
+          <input id="cc-globs-add-input" type="text" placeholder="~$*" onkeydown="if(event.key==='Enter'){event.preventDefault();cc_addItem('cc-globs','exclude_filename_globs');}" style="flex:1;padding:3px 6px;font-size:11px;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:3px">
+          <button onclick="cc_addItem('cc-globs', 'exclude_filename_globs')" style="background:var(--cyan);border:none;color:#000;padding:3px 10px;border-radius:3px;cursor:pointer;font-size:11px;font-weight:700">+</button>
         </div>
       </div>
 
