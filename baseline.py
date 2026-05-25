@@ -1899,6 +1899,38 @@ def _infer_drift_cause_v2(
 #       the user can see what we INTENDED to do.
 
 
+def _parse_to_naive_local(ts_str: str) -> datetime | None:
+    """Parse an ISO 8601 timestamp into a NAIVE-LOCAL datetime.
+
+    Cluster timestamps in the timeline are recorded via
+    ``datetime.now().isoformat(...)`` -- naive, representing local
+    time. But Update Session + Event Log return UTC timestamps with
+    ``Z`` or ``+00:00`` suffix. If we strip the timezone without
+    converting, we end up comparing naive-UTC against naive-local
+    and silently miss matches by the local UTC offset (4 h on EDT).
+
+    This helper:
+      - Empty / None / non-string -> None
+      - Naive ISO string -> parse and assume LOCAL (no conversion)
+      - tz-aware string -> convert to LOCAL then drop tz
+
+    Returns None on any parse failure so callers can ``continue``.
+
+    Bug history: caught 2026-05-25 when a real May-22 cluster
+    correlated with 3 System log Service-installed events that my
+    post-filter discarded due to the offset.
+    """
+    if not isinstance(ts_str, str) or not ts_str:
+        return None
+    try:
+        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00").replace("/", "-"))
+    except (ValueError, TypeError):
+        return None
+    if ts.tzinfo is None:
+        return ts  # already naive; assume local
+    return ts.astimezone().replace(tzinfo=None)
+
+
 def gather_cluster_context(
     started_at: str,
     ended_at: str,
@@ -1950,14 +1982,8 @@ def gather_cluster_context(
     wu_raw = _recent_windows_updates(window=timedelta(days=14))
     windows_updates: list[dict] = []
     for u in wu_raw:
-        ts_str = u.get("installed") or ""
-        if not ts_str:
-            continue
-        try:
-            ts = datetime.fromisoformat(str(ts_str))
-            if ts.tzinfo:
-                ts = ts.replace(tzinfo=None)
-        except (ValueError, TypeError):
+        ts = _parse_to_naive_local(u.get("installed") or "")
+        if ts is None:
             continue
         if expanded_start <= ts <= expanded_end:
             windows_updates.append(
@@ -2003,16 +2029,8 @@ def gather_cluster_context(
 
         full_history = _wdm.get_update_history() or []
         for u in full_history:
-            ts_str = u.get("Date") or u.get("InstalledOn") or u.get("installed") or ""
-            if not ts_str:
-                continue
-            try:
-                # Date format from get_update_history is ISO-ish; try a
-                # few common shapes.
-                ts = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
-                if ts.tzinfo:
-                    ts = ts.replace(tzinfo=None)
-            except (ValueError, TypeError):
+            ts = _parse_to_naive_local(u.get("Date") or u.get("InstalledOn") or u.get("installed") or "")
+            if ts is None:
                 continue
             if expanded_start <= ts <= expanded_end:
                 update_history.append(
@@ -2058,14 +2076,11 @@ def gather_cluster_context(
             for e in entries or []:
                 if not isinstance(e, dict):
                     continue
-                ts_str = e.get("TimeCreated") or ""
-                # Defense-in-depth: re-filter by parsed timestamp in case
-                # the XPath was lenient.
-                try:
-                    ts = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
-                    if ts.tzinfo:
-                        ts = ts.replace(tzinfo=None)
-                except (ValueError, TypeError):
+                # Event Log emits UTC with `Z` suffix. _parse_to_naive_local
+                # converts to LOCAL before stripping tz so the comparison
+                # to expanded_start (local naive) is correct.
+                ts = _parse_to_naive_local(e.get("TimeCreated") or "")
+                if ts is None:
                     continue
                 if not (expanded_start <= ts <= expanded_end):
                     continue
