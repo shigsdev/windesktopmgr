@@ -6628,12 +6628,31 @@ async function bl_examineCluster(idx) {
   const win = data.window || {};
   const wus = data.windows_updates || [];
   const biosChanges = data.bios_audit_changes || [];
+  const wuHistory = data.update_history || [];
+  const evtEntries = data.event_log_entries || [];
+  const totalSignals = wus.length + biosChanges.length + wuHistory.length + evtEntries.length;
+
   const wuRows = wus.length
     ? wus.map(u => `<tr><td style="padding:4px 8px;font-family:var(--font-mono);font-size:10px">${escHtml(u.installed_on)}</td><td style="padding:4px 8px;font-weight:600">${escHtml(u.hotfix_id)}</td><td style="padding:4px 8px;color:var(--muted);font-size:11px">${escHtml(u.description)}</td></tr>`).join("")
-    : `<tr><td colspan="3" style="padding:8px;color:var(--muted);text-align:center">(no Windows Updates in this window)</td></tr>`;
+    : `<tr><td colspan="3" style="padding:8px;color:var(--muted);text-align:center;font-size:10px">(none in window — Get-HotFix only catches legacy hotfixes; check Update history below)</td></tr>`;
   const biosRows = biosChanges.length
     ? biosChanges.map(c => `<tr><td style="padding:4px 8px;font-family:var(--font-mono);font-size:10px">${escHtml(c.timestamp || "")}</td><td style="padding:4px 8px;font-size:11px">${escHtml((c.changes || []).map(x => x.field).join(", ") || "(no fields)")}</td></tr>`).join("")
-    : `<tr><td colspan="2" style="padding:8px;color:var(--muted);text-align:center">(no BIOS audit changes in this window)</td></tr>`;
+    : `<tr><td colspan="2" style="padding:8px;color:var(--muted);text-align:center;font-size:10px">(none in window)</td></tr>`;
+  const wuHistoryRows = wuHistory.length
+    ? wuHistory.map(u => `<tr><td style="padding:4px 8px;font-family:var(--font-mono);font-size:10px">${escHtml(u.date)}</td><td style="padding:4px 8px;font-weight:600;font-size:11px">${escHtml(u.title)}</td><td style="padding:4px 8px;color:var(--muted);font-size:10px">${escHtml(u.result)}</td></tr>`).join("")
+    : `<tr><td colspan="3" style="padding:8px;color:var(--muted);text-align:center;font-size:10px">(none in window — Microsoft.Update.Session.QueryHistory returned no events here)</td></tr>`;
+  const evtRows = evtEntries.length
+    ? evtEntries.map(e => `<tr><td style="padding:4px 8px;font-family:var(--font-mono);font-size:10px">${escHtml(e.time)}</td><td style="padding:4px 8px;font-size:10px;font-weight:600">${escHtml(e.channel)}</td><td style="padding:4px 8px;font-size:10px">${escHtml(String(e.event_id||""))}</td><td style="padding:4px 8px;font-size:10px;color:var(--muted)">${escHtml(e.provider)}</td><td style="padding:4px 8px;font-size:10px;color:var(--text);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(e.message)}">${escHtml(e.message)}</td></tr>`).join("")
+    : `<tr><td colspan="5" style="padding:8px;color:var(--muted);text-align:center;font-size:10px">(none — Setup/Application/System logs returned no events in this window)</td></tr>`;
+
+  const noSignalNote = totalSignals === 0
+    ? `<div style="padding:12px 14px;background:var(--surface);border:1px solid var(--orange);border-left:4px solid var(--orange);border-radius:6px;font-size:11px;color:var(--text);margin-bottom:14px">
+        <strong style="color:var(--orange)">No external signals correlate with this cluster.</strong>
+        That doesn't mean nothing happened — it means the four sources I checked (Get-HotFix, BIOS audit, Update Session history, Event Log Setup/Application/System) all came back empty for this window.
+        Likely causes: an app installer that doesn't log to Setup/Application channels (e.g. Click-to-Run Office, MSIX apps, portable installers), an admin push (Intune/SCCM), or a manual config change you made yourself.
+        Drill into the individual events below by clicking through to the entry-history modal.
+      </div>` : "";
+
   modal.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
       <div style="font-size:16px;font-weight:700;color:var(--text-bright)">🔍 What happened around ${escHtml(new Date(cluster.started_at).toLocaleString())}?</div>
@@ -6642,16 +6661,25 @@ async function bl_examineCluster(idx) {
     <div style="font-size:11px;color:var(--muted);margin-bottom:14px">
       Cluster window: ${escHtml(win.started_at)} → ${escHtml(win.ended_at)} · expanded by ±${win.seconds || 0}s (probe: ${escHtml(win.expanded_started)} → ${escHtml(win.expanded_ended)})
     </div>
+    ${noSignalNote}
     <div style="margin-bottom:16px">
-      <div style="font-size:13px;font-weight:700;color:var(--text-bright);margin-bottom:6px">Windows Updates installed in this window (${wus.length})</div>
+      <div style="font-size:13px;font-weight:700;color:var(--text-bright);margin-bottom:6px">📜 Update history (Microsoft.Update.Session) (${wuHistory.length})</div>
+      <table style="width:100%;border-collapse:collapse;font-size:11px"><tbody>${wuHistoryRows}</tbody></table>
+    </div>
+    <div style="margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:var(--text-bright);margin-bottom:6px">📋 Event Log (Setup/Application/System) (${evtEntries.length})</div>
+      <table style="width:100%;border-collapse:collapse;font-size:11px"><tbody>${evtRows}</tbody></table>
+    </div>
+    <div style="margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:var(--text-bright);margin-bottom:6px">🩹 Hotfixes (Get-HotFix legacy) (${wus.length})</div>
       <table style="width:100%;border-collapse:collapse;font-size:11px"><tbody>${wuRows}</tbody></table>
     </div>
     <div>
-      <div style="font-size:13px;font-weight:700;color:var(--text-bright);margin-bottom:6px">BIOS audit changes in this window (${biosChanges.length})</div>
+      <div style="font-size:13px;font-weight:700;color:var(--text-bright);margin-bottom:6px">🔩 BIOS audit changes (${biosChanges.length})</div>
       <table style="width:100%;border-collapse:collapse;font-size:11px"><tbody>${biosRows}</tbody></table>
     </div>
     <div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border);font-size:10px;color:var(--muted)">
-      Best-effort context. Empty lists mean nothing in those sources fell in the window -- the cluster could still be a legit install whose installer didn't register as a HotFix.
+      Best-effort context. Event Log queries are capped at 20 per channel + 6 s timeout. Drill into individual cluster events from the timeline row to see per-entry investigator output.
     </div>`;
   overlay.appendChild(modal);
   // ESC dismiss

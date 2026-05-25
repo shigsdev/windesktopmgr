@@ -1990,6 +1990,102 @@ def gather_cluster_context(
     except Exception:  # noqa: BLE001 -- best-effort
         pass
 
+    # ── Update Session history (catches modern WU that Get-HotFix misses) ──
+    # User feedback 2026-05-25: the original Examine modal showed
+    # zero context for the live 71-event cluster because Get-HotFix
+    # only captures legacy hotfixes. Microsoft.Update.Session's
+    # QueryHistory returns the full update-install log including
+    # cumulative + driver + feature updates.
+    update_history: list[dict] = []
+    try:
+        # Lazy import to avoid the circular dep at module load.
+        import windesktopmgr as _wdm
+
+        full_history = _wdm.get_update_history() or []
+        for u in full_history:
+            ts_str = u.get("Date") or u.get("InstalledOn") or u.get("installed") or ""
+            if not ts_str:
+                continue
+            try:
+                # Date format from get_update_history is ISO-ish; try a
+                # few common shapes.
+                ts = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+                if ts.tzinfo:
+                    ts = ts.replace(tzinfo=None)
+            except (ValueError, TypeError):
+                continue
+            if expanded_start <= ts <= expanded_end:
+                update_history.append(
+                    {
+                        "title": u.get("Title") or u.get("title") or "",
+                        "result": u.get("Result") or u.get("result") or "",
+                        "operation": u.get("Operation") or u.get("operation") or "",
+                        "date": ts.isoformat(timespec="seconds"),
+                        "description": u.get("Description") or u.get("description") or "",
+                    }
+                )
+    except Exception:  # noqa: BLE001 -- best-effort
+        pass
+
+    # ── Event Log (Setup + Application + System providers) ──
+    # XPath time-range filter using win32evtlog. Setup logs MSI events
+    # (event IDs 1033/1034/1036/11707/11708/11724) which capture app
+    # installs that don't show up in Get-HotFix. Application + System
+    # catch service-changed and driver-installed events. Limit to 20
+    # per channel + a 6 s timeout per query so a slow event log doesn't
+    # stall the request.
+    event_log_entries: list[dict] = []
+    try:
+        import windesktopmgr as _wdm
+
+        # Convert the window to the EvtQuery TimeCreated XPath format
+        # (must be the ms-since-epoch form -- ISO doesn't work with
+        # EvtQuery's parser). Build a millisecond range that bounds
+        # the cluster's expanded window.
+        delta_ms = int((datetime.now() - expanded_start).total_seconds() * 1000)
+        delta_end_ms = int((datetime.now() - expanded_end).total_seconds() * 1000)
+        # TimeCreated/@SystemTime > now-X-ms AND TimeCreated/@SystemTime < now-Y-ms
+        # XPath: TimeCreated[timediff(@SystemTime) <= X and timediff(@SystemTime) >= Y]
+        time_xpath = (
+            f"*[System[TimeCreated[timediff(@SystemTime) <= {max(0, delta_ms)} "
+            f"and timediff(@SystemTime) >= {max(0, delta_end_ms)}]]]"
+        )
+        for channel in ("Setup", "Application", "System"):
+            try:
+                entries = _wdm._query_event_log_xpath(channel, time_xpath, max_events=20, timeout_s=6.0)
+            except Exception:  # noqa: BLE001
+                continue
+            for e in entries or []:
+                if not isinstance(e, dict):
+                    continue
+                ts_str = e.get("TimeCreated") or ""
+                # Defense-in-depth: re-filter by parsed timestamp in case
+                # the XPath was lenient.
+                try:
+                    ts = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+                    if ts.tzinfo:
+                        ts = ts.replace(tzinfo=None)
+                except (ValueError, TypeError):
+                    continue
+                if not (expanded_start <= ts <= expanded_end):
+                    continue
+                event_log_entries.append(
+                    {
+                        "channel": channel,
+                        "event_id": e.get("Id"),
+                        "provider": e.get("ProviderName") or "",
+                        "level": e.get("Level"),
+                        "time": ts.isoformat(timespec="seconds"),
+                        # Cap message at 300 chars to avoid sending megabytes
+                        # of event-message text to the browser modal.
+                        "message": (e.get("Message") or "")[:300],
+                    }
+                )
+        # Newest first across all channels.
+        event_log_entries.sort(key=lambda r: r["time"], reverse=True)
+    except Exception:  # noqa: BLE001 -- best-effort
+        pass
+
     return {
         "ok": True,
         "window": {
@@ -2001,9 +2097,13 @@ def gather_cluster_context(
         },
         "windows_updates": windows_updates,
         "bios_audit_changes": bios_changes,
+        "update_history": update_history,
+        "event_log_entries": event_log_entries,
         "totals": {
             "windows_updates": len(windows_updates),
             "bios_audit_changes": len(bios_changes),
+            "update_history": len(update_history),
+            "event_log_entries": len(event_log_entries),
         },
     }
 
