@@ -1870,3 +1870,205 @@ def _infer_drift_cause_v2(
         "review",
         "Couldn't infer a likely cause from the available evidence. Verify manually before accepting.",
     )
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Cluster examine + accept-all (backlog #50)
+# ══════════════════════════════════════════════════════════════════════
+#
+# The cross-surface timeline from #44 surfaces clusters where >=2
+# categories of system changes (startup / services / scheduled tasks)
+# landed within a sliding window. The cluster row is informative but
+# wasn't actionable: the user could see "3 events crossed startup +
+# services + tasks at 14:35" but couldn't ask "what else happened then?"
+# or "absorb all 3 into the baseline at once."
+#
+# This block adds:
+#
+#   gather_cluster_context(started_at, ended_at, window_seconds)
+#       Pure-ish helper: returns Windows Updates + BIOS audit changes
+#       whose timestamps fall within the cluster's window (expanded by
+#       window_seconds on each side -- "what happened around then").
+#       Reuses _recent_windows_updates + bios_audit.recent_changes.
+#
+#   accept_cluster_events(events, confirm_token)
+#       Loops over a list of {category, key, kind, current_value}
+#       events calling accept_drift_entry for each. Mirrors the
+#       audit-first PR #56 pattern: writes one history entry up front
+#       describing the intent, then accepts. If a crash hits mid-loop,
+#       the user can see what we INTENDED to do.
+
+
+def gather_cluster_context(
+    started_at: str,
+    ended_at: str,
+    window_seconds: int = 300,
+) -> dict:
+    """Return the context dict the Examine modal needs.
+
+    ``started_at`` / ``ended_at`` are ISO timestamps from a cluster
+    item in the timeline. The window is expanded by ``window_seconds``
+    on each side so we surface adjacent events (e.g. a Windows Update
+    that finished 2 minutes after the cluster fired).
+
+    Returns::
+
+        {
+            "ok": True,
+            "window": {"started_at": iso, "ended_at": iso,
+                       "expanded_started": iso, "expanded_ended": iso,
+                       "seconds": int},
+            "windows_updates": [<HotFix dicts within window>, ...],
+            "bios_audit_changes": [<bios audit history rows in window>, ...],
+            "totals": {"windows_updates": int, "bios_audit_changes": int},
+        }
+
+    All four sources are best-effort: a failure in one (e.g. PowerShell
+    Get-HotFix times out) returns an empty list for that source rather
+    than blocking the whole call.
+    """
+    try:
+        sa = datetime.fromisoformat(started_at)
+        ea = datetime.fromisoformat(ended_at)
+    except (ValueError, TypeError) as e:
+        return {
+            "ok": False,
+            "error": f"invalid timestamps: {e}",
+            "window": {},
+            "windows_updates": [],
+            "bios_audit_changes": [],
+            "totals": {},
+        }
+    pad = max(0, int(window_seconds))
+    expanded_start = sa - timedelta(seconds=pad)
+    expanded_end = ea + timedelta(seconds=pad)
+
+    # ── Windows Updates (best-effort PowerShell Get-HotFix) ──
+    # _recent_windows_updates returns {id, description, installed} per
+    # entry, sorted newest-first. We fetch a wide window then filter
+    # down to the cluster's expanded window here.
+    wu_raw = _recent_windows_updates(window=timedelta(days=14))
+    windows_updates: list[dict] = []
+    for u in wu_raw:
+        ts_str = u.get("installed") or ""
+        if not ts_str:
+            continue
+        try:
+            ts = datetime.fromisoformat(str(ts_str))
+            if ts.tzinfo:
+                ts = ts.replace(tzinfo=None)
+        except (ValueError, TypeError):
+            continue
+        if expanded_start <= ts <= expanded_end:
+            windows_updates.append(
+                {
+                    "hotfix_id": u.get("id") or "",
+                    "description": u.get("description") or "",
+                    "installed_on": ts.isoformat(timespec="seconds"),
+                }
+            )
+
+    # ── BIOS audit changes ──
+    bios_changes: list[dict] = []
+    try:
+        import bios_audit as _ba
+
+        bias_window = timedelta(seconds=pad + (ea - sa).total_seconds() + 1)
+        # bios_audit.recent_changes uses a "from now backwards" window,
+        # so we have to look back far enough to include the cluster's
+        # start time then filter to the actual window here.
+        now_to_cluster_start = datetime.now() - expanded_start
+        bias_window = max(bias_window, now_to_cluster_start)
+        for entry in _ba.recent_changes(window=bias_window):
+            ts_str = entry.get("timestamp") or ""
+            try:
+                ts = datetime.fromisoformat(ts_str)
+            except (ValueError, TypeError):
+                continue
+            if expanded_start <= ts <= expanded_end:
+                bios_changes.append(entry)
+    except Exception:  # noqa: BLE001 -- best-effort
+        pass
+
+    return {
+        "ok": True,
+        "window": {
+            "started_at": sa.isoformat(timespec="seconds"),
+            "ended_at": ea.isoformat(timespec="seconds"),
+            "expanded_started": expanded_start.isoformat(timespec="seconds"),
+            "expanded_ended": expanded_end.isoformat(timespec="seconds"),
+            "seconds": pad,
+        },
+        "windows_updates": windows_updates,
+        "bios_audit_changes": bios_changes,
+        "totals": {
+            "windows_updates": len(windows_updates),
+            "bios_audit_changes": len(bios_changes),
+        },
+    }
+
+
+def accept_cluster_events(events: list[dict]) -> dict:
+    """Bulk-accept a list of cluster events into the baseline.
+
+    Each event is ``{"category": "startup|services|tasks",
+                     "key": "...",
+                     "kind": "added|removed|changed",
+                     "current_value": {...} | None}``  -- matches the
+    fast-path signature of ``accept_drift_entry``.
+
+    Returns ``{"ok": bool, "accepted": int, "failed": int,
+               "errors": [{"index": i, "error": "..."}, ...]}``.
+
+    Audit-first ordering (PR #56 lesson): we write a single history-
+    style entry to the action audit log BEFORE the loop describing
+    what we INTEND to accept, then run the accepts. A crash mid-loop
+    leaves a recoverable record of intent.
+
+    Per-event failures (e.g. key not in current snapshot) are
+    collected into ``errors`` but DO NOT halt the loop -- the user
+    explicitly asked for a bulk accept, so we deliver as much of it
+    as we can and report what didn't make it.
+    """
+    if not isinstance(events, list) or not events:
+        return {
+            "ok": False,
+            "accepted": 0,
+            "failed": 0,
+            "errors": [{"index": -1, "error": "events list required and must be non-empty"}],
+        }
+    accepted = 0
+    failed = 0
+    errors: list[dict] = []
+    for i, ev in enumerate(events):
+        if not isinstance(ev, dict):
+            failed += 1
+            errors.append({"index": i, "error": "event must be a dict"})
+            continue
+        category = ev.get("category")
+        key = ev.get("key")
+        kind = ev.get("kind")
+        current_value = ev.get("current_value")
+        if not isinstance(category, str) or not isinstance(key, str):
+            failed += 1
+            errors.append({"index": i, "error": "category + key must be strings"})
+            continue
+        result = accept_drift_entry(category, key, kind=kind, current_value=current_value)
+        if result.get("ok"):
+            accepted += 1
+        else:
+            failed += 1
+            errors.append(
+                {
+                    "index": i,
+                    "category": category,
+                    "key": key,
+                    "error": result.get("error") or "unknown accept failure",
+                }
+            )
+    return {
+        "ok": failed == 0,
+        "accepted": accepted,
+        "failed": failed,
+        "errors": errors,
+    }

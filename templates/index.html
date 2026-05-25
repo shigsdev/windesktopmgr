@@ -6594,7 +6594,123 @@ async function saveDeviceEdit() {
 // is user-configurable via the <select> in the timeline panel.
 function bl_reloadTimeline() { return loadBaselineTimeline(); }
 
+// ── Cluster examine + accept-all (backlog #50) ────────────────────
+//
+// Each cluster rendered by loadBaselineTimeline is stashed on
+// window._blClusterStash by index so the button handlers (which can
+// only carry primitive args through onclick="...") can pick the full
+// cluster object back up.
+
+window._blClusterStash = [];
+
+async function bl_examineCluster(idx) {
+  const cluster = (window._blClusterStash || [])[idx];
+  if (!cluster) { alert("Cluster data not available -- refresh the timeline."); return; }
+  const url = `/api/baseline/cluster-context?started_at=${encodeURIComponent(cluster.started_at)}&ended_at=${encodeURIComponent(cluster.ended_at)}&window=300`;
+  let data;
+  try {
+    const r = await fetch(url);
+    data = await r.json();
+  } catch (e) {
+    alert("Cluster examine failed: " + e.message);
+    return;
+  }
+  if (!data.ok) { alert("Cluster examine refused: " + (data.error || "unknown")); return; }
+
+  // Build a modal with the contextual signals. Pure-JS overlay (no
+  // dependency on a modal lib); ESC dismisses + click-outside dismisses.
+  const overlay = document.createElement("div");
+  overlay.id = "bl-examine-overlay";
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px";
+  overlay.onclick = e => { if (e.target === overlay) document.body.removeChild(overlay); };
+  const modal = document.createElement("div");
+  modal.style.cssText = "background:var(--card);border:1px solid var(--cyan);border-radius:10px;padding:20px;max-width:800px;width:100%;max-height:80vh;overflow-y:auto;color:var(--text)";
+  const win = data.window || {};
+  const wus = data.windows_updates || [];
+  const biosChanges = data.bios_audit_changes || [];
+  const wuRows = wus.length
+    ? wus.map(u => `<tr><td style="padding:4px 8px;font-family:var(--font-mono);font-size:10px">${escHtml(u.installed_on)}</td><td style="padding:4px 8px;font-weight:600">${escHtml(u.hotfix_id)}</td><td style="padding:4px 8px;color:var(--muted);font-size:11px">${escHtml(u.description)}</td></tr>`).join("")
+    : `<tr><td colspan="3" style="padding:8px;color:var(--muted);text-align:center">(no Windows Updates in this window)</td></tr>`;
+  const biosRows = biosChanges.length
+    ? biosChanges.map(c => `<tr><td style="padding:4px 8px;font-family:var(--font-mono);font-size:10px">${escHtml(c.timestamp || "")}</td><td style="padding:4px 8px;font-size:11px">${escHtml((c.changes || []).map(x => x.field).join(", ") || "(no fields)")}</td></tr>`).join("")
+    : `<tr><td colspan="2" style="padding:8px;color:var(--muted);text-align:center">(no BIOS audit changes in this window)</td></tr>`;
+  modal.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <div style="font-size:16px;font-weight:700;color:var(--text-bright)">🔍 What happened around ${escHtml(new Date(cluster.started_at).toLocaleString())}?</div>
+      <button onclick="document.body.removeChild(document.getElementById('bl-examine-overlay'))" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer">Close</button>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:14px">
+      Cluster window: ${escHtml(win.started_at)} → ${escHtml(win.ended_at)} · expanded by ±${win.seconds || 0}s (probe: ${escHtml(win.expanded_started)} → ${escHtml(win.expanded_ended)})
+    </div>
+    <div style="margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:var(--text-bright);margin-bottom:6px">Windows Updates installed in this window (${wus.length})</div>
+      <table style="width:100%;border-collapse:collapse;font-size:11px"><tbody>${wuRows}</tbody></table>
+    </div>
+    <div>
+      <div style="font-size:13px;font-weight:700;color:var(--text-bright);margin-bottom:6px">BIOS audit changes in this window (${biosChanges.length})</div>
+      <table style="width:100%;border-collapse:collapse;font-size:11px"><tbody>${biosRows}</tbody></table>
+    </div>
+    <div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border);font-size:10px;color:var(--muted)">
+      Best-effort context. Empty lists mean nothing in those sources fell in the window -- the cluster could still be a legit install whose installer didn't register as a HotFix.
+    </div>`;
+  overlay.appendChild(modal);
+  // ESC dismiss
+  const esc = ev => { if (ev.key === "Escape") { try { document.body.removeChild(overlay); } catch {} document.removeEventListener("keydown", esc); } };
+  document.addEventListener("keydown", esc);
+  document.body.appendChild(overlay);
+}
+
+async function bl_acceptCluster(idx) {
+  const cluster = (window._blClusterStash || [])[idx];
+  if (!cluster) { alert("Cluster data not available -- refresh the timeline."); return; }
+  const events = (cluster.events || []).map(ev => ({
+    category: ev.category,
+    key: ev.key,
+    kind: ev.kind,
+    // current_value is omitted -- the slow-path accept_drift_entry call
+    // re-snapshots to discover the value. Adds latency but keeps the
+    // payload small + avoids stale-data bugs.
+    current_value: null,
+  }));
+  if (!events.length) { alert("Cluster has no events."); return; }
+  const n = events.length;
+  const expected = `ACCEPT ${n} CHANGES`;
+  const typed = window.prompt(
+    `Accept all ${n} changes in this cluster?\n\n` +
+    `This absorbs every add/remove/change in the cluster into your baseline.\n` +
+    `Useful when the cluster represents a known event (Windows Update install, app install).\n\n` +
+    `To confirm, type exactly:\n    ${expected}`,
+    ""
+  );
+  if (typed === null) return;
+  if (typed !== expected) { alert(`Cancelled: confirmation didn't match "${expected}".`); return; }
+
+  let result;
+  try {
+    const r = await fetch("/api/baseline/accept-cluster", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({events: events, confirm_token: expected}),
+    });
+    result = await r.json();
+  } catch (e) {
+    alert("Accept-cluster failed: " + e.message);
+    return;
+  }
+  const summary = `Accepted ${result.accepted || 0} of ${n} changes${result.failed ? ", " + result.failed + " failed" : ""}.`;
+  if (result.errors && result.errors.length) {
+    alert(summary + "\n\nFirst errors:\n" + result.errors.slice(0, 5).map(e => `  ${e.category || ""}: ${e.error}`).join("\n"));
+  } else {
+    alert(summary);
+  }
+  // Reload the timeline so the cluster updates (or disappears if all accepted).
+  loadBaseline();
+}
+
 async function loadBaselineTimeline() {
+  // Reset the stash so stale entries from a previous render don't
+  // accumulate indefinitely.
+  window._blClusterStash = [];
   const section = document.getElementById("bl-timeline-section");
   const body = document.getElementById("bl-timeline-body");
   const subtitle = document.getElementById("bl-timeline-subtitle");
@@ -6641,6 +6757,10 @@ async function loadBaselineTimeline() {
           : ${escHtml(ev.name || ev.key || "")}
           ${ev.delta && ev.delta.length ? `<span style="color:var(--muted);font-size:10px"> (${escHtml(ev.delta.join(", "))})</span>` : ""}
         </div>`).join("");
+      // Stash the cluster on a global keyed by index so the Examine/Accept
+      // button handlers can pick it back up. JSON.stringify would round-trip
+      // but adds escaping nightmares for nested quotes; a global is simpler.
+      const idx = window._blClusterStash.push(it) - 1;
       return `
         <div style="margin:8px 0;padding:8px 10px;background:var(--surface);border:1px solid ${color};border-left:4px solid ${color};border-radius:6px">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px">
@@ -6650,7 +6770,11 @@ async function loadBaselineTimeline() {
             </div>
             <div style="color:var(--muted);font-size:10px;font-family:var(--font-mono)">${escHtml(startedAt)}</div>
           </div>
-          <div style="color:var(--muted);font-size:11px;margin-bottom:4px">Categories: ${escHtml(catLabel)}</div>
+          <div style="color:var(--muted);font-size:11px;margin-bottom:6px">Categories: ${escHtml(catLabel)}</div>
+          <div style="display:flex;gap:6px;margin-bottom:6px">
+            <button onclick="bl_examineCluster(${idx})" style="background:transparent;border:1px solid var(--cyan);color:var(--cyan);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px">🔍 Examine</button>
+            <button onclick="bl_acceptCluster(${idx})" style="background:var(--cyan);border:none;color:#000;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">✓ Accept all ${it.event_count || 0}</button>
+          </div>
           ${eventRows}
         </div>`;
     }
@@ -7656,6 +7780,11 @@ async function loadBaseline() {
   // Always offer the re-accept button once a baseline exists so legit
   // changes (Windows Update, new app install) can be absorbed quickly.
   acceptBtn.style.display = "";
+  // Bottom-mirrored Accept button (backlog #50) -- show/hide in sync
+  // with the top one so a user who reads top-to-bottom finds the
+  // action without scrolling back up.
+  const bottomActions = document.getElementById("bl-bottom-actions");
+  if (bottomActions) bottomActions.style.display = "";
 
   // Schema-migration banner: fires when the collector started tracking
   // a field after the baseline was captured. Without this, the user
@@ -10691,6 +10820,16 @@ function renderSystemInfo(d, upgrades) {
       <div id="bl-cat-startup"  class="bl-category" data-category="startup"  style="margin-bottom:16px"></div>
       <div id="bl-cat-services" class="bl-category" data-category="services" style="margin-bottom:16px"></div>
       <div id="bl-cat-tasks"    class="bl-category" data-category="tasks"    style="margin-bottom:16px"></div>
+
+      <!-- Bottom Accept-all mirror (backlog #50). The "Accept current as
+           baseline" button is at the top right by default; for users who
+           read top-to-bottom and want to act AFTER reviewing all drift,
+           we mirror it here. id="bl-accept-bottom-btn" is shown/hidden
+           by loadBaseline() in sync with the top button. -->
+      <div id="bl-bottom-actions" style="display:none;margin-top:14px;padding:12px 16px;background:var(--card);border:1px solid var(--border);border-radius:8px;text-align:right">
+        <span style="font-size:11px;color:var(--muted);margin-right:8px">Reviewed everything above? Promote the current state to the baseline:</span>
+        <button onclick="acceptBaseline()" id="bl-accept-bottom-btn" style="background:var(--cyan);border:none;color:#000;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700">Accept current as baseline</button>
+      </div>
     </div>
 
     <!-- Full monitored inventory: shows EVERY item being tracked, not just

@@ -2245,3 +2245,217 @@ class TestBaselineDashboardConcern:
         resp = client.get("/api/dashboard/summary")
         concerns = resp.get_json().get("concerns", [])
         assert not any("cross-surface" in c.get("title", "").lower() for c in concerns)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Backlog #50: cluster examine + accept-all
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestGatherClusterContext:
+    """Cluster-context helper: returns Windows Updates + BIOS audit
+    changes whose timestamps fall in the cluster's (expanded) window.
+    Best-effort -- a failure in one source returns empty list rather
+    than breaking the whole call."""
+
+    def test_invalid_timestamps_return_error(self, baseline_tmp):
+        result = baseline.gather_cluster_context("not-iso", "also-not", window_seconds=300)
+        assert result["ok"] is False
+        assert "invalid" in result["error"].lower()
+
+    def test_empty_window_returns_empty_lists(self, baseline_tmp, mocker):
+        mocker.patch.object(baseline, "_recent_windows_updates", return_value=[])
+        result = baseline.gather_cluster_context("2026-05-25T14:30:00", "2026-05-25T14:30:00", window_seconds=300)
+        assert result["ok"] is True
+        assert result["windows_updates"] == []
+        assert result["totals"]["windows_updates"] == 0
+        assert "expanded_started" in result["window"]
+        assert result["window"]["seconds"] == 300
+
+    def test_windows_updates_filtered_to_window(self, baseline_tmp, mocker):
+        mocker.patch.object(
+            baseline,
+            "_recent_windows_updates",
+            return_value=[
+                {"id": "KB1", "description": "Cumulative", "installed": "2026-05-25T14:30:00"},
+                {"id": "KB2", "description": "Defender", "installed": "2026-05-25T14:32:00"},
+                {"id": "KB3", "description": "OldOne", "installed": "2026-05-24T10:00:00"},
+            ],
+        )
+        result = baseline.gather_cluster_context("2026-05-25T14:30:00", "2026-05-25T14:31:00", window_seconds=120)
+        ids = [u["hotfix_id"] for u in result["windows_updates"]]
+        assert "KB1" in ids
+        assert "KB2" in ids
+        assert "KB3" not in ids
+        assert result["totals"]["windows_updates"] == 2
+
+    def test_unparseable_hotfix_timestamp_skipped(self, baseline_tmp, mocker):
+        mocker.patch.object(
+            baseline,
+            "_recent_windows_updates",
+            return_value=[
+                {"id": "KB-good", "description": "ok", "installed": "2026-05-25T14:30:00"},
+                {"id": "KB-bad", "description": "no ts"},
+                {"id": "KB-junk", "description": "junk ts", "installed": "garbage"},
+            ],
+        )
+        result = baseline.gather_cluster_context("2026-05-25T14:29:00", "2026-05-25T14:31:00", window_seconds=60)
+        ids = [u["hotfix_id"] for u in result["windows_updates"]]
+        assert ids == ["KB-good"]
+
+    def test_window_expanded_by_seconds(self, baseline_tmp, mocker):
+        mocker.patch.object(
+            baseline,
+            "_recent_windows_updates",
+            return_value=[
+                {"id": "KB-before", "description": "before", "installed": "2026-05-25T14:29:00"},
+                {"id": "KB-in", "description": "in", "installed": "2026-05-25T14:30:30"},
+            ],
+        )
+        result = baseline.gather_cluster_context("2026-05-25T14:30:00", "2026-05-25T14:30:30", window_seconds=300)
+        ids = [u["hotfix_id"] for u in result["windows_updates"]]
+        assert "KB-before" in ids
+        assert "KB-in" in ids
+
+    def test_bios_audit_failure_is_swallowed(self, baseline_tmp, mocker):
+        mocker.patch.object(baseline, "_recent_windows_updates", return_value=[])
+        import bios_audit as _ba
+
+        mocker.patch.object(_ba, "recent_changes", side_effect=RuntimeError("simulated"))
+        result = baseline.gather_cluster_context("2026-05-25T14:30:00", "2026-05-25T14:31:00", window_seconds=60)
+        assert result["ok"] is True
+        assert result["bios_audit_changes"] == []
+
+
+class TestAcceptClusterEvents:
+    """Bulk accept_drift_entry over a list of events. Per-event failures
+    are collected; the loop doesn't abort on the first failure."""
+
+    def _seed_baseline(self):
+        snap = {
+            "timestamp": "2026-05-24T10:00:00",
+            "startup": {"by_key": {}},
+            "services": {"by_key": {"existing-svc": {"name": "Spooler", "image_path": "C:\\old.exe"}}},
+            "tasks": {"by_key": {}},
+            "counts": {"startup": 0, "services": 1, "tasks": 0},
+        }
+        baseline._atomic_write(baseline.BASELINE_FILE, snap)
+
+    def test_empty_events_list_refused(self, baseline_tmp):
+        result = baseline.accept_cluster_events([])
+        assert result["ok"] is False
+        assert result["failed"] == 0
+        assert result["accepted"] == 0
+
+    def test_non_list_input_refused(self, baseline_tmp):
+        result = baseline.accept_cluster_events("not a list")
+        assert result["ok"] is False
+
+    def test_malformed_event_dict_caught(self, baseline_tmp):
+        result = baseline.accept_cluster_events([{"kind": "added"}, {"foo": "bar"}])
+        assert result["accepted"] == 0
+        assert result["failed"] == 2
+        assert len(result["errors"]) == 2
+
+    def test_per_event_failures_are_collected_not_aborting(self, baseline_tmp):
+        events = [
+            {"kind": "added"},
+            {"category": "services", "key": "Spooler", "kind": "added", "current_value": {"name": "Spooler"}},
+        ]
+        result = baseline.accept_cluster_events(events)
+        assert result["failed"] == 2
+        assert result["accepted"] == 0
+        assert len(result["errors"]) == 2
+
+    def test_successful_accept_loop(self, baseline_tmp):
+        self._seed_baseline()
+        events = [
+            {
+                "category": "services",
+                "key": "NewSvc1",
+                "kind": "added",
+                "current_value": {"name": "NewSvc1", "image_path": "C:\\new.exe"},
+            },
+            {
+                "category": "services",
+                "key": "NewSvc2",
+                "kind": "added",
+                "current_value": {"name": "NewSvc2", "image_path": "C:\\two.exe"},
+            },
+        ]
+        result = baseline.accept_cluster_events(events)
+        assert result["accepted"] == 2
+        assert result["failed"] == 0
+        assert result["ok"] is True
+        snap = baseline.load_baseline()
+        assert "NewSvc1" in snap["services"]["by_key"]
+        assert "NewSvc2" in snap["services"]["by_key"]
+
+
+class TestClusterContextRoute:
+    def test_requires_both_timestamps(self, client, baseline_tmp):
+        r = client.get("/api/baseline/cluster-context?started_at=2026-05-25T14:30:00")
+        assert r.status_code == 400
+        assert "ended_at" in r.get_json()["error"]
+
+    def test_clamps_window_seconds(self, client, baseline_tmp, mocker):
+        mocker.patch.object(baseline, "_recent_windows_updates", return_value=[])
+        r = client.get(
+            "/api/baseline/cluster-context?started_at=2026-05-25T14:30:00&ended_at=2026-05-25T14:31:00&window=999999"
+        )
+        assert r.status_code == 200
+        assert r.get_json()["window"]["seconds"] == 86400
+
+    def test_invalid_timestamps_returns_400(self, client, baseline_tmp):
+        r = client.get("/api/baseline/cluster-context?started_at=garbage&ended_at=alsogarbage")
+        assert r.status_code == 400
+
+    def test_happy_path_returns_shape(self, client, baseline_tmp, mocker):
+        mocker.patch.object(
+            baseline,
+            "_recent_windows_updates",
+            return_value=[{"id": "KB1", "description": "x", "installed": "2026-05-25T14:30:00"}],
+        )
+        r = client.get(
+            "/api/baseline/cluster-context?started_at=2026-05-25T14:30:00&ended_at=2026-05-25T14:31:00&window=300"
+        )
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data["ok"] is True
+        assert len(data["windows_updates"]) == 1
+        assert data["totals"]["windows_updates"] == 1
+
+
+class TestAcceptClusterRoute:
+    def test_requires_events_list(self, client, baseline_tmp):
+        r = client.post("/api/baseline/accept-cluster", json={"confirm_token": "ACCEPT 0 CHANGES"})
+        assert r.status_code == 400
+        assert "events" in r.get_json()["error"]
+
+    def test_confirm_token_must_match_event_count(self, client, baseline_tmp):
+        r = client.post(
+            "/api/baseline/accept-cluster",
+            json={
+                "events": [
+                    {"category": "services", "key": "X", "kind": "added"},
+                    {"category": "services", "key": "Y", "kind": "added"},
+                ],
+                "confirm_token": "ACCEPT 3 CHANGES",
+            },
+        )
+        assert r.status_code == 400
+        assert "ACCEPT 2 CHANGES" in r.get_json()["error"]
+
+    def test_partial_success_returns_207(self, client, baseline_tmp):
+        # Both events malformed -> all fail -> 207 Multi-Status.
+        r = client.post(
+            "/api/baseline/accept-cluster",
+            json={
+                "events": [{"kind": "added"}, {"kind": "added"}],
+                "confirm_token": "ACCEPT 2 CHANGES",
+            },
+        )
+        assert r.status_code == 207
+        data = r.get_json()
+        assert data["failed"] == 2
+        assert data["accepted"] == 0
