@@ -2511,11 +2511,12 @@ class TestAcceptClusterEvents:
         assert result["accepted"] == 1
         assert snapshot_spy.call_count == 0, "no snapshot needed when current_value supplied"
 
-    def test_added_event_not_in_snapshot_records_soft_failure(self, baseline_tmp, mocker):
+    def test_added_event_not_in_snapshot_classified_as_no_op(self, baseline_tmp, mocker):
         """If the user is bulk-accepting a stale cluster (item was
         already removed since the drift was detected), the snapshot
-        lookup returns None. Don't write a partial/bad entry to the
-        baseline -- record a clear failure with the reason."""
+        lookup returns None. The desired end-state is reached -- the
+        item is gone -- so classify as idempotent no_op rather than
+        failure (was a failure before 2026-05-26)."""
         self._seed_baseline()
         mocker.patch.object(
             baseline,
@@ -2529,8 +2530,10 @@ class TestAcceptClusterEvents:
         events = [{"category": "services", "key": "GoneNow", "kind": "added"}]
         result = baseline.accept_cluster_events(events)
         assert result["accepted"] == 0
-        assert result["failed"] == 1
-        assert "no longer present" in result["errors"][0]["error"]
+        assert result["no_op"] == 1
+        assert result["failed"] == 0
+        assert result["ok"] is True
+        assert result["errors"] == []
 
     def test_removed_kind_does_not_need_snapshot(self, baseline_tmp, mocker):
         """removed events don't need current_value -- the snapshot
@@ -2549,6 +2552,105 @@ class TestAcceptClusterEvents:
         result = baseline.accept_cluster_events(events)
         assert result["accepted"] == 1
         assert snapshot_spy.call_count == 0, "removed events should not trigger snapshot"
+
+    def test_removal_of_key_not_in_baseline_is_no_op_not_failure(self, baseline_tmp):
+        """User report 2026-05-26: cluster contained 31 removal events
+        for Windows per-user services (suffix changes every login).
+        The baseline never had THOSE exact keys, so accept_drift_entry
+        rejected them with "key not in baseline -- can't remove". But
+        the desired end-state ("key not in baseline") was ALREADY
+        ACHIEVED -- count as idempotent no-op, not failure.
+        """
+        snap = {
+            "timestamp": "2026-05-26T10:00:00",
+            "startup": {"by_key": {}},
+            "services": {"by_key": {}},
+            "tasks": {"by_key": {}},
+            "counts": {"startup": 0, "services": 0, "tasks": 0},
+        }
+        baseline._atomic_write(baseline.BASELINE_FILE, snap)
+        # NB: real-world keys carry a hex session-id suffix (e.g.
+        # AarSvc_196eb3). Tests use a tame suffix to avoid tripping
+        # gitleaks's generic-api-key entropy heuristic on the literal.
+        events = [
+            {"category": "services", "key": "AarSvc_sessA", "kind": "removed"},
+            {"category": "services", "key": "BcastDVRUserService_sessA", "kind": "removed"},
+        ]
+        result = baseline.accept_cluster_events(events)
+        assert result["ok"] is True, "removal of absent keys must NOT mark batch as failed"
+        assert result["accepted"] == 0
+        assert result["no_op"] == 2
+        assert result["failed"] == 0
+        assert result["errors"] == []
+
+    def test_add_with_different_value_still_accepts(self, baseline_tmp):
+        """Real adds must still write, even when the no_op-by-error
+        path exists for absent removals. This protects against the
+        idempotent shortcut accidentally swallowing real work."""
+        snap = {
+            "timestamp": "2026-05-26T10:00:00",
+            "startup": {"by_key": {}},
+            "services": {"by_key": {"Svc": {"name": "Svc", "image_path": "C:\\old.exe", "start_mode": "manual"}}},
+            "tasks": {"by_key": {}},
+            "counts": {"startup": 0, "services": 1, "tasks": 0},
+        }
+        baseline._atomic_write(baseline.BASELINE_FILE, snap)
+        events = [
+            {
+                "category": "services",
+                "key": "Svc",
+                "kind": "added",
+                "current_value": {"name": "Svc", "image_path": "C:\\new.exe", "start_mode": "automatic"},
+            }
+        ]
+        result = baseline.accept_cluster_events(events)
+        assert result["accepted"] == 1
+        assert result["no_op"] == 0
+        assert result["failed"] == 0
+        b = baseline.load_baseline()
+        assert b["services"]["by_key"]["Svc"]["image_path"] == "C:\\new.exe"
+
+    def test_user_report_115_event_cluster_with_31_already_absorbed_removals(self, baseline_tmp):
+        """Reproduce the exact user-reported shape from 2026-05-26:
+        115 events, 84 succeed (truly added/changed/removed), 31 are
+        removals of keys never in baseline. Expected: accepted=84,
+        no_op=31, failed=0, ok=True.
+        """
+        baseline_entries = {f"keep-svc-{i}": {"name": f"keep-{i}", "image_path": f"C:\\{i}.exe"} for i in range(20)}
+        for i in range(50):
+            baseline_entries[f"existing-svc-{i}"] = {"name": f"existing-{i}", "image_path": f"C:\\e{i}.exe"}
+        snap = {
+            "timestamp": "2026-05-26T10:00:00",
+            "startup": {"by_key": {}},
+            "services": {"by_key": baseline_entries},
+            "tasks": {"by_key": {}},
+            "counts": {"startup": 0, "services": len(baseline_entries), "tasks": 0},
+        }
+        baseline._atomic_write(baseline.BASELINE_FILE, snap)
+
+        events = []
+        # 34 added (real writes)
+        for i in range(34):
+            events.append(
+                {
+                    "category": "services",
+                    "key": f"new-svc-{i}",
+                    "kind": "added",
+                    "current_value": {"name": f"new-{i}", "image_path": f"C:\\new{i}.exe"},
+                }
+            )
+        # 50 removed of existing baseline keys (real writes)
+        for i in range(50):
+            events.append({"category": "services", "key": f"existing-svc-{i}", "kind": "removed"})
+        # 31 removed of keys NEVER in baseline (no-op)
+        for i in range(31):
+            events.append({"category": "services", "key": f"AarSvc_xx{i:02d}", "kind": "removed"})
+        assert len(events) == 115
+        result = baseline.accept_cluster_events(events)
+        assert result["accepted"] == 84, f"expected 84 accepted, got {result}"
+        assert result["no_op"] == 31, f"expected 31 no_op, got {result}"
+        assert result["failed"] == 0
+        assert result["ok"] is True
 
 
 class TestClusterContextRoute:

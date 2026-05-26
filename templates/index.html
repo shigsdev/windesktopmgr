@@ -6772,8 +6772,29 @@ async function bl_acceptCluster(idx) {
     alert("Accept-cluster failed: " + e.message);
     return;
   }
-  const summary = `Accepted ${result.accepted || 0} of ${n} changes${result.failed ? ", " + result.failed + " failed" : ""}.`;
-  if (result.errors && result.errors.length) {
+  // Three-way breakdown (backlog #50, post-incident 2026-05-26):
+  // - accepted   : baseline was actually written
+  // - no_op      : desired end-state already matched (e.g. removal of
+  //                a key that wasn't in baseline, or accept of a key
+  //                already in baseline with same value). Idempotent
+  //                success.
+  // - failed     : true failure -- something needs the user's
+  //                attention.
+  const accepted = result.accepted || 0;
+  const noOp = result.no_op || 0;
+  const failed = result.failed || 0;
+  const total = accepted + noOp + failed;
+  let summary;
+  if (failed === 0) {
+    summary = noOp > 0
+      ? `✅ All ${total} changes resolved.\n   ${accepted} written to baseline · ${noOp} already in desired state (no-op)`
+      : `✅ Accepted all ${accepted} of ${total} changes.`;
+  } else {
+    summary = `Accepted ${accepted} of ${total}` +
+      (noOp > 0 ? `, ${noOp} already in desired state` : "") +
+      `, ${failed} truly failed.`;
+  }
+  if (failed > 0 && result.errors && result.errors.length) {
     alert(summary + "\n\nFirst errors:\n" + result.errors.slice(0, 5).map(e => `  ${e.category || ""}: ${e.error}`).join("\n"));
   } else {
     alert(summary);

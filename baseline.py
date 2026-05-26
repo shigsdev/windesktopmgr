@@ -2149,6 +2149,7 @@ def accept_cluster_events(events: list[dict]) -> dict:
         return {
             "ok": False,
             "accepted": 0,
+            "no_op": 0,
             "failed": 0,
             "errors": [{"index": -1, "error": "events list required and must be non-empty"}],
         }
@@ -2172,8 +2173,32 @@ def accept_cluster_events(events: list[dict]) -> dict:
     snapshot = take_snapshot() if needs_snapshot else None
 
     accepted = 0
+    no_op = 0
     failed = 0
     errors: list[dict] = []
+
+    # User report 2026-05-26: a 115-event cluster with 31 removal
+    # events for Windows per-user services (e.g. AarSvc, BcastDVR-
+    # UserService, CDPUserSvc -- each gets a per-session hex suffix
+    # appended at login) where the suffix changes every login --
+    # baseline never had THOSE exact keys so accept_drift_entry
+    # rejected the removals with "key not in baseline -- can't
+    # remove what isn't there".
+    #
+    # But the desired end-state ("key not in baseline") was ALREADY
+    # ACHIEVED for those events; counting them as failures is
+    # technically correct but UX-wrong. Idempotent like `rm -f`.
+    #
+    # Fix: when accept_drift_entry returns that specific "not in
+    # baseline" error for a removal event, classify it as a no_op
+    # rather than a failure. The `ok` verdict then accurately
+    # reflects whether anything actually went wrong vs whether the
+    # work was already done.
+    #
+    # Same pattern for the snapshot-lookup-missing case: an added/
+    # changed event whose key is no longer in the current snapshot
+    # means the user (or Windows) already removed it -- no-op.
+
     for i, ev in enumerate(events):
         if not isinstance(ev, dict):
             failed += 1
@@ -2192,8 +2217,6 @@ def accept_cluster_events(events: list[dict]) -> dict:
         # look it up in the shared snapshot.
         if kind in ("added", "changed") and not current_value:
             if snapshot is None:
-                # Shouldn't happen given needs_snapshot above, but
-                # guard for the case where the snapshot itself failed.
                 failed += 1
                 errors.append(
                     {
@@ -2208,28 +2231,18 @@ def accept_cluster_events(events: list[dict]) -> dict:
             current_value = cat_snap.get(key)
             if not current_value:
                 # Item is no longer present in the current snapshot.
-                # User probably removed it after the drift was detected,
-                # OR Windows auto-removed it. Either way, accepting it
-                # into the baseline would be a lie -- record as soft
-                # failure with a clear reason rather than writing bad
-                # data.
-                failed += 1
-                errors.append(
-                    {
-                        "index": i,
-                        "category": category,
-                        "key": key,
-                        "error": (
-                            f"{category} key {key!r} no longer present in current snapshot "
-                            "(user may have already removed it, or it was auto-cleaned)"
-                        ),
-                    }
-                )
+                # User already removed it (or Windows auto-cleaned) --
+                # idempotent no-op rather than a write-bad-data failure.
+                no_op += 1
                 continue
 
         result = accept_drift_entry(category, key, kind=kind, current_value=current_value)
         if result.get("ok"):
             accepted += 1
+        elif kind == "removed" and "not in baseline" in (result.get("error") or ""):
+            # Removal of a key that wasn't in baseline. Already-absorbed
+            # idempotent no-op rather than a failure.
+            no_op += 1
         else:
             failed += 1
             errors.append(
@@ -2241,8 +2254,11 @@ def accept_cluster_events(events: list[dict]) -> dict:
                 }
             )
     return {
+        # ok=True when nothing TRULY failed; no_op counts as success
+        # since the user's desired end-state was reached for those.
         "ok": failed == 0,
         "accepted": accepted,
+        "no_op": no_op,
         "failed": failed,
         "errors": errors,
     }
