@@ -6613,24 +6613,54 @@ async function bl_examineCluster(idx, windowSeconds) {
   // via the in-modal selector.
   const ws = Number(windowSeconds) || 900;
   const url = `/api/baseline/cluster-context?started_at=${encodeURIComponent(cluster.started_at)}&ended_at=${encodeURIComponent(cluster.ended_at)}&window=${ws}`;
-  let data;
-  try {
-    const r = await fetch(url);
-    data = await r.json();
-  } catch (e) {
-    alert("Cluster examine failed: " + e.message);
-    return;
-  }
-  if (!data.ok) { alert("Cluster examine refused: " + (data.error || "unknown")); return; }
 
-  // Build a modal with the contextual signals. Pure-JS overlay (no
-  // dependency on a modal lib); ESC dismisses + click-outside dismisses.
+  // Show the modal overlay IMMEDIATELY with a loading state so the
+  // user (and the Playwright test) get instant feedback. The fetch
+  // can take 5-10 s on the first call because Microsoft.Update.Session
+  // is slow on a cold COM. Replace the modal contents after the fetch
+  // resolves. Tear down any prior overlay so a second click doesn't
+  // stack overlays.
+  const old = document.getElementById("bl-examine-overlay");
+  if (old) old.remove();
   const overlay = document.createElement("div");
   overlay.id = "bl-examine-overlay";
   overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px";
   overlay.onclick = e => { if (e.target === overlay) document.body.removeChild(overlay); };
   const modal = document.createElement("div");
   modal.style.cssText = "background:var(--card);border:1px solid var(--cyan);border-radius:10px;padding:20px;max-width:800px;width:100%;max-height:80vh;overflow-y:auto;color:var(--text)";
+  modal.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <div style="font-size:16px;font-weight:700;color:var(--text-bright)">🔍 What happened around ${escHtml(new Date(cluster.started_at).toLocaleString())}?</div>
+      <button onclick="document.body.removeChild(document.getElementById('bl-examine-overlay'))" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer">Close</button>
+    </div>
+    <div style="padding:30px;text-align:center;color:var(--muted);font-size:12px">
+      ⏳ Loading context (Microsoft.Update.Session can take ~5–10s on a cold COM)…
+    </div>`;
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  // ESC dismiss
+  const esc = ev => { if (ev.key === "Escape") { try { document.body.removeChild(overlay); } catch {} document.removeEventListener("keydown", esc); } };
+  document.addEventListener("keydown", esc);
+
+  let data;
+  try {
+    const r = await fetch(url);
+    data = await r.json();
+  } catch (e) {
+    modal.innerHTML = `<div style="color:var(--red);padding:20px">Cluster examine failed: ${escHtml(e.message)}</div>`;
+    return;
+  }
+  // If the overlay was dismissed mid-fetch, don't try to populate it.
+  if (!document.getElementById("bl-examine-overlay")) return;
+  if (!data.ok) {
+    modal.innerHTML = `<div style="color:var(--red);padding:20px">Cluster examine refused: ${escHtml(data.error || "unknown")}</div>`;
+    return;
+  }
+
+  // Build the final-state modal contents. The overlay + modal
+  // shells were already created up-front (with a loading placeholder)
+  // so the user sees instant feedback; now we replace the placeholder
+  // with the rendered tables.
   const win = data.window || {};
   const wus = data.windows_updates || [];
   const biosChanges = data.bios_audit_changes || [];
@@ -6700,11 +6730,9 @@ async function bl_examineCluster(idx, windowSeconds) {
     <div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border);font-size:10px;color:var(--muted)">
       Best-effort context. Event Log queries are capped at 20 per channel + 6 s timeout. Drill into individual cluster events from the timeline row to see per-entry investigator output.
     </div>`;
-  overlay.appendChild(modal);
-  // ESC dismiss
-  const esc = ev => { if (ev.key === "Escape") { try { document.body.removeChild(overlay); } catch {} document.removeEventListener("keydown", esc); } };
-  document.addEventListener("keydown", esc);
-  document.body.appendChild(overlay);
+  // No appendChild needed -- overlay + modal were attached up-front
+  // with the loading placeholder, and innerHTML replacement updates
+  // them in place.
 }
 
 async function bl_acceptCluster(idx) {

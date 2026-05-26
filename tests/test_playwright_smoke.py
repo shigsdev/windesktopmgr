@@ -331,6 +331,116 @@ class TestCloudCopyListEditorPersists:
         # quirks); the focus + placeholder change are the primary signal.
         # (Don't assert exact red value to avoid false positives.)
 
+    def test_cluster_examine_modal_shows_real_data_at_24h_window(self, loaded_page):
+        """End-to-end: open the Baseline tab, find a cluster in the
+        timeline, click Examine, widen the window to 24h, and assert
+        the modal contains REAL event-log data.
+
+        Added 2026-05-25 after the user reported "the modal shows
+        nothing" and asked "can you validate via testing that data
+        shows up?"
+
+        Why 24h: cluster timestamps mark when DRIFT WAS DETECTED, not
+        when changes happened. On any actively-used Windows machine
+        SOME event-log activity will exist in any 24h span -- so the
+        24h window is the strongest "the pipeline works end-to-end"
+        signal we can express in a tz-portable test.
+
+        Skips if the timeline has no clusters (no drift history yet).
+        """
+        page, _errors = loaded_page
+
+        # ── Step 1: open Baseline tab ──
+        page.evaluate("switchTab('baseline')")
+        page.wait_for_timeout(3000)
+
+        # ── Step 2: find a cluster in the timeline ──
+        # The cluster stash is populated by loadBaselineTimeline after
+        # the drift fetch lands.
+        cluster_count = 0
+        for _ in range(20):
+            page.wait_for_timeout(500)
+            cluster_count = page.evaluate("(window._blClusterStash || []).filter(c => c.type === 'cluster').length")
+            if cluster_count > 0:
+                break
+        if cluster_count == 0:
+            pytest.skip("no clusters in baseline history -- can't end-to-end test the modal")
+
+        # ── Step 3: click Examine on the first cluster ──
+        page.evaluate("""() => {
+            const stash = window._blClusterStash || [];
+            const idx = stash.findIndex(c => c.type === 'cluster');
+            bl_examineCluster(idx, 86400);  // open directly at 24h window
+        }""")
+
+        # The overlay appears INSTANTLY with a loading placeholder, then
+        # the fetch resolves and the contents are replaced with the
+        # rendered tables. Wait for the "Update history" section header
+        # to appear -- it's only present in the final state, not the
+        # loading placeholder, so this is a reliable readiness signal.
+        # First-call Microsoft.Update.Session COM can take 5-10s on a
+        # cold start; allow plenty of headroom (30s).
+        for _ in range(60):  # 60 * 500ms = 30s
+            page.wait_for_timeout(500)
+            overlay_present = page.evaluate("!!document.getElementById('bl-examine-overlay')")
+            if overlay_present:
+                modal_text = page.evaluate("document.getElementById('bl-examine-overlay')?.innerText || ''")
+                if "Update history" in modal_text:  # final state has all section headers
+                    break
+
+        # ── Step 4: assert modal opened with expected structure ──
+        present = page.evaluate("!!document.getElementById('bl-examine-overlay')")
+        assert present, "Examine modal didn't open"
+
+        # All four source headers must be present in the rendered HTML.
+        modal_html = page.evaluate("document.getElementById('bl-examine-overlay').innerHTML")
+        assert "Update history" in modal_html, "modal missing Update history section"
+        assert "Event Log" in modal_html, "modal missing Event Log section"
+        assert "Hotfixes" in modal_html, "modal missing Hotfixes section"
+        assert "BIOS audit" in modal_html, "modal missing BIOS audit section"
+
+        # ── Step 5: assert at least one source returned REAL data ──
+        # Count <tbody><tr> rows directly. Header-text counts like
+        # "Update history (Microsoft.Update.Session) (N)" have nested
+        # parens that confuse a naive regex, so we walk the DOM instead.
+        # Placeholder "no entries" rows have a single <td> with colspan;
+        # exclude them so the count reflects REAL data only.
+        signal_counts = page.evaluate(
+            """() => {
+                const tables = Array.from(document.querySelectorAll('#bl-examine-overlay table'));
+                return tables.map(t => {
+                    const rows = Array.from(t.querySelectorAll('tbody tr'));
+                    return rows.filter(r => {
+                        const tds = r.querySelectorAll('td');
+                        if (tds.length === 1 && tds[0].hasAttribute('colspan')) return false;
+                        return true;
+                    }).length;
+                });
+            }"""
+        )
+        total = sum(signal_counts)
+        assert total > 0, (
+            "Examine modal at 24h window found ZERO signals across all four sources. "
+            "On any actively-used Windows machine SOMETHING should be in the System or "
+            "Application event log within a 24-hour span. The pipeline is broken or the "
+            "cluster timestamp is in the future. "
+            f"counts: {signal_counts}"
+        )
+
+        # ── Step 6: verify the window-selector dropdown is present ──
+        has_dropdown = page.evaluate("""!!document.querySelector("#bl-examine-overlay select")""")
+        assert has_dropdown, "window-selector dropdown missing from modal"
+
+        # ── Step 7: dismiss via Close button ──
+        page.evaluate(
+            """() => {
+                document.querySelector('#bl-examine-overlay button').click();
+            }"""
+        )
+        page.wait_for_timeout(300)
+        still_present = page.evaluate("!!document.getElementById('bl-examine-overlay')")
+        assert not still_present, "modal didn't close after clicking Close"
+
     def test_placeholder_survives_add(self, loaded_page):
         """User report 2026-05-25: 'folder name' placeholder vanished
         after the first add. Original cc_renderListEditor called with 2
