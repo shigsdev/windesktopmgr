@@ -2152,6 +2152,25 @@ def accept_cluster_events(events: list[dict]) -> dict:
             "failed": 0,
             "errors": [{"index": -1, "error": "events list required and must be non-empty"}],
         }
+
+    # Decide whether we need a fresh system snapshot to look up
+    # current_value for added/changed events.  The cluster timeline
+    # doesn't carry the full new-state dict (only category/kind/key/
+    # name/delta) to keep the payload small, so the JS sends
+    # ``current_value: null`` for every event.  Without a snapshot
+    # accept_drift_entry's fast path rejects added/changed with
+    # "current_value (dict) required" -- which is the bug the user
+    # hit on 2026-05-25 (213 events, 27 accepted, 186 failed).
+    #
+    # Strategy: take ONE snapshot at the start of the bulk accept and
+    # look each event's current_value out of it.  One snapshot ≈ 5-10 s;
+    # 213 individual snapshots (the slow-path-per-event alternative)
+    # would have been ~30 min.
+    needs_snapshot = any(
+        isinstance(ev, dict) and ev.get("kind") in ("added", "changed") and not ev.get("current_value") for ev in events
+    )
+    snapshot = take_snapshot() if needs_snapshot else None
+
     accepted = 0
     failed = 0
     errors: list[dict] = []
@@ -2168,6 +2187,46 @@ def accept_cluster_events(events: list[dict]) -> dict:
             failed += 1
             errors.append({"index": i, "error": "category + key must be strings"})
             continue
+
+        # If the caller didn't supply current_value for added/changed,
+        # look it up in the shared snapshot.
+        if kind in ("added", "changed") and not current_value:
+            if snapshot is None:
+                # Shouldn't happen given needs_snapshot above, but
+                # guard for the case where the snapshot itself failed.
+                failed += 1
+                errors.append(
+                    {
+                        "index": i,
+                        "category": category,
+                        "key": key,
+                        "error": "no snapshot available for added/changed lookup",
+                    }
+                )
+                continue
+            cat_snap = (snapshot.get(category) or {}).get("by_key") or {}
+            current_value = cat_snap.get(key)
+            if not current_value:
+                # Item is no longer present in the current snapshot.
+                # User probably removed it after the drift was detected,
+                # OR Windows auto-removed it. Either way, accepting it
+                # into the baseline would be a lie -- record as soft
+                # failure with a clear reason rather than writing bad
+                # data.
+                failed += 1
+                errors.append(
+                    {
+                        "index": i,
+                        "category": category,
+                        "key": key,
+                        "error": (
+                            f"{category} key {key!r} no longer present in current snapshot "
+                            "(user may have already removed it, or it was auto-cleaned)"
+                        ),
+                    }
+                )
+                continue
+
         result = accept_drift_entry(category, key, kind=kind, current_value=current_value)
         if result.get("ok"):
             accepted += 1
