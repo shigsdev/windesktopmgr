@@ -2446,6 +2446,110 @@ class TestAcceptClusterEvents:
         assert "NewSvc1" in snap["services"]["by_key"]
         assert "NewSvc2" in snap["services"]["by_key"]
 
+    def test_snapshot_lookup_when_current_value_missing(self, baseline_tmp, mocker):
+        """Regression for the 2026-05-25 bug where the cluster UI sent
+        current_value=None for every event, and accept_drift_entry's
+        fast path rejected added/changed with "current_value (dict)
+        required".
+
+        Fix: when current_value is missing for added/changed, snapshot
+        the system ONCE at the start and look it up. Verify the loop
+        takes exactly one snapshot regardless of event count + uses
+        the looked-up value to populate the baseline.
+        """
+        self._seed_baseline()
+
+        # Mock take_snapshot so the test is deterministic + we can
+        # count invocations.
+        fake_snapshot = {
+            "timestamp": "2026-05-25T20:00:00",
+            "startup": {"by_key": {}},
+            "services": {
+                "by_key": {
+                    "LookedUpSvc1": {"name": "LookedUpSvc1", "image_path": "C:\\one.exe", "start_mode": "automatic"},
+                    "LookedUpSvc2": {"name": "LookedUpSvc2", "image_path": "C:\\two.exe", "start_mode": "manual"},
+                }
+            },
+            "tasks": {"by_key": {}},
+            "counts": {"startup": 0, "services": 2, "tasks": 0},
+        }
+        snapshot_spy = mocker.patch.object(baseline, "take_snapshot", return_value=fake_snapshot)
+
+        events = [
+            {"category": "services", "key": "LookedUpSvc1", "kind": "added"},  # no current_value
+            {"category": "services", "key": "LookedUpSvc2", "kind": "added"},  # no current_value
+        ]
+        result = baseline.accept_cluster_events(events)
+
+        # Both accepted via snapshot lookup.
+        assert result["accepted"] == 2, f"expected 2 accepted, got {result}"
+        assert result["failed"] == 0
+        # Critical: ONE snapshot taken regardless of event count.
+        assert snapshot_spy.call_count == 1, (
+            f"expected exactly 1 snapshot (shared across events), got {snapshot_spy.call_count}"
+        )
+        # Baseline now has both entries with the looked-up values.
+        snap = baseline.load_baseline()
+        assert snap["services"]["by_key"]["LookedUpSvc1"]["image_path"] == "C:\\one.exe"
+        assert snap["services"]["by_key"]["LookedUpSvc2"]["image_path"] == "C:\\two.exe"
+
+    def test_snapshot_lookup_skipped_when_all_events_have_value(self, baseline_tmp, mocker):
+        """If every event already supplies current_value, no snapshot
+        is needed -- and importantly, none should be taken (the
+        snapshot is 5-10 s; we don't want to waste it)."""
+        self._seed_baseline()
+        snapshot_spy = mocker.patch.object(baseline, "take_snapshot")
+        events = [
+            {
+                "category": "services",
+                "key": "X",
+                "kind": "added",
+                "current_value": {"name": "X", "image_path": "C:\\x.exe"},
+            },
+        ]
+        result = baseline.accept_cluster_events(events)
+        assert result["accepted"] == 1
+        assert snapshot_spy.call_count == 0, "no snapshot needed when current_value supplied"
+
+    def test_added_event_not_in_snapshot_records_soft_failure(self, baseline_tmp, mocker):
+        """If the user is bulk-accepting a stale cluster (item was
+        already removed since the drift was detected), the snapshot
+        lookup returns None. Don't write a partial/bad entry to the
+        baseline -- record a clear failure with the reason."""
+        self._seed_baseline()
+        mocker.patch.object(
+            baseline,
+            "take_snapshot",
+            return_value={
+                "startup": {"by_key": {}},
+                "services": {"by_key": {}},  # event's key NOT here
+                "tasks": {"by_key": {}},
+            },
+        )
+        events = [{"category": "services", "key": "GoneNow", "kind": "added"}]
+        result = baseline.accept_cluster_events(events)
+        assert result["accepted"] == 0
+        assert result["failed"] == 1
+        assert "no longer present" in result["errors"][0]["error"]
+
+    def test_removed_kind_does_not_need_snapshot(self, baseline_tmp, mocker):
+        """removed events don't need current_value -- the snapshot
+        should NOT be taken if ALL events are 'removed'."""
+        # Seed a baseline with an entry to remove.
+        snap = {
+            "timestamp": "2026-05-24T10:00:00",
+            "startup": {"by_key": {}},
+            "services": {"by_key": {"ToRemove": {"name": "ToRemove", "image_path": "C:\\rm.exe"}}},
+            "tasks": {"by_key": {}},
+            "counts": {"startup": 0, "services": 1, "tasks": 0},
+        }
+        baseline._atomic_write(baseline.BASELINE_FILE, snap)
+        snapshot_spy = mocker.patch.object(baseline, "take_snapshot")
+        events = [{"category": "services", "key": "ToRemove", "kind": "removed"}]
+        result = baseline.accept_cluster_events(events)
+        assert result["accepted"] == 1
+        assert snapshot_spy.call_count == 0, "removed events should not trigger snapshot"
+
 
 class TestClusterContextRoute:
     def test_requires_both_timestamps(self, client, baseline_tmp):
