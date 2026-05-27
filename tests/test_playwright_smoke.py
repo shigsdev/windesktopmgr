@@ -64,6 +64,7 @@ TAB_IDS = [
     "nlq",
     "baseline",
     "backup",
+    "utilities",
 ]
 
 
