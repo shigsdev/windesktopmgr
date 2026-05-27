@@ -33,6 +33,7 @@ import win32serviceutil
 import wmi
 from flask import Flask, jsonify, make_response, render_template, request, send_from_directory
 
+import codehealth  # noqa: E402 -- import order intentional
 from applogging import get_logger
 from disk import disk_bp, get_disk_health, summarize_disk
 from homenet import homenet_bp, homenet_get_inventory
@@ -9636,6 +9637,48 @@ def baseline_accept_cluster_route():
     return jsonify(result), status
 
 
+@app.route("/api/codehealth/status")
+def codehealth_status_route():
+    """Return the last persisted codehealth scan + freshness signals.
+
+    Response::
+
+        {"ok": true,
+         "state": {<scan result> or {}},
+         "is_stale": <bool>,                 # last_run > STALE_DAYS ago, or never run
+         "is_running": <bool>,               # background scan currently in flight
+         "stale_days_threshold": <int>}
+
+    Empty ``state`` ({}) means no scan has ever completed -- the UI
+    should render placeholder cards + a primary "Scan now" CTA.
+    """
+    state = codehealth.load_state()
+    return jsonify(
+        {
+            "ok": True,
+            "state": state,
+            "is_stale": codehealth.is_stale(state),
+            "is_running": codehealth.is_running(),
+            "stale_days_threshold": codehealth.STALE_DAYS,
+        }
+    )
+
+
+@app.route("/api/codehealth/run", methods=["POST"])
+def codehealth_run_route():
+    """Kick off a fresh codehealth scan in the background.
+
+    Returns immediately with 202 + ``{"ok": true, "started": true}``.
+    If a scan is already running, returns 409 + ``{"ok": false,
+    "started": false, "error": "already running"}``. UI polls
+    ``/api/codehealth/status`` until ``is_running`` flips back to false.
+    """
+    started = codehealth.run_in_background()
+    if not started:
+        return jsonify({"ok": False, "started": False, "error": "scan already running"}), 409
+    return jsonify({"ok": True, "started": True}), 202
+
+
 @app.route("/api/baseline/timeline")
 def baseline_timeline_route():
     """Unified cross-surface change timeline (backlog #44).
@@ -12313,6 +12356,17 @@ def start_server(open_browser: bool = True):  # pragma: no cover
     print(f"[StartupCache]  Worker started. {len(_startup_cache)} cached, {startup_requeued} re-queued.")
     print(f"[ServicesCache] Worker started. {len(_services_cache)} cached, {services_requeued} re-queued.")
     print(f"[ProcessCache]  Worker started. {len(_process_cache)} cached, {process_requeued} re-queued.")
+
+    # Codehealth scanners (backlog #51): fire a background scan on tray
+    # boot if the persisted state is missing OR older than STALE_DAYS.
+    # The four scanners (coverage / ruff / secrets / tech-debt) take
+    # ~3-5 s total against this repo, so it's a fire-and-forget that
+    # the user sees populated on the Utilities tab a few seconds after
+    # the tray comes up. PR-2 adds a proper cron + configurable cadence.
+    if codehealth.maybe_run_on_boot():
+        print("[CodeHealth]    Background scan kicked off (state stale or missing).")
+    else:
+        print("[CodeHealth]    Skipped boot scan (state fresh).")
 
     # Router config backups are MANUAL (reverted 2026-05-11). The earlier
     # daemon-thread scheduler fired daily failures because neither vendor

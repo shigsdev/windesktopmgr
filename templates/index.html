@@ -633,6 +633,7 @@
       <button class="page-tab" data-page="homenet">🏠 Home Network</button>
       <button class="page-tab" data-page="baseline">📐 Baseline</button>
       <button class="page-tab" data-page="backup">📦 Backup</button>
+      <button class="page-tab" data-page="utilities">🛠 Utilities</button>
       <button class="page-tab" data-page="logs">📜 Logs</button>
       <button class="page-tab" data-page="architecture">🏗 Architecture</button>
     </div>
@@ -703,13 +704,20 @@
         <div style="font-size:13px;color:var(--muted)">No critical issues or warnings detected across any monitored area.</div>
       </div>
 
-      <!-- Quick Fixes -->
-      <div id="db-quick-fixes" style="margin-top:24px">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-          <div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)">Quick Fixes</div>
-          <div style="font-size:10px;color:var(--muted)">One-click remediation actions</div>
+      <!-- Quick Fixes deep-link (moved to Utilities tab in backlog #51).
+           Replaces the inline grid that used to live here. -->
+      <div id="db-quick-fixes-link" style="margin-top:24px">
+        <div onclick="switchTab('utilities')"
+             style="cursor:pointer;display:flex;align-items:center;gap:12px;padding:14px 16px;
+                    background:var(--surface);border:1px solid var(--border);border-radius:8px;
+                    transition:border-color .15s ease">
+          <div style="font-size:20px">🛠</div>
+          <div style="flex:1">
+            <div style="font-size:13px;font-weight:700;color:var(--text-bright)">Quick Fixes &amp; Code-Health</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:2px">One-click remediation, coverage / ruff / secrets / tech-debt scans</div>
+          </div>
+          <div style="font-size:11px;color:var(--cyan)">Open Utilities tab →</div>
         </div>
-        <div id="db-qf-cards" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px"></div>
       </div>
 
       <!-- Trends card (backlog #4) -->
@@ -1353,6 +1361,11 @@ document.querySelectorAll(".page-tab").forEach(btn => {
       // when a drive is plugged/unplugged, and the call is fast (no
       // subprocess; pure user-space XML parse + a few stat() calls).
       loadBackup();
+    } else if (page === "utilities") {
+      // Force-reload on every visit -- both halves (Quick Fixes and
+      // codehealth status) are cheap reads, and the user opening this
+      // tab is the strongest signal they want fresh numbers.
+      util_load();
     } else if (page === "logs") {
       if (!_tabLoaded["logs"])           { _tabLoaded["logs"]           = true; logLoad(); }
     } else if (page === "architecture") {
@@ -4325,6 +4338,8 @@ const ALL_TABS = [
   { page:"credentials",  icon:"🔐", label:"Credentials & Network" },
   { page:"remediation",  icon:"🔧", label:"Remediation" },
   { page:"baseline",     icon:"📐", label:"Baseline / Drift" },
+  { page:"backup",       icon:"📦", label:"Backup" },
+  { page:"utilities",    icon:"🛠", label:"Utilities" },
   { page:"logs",         icon:"📜", label:"Application Logs" },
 ];
 
@@ -4471,26 +4486,9 @@ function renderDashboard(d) {
   });
   }
 
-  // ── Quick Fixes cards ────────────────────────────────────────────────────
-  fetch("/api/remediation/actions").then(r=>r.json()).then(actions=>{
-    // Risk → foreground colour (used for border hover + badge text + badge border)
-    const rc = r=>r==="high"?"var(--red)":r==="medium"?"var(--orange)":"var(--green)";
-    // Risk → badge background. Alpha bumped from 0.07 -> 0.22 so LOW/MEDIUM/HIGH
-    // labels are legible at a glance instead of washing into the card (#8).
-    const rb = r=>r==="high"?"rgba(255,71,87,.22)":r==="medium"?"rgba(255,112,67,.22)":"rgba(0,229,160,.22)";
-    document.getElementById("db-qf-cards").innerHTML = actions.map(a=>`
-      <button onclick="runRemediationFromDashboard('${esc(a.id)}')"
-        style="background:var(--card);border:1px solid var(--border);border-radius:8px;
-        padding:10px 8px;cursor:pointer;text-align:center;transition:border-color .15s;position:relative"
-        onmouseover="this.style.borderColor='${rc(a.risk)}'"
-        onmouseout="this.style.borderColor='var(--border)'" title="${esc(a.description)}">
-        <div style="font-size:16px;margin-bottom:4px">${esc(a.icon)}</div>
-        <div style="font-size:11px;color:var(--text-bright);font-family:var(--font-mono);font-weight:500;line-height:1.3;margin-bottom:6px">${esc(a.label)}</div>
-        <span style="font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;
-          color:${rc(a.risk)};background:${rb(a.risk)};
-          border:1px solid ${rc(a.risk)};padding:2px 7px;border-radius:8px">${a.risk}</span>
-      </button>`).join("");
-  }).catch(()=>{});
+  // Quick Fixes moved to the Utilities tab (backlog #51). Dashboard now
+  // shows the deep-link card #db-quick-fixes-link instead. The actual
+  // renderer lives in util_loadQuickFixes() further down.
 
   // ── Quick links grid ──────────────────────────────────────────────────────
   document.getElementById("db-quick-links").innerHTML = ALL_TABS.map(t =>
@@ -7810,6 +7808,164 @@ async function loadBackupActionsHistory() {
   }
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// UTILITIES TAB (backlog #51) — Quick Fixes + code-health scans
+//
+// All function names prefixed `util_*` to keep out of global-scope
+// collisions (see the tab-prefix convention in CLAUDE.md).
+// ══════════════════════════════════════════════════════════════════════════
+
+let _utilPollTimer = null;
+
+async function util_load() {
+  await Promise.all([
+    util_loadQuickFixes(),
+    util_loadCodeHealth(),
+  ]);
+}
+
+async function util_loadQuickFixes() {
+  // Mirror of the original Dashboard renderer (removed from
+  // loadDashboard above; this is now the single source of truth).
+  const target = document.getElementById("util-qf-cards");
+  if (!target) return;
+  try {
+    const r = await fetch("/api/remediation/actions");
+    const actions = await r.json();
+    const rc = r=>r==="high"?"var(--red)":r==="medium"?"var(--orange)":"var(--green)";
+    const rb = r=>r==="high"?"rgba(255,71,87,.22)":r==="medium"?"rgba(255,112,67,.22)":"rgba(0,229,160,.22)";
+    target.innerHTML = (actions || []).map(a=>`
+      <button onclick="runRemediationFromDashboard('${esc(a.id)}')"
+        style="background:var(--card);border:1px solid var(--border);border-radius:8px;
+        padding:10px 8px;cursor:pointer;text-align:center;transition:border-color .15s;position:relative"
+        onmouseover="this.style.borderColor='${rc(a.risk)}'"
+        onmouseout="this.style.borderColor='var(--border)'" title="${esc(a.description)}">
+        <div style="font-size:16px;margin-bottom:4px">${esc(a.icon)}</div>
+        <div style="font-size:11px;color:var(--text-bright);font-family:var(--font-mono);font-weight:500;line-height:1.3;margin-bottom:6px">${esc(a.label)}</div>
+        <span style="font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;
+          color:${rc(a.risk)};background:${rb(a.risk)};
+          border:1px solid ${rc(a.risk)};padding:2px 7px;border-radius:8px">${a.risk}</span>
+      </button>`).join("");
+  } catch {
+    target.innerHTML = `<div style="color:var(--muted);padding:10px;grid-column:1/-1">Quick Fixes unavailable.</div>`;
+  }
+}
+
+function util_levelColor(level) {
+  return level === "critical" ? "var(--red)"
+       : level === "warning"  ? "var(--orange)"
+       : level === "info"     ? "var(--cyan)"
+       : "var(--green)";
+}
+
+function util_renderScannerCard(name, label, icon, result) {
+  const status = result.ok ? result.summary : (result.error || "Scanner unavailable");
+  const color = util_levelColor(result.level || "ok");
+  const dur = result.duration_ms != null ? `${(result.duration_ms / 1000).toFixed(1)}s` : "—";
+  const ts = result.finished_at ? new Date(result.finished_at).toLocaleString() : "never";
+  return `
+    <div style="background:var(--card);border:1px solid var(--border);border-left:3px solid ${color};
+                border-radius:8px;padding:14px 16px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span style="font-size:18px">${icon}</span>
+        <div style="flex:1;font-size:12px;font-weight:700;color:var(--text-bright)">${esc(label)}</div>
+        <span style="font-size:9px;text-transform:uppercase;font-weight:800;letter-spacing:.04em;
+                     color:${color};border:1px solid ${color};padding:2px 7px;border-radius:8px">${esc(result.level || "?")}</span>
+      </div>
+      <div style="font-size:12px;color:var(--text);line-height:1.4;margin-bottom:6px">${esc(status)}</div>
+      <div style="font-size:10px;color:var(--muted);font-family:var(--font-mono)">${esc(ts)} · ${esc(dur)}</div>
+    </div>`;
+}
+
+async function util_loadCodeHealth(opts) {
+  const fromPoll = opts && opts.fromPoll;
+  const lastSpan = document.getElementById("util-last-scan");
+  const grid     = document.getElementById("util-ch-grid");
+  const empty    = document.getElementById("util-ch-empty");
+  const btn      = document.getElementById("util-scan-btn");
+  if (!grid) return;
+  let payload;
+  try {
+    const r = await fetch("/api/codehealth/status");
+    payload = await r.json();
+  } catch (e) {
+    grid.innerHTML = `<div style="color:var(--red);grid-column:1/-1;padding:10px">Failed to load: ${esc(e.message)}</div>`;
+    return;
+  }
+  const state    = payload.state || {};
+  const scanners = state.scanners || {};
+  const running  = payload.is_running;
+  const stale    = payload.is_stale;
+  const finished = state.finished_at;
+  const hasResults = scanners && Object.keys(scanners).length > 0;
+
+  // Header line + Scan-now button state.
+  if (running) {
+    if (lastSpan) lastSpan.textContent = "Scan in progress…";
+    if (btn) { btn.disabled = true; btn.textContent = "Scanning…"; }
+    // Auto-poll every 1.5s while a scan is in flight.
+    if (!_utilPollTimer) {
+      _utilPollTimer = setInterval(() => util_loadCodeHealth({fromPoll: true}), 1500);
+    }
+  } else {
+    if (lastSpan) {
+      if (!finished) {
+        lastSpan.textContent = "Never scanned";
+      } else {
+        const ts = new Date(finished).toLocaleString();
+        const tag = stale ? " (stale)" : "";
+        lastSpan.textContent = `Last scan: ${ts}${tag}`;
+        lastSpan.style.color = stale ? "var(--orange)" : "var(--muted)";
+      }
+    }
+    if (btn) { btn.disabled = false; btn.textContent = "▶ Scan now"; }
+    if (_utilPollTimer) { clearInterval(_utilPollTimer); _utilPollTimer = null; }
+  }
+
+  if (!hasResults) {
+    grid.style.display = "none";
+    if (empty) empty.style.display = running ? "none" : "";
+    return;
+  }
+  grid.style.display = "grid";
+  if (empty) empty.style.display = "none";
+
+  const cards = [
+    ["coverage",  "Test Coverage",   "🧪", scanners.coverage   || {}],
+    ["ruff",      "Code Bugs (ruff)","🪲", scanners.ruff       || {}],
+    ["secrets",   "Security / Secrets","🔒", scanners.secrets  || {}],
+    ["tech_debt", "Tech Debt",       "🧹", scanners.tech_debt  || {}],
+  ];
+  grid.innerHTML = cards.map(([_, label, icon, r]) =>
+    util_renderScannerCard(_, label, icon, r)
+  ).join("");
+}
+
+async function util_runScan() {
+  const btn = document.getElementById("util-scan-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "Starting…"; }
+  try {
+    const r = await fetch("/api/codehealth/run", {method:"POST"});
+    if (r.status === 409) {
+      // Already running — just (re)start the poll.
+      await util_loadCodeHealth();
+      return;
+    }
+    if (!r.ok) {
+      const data = await r.json().catch(()=>({}));
+      alert("Scan failed to start: " + (data.error || r.status));
+      if (btn) { btn.disabled = false; btn.textContent = "▶ Scan now"; }
+      return;
+    }
+    // Kick off polling; util_loadCodeHealth flips the button back when
+    // is_running flips back to false.
+    await util_loadCodeHealth();
+  } catch (e) {
+    alert("Scan failed to start: " + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = "▶ Scan now"; }
+  }
+}
+
 async function loadBaseline() {
   const loading    = document.getElementById("bl-loading");
   const nobaseline = document.getElementById("bl-nobaseline");
@@ -11049,6 +11205,47 @@ function renderSystemInfo(d, upgrades) {
         Managed backup with explicit drive-selection + retention policy + disk-space impact tracking. Designed after the 2.4 TB WindowsImageBackup growth surprise. See backlog #11 for full scope.
       </div>
     </details>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       PAGE: UTILITIES (backlog #51)
+       Quick Fixes (moved from Dashboard) + recurring code-health scans
+       (coverage / ruff / secrets / tech-debt). PR-1 ships on-demand
+       scans + auto-trigger on tray boot when state is >7 days stale;
+       PR-2 will add a configurable weekly cron + trend history.
+  ══════════════════════════════════════════ -->
+  <div id="page-utilities" style="display:none">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin:20px 0 20px">
+      <div>
+        <h2 style="margin:0;font-family:var(--font-head);font-size:20px">Utilities</h2>
+        <div style="font-size:11px;color:var(--muted);margin-top:3px">One-click remediation + recurring code-health scans</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span id="util-last-scan" style="font-size:11px;color:var(--muted)">Loading…</span>
+        <button id="util-scan-btn" onclick="util_runScan()" class="btn-action" style="padding:6px 16px;font-size:12px">▶ Scan now</button>
+      </div>
+    </div>
+
+    <!-- ── Quick Fixes section (moved from Dashboard) ───────────────── -->
+    <div id="util-quick-fixes" style="margin-bottom:28px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)">Quick Fixes</div>
+        <div style="font-size:10px;color:var(--muted)">One-click remediation actions</div>
+      </div>
+      <div id="util-qf-cards" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px"></div>
+    </div>
+
+    <!-- ── Code-Health Scans section ────────────────────────────────── -->
+    <div id="util-codehealth">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)">Code Health</div>
+        <div style="font-size:10px;color:var(--muted)">Coverage · ruff · secrets · tech-debt — runs on demand and on tray boot if &gt;7 days stale</div>
+      </div>
+      <div id="util-ch-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px">Loading…</div>
+      <div id="util-ch-empty" style="display:none;padding:20px;text-align:center;font-size:12px;color:var(--muted);border:1px dashed var(--border);border-radius:8px;margin-top:8px">
+        No scan has completed yet. Click <strong style="color:var(--cyan)">▶ Scan now</strong> above (takes ~3-5 s).
+      </div>
+    </div>
   </div>
 
   <!-- ══════════════════════════════════════════

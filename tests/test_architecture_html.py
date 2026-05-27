@@ -66,6 +66,7 @@ TEST_FILES = [
     "test_backup.py",
     "test_cloudcopy.py",
     "test_check_repo_secrets.py",
+    "test_codehealth.py",
     "test_report.py",
     "test_playwright_smoke.py",
 ]
