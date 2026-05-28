@@ -66,7 +66,7 @@ def _atomic_write(path: str, payload) -> bool:
     tmp = path + ".tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
-            if isinstance(payload, (dict, list)):
+            if isinstance(payload, dict | list):
                 json.dump(payload, f, indent=2)
             else:
                 f.write(str(payload))
