@@ -598,6 +598,21 @@ def _refresh_coverage_and_rescan() -> None:
         "stderr_tail": "",
     }
     try:
+        # Use a dedicated --basetemp per refresh so pytest-xdist
+        # workers don't race with leftover pytest-of-<user>/pytest-
+        # current symlinks from previous runs. Caught 2026-05-27 on
+        # the live tray: xdist raised INTERNALERROR(AssertionError)
+        # while a sibling pytest run was cleaning up the same shared
+        # tmpdir tree, returning exit 3 with no .coverage written.
+        # Per-run isolated basetemp is the documented fix.
+        import shutil
+        import tempfile
+
+        basetemp = os.path.join(tempfile.gettempdir(), "codehealth-cov-refresh")
+        if os.path.exists(basetemp):
+            shutil.rmtree(basetemp, ignore_errors=True)
+        os.makedirs(basetemp, exist_ok=True)
+
         proc = subprocess.run(
             # -n auto parallelises across CPU cores via pytest-xdist;
             # pytest-cov has built-in support for merging coverage
@@ -605,7 +620,18 @@ def _refresh_coverage_and_rescan() -> None:
             # ~5 min serial to ~45 s on a 10-core box. This is the
             # same configuration pre-commit uses.
             # --no-header / -q keep the captured output compact.
-            ["python", "-m", "pytest", "--cov", "-n", "auto", "--no-header", "-q"],
+            # --basetemp isolates the run from concurrent pytest sessions.
+            [
+                "python",
+                "-m",
+                "pytest",
+                "--cov",
+                "-n",
+                "auto",
+                "--no-header",
+                "-q",
+                f"--basetemp={basetemp}",
+            ],
             cwd=_REPO_ROOT,
             capture_output=True,
             text=True,
