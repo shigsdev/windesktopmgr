@@ -9683,6 +9683,19 @@ def codehealth_run_route():
     return jsonify({"ok": True, "started": True}), 202
 
 
+@app.route("/api/codehealth/reset-emitted", methods=["POST"])
+def codehealth_reset_emitted_route():
+    """Clear the set of scan-finding fingerprints we've already pushed
+    to the backlog. Next scan will re-emit findings that were previously
+    deduped. Useful when the user has manually cleaned up old auto-
+    generated rows and wants the scanner to repopulate.
+
+    PR-2 of #51 (sub-task B, 2026-05-27): backlog auto-population.
+    """
+    ok = codehealth.reset_emitted_fingerprints()
+    return jsonify({"ok": ok}), (200 if ok else 500)
+
+
 @app.route("/api/codehealth/refresh-coverage", methods=["POST"])
 def codehealth_refresh_coverage_route():
     """Run pytest --cov in the background so the .coverage file gets a

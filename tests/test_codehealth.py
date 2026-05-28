@@ -26,11 +26,21 @@ import codehealth
 
 @pytest.fixture
 def ch_tmp(tmp_path, monkeypatch):
-    """Redirect STATE_FILE to tmp_path so tests don't touch the real
-    codehealth_state.json next to the running tray."""
+    """Redirect STATE_FILE + EMITTED_FILE + BACKLOG_PATH to tmp_path so
+    tests don't touch the real codehealth_state.json / emitted.json /
+    project backlog markdown next to the running tray."""
     state_path = tmp_path / "codehealth_state.json"
+    emitted_path = tmp_path / "codehealth_emitted.json"
+    backlog_path = tmp_path / "project_backlog.md"
     monkeypatch.setattr(codehealth, "STATE_FILE", str(state_path))
-    yield {"state": state_path, "tmp": tmp_path}
+    monkeypatch.setattr(codehealth, "EMITTED_FILE", str(emitted_path))
+    monkeypatch.setattr(codehealth, "BACKLOG_PATH", str(backlog_path))
+    yield {
+        "state": state_path,
+        "emitted": emitted_path,
+        "backlog": backlog_path,
+        "tmp": tmp_path,
+    }
 
 
 # ─── load_state / save_state / is_stale ─────────────────────────────
@@ -554,3 +564,409 @@ class TestRefreshCoverage:
         r = client.get("/api/codehealth/status")
         data = r.get_json()
         assert data["is_refreshing_coverage"] is True
+
+
+# ─── Backlog auto-append (PR-2 sub-task B, 2026-05-27) ──────────────
+
+
+# Minimal real-shape backlog skeleton -- the appender inserts before
+# the "**Priority key:**" anchor so we mimic that section verbatim.
+_BACKLOG_SKELETON = """# Project Backlog
+
+### Backlog
+
+| # | Feature | Effort | Priority |
+|---|---------|--------|----------|
+| 50 | **Existing feature row** | Medium | P1 |
+| 51 | **Another existing row** | Small | P2 |
+
+**Priority key:** P0 = do next, P1 = high value, P2 = nice to have
+"""
+
+
+class TestFindingsToBacklogEntries:
+    def test_coverage_warning_emits_entry(self):
+        scan = {
+            "scanners": {
+                "coverage": {"level": "warning", "count": 70, "is_stale": False},
+                "ruff": {"details": []},
+                "secrets": {"level": "ok", "count": 0},
+                "tech_debt": {"details": {"large_files": []}},
+            }
+        }
+        entries = codehealth.findings_to_backlog_entries(scan)
+        assert len(entries) == 1
+        assert entries[0]["category"] == "Code Health"
+        assert entries[0]["priority"] == "P1"
+        assert "70%" in entries[0]["title"]
+
+    def test_coverage_critical_emits_p0(self):
+        scan = {
+            "scanners": {
+                "coverage": {"level": "critical", "count": 30, "is_stale": False},
+                "ruff": {"details": []},
+                "secrets": {"level": "ok", "count": 0},
+                "tech_debt": {"details": {"large_files": []}},
+            }
+        }
+        entries = codehealth.findings_to_backlog_entries(scan)
+        assert entries[0]["priority"] == "P0"
+        assert entries[0]["severity"] == "critical"
+
+    def test_stale_coverage_does_not_emit(self):
+        """Don't add backlog rows from a historical/stale coverage
+        reading -- the user's already-shipped fix might have moved
+        the % since."""
+        scan = {
+            "scanners": {
+                "coverage": {"level": "warning", "count": 57, "is_stale": True},
+                "ruff": {"details": []},
+                "secrets": {"level": "ok"},
+                "tech_debt": {"details": {}},
+            }
+        }
+        entries = codehealth.findings_to_backlog_entries(scan)
+        assert entries == []
+
+    def test_ruff_security_emits_critical_p0(self):
+        scan = {
+            "scanners": {
+                "coverage": {"level": "ok"},
+                "ruff": {
+                    "details": [
+                        {
+                            "code": "S105",
+                            "message": "hardcoded password",
+                            "file": "auth.py",
+                            "line": 42,
+                        }
+                    ]
+                },
+                "secrets": {"level": "ok"},
+                "tech_debt": {"details": {}},
+            }
+        }
+        entries = codehealth.findings_to_backlog_entries(scan)
+        assert len(entries) == 1
+        assert entries[0]["category"] == "Security"
+        assert entries[0]["priority"] == "P0"
+        assert "S105" in entries[0]["title"]
+
+    def test_ruff_correctness_emits_warning_p1(self):
+        scan = {
+            "scanners": {
+                "coverage": {"level": "ok"},
+                "ruff": {
+                    "details": [
+                        {
+                            "code": "F401",
+                            "message": "unused import 'foo'",
+                            "file": "x.py",
+                            "line": 1,
+                        }
+                    ]
+                },
+                "secrets": {"level": "ok"},
+                "tech_debt": {"details": {}},
+            }
+        }
+        entries = codehealth.findings_to_backlog_entries(scan)
+        assert len(entries) == 1
+        assert entries[0]["category"] == "Code Bug"
+        assert entries[0]["priority"] == "P1"
+
+    def test_ruff_modernisation_skipped(self):
+        """UP-class modernisations are style improvements, not bugs.
+        Don't spam the backlog with them."""
+        scan = {
+            "scanners": {
+                "coverage": {"level": "ok"},
+                "ruff": {
+                    "details": [
+                        {"code": "UP038", "message": "...", "file": "x.py", "line": 1},
+                        {"code": "PIE810", "message": "...", "file": "y.py", "line": 2},
+                    ]
+                },
+                "secrets": {"level": "ok"},
+                "tech_debt": {"details": {}},
+            }
+        }
+        entries = codehealth.findings_to_backlog_entries(scan)
+        assert entries == []
+
+    def test_secrets_critical_emits_p0(self):
+        scan = {
+            "scanners": {
+                "coverage": {"level": "ok"},
+                "ruff": {"details": []},
+                "secrets": {"level": "critical", "count": 3},
+                "tech_debt": {"details": {}},
+            }
+        }
+        entries = codehealth.findings_to_backlog_entries(scan)
+        assert len(entries) == 1
+        assert entries[0]["category"] == "Security"
+        assert entries[0]["priority"] == "P0"
+        assert "3" in entries[0]["title"]
+
+    def test_secrets_clean_emits_nothing(self):
+        scan = {
+            "scanners": {
+                "coverage": {"level": "ok"},
+                "ruff": {"details": []},
+                "secrets": {"level": "ok", "count": 0},
+                "tech_debt": {"details": {}},
+            }
+        }
+        assert codehealth.findings_to_backlog_entries(scan) == []
+
+    def test_large_files_emit_info_p2(self):
+        scan = {
+            "scanners": {
+                "coverage": {"level": "ok"},
+                "ruff": {"details": []},
+                "secrets": {"level": "ok"},
+                "tech_debt": {
+                    "details": {
+                        "large_files": [
+                            {"file": "huge.py", "lines": 12000},
+                            {"file": "big.html", "lines": 5500},
+                        ]
+                    }
+                },
+            }
+        }
+        entries = codehealth.findings_to_backlog_entries(scan)
+        assert len(entries) == 2
+        assert all(e["priority"] == "P2" for e in entries)
+        assert all(e["category"] == "Tech Debt" for e in entries)
+        assert "huge.py" in entries[0]["title"]
+        assert "12,000" in entries[0]["title"]
+
+    def test_fingerprint_is_stable_across_calls(self):
+        scan = {
+            "scanners": {
+                "coverage": {"level": "warning", "count": 70, "is_stale": False},
+                "ruff": {"details": []},
+                "secrets": {"level": "ok"},
+                "tech_debt": {"details": {}},
+            }
+        }
+        e1 = codehealth.findings_to_backlog_entries(scan)
+        e2 = codehealth.findings_to_backlog_entries(scan)
+        assert e1[0]["fingerprint"] == e2[0]["fingerprint"]
+        # Different inputs -> different fingerprints.
+        scan2 = dict(scan)
+        scan2["scanners"] = dict(scan["scanners"])
+        scan2["scanners"]["coverage"] = {"level": "critical", "count": 30, "is_stale": False}
+        e3 = codehealth.findings_to_backlog_entries(scan2)
+        assert e1[0]["fingerprint"] != e3[0]["fingerprint"]
+
+
+class TestAppendFindingsToBacklog:
+    def _setup_backlog(self, ch_tmp):
+        ch_tmp["backlog"].write_text(_BACKLOG_SKELETON, encoding="utf-8")
+
+    def test_appends_new_rows_before_priority_key(self, ch_tmp):
+        self._setup_backlog(ch_tmp)
+        scan = {
+            "scanners": {
+                "coverage": {"level": "warning", "count": 70, "is_stale": False},
+                "ruff": {"details": []},
+                "secrets": {"level": "ok"},
+                "tech_debt": {"details": {}},
+            }
+        }
+        result = codehealth.append_findings_to_backlog(scan)
+        assert result["ok"] is True
+        assert result["appended"] == 1
+        text = ch_tmp["backlog"].read_text(encoding="utf-8")
+        # New row should appear BEFORE the priority key line.
+        new_row_idx = text.find("Scan finding")
+        priority_idx = text.find("**Priority key:**")
+        assert new_row_idx != -1
+        assert priority_idx != -1
+        assert new_row_idx < priority_idx
+        # Next number should be 52 (max existing was 51).
+        assert "| 52 |" in text
+
+    def test_dedup_skips_already_emitted_findings(self, ch_tmp):
+        self._setup_backlog(ch_tmp)
+        scan = {
+            "scanners": {
+                "coverage": {"level": "warning", "count": 70, "is_stale": False},
+                "ruff": {"details": []},
+                "secrets": {"level": "ok"},
+                "tech_debt": {"details": {}},
+            }
+        }
+        r1 = codehealth.append_findings_to_backlog(scan)
+        r2 = codehealth.append_findings_to_backlog(scan)
+        assert r1["appended"] == 1
+        assert r2["appended"] == 0
+        assert r2["skipped"] == 1
+        # Backlog should have exactly ONE auto-row, not two.
+        text = ch_tmp["backlog"].read_text(encoding="utf-8")
+        assert text.count("Scan finding") == 1
+
+    def test_missing_backlog_file_returns_error_no_crash(self, ch_tmp):
+        # No backlog file created.
+        scan = {
+            "scanners": {
+                "coverage": {"level": "critical", "count": 20, "is_stale": False},
+                "ruff": {"details": []},
+                "secrets": {"level": "ok"},
+                "tech_debt": {"details": {}},
+            }
+        }
+        result = codehealth.append_findings_to_backlog(scan)
+        assert result["ok"] is False
+        assert "not found" in result["error"]
+        assert result["appended"] == 0
+
+    def test_no_findings_returns_ok_with_zero_appended(self, ch_tmp):
+        self._setup_backlog(ch_tmp)
+        scan = {
+            "scanners": {
+                "coverage": {"level": "ok"},
+                "ruff": {"details": []},
+                "secrets": {"level": "ok"},
+                "tech_debt": {"details": {}},
+            }
+        }
+        result = codehealth.append_findings_to_backlog(scan)
+        assert result["ok"] is True
+        assert result["appended"] == 0
+
+    def test_multiple_findings_get_sequential_numbers(self, ch_tmp):
+        self._setup_backlog(ch_tmp)
+        scan = {
+            "scanners": {
+                "coverage": {"level": "warning", "count": 70, "is_stale": False},
+                "ruff": {
+                    "details": [
+                        {"code": "S105", "message": "hp", "file": "a.py", "line": 1},
+                        {"code": "F401", "message": "ui", "file": "b.py", "line": 2},
+                    ]
+                },
+                "secrets": {"level": "ok"},
+                "tech_debt": {"details": {}},
+            }
+        }
+        result = codehealth.append_findings_to_backlog(scan)
+        assert result["appended"] == 3
+        text = ch_tmp["backlog"].read_text(encoding="utf-8")
+        # Existing rows 50, 51 -- new ones should be 52, 53, 54.
+        assert "| 52 |" in text
+        assert "| 53 |" in text
+        assert "| 54 |" in text
+
+    def test_reset_emitted_allows_re_append(self, ch_tmp):
+        self._setup_backlog(ch_tmp)
+        scan = {
+            "scanners": {
+                "coverage": {"level": "warning", "count": 70, "is_stale": False},
+                "ruff": {"details": []},
+                "secrets": {"level": "ok"},
+                "tech_debt": {"details": {}},
+            }
+        }
+        codehealth.append_findings_to_backlog(scan)
+        codehealth.reset_emitted_fingerprints()
+        # After reset, same scan should re-emit.
+        result = codehealth.append_findings_to_backlog(scan)
+        assert result["appended"] == 1
+
+    def test_backlog_no_priority_key_anchor_falls_back_to_append(self, ch_tmp):
+        """If the user has moved/removed the **Priority key:** anchor,
+        the function should still succeed -- append at the end of the file."""
+        ch_tmp["backlog"].write_text("| 1 | foo | Small | P0 |\n", encoding="utf-8")
+        scan = {
+            "scanners": {
+                "coverage": {"level": "warning", "count": 70, "is_stale": False},
+                "ruff": {"details": []},
+                "secrets": {"level": "ok"},
+                "tech_debt": {"details": {}},
+            }
+        }
+        result = codehealth.append_findings_to_backlog(scan)
+        assert result["ok"] is True
+        assert result["appended"] == 1
+        text = ch_tmp["backlog"].read_text(encoding="utf-8")
+        assert "Scan finding" in text
+
+
+class TestEmittedFingerprintPersistence:
+    def test_load_missing_returns_empty_set(self, ch_tmp):
+        assert codehealth.load_emitted_fingerprints() == set()
+
+    def test_save_and_load_round_trip(self, ch_tmp):
+        fps = {"aaa111", "bbb222", "ccc333"}
+        codehealth.save_emitted_fingerprints(fps)
+        assert codehealth.load_emitted_fingerprints() == fps
+
+    def test_load_malformed_returns_empty_set(self, ch_tmp):
+        ch_tmp["emitted"].write_text("{not json", encoding="utf-8")
+        assert codehealth.load_emitted_fingerprints() == set()
+
+    def test_reset_wipes_state(self, ch_tmp):
+        codehealth.save_emitted_fingerprints({"aaa"})
+        codehealth.reset_emitted_fingerprints()
+        assert codehealth.load_emitted_fingerprints() == set()
+
+
+class TestResetEmittedRoute:
+    def test_post_returns_200_and_clears(self, client, ch_tmp):
+        codehealth.save_emitted_fingerprints({"abc"})
+        r = client.post("/api/codehealth/reset-emitted")
+        assert r.status_code == 200
+        assert r.get_json()["ok"] is True
+        assert codehealth.load_emitted_fingerprints() == set()
+
+
+class TestRunAndSaveAppendsToBacklog:
+    """Integration test: scan_all() -> save_state() -> append_findings_
+    to_backlog() should chain through _run_and_save without raising."""
+
+    def test_run_and_save_appends_findings(self, ch_tmp, mocker):
+        # Mock scan_all to return a single warning finding.
+        mocker.patch(
+            "codehealth.scan_all",
+            return_value={
+                "started_at": "2026-05-27T20:00:00",
+                "finished_at": "2026-05-27T20:00:05",
+                "worst_level": "warning",
+                "scanners": {
+                    "coverage": {"level": "ok"},
+                    "ruff": {"details": [{"code": "F401", "message": "x", "file": "a.py", "line": 1}]},
+                    "secrets": {"level": "ok"},
+                    "tech_debt": {"details": {}},
+                },
+            },
+        )
+        ch_tmp["backlog"].write_text(_BACKLOG_SKELETON, encoding="utf-8")
+        codehealth._run_and_save()
+        text = ch_tmp["backlog"].read_text(encoding="utf-8")
+        assert "Scan finding" in text
+        assert "F401" in text
+
+    def test_run_and_save_survives_missing_backlog(self, ch_tmp, mocker):
+        """If the backlog file is missing (different machine, etc.),
+        the scan must still complete + persist state -- append failure
+        is non-fatal."""
+        mocker.patch(
+            "codehealth.scan_all",
+            return_value={
+                "scanners": {
+                    "coverage": {"level": "warning", "count": 70, "is_stale": False},
+                    "ruff": {"details": []},
+                    "secrets": {"level": "ok"},
+                    "tech_debt": {"details": {}},
+                },
+            },
+        )
+        # No backlog file created -- function should swallow the error.
+        codehealth._run_and_save()
+        # State got persisted despite backlog miss.
+        state = codehealth.load_state()
+        assert state.get("scanners", {}).get("coverage", {}).get("level") == "warning"
