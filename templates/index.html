@@ -7858,11 +7858,15 @@ function util_levelColor(level) {
        : "var(--green)";
 }
 
-function util_renderScannerCard(name, label, icon, result) {
+function util_renderScannerCard(name, label, icon, result, opts) {
   const status = result.ok ? result.summary : (result.error || "Scanner unavailable");
   const color = util_levelColor(result.level || "ok");
   const dur = result.duration_ms != null ? `${(result.duration_ms / 1000).toFixed(1)}s` : "—";
   const ts = result.finished_at ? new Date(result.finished_at).toLocaleString() : "never";
+  // Per-card extra controls. PR-2 of #51 ships a Refresh button for
+  // the coverage card so the user can trigger a fresh pytest --cov
+  // run from the UI when .coverage gets stale (the 2026-05-27 bug).
+  const extraControl = (opts && opts.extraControl) || "";
   return `
     <div style="background:var(--card);border:1px solid var(--border);border-left:3px solid ${color};
                 border-radius:8px;padding:14px 16px">
@@ -7873,7 +7877,10 @@ function util_renderScannerCard(name, label, icon, result) {
                      color:${color};border:1px solid ${color};padding:2px 7px;border-radius:8px">${esc(result.level || "?")}</span>
       </div>
       <div style="font-size:12px;color:var(--text);line-height:1.4;margin-bottom:6px">${esc(status)}</div>
-      <div style="font-size:10px;color:var(--muted);font-family:var(--font-mono)">${esc(ts)} · ${esc(dur)}</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:10px;color:var(--muted);font-family:var(--font-mono)">
+        <span>${esc(ts)} · ${esc(dur)}</span>
+        ${extraControl}
+      </div>
     </div>`;
 }
 
@@ -7895,15 +7902,24 @@ async function util_loadCodeHealth(opts) {
   const state    = payload.state || {};
   const scanners = state.scanners || {};
   const running  = payload.is_running;
+  const refreshingCov = payload.is_refreshing_coverage;
   const stale    = payload.is_stale;
   const finished = state.finished_at;
   const hasResults = scanners && Object.keys(scanners).length > 0;
 
   // Header line + Scan-now button state.
-  if (running) {
-    if (lastSpan) lastSpan.textContent = "Scan in progress…";
-    if (btn) { btn.disabled = true; btn.textContent = "Scanning…"; }
-    // Auto-poll every 1.5s while a scan is in flight.
+  // Either a scan OR a coverage refresh keeps the spinner running.
+  // A coverage refresh ends with an automatic scan_all so the
+  // running flag flips through both phases.
+  const anyInFlight = running || refreshingCov;
+  if (anyInFlight) {
+    if (lastSpan) {
+      lastSpan.textContent = refreshingCov
+        ? "Running pytest --cov (~60s)…"
+        : "Scan in progress…";
+    }
+    if (btn) { btn.disabled = true; btn.textContent = refreshingCov ? "Refreshing coverage…" : "Scanning…"; }
+    // Auto-poll every 1.5s while in flight.
     if (!_utilPollTimer) {
       _utilPollTimer = setInterval(() => util_loadCodeHealth({fromPoll: true}), 1500);
     }
@@ -7922,23 +7938,71 @@ async function util_loadCodeHealth(opts) {
     if (_utilPollTimer) { clearInterval(_utilPollTimer); _utilPollTimer = null; }
   }
 
+  // Surface the last refresh error inline if it failed (the user
+  // clicked Refresh and pytest blew up). Done above the cards.
+  const refLast = payload.coverage_refresh_last_result;
+  let refreshErrorBanner = "";
+  if (refLast && !refLast.ok && !refreshingCov) {
+    const tail = (refLast.stderr_tail || refLast.stdout_tail || "").slice(-300);
+    refreshErrorBanner = `<div style="grid-column:1/-1;background:rgba(255,71,87,.08);border:1px solid rgba(255,71,87,.4);
+                          border-radius:6px;padding:8px 12px;margin-bottom:8px;font-size:11px;color:var(--text)">
+        ⚠ Last coverage refresh failed: ${esc(refLast.error || "pytest returned " + refLast.returncode)}
+        ${tail ? `<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--muted)">tail</summary>
+          <pre style="font-size:10px;color:var(--muted);white-space:pre-wrap;margin:4px 0 0">${esc(tail)}</pre></details>` : ""}
+      </div>`;
+  }
+
   if (!hasResults) {
     grid.style.display = "none";
-    if (empty) empty.style.display = running ? "none" : "";
+    if (empty) empty.style.display = anyInFlight ? "none" : "";
     return;
   }
   grid.style.display = "grid";
   if (empty) empty.style.display = "none";
 
+  // Per-card extra controls. The Coverage card gets a Refresh button
+  // that re-runs pytest --cov so the user can fix stale .coverage
+  // data from inside the UI (PR-2 of #51, fixes the 2026-05-27 bug).
+  const covCtrl = refreshingCov
+    ? `<span style="color:var(--cyan)">refreshing…</span>`
+    : `<button onclick="util_refreshCoverage()"
+                style="background:transparent;border:1px solid var(--border);color:var(--cyan);
+                       padding:2px 8px;border-radius:4px;cursor:pointer;font-size:10px;font-family:var(--font-mono)"
+                title="Re-runs pytest --cov to refresh the .coverage file (~60s)">↻ Refresh</button>`;
+
   const cards = [
-    ["coverage",  "Test Coverage",   "🧪", scanners.coverage   || {}],
-    ["ruff",      "Code Bugs (ruff)","🪲", scanners.ruff       || {}],
-    ["secrets",   "Security / Secrets","🔒", scanners.secrets  || {}],
-    ["tech_debt", "Tech Debt",       "🧹", scanners.tech_debt  || {}],
+    ["coverage",  "Test Coverage",   "🧪", scanners.coverage   || {}, {extraControl: covCtrl}],
+    ["ruff",      "Code Bugs (ruff)","🪲", scanners.ruff       || {}, null],
+    ["secrets",   "Security / Secrets","🔒", scanners.secrets  || {}, null],
+    ["tech_debt", "Tech Debt",       "🧹", scanners.tech_debt  || {}, null],
   ];
-  grid.innerHTML = cards.map(([_, label, icon, r]) =>
-    util_renderScannerCard(_, label, icon, r)
+  grid.innerHTML = refreshErrorBanner + cards.map(([_, label, icon, r, opts]) =>
+    util_renderScannerCard(_, label, icon, r, opts)
   ).join("");
+}
+
+async function util_refreshCoverage() {
+  // Re-runs pytest --cov against the primary repo so .coverage gets
+  // freshened. The backend kicks off a thread; we poll status until
+  // is_refreshing_coverage flips back to false, then the new % shows up.
+  try {
+    const r = await fetch("/api/codehealth/refresh-coverage", {method:"POST"});
+    if (r.status === 409) {
+      // Already running — just (re)start the poll.
+      await util_loadCodeHealth();
+      return;
+    }
+    if (!r.ok) {
+      const data = await r.json().catch(()=>({}));
+      alert("Coverage refresh failed to start: " + (data.error || r.status));
+      return;
+    }
+    // Re-render immediately so the spinner state shows; poll picks up
+    // the rest.
+    await util_loadCodeHealth();
+  } catch (e) {
+    alert("Coverage refresh failed to start: " + e.message);
+  }
 }
 
 async function util_runScan() {

@@ -81,6 +81,18 @@ _run_lock = threading.Lock()
 # True while a background scan thread is in flight. Guards against
 # double-runs when the user mashes the "Run now" button.
 _running = False
+# True while a "Refresh coverage" job is in flight (the pytest --cov
+# run that takes 30-90s). Reported as is_refreshing_coverage in
+# /api/codehealth/status so the UI can show progress + disable the
+# button. Different from _running because the refresh job EVENTUALLY
+# triggers a scan_all itself, but we want the button to stay disabled
+# for the whole pytest+rescan cycle.
+_coverage_refresh_running = False
+_coverage_refresh_last_result: dict | None = None
+# Generous because the full suite is ~50-80s on this repo and worker
+# machines vary. Aborting too early would leave .coverage in an
+# inconsistent half-written state.
+COVERAGE_REFRESH_TIMEOUT_SEC = 600
 
 
 def _now_iso() -> str:
@@ -535,3 +547,124 @@ def maybe_run_on_boot() -> bool:
     if is_stale(state):
         return run_in_background()
     return False
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Coverage refresh (PR-2 of #51)
+#
+# scan_coverage() reads whatever .coverage exists on disk. That file
+# is only refreshed by an actual pytest --cov run, which happens via
+# pre-commit hooks but NOT during normal tray operation. After a few
+# days the .coverage in the primary repo becomes stale -- the user
+# report on 2026-05-27 was a 16-day-old 57.1% reading against an
+# actual ~86% coverage.
+#
+# refresh_coverage_in_background() spawns a thread that runs the
+# full pytest --cov suite IN PROCESS (subprocess to a fresh python),
+# letting pytest rewrite .coverage. When pytest exits we trigger a
+# scan_all so all four cards re-render with the fresh data in one shot.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def is_refreshing_coverage() -> bool:
+    return _coverage_refresh_running
+
+
+def get_coverage_refresh_last_result() -> dict | None:
+    """Returns the last refresh outcome (success or failure), or None
+    if no refresh has run since process start. Used by the UI to show
+    "Refresh failed: <reason>" after a click."""
+    return _coverage_refresh_last_result
+
+
+def _refresh_coverage_and_rescan() -> None:
+    """Thread body: runs pytest --cov against the primary repo so
+    .coverage gets a fresh write, then fires scan_all to re-read it
+    and update the persisted state."""
+    global _coverage_refresh_running, _coverage_refresh_last_result
+    with _run_lock:
+        if _coverage_refresh_running:
+            return
+        _coverage_refresh_running = True
+    started = datetime.now()
+    result: dict = {
+        "ok": False,
+        "started_at": started.isoformat(timespec="seconds"),
+        "finished_at": "",
+        "duration_ms": 0,
+        "returncode": None,
+        "error": None,
+        "stdout_tail": "",
+        "stderr_tail": "",
+    }
+    try:
+        proc = subprocess.run(
+            # -n auto parallelises across CPU cores via pytest-xdist;
+            # pytest-cov has built-in support for merging coverage
+            # data from worker subprocesses. Cuts wall-time from
+            # ~5 min serial to ~45 s on a 10-core box. This is the
+            # same configuration pre-commit uses.
+            # --no-header / -q keep the captured output compact.
+            ["python", "-m", "pytest", "--cov", "-n", "auto", "--no-header", "-q"],
+            cwd=_REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=COVERAGE_REFRESH_TIMEOUT_SEC,
+            check=False,
+        )
+        result["returncode"] = proc.returncode
+        # Last 1000 chars is enough to surface the failure reason in
+        # the UI without bloating the JSON payload.
+        result["stdout_tail"] = (proc.stdout or "")[-1000:]
+        result["stderr_tail"] = (proc.stderr or "")[-1000:]
+        # pytest may exit 0 (clean) or 1 (failures) or 5 (no tests
+        # collected). Either way the .coverage file is usually
+        # written. Anything else (e.g. 2 = interrupted, 3 = internal
+        # error) means the file may be missing or corrupt; surface it
+        # but still attempt the rescan so the user sees the new state.
+        if proc.returncode in (0, 1):
+            result["ok"] = True
+        elif proc.returncode == 5:
+            result["ok"] = True
+            result["error"] = "no tests collected"
+        else:
+            result["error"] = f"pytest returned {proc.returncode}"
+    except subprocess.TimeoutExpired:
+        result["error"] = f"timeout after {COVERAGE_REFRESH_TIMEOUT_SEC}s"
+    except OSError as exc:
+        result["error"] = str(exc)
+    finally:
+        finished = datetime.now()
+        result["finished_at"] = finished.isoformat(timespec="seconds")
+        result["duration_ms"] = int((finished - started).total_seconds() * 1000)
+        _coverage_refresh_last_result = result
+        _log.info(
+            "coverage refresh complete: ok=%s returncode=%s duration=%ss",
+            result["ok"],
+            result["returncode"],
+            result["duration_ms"] / 1000,
+        )
+
+    # Re-run scan_all so the persisted state reflects the new .coverage
+    # plus refreshed ruff / secrets / tech-debt. Done OUTSIDE the
+    # _coverage_refresh_running guard so the UI's refresh-spinner can
+    # flip off before the scan-all spinner kicks in -- but we want
+    # the "Run now" guard to still prevent overlap.
+    with _run_lock:
+        _coverage_refresh_running = False
+
+    # Fire a regular scan_all (which has its own _running guard).
+    # Skips silently if a scan_all is somehow already in flight.
+    run_in_background()
+
+
+def refresh_coverage_in_background() -> bool:
+    """Kick off a background pytest --cov run if one isn't already in
+    flight. Returns True if a new thread was started, False if a
+    refresh was already running."""
+    with _run_lock:
+        if _coverage_refresh_running:
+            return False
+    thread = threading.Thread(target=_refresh_coverage_and_rescan, daemon=True, name="CodeHealthCoverageRefresh")
+    thread.start()
+    return True

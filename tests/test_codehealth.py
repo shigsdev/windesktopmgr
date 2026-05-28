@@ -418,6 +418,7 @@ class TestCodeHealthRoutes:
         assert data["state"] == {}
         assert data["is_stale"] is True
         assert data["is_running"] is False
+        assert data["is_refreshing_coverage"] is False
         assert data["stale_days_threshold"] == codehealth.STALE_DAYS
 
     def test_status_returns_persisted_state(self, client, ch_tmp):
@@ -448,3 +449,108 @@ class TestCodeHealthRoutes:
         data = r.get_json()
         assert data["ok"] is False
         assert "already running" in data["error"]
+
+
+# ─── Coverage refresh (PR-2 of #51) ─────────────────────────────────
+
+
+class TestRefreshCoverage:
+    def test_refresh_kicks_off_pytest_subprocess(self, ch_tmp, mocker):
+        """The thread body should call pytest --cov against the repo."""
+        mock_proc = mocker.MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = "all green"
+        mock_proc.stderr = ""
+        run_spy = mocker.patch("codehealth.subprocess.run", return_value=mock_proc)
+        # Patch out the post-refresh scan_all so the test stays fast.
+        mocker.patch("codehealth.run_in_background")
+        codehealth._refresh_coverage_and_rescan()
+        # Subprocess should have been invoked with pytest + --cov.
+        assert run_spy.call_count == 1
+        cmd = run_spy.call_args[0][0]
+        assert "pytest" in " ".join(cmd)
+        assert "--cov" in cmd
+        # is_refreshing_coverage flag should be cleared after the body runs.
+        assert codehealth.is_refreshing_coverage() is False
+        last = codehealth.get_coverage_refresh_last_result()
+        assert last is not None
+        assert last["ok"] is True
+        assert last["returncode"] == 0
+
+    def test_refresh_pytest_failure_still_reports_ok(self, ch_tmp, mocker):
+        """pytest exit 1 means tests failed but .coverage was still
+        written -- the refresh achieved its goal. ok should still be True."""
+        mock_proc = mocker.MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.stdout = "1 failed"
+        mock_proc.stderr = ""
+        mocker.patch("codehealth.subprocess.run", return_value=mock_proc)
+        mocker.patch("codehealth.run_in_background")
+        codehealth._refresh_coverage_and_rescan()
+        last = codehealth.get_coverage_refresh_last_result()
+        assert last["ok"] is True
+        assert last["returncode"] == 1
+
+    def test_refresh_internal_error_returns_failure(self, ch_tmp, mocker):
+        """Exit codes other than 0/1/5 are real failures (e.g. 2 =
+        interrupted, 3 = internal error). Report ok=False."""
+        mock_proc = mocker.MagicMock()
+        mock_proc.returncode = 3
+        mock_proc.stdout = ""
+        mock_proc.stderr = "internal error"
+        mocker.patch("codehealth.subprocess.run", return_value=mock_proc)
+        mocker.patch("codehealth.run_in_background")
+        codehealth._refresh_coverage_and_rescan()
+        last = codehealth.get_coverage_refresh_last_result()
+        assert last["ok"] is False
+        assert "pytest returned 3" in last["error"]
+        assert "internal error" in last["stderr_tail"]
+
+    def test_refresh_timeout_reports_failure(self, ch_tmp, mocker):
+        mocker.patch(
+            "codehealth.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="pytest", timeout=600),
+        )
+        mocker.patch("codehealth.run_in_background")
+        codehealth._refresh_coverage_and_rescan()
+        last = codehealth.get_coverage_refresh_last_result()
+        assert last["ok"] is False
+        assert "timeout" in last["error"].lower()
+
+    def test_refresh_triggers_followup_scan_all(self, ch_tmp, mocker):
+        """After pytest exits, the refresh worker fires a scan_all so
+        all 4 cards re-render with the fresh data in one shot."""
+        mock_proc = mocker.MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = ""
+        mock_proc.stderr = ""
+        mocker.patch("codehealth.subprocess.run", return_value=mock_proc)
+        run_spy = mocker.patch("codehealth.run_in_background")
+        codehealth._refresh_coverage_and_rescan()
+        assert run_spy.call_count == 1, "scan_all must fire after pytest completes"
+
+    def test_refresh_in_background_skips_when_already_running(self, ch_tmp, monkeypatch):
+        monkeypatch.setattr(codehealth, "_coverage_refresh_running", True)
+        assert codehealth.refresh_coverage_in_background() is False
+
+    def test_refresh_route_returns_202(self, client, ch_tmp, mocker):
+        mocker.patch("codehealth.refresh_coverage_in_background", return_value=True)
+        r = client.post("/api/codehealth/refresh-coverage")
+        assert r.status_code == 202
+        data = r.get_json()
+        assert data["ok"] is True
+        assert data["started"] is True
+
+    def test_refresh_route_returns_409_when_in_flight(self, client, ch_tmp, mocker):
+        mocker.patch("codehealth.refresh_coverage_in_background", return_value=False)
+        r = client.post("/api/codehealth/refresh-coverage")
+        assert r.status_code == 409
+        data = r.get_json()
+        assert data["ok"] is False
+        assert "already running" in data["error"]
+
+    def test_status_exposes_refresh_flag(self, client, ch_tmp, mocker):
+        mocker.patch("codehealth.is_refreshing_coverage", return_value=True)
+        r = client.get("/api/codehealth/status")
+        data = r.get_json()
+        assert data["is_refreshing_coverage"] is True
