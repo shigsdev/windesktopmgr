@@ -161,6 +161,78 @@ class TestParseFileHistoryConfig:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# _probe_backup_store -- the ACL-aware existence probe (post-2026-05-27 bug fix)
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestProbeBackupStore:
+    """The probe must distinguish three states the old os.path.isdir
+    couldn't:
+      - exists + readable
+      - exists + ACL-restricted (still exists -- don't fire critical)
+      - truly missing
+    """
+
+    def test_directly_readable_returns_true(self, tmp_path):
+        store = tmp_path / "Data"
+        store.mkdir()
+        exists, reason = backup._probe_backup_store(str(store))
+        assert exists is True
+        assert "stat ok" in reason
+
+    def test_truly_missing_returns_false(self, tmp_path):
+        exists, reason = backup._probe_backup_store(str(tmp_path / "nope"))
+        assert exists is False
+        assert "missing" in reason or "doesn't exist" in reason
+
+    def test_acl_restricted_falls_back_to_parent_listing(self, tmp_path, mocker):
+        # Folder exists on disk; mock isdir(leaf) -> False to simulate
+        # ACL-denied stat. Parent scandir still works.
+        store = tmp_path / "Data"
+        store.mkdir()
+        mocker.patch.object(backup.os.path, "isdir", side_effect=lambda p: not str(p).endswith("Data"))
+        exists, reason = backup._probe_backup_store(str(store))
+        assert exists is True
+        assert "parent listing" in reason
+
+    def test_parent_listing_no_leaf_returns_false(self, tmp_path, mocker):
+        # Parent exists, scandir works, but leaf isn't there.
+        # That's a TRUE missing -- not an ACL issue.
+        mocker.patch.object(backup.os.path, "isdir", return_value=False)
+        exists, reason = backup._probe_backup_store(str(tmp_path / "Nothere"))
+        assert exists is False
+        assert "leaf" in reason or "missing" in reason
+
+    def test_parent_permission_denied_returns_none(self, tmp_path, mocker):
+        """Critical bug-fix path: never assume missing under PermissionError."""
+        mocker.patch.object(backup.os.path, "isdir", return_value=False)
+        mocker.patch.object(backup.os, "scandir", side_effect=PermissionError("denied"))
+        exists, reason = backup._probe_backup_store(str(tmp_path / "Data"))
+        assert exists is None
+        assert "elevation" in reason.lower() or "can't determine" in reason.lower()
+
+    def test_parent_not_found_returns_false(self, mocker):
+        # Parent itself doesn't exist -> truly missing, not ACL.
+        mocker.patch.object(backup.os.path, "isdir", return_value=False)
+        mocker.patch.object(backup.os, "scandir", side_effect=FileNotFoundError())
+        exists, reason = backup._probe_backup_store(r"X:\nonexistent\Data")
+        assert exists is False
+
+    def test_empty_path_returns_none(self):
+        exists, reason = backup._probe_backup_store("")
+        assert exists is None
+
+    def test_case_insensitive_leaf_match(self, tmp_path, mocker):
+        # Configured path says "Data" but on disk it's "DATA". Should still match.
+        store = tmp_path / "DATA"
+        store.mkdir()
+        mocker.patch.object(backup.os.path, "isdir", return_value=False)
+        # Probe with the configured (different-case) name.
+        exists, reason = backup._probe_backup_store(str(tmp_path / "Data"))
+        assert exists is True
+
+
+# ══════════════════════════════════════════════════════════════════════
 # get_file_history_state (live read + health probes)
 # ══════════════════════════════════════════════════════════════════════
 
@@ -214,6 +286,61 @@ class TestGetFileHistoryState:
         state = backup.get_file_history_state()
         assert state["health"]["level"] == "info"
         assert "disabled" in state["health"]["reason"].lower()
+
+    def test_acl_restricted_store_is_info_not_critical(self, backup_tmp, tmp_path, mocker):
+        """User report 2026-05-27: the live tray showed Backup health as
+        CRITICAL with "backup store folder ... is missing -- backups are
+        NOT being saved" against E:\\higs7\\SHIGS78-PC24\\Data, but the
+        folder DID exist -- it was just ACL-restricted so the unelevated
+        os.path.isdir returned False. Regression test: when isdir says
+        False but the parent listing shows the leaf name, treat as info
+        (acl-restricted) NOT critical (truly missing).
+        """
+        drive = tmp_path / "drive"
+        store_parent = drive / "higs7" / "SHIGS78-PC24"
+        store_parent.mkdir(parents=True)
+        # Create the leaf folder but make os.path.isdir return False so
+        # we simulate the ACL-denied stat -- the parent listing still
+        # shows it, which is the user's actual scenario.
+        leaf = store_parent / "Data"
+        leaf.mkdir()
+        xml = _REAL_FH_XML.replace("<TargetUrl>E:\\</TargetUrl>", f"<TargetUrl>{drive}\\</TargetUrl>")
+        backup_tmp["fh_config"].write_text(xml, encoding="utf-8")
+        # Force isdir to return False for the store path only -- mimics
+        # the ACL denial. The parent scan still works (real folder on disk).
+        original_isdir = backup.os.path.isdir
+
+        def isdir_patched(path):
+            if str(path).endswith("Data"):
+                return False
+            return original_isdir(path)
+
+        mocker.patch.object(backup.os.path, "isdir", side_effect=isdir_patched)
+        state = backup.get_file_history_state()
+        # Folder was found via parent listing -> True
+        assert state["target_backup_store_exists"] is True, (
+            f"parent listing should rescue ACL-restricted leaf; got {state}"
+        )
+        # And since exists=True, health should NOT be critical.
+        assert state["health"]["level"] != "critical"
+
+    def test_inaccessible_parent_is_indeterminate_info_not_critical(self, backup_tmp, tmp_path, mocker):
+        """When even the parent directory raises PermissionError on scandir,
+        we cannot determine missing vs ACL-denied. Must fall back to info
+        (NOT critical) -- never assume missing under permission denial."""
+        drive = tmp_path / "drive"
+        drive.mkdir()
+        xml = _REAL_FH_XML.replace("<TargetUrl>E:\\</TargetUrl>", f"<TargetUrl>{drive}\\</TargetUrl>")
+        backup_tmp["fh_config"].write_text(xml, encoding="utf-8")
+        # isdir always returns False AND scandir raises PermissionError.
+        mocker.patch.object(
+            backup.os.path, "isdir", side_effect=lambda p: str(p).endswith("\\") or str(p).endswith("drive")
+        )
+        mocker.patch.object(backup.os, "scandir", side_effect=PermissionError("denied"))
+        state = backup.get_file_history_state()
+        assert state["target_backup_store_exists"] is None
+        assert state["health"]["level"] == "info"
+        assert "need elevation" in state["health"]["reason"].lower()
 
     def test_healthy_when_target_and_store_exist(self, backup_tmp, tmp_path):
         drive = tmp_path / "drive"

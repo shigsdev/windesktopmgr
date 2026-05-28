@@ -629,6 +629,78 @@ def parse_file_history_config(xml_text: str) -> dict:
     return result
 
 
+def _probe_backup_store(full_store: str) -> tuple[bool | None, str]:
+    """Determine whether the File History backup-store folder exists.
+
+    Returns ``(exists, reason)`` where ``exists`` is:
+      - ``True``  -- folder confirmed present (either we could stat it
+                      directly, OR it appeared in the parent directory's
+                      listing)
+      - ``False`` -- folder confirmed missing (parent listed cleanly
+                      and the leaf was NOT in it)
+      - ``None``  -- couldn't determine (parent itself wasn't listable;
+                      the folder may exist behind an ACL boundary that
+                      the unelevated tray can't cross)
+
+    Bug fix 2026-05-27 (post-deploy user report): the previous probe
+    used ``os.path.isdir`` which returns ``False`` for BOTH "doesn't
+    exist" and "ACL denies access." Windows File History writes its
+    backup store with restricted ACLs to prevent tampering -- a healthy
+    backup setup looked identical to a missing one from the tray's
+    unelevated view, and the health card fired ``critical`` against a
+    perfectly-working store.
+
+    Strategy: first try a direct ``os.path.isdir`` because that's
+    cheap and handles the most common (readable) case. If that fails,
+    walk the parent directory's listing and look for the leaf name.
+    A folder that we can't stat but CAN see listed in its parent is
+    a healthy ACL-restricted folder, not a missing one. If we can't
+    even list the parent (rare -- only happens when the entire
+    target drive is under restricted ACLs), return ``None`` so the
+    health verdict downgrades to "info" instead of falsely firing
+    "critical."
+    """
+    if not full_store:
+        return None, "no path supplied"
+    full_store = full_store.rstrip("\\/")
+
+    # ── Fast path: directly stat-able. ──
+    try:
+        if os.path.isdir(full_store):
+            return True, "direct stat ok"
+    except OSError:
+        pass
+
+    # ── Slow path: stat said False (could be missing OR ACL-denied).
+    # Walk the parent listing and look for the leaf by name. This
+    # works even when stat() of the leaf itself raises PermissionError
+    # because os.scandir of the parent doesn't require READ on the
+    # children.
+    parent = os.path.dirname(full_store)
+    leaf = os.path.basename(full_store)
+    if not parent or not leaf:
+        return False, "malformed path -- no parent/leaf split"
+
+    try:
+        with os.scandir(parent) as entries:
+            for entry in entries:
+                # Windows file system is case-insensitive; the configured
+                # store path may have different casing than what's on disk.
+                if entry.name.lower() == leaf.lower():
+                    return True, "parent listing shows leaf (acl-restricted contents)"
+        # Parent scan completed cleanly and leaf was not present.
+        return False, "parent dir scanned cleanly -- leaf truly missing"
+    except PermissionError:
+        # Can't list the parent. Inconclusive -- never assume missing
+        # under ACL denial.
+        return None, "parent dir not listable -- can't determine (may need elevation)"
+    except FileNotFoundError:
+        # Parent itself doesn't exist. The whole tree is missing.
+        return False, "parent dir doesn't exist"
+    except OSError as exc:
+        return None, f"parent scan failed: {exc}"
+
+
 def _staging_area_usage(staging_path: str) -> tuple[int, int]:
     """Return (used_bytes, file_count) for the staging area. Returns (0, 0)
     on any I/O error -- the staging area is normally empty (transient
@@ -679,6 +751,11 @@ def get_file_history_state() -> dict:
           "catalog_age_days": float | None,
           "target_path_exists": bool | None,
           "target_backup_store_exists": bool | None,
+              # True  = stat-able OR listed in parent (acl-restricted ok)
+              # False = parent scanned cleanly, leaf not present
+              # None  = couldn't determine (parent not listable -- may
+              #         need elevation; treated as info, not critical)
+          "target_backup_store_probe": str,  # one-line reason for above
           "staging_usage_bytes": int,
           "staging_file_count": int,
           "staging_usage_ratio": float | None,
@@ -699,6 +776,7 @@ def get_file_history_state() -> dict:
         "catalog_age_days": None,
         "target_path_exists": None,
         "target_backup_store_exists": None,
+        "target_backup_store_probe": "",
         "staging_usage_bytes": 0,
         "staging_file_count": 0,
         "staging_usage_ratio": None,
@@ -743,9 +821,14 @@ def get_file_history_state() -> dict:
             # E:\higs7\SHIGS78-PC24\Data. The backup_store_path in the
             # XML is relative to the drive.
             full_store = os.path.join(target_url.rstrip("\\/"), store_path)
-            result["target_backup_store_exists"] = os.path.isdir(full_store)
+            exists, probe_reason = _probe_backup_store(full_store)
+            result["target_backup_store_exists"] = exists
+            result["target_backup_store_probe"] = probe_reason
         else:
             result["target_backup_store_exists"] = False if store_path else None
+            result["target_backup_store_probe"] = (
+                "no store path configured" if not store_path else "target drive offline"
+            )
 
     # Staging usage
     staging = cfg.get("staging_area") or {}
@@ -773,6 +856,22 @@ def get_file_history_state() -> dict:
                 f"Target drive '{target_url}' is reachable but the backup store folder "
                 f"'{(target.get('backup_store_path') or '').rstrip('/')}' is missing -- "
                 f"backups are NOT being saved to disk"
+            ),
+        }
+    elif result["target_backup_store_exists"] is None and (target.get("backup_store_path") or ""):
+        # Couldn't determine whether the store exists because the
+        # parent dir isn't listable from the unelevated tray. This
+        # happens with restricted-ACL store folders (the healthy
+        # default). Surface as info -- not a fail -- with the probe
+        # reason so the user knows why we're not asserting health.
+        # Caught the 2026-05-27 user report where E:\higs7\... was
+        # present + working but read-blocked by ACL.
+        result["health"] = {
+            "level": "info",
+            "reason": (
+                f"Backup store '{(target.get('backup_store_path') or '').rstrip('/')}' "
+                f"is not directly readable from the tray (may need elevation to confirm). "
+                f"Probe: {result.get('target_backup_store_probe') or 'unknown'}"
             ),
         }
     elif result["catalog_age_days"] is not None and result["catalog_age_days"] > _FH_CATALOG_STALE_DAYS:
