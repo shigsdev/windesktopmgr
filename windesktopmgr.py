@@ -9645,8 +9645,10 @@ def codehealth_status_route():
 
         {"ok": true,
          "state": {<scan result> or {}},
-         "is_stale": <bool>,                 # last_run > STALE_DAYS ago, or never run
-         "is_running": <bool>,               # background scan currently in flight
+         "is_stale": <bool>,                          # last_run > STALE_DAYS ago, or never run
+         "is_running": <bool>,                        # background scan currently in flight
+         "is_refreshing_coverage": <bool>,            # pytest --cov refresh in flight (PR-2 of #51)
+         "coverage_refresh_last_result": <dict|None>, # last refresh outcome (stdout/stderr tail)
          "stale_days_threshold": <int>}
 
     Empty ``state`` ({}) means no scan has ever completed -- the UI
@@ -9659,6 +9661,8 @@ def codehealth_status_route():
             "state": state,
             "is_stale": codehealth.is_stale(state),
             "is_running": codehealth.is_running(),
+            "is_refreshing_coverage": codehealth.is_refreshing_coverage(),
+            "coverage_refresh_last_result": codehealth.get_coverage_refresh_last_result(),
             "stale_days_threshold": codehealth.STALE_DAYS,
         }
     )
@@ -9676,6 +9680,27 @@ def codehealth_run_route():
     started = codehealth.run_in_background()
     if not started:
         return jsonify({"ok": False, "started": False, "error": "scan already running"}), 409
+    return jsonify({"ok": True, "started": True}), 202
+
+
+@app.route("/api/codehealth/refresh-coverage", methods=["POST"])
+def codehealth_refresh_coverage_route():
+    """Run pytest --cov in the background so the .coverage file gets a
+    fresh write, then auto-trigger a scan_all to re-read everything.
+
+    Returns 202 immediately with ``{"ok": true, "started": true}``.
+    If a refresh is already running, returns 409. UI should poll
+    ``/api/codehealth/status`` and wait for ``is_refreshing_coverage``
+    to flip back to false; the new coverage % will then be in ``state``.
+
+    PR-2 of #51: ships the user-facing "Refresh coverage" button so
+    the stale .coverage file issue (caught 2026-05-27) is fixable
+    from inside the UI rather than requiring the user to drop to a
+    shell and run pytest manually.
+    """
+    started = codehealth.refresh_coverage_in_background()
+    if not started:
+        return jsonify({"ok": False, "started": False, "error": "coverage refresh already running"}), 409
     return jsonify({"ok": True, "started": True}), 202
 
 
