@@ -575,10 +575,10 @@ $pctUsed = if($totalMB -gt 0){[math]::Round(($usedMB/$totalMB)*100,1)}else{0}
     }
 
     speeds = mem_raw.get("Speeds", []) or []
-    if isinstance(speeds, (int, float)):
+    if isinstance(speeds, int | float):
         speeds = [speeds]
     sizes = mem_raw.get("Sizes", []) or []
-    if isinstance(sizes, (int, float)):
+    if isinstance(sizes, int | float):
         sizes = [sizes]
 
     if len(set(speeds)) > 1:
@@ -639,7 +639,7 @@ try { foreach ($tz in Get-CimInstance -Namespace root\\WMI -ClassName MSAcpi_The
 
     for t in thermal_data.get("Temperatures", []):
         tc = t.get("TempC", 0)
-        if isinstance(tc, (int, float)):
+        if isinstance(tc, int | float):
             if tc > 90:
                 critical.append(f"CPU temperature at {tc}C - CRITICALLY HIGH. Check CPU cooler.")
             elif tc > 80:
@@ -838,7 +838,7 @@ $queueCmd = (Get-Counter '\\System\\Processor Queue Length' -EA SilentlyContinue
     elif avg > 0:
         info.append(f"CPU usage at {avg}%.")
 
-    if isinstance(queue, (int, float)) and queue > 10:
+    if isinstance(queue, int | float) and queue > 10:
         warnings.append(f"Processor queue length is {int(queue)} (>10 indicates CPU bottleneck).")
 
     return cpu_data, critical, warnings, info

@@ -3304,7 +3304,7 @@ class TestDashboardSummaryCache:
         resp2 = client.get("/api/dashboard/summary")
         d = resp2.get_json()
         assert d["cache"] == "fresh"
-        assert isinstance(d.get("cache_age_s"), (int, float))
+        assert isinstance(d.get("cache_age_s"), int | float)
 
     def test_stale_cache_returns_cached_payload_and_triggers_refresh(self, client, mocker):
         """When the cache is older than TTL, the route must still return

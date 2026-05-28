@@ -58,7 +58,7 @@ _original_subprocess_run = subprocess.run
 def _summarize_cmd(args) -> str:
     """Return a short string describing the subprocess command for logging."""
     try:
-        text = " ".join(str(a) for a in args) if isinstance(args, (list, tuple)) else str(args)
+        text = " ".join(str(a) for a in args) if isinstance(args, list | tuple) else str(args)
     except Exception:  # noqa: BLE001
         return "<unprintable cmd>"
     text = text.replace("\n", " ").replace("\r", " ")
@@ -10010,7 +10010,7 @@ def warranty_data():
                 raw, _typ = winreg.QueryValueEx(mc_key, "Update Revision")
             finally:
                 winreg.CloseKey(mc_key)
-            microcode = "0x" + raw.hex().upper() if isinstance(raw, (bytes, bytearray)) else str(raw)
+            microcode = "0x" + raw.hex().upper() if isinstance(raw, bytes | bytearray) else str(raw)
         except Exception:  # noqa: BLE001
             microcode = "Unable to read"
 

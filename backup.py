@@ -506,7 +506,7 @@ def load_windows_backup_cache() -> dict:
         "cache_age_seconds": age_s,
         "versions": versions,
         "version_count": len(versions),
-        "total_size_bytes": total_size if isinstance(total_size, (int, float)) else None,
+        "total_size_bytes": total_size if isinstance(total_size, int | float) else None,
         "error": None,
     }
 
@@ -843,7 +843,7 @@ def get_file_history_state() -> dict:
     result["staging_usage_bytes"] = used
     result["staging_file_count"] = count
     max_cap = staging.get("max_capacity_bytes")
-    if isinstance(max_cap, (int, float)) and max_cap > 0:
+    if isinstance(max_cap, int | float) and max_cap > 0:
         result["staging_usage_ratio"] = round(used / max_cap, 4)
 
     # Health verdict. Worst signal wins.
