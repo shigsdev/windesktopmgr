@@ -825,7 +825,7 @@ def findings_to_backlog_entries(scan_result: dict) -> list[dict]:
             }
         )
 
-    # ── ruff ────────────────────────────────────────────────────────
+    # ── ruff (per-finding for F/S/B; rollup for style) ──────────────
     ruff = scanners.get("ruff") or {}
     for finding in ruff.get("details") or []:
         if not isinstance(finding, dict):
@@ -833,8 +833,10 @@ def findings_to_backlog_entries(scan_result: dict) -> list[dict]:
         code = (finding.get("code") or "").upper()
         m = re.match(r"^[A-Z]+", code)
         prefix = m.group(0) if m else ""
-        # Only correctness (F) + security (S) + bugbear (B) get backlogged.
-        # UP/PIE/SIM/etc. are style improvements -- don't spam.
+        # Only correctness (F) + security (S) + bugbear (B) get per-
+        # finding rows. UP/PIE/SIM/RUF (style + modernization) fall
+        # through to the rollup below -- 10 individual rows for a batch
+        # of mechanical fixes is more clutter than signal.
         if prefix not in ("F", "S", "B"):
             continue
         fpath = finding.get("file") or ""
@@ -855,6 +857,46 @@ def findings_to_backlog_entries(scan_result: dict) -> list[dict]:
                     f"add a justified `# noqa: {code}` comment."
                 ),
                 "source": "ruff",
+            }
+        )
+
+    # Style / modernization rollup. User asked 2026-05-27 why the card
+    # said "10 ruff findings (UP=10)" but zero ended up in the backlog.
+    # Answer: my filter (above) intentionally skipped them. Fix: emit
+    # ONE consolidated row for all the style-class findings rather
+    # than spamming 10 individual rows. Auto-applies as a batch with
+    # `ruff check --fix --unsafe-fixes`, so a single backlog item is
+    # the right granularity.
+    by_prefix = ruff.get("by_prefix") or {}
+    # These prefixes are "style / modernization / opinionated" -- they
+    # don't represent real bugs (pyflakes F + bandit S + bugbear B do).
+    # PT = pytest-style, SIM = simplifications, UP = pyupgrade,
+    # PIE = flake8-pie misc, RUF = ruff's own rules, C90 = mccabe complexity.
+    style_prefixes = ("UP", "PIE", "SIM", "RUF", "PT", "C90")
+    style_count = sum(by_prefix.get(p, 0) for p in style_prefixes)
+    if style_count > 0:
+        breakdown_parts = [f"{p}={by_prefix[p]}" for p in style_prefixes if by_prefix.get(p)]
+        breakdown = ", ".join(breakdown_parts)
+        # Fingerprint includes the count so a different total -> new
+        # row (visible progress), but a re-scan with the same count
+        # -> dedup. When the user fixes some but not all, they get a
+        # new row reflecting the remaining work.
+        entries.append(
+            {
+                "fingerprint": _fingerprint("ruff_style", f"count_{style_count}"),
+                "category": "Tech Debt",
+                "title": f"{style_count} ruff style/modernization findings ({breakdown})",
+                "severity": "info",
+                "priority": "P2",
+                "body": (
+                    f"ruff flagged {style_count} modernization opportunities ({breakdown}). "
+                    f"Most are mechanical (e.g. UP038: `isinstance(x, (A, B))` -> "
+                    f"`isinstance(x, A | B)`). Auto-apply the whole batch with "
+                    f"`ruff check --fix --unsafe-fixes` then spot-check the diff. "
+                    f"This is one rollup row rather than {style_count} individual rows -- "
+                    f"the dashboard card shows the per-finding details."
+                ),
+                "source": "ruff_style",
             }
         )
 

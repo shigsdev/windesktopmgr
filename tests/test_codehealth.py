@@ -675,9 +675,9 @@ class TestFindingsToBacklogEntries:
         assert entries[0]["category"] == "Code Bug"
         assert entries[0]["priority"] == "P1"
 
-    def test_ruff_modernisation_skipped(self):
-        """UP-class modernisations are style improvements, not bugs.
-        Don't spam the backlog with them."""
+    def test_ruff_modernisation_no_individual_rows(self):
+        """UP/PIE/SIM-class findings must NOT emit per-finding rows --
+        they're style fixes, not bugs (they get rolled up separately)."""
         scan = {
             "scanners": {
                 "coverage": {"level": "ok"},
@@ -685,14 +685,95 @@ class TestFindingsToBacklogEntries:
                     "details": [
                         {"code": "UP038", "message": "...", "file": "x.py", "line": 1},
                         {"code": "PIE810", "message": "...", "file": "y.py", "line": 2},
-                    ]
+                    ],
+                    "by_prefix": {"UP": 1, "PIE": 1},
                 },
                 "secrets": {"level": "ok"},
                 "tech_debt": {"details": {}},
             }
         }
         entries = codehealth.findings_to_backlog_entries(scan)
-        assert entries == []
+        assert [e for e in entries if e.get("source") == "ruff"] == []
+
+    def test_ruff_style_findings_emit_single_rollup(self):
+        """User feedback 2026-05-27: card showed 10 UP findings but
+        zero in the backlog because the per-finding filter skipped
+        them. Fix: ONE consolidated rollup row covers the batch."""
+        scan = {
+            "scanners": {
+                "coverage": {"level": "ok"},
+                "ruff": {
+                    "details": [{"code": "UP038", "message": "...", "file": "x.py", "line": 1}],
+                    "by_prefix": {"UP": 10},
+                },
+                "secrets": {"level": "ok"},
+                "tech_debt": {"details": {}},
+            }
+        }
+        entries = codehealth.findings_to_backlog_entries(scan)
+        rollups = [e for e in entries if e.get("source") == "ruff_style"]
+        assert len(rollups) == 1
+        r = rollups[0]
+        assert r["priority"] == "P2"
+        assert r["severity"] == "info"
+        assert "10" in r["title"]
+        assert "UP=10" in r["title"]
+        assert "ruff check --fix --unsafe-fixes" in r["body"]
+
+    def test_ruff_style_rollup_fingerprint_changes_with_count(self):
+        """When the count changes (user fixed some), a NEW rollup row
+        gets emitted so the user sees progress in the backlog rather
+        than the old row that's now wrong."""
+        scan_10 = {
+            "scanners": {
+                "coverage": {"level": "ok"},
+                "ruff": {"details": [], "by_prefix": {"UP": 10}},
+                "secrets": {"level": "ok"},
+                "tech_debt": {"details": {}},
+            }
+        }
+        scan_5 = {
+            "scanners": {
+                "coverage": {"level": "ok"},
+                "ruff": {"details": [], "by_prefix": {"UP": 5}},
+                "secrets": {"level": "ok"},
+                "tech_debt": {"details": {}},
+            }
+        }
+        e10 = next(e for e in codehealth.findings_to_backlog_entries(scan_10) if e.get("source") == "ruff_style")
+        e5 = next(e for e in codehealth.findings_to_backlog_entries(scan_5) if e.get("source") == "ruff_style")
+        assert e10["fingerprint"] != e5["fingerprint"]
+
+    def test_ruff_no_style_findings_no_rollup(self):
+        scan = {
+            "scanners": {
+                "coverage": {"level": "ok"},
+                "ruff": {"details": [], "by_prefix": {}},
+                "secrets": {"level": "ok"},
+                "tech_debt": {"details": {}},
+            }
+        }
+        entries = codehealth.findings_to_backlog_entries(scan)
+        assert [e for e in entries if e.get("source") == "ruff_style"] == []
+
+    def test_ruff_mixed_per_finding_and_rollup_coexist(self):
+        """An F-class bug + a batch of UP findings -> both surface:
+        one per-finding row + one rollup row."""
+        scan = {
+            "scanners": {
+                "coverage": {"level": "ok"},
+                "ruff": {
+                    "details": [{"code": "F401", "message": "unused", "file": "a.py", "line": 1}],
+                    "by_prefix": {"F": 1, "UP": 10},
+                },
+                "secrets": {"level": "ok"},
+                "tech_debt": {"details": {}},
+            }
+        }
+        entries = codehealth.findings_to_backlog_entries(scan)
+        sources = [e["source"] for e in entries]
+        assert sources.count("ruff") == 1
+        assert sources.count("ruff_style") == 1
 
     def test_secrets_critical_emits_p0(self):
         scan = {
