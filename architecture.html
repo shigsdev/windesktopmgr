@@ -193,7 +193,7 @@
       <button type="button" onclick="exportPDF()" title="Open the browser print dialog — choose 'Save as PDF'" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--yellow);border:none;cursor:pointer;border-right:1px solid var(--border)">Export PDF</button>
       <button type="button" onclick="exportHTML()" title="Download a self-contained copy of this diagram" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--blue);border:none;cursor:pointer">Export HTML</button>
     </div>
-    <div class="badge" style="color:var(--green);border-color:#00e67633">2,613 tests · 86% coverage</div>
+    <div class="badge" style="color:var(--green);border-color:#00e67633">2,637 tests · 86% coverage</div>
     <div class="badge">
       <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
     </div>
@@ -282,7 +282,7 @@
       <span style="font-size:9px;color:var(--cyan);font-weight:700;letter-spacing:.08em">FETCH / POST</span>
       <svg width="12" height="20"><polygon points="1,6 6,0 11,6" fill="var(--purple)"/><line x1="6" y1="6" x2="6" y2="20" stroke="var(--purple)" stroke-width="2"/></svg>
     </div>
-    <span style="font-size:9px;color:var(--muted);margin-left:12px">HTTP JSON · 76 API endpoints · localhost:5000</span>
+    <span style="font-size:9px;color:var(--muted);margin-left:12px">HTTP JSON · 77 API endpoints · localhost:5000</span>
   </div>
 
   <!-- ── LAYER 2: FLASK BACKEND ───────────────────────────────── -->
@@ -729,7 +729,7 @@
           </div>
           <div class="fs-chip">
             <div class="fs-title">codehealth.py</div>
-            <div class="fs-sub">Utilities tab code-health scans (#51 PR-1+2) · ~520 lines · 4 scanners: coverage (existing .coverage via coverage CLI JSON exporter; staleness detection demotes severity when >3d old) · ruff (full repo, prefix categorisation S/F/B/UP) · secrets (scripts/check_repo_secrets.py + redaction-preserving) · tech-debt (TODO/FIXME walk + >5k-line file flag) · severity ladder ok/info/warning/critical · background thread guard against double-runs · auto-trigger on tray boot when state >7 days stale · PR-2 refresh-coverage button runs pytest --cov -n auto in a worker thread + auto-rescan (45s)</div>
+            <div class="fs-sub">Utilities tab code-health scans (#51 PR-1+2 sub-tasks A+B) · ~970 lines · 4 scanners: coverage (existing .coverage via coverage CLI JSON exporter; staleness detection demotes severity when >3d old) · ruff (full repo, prefix categorisation S/F/B/UP) · secrets (scripts/check_repo_secrets.py + redaction-preserving) · tech-debt (TODO/FIXME walk + >5k-line file flag) · severity ladder ok/info/warning/critical · background thread guard against double-runs · auto-trigger on tray boot when state >7 days stale · refresh-coverage button (pytest --cov -n auto in a worker thread + auto-rescan, ~45s, --basetemp isolation against xdist tmp_path races) · scan findings auto-append to project backlog with SHA-256 fingerprint dedup (filters: only warning/critical, skips UP/PIE noise and stale-coverage false positives)</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">applogging.py</div>
@@ -807,7 +807,7 @@
 
   <!-- ── LAYER 7: TEST SUITE ──────────────────────────────────── -->
   <div class="row row-tests" id="layer-tests">
-    <div class="row-label">🧪 Test Suite — 2,613 tests · pytest · 86% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
+    <div class="row-label">🧪 Test Suite — 2,637 tests · pytest · 86% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
       <div class="test-chip">
         <div class="test-title">test_routes.py</div>
@@ -903,7 +903,7 @@
       </div>
       <div class="test-chip">
         <div class="test-title">test_codehealth.py</div>
-        <div class="test-sub">48 tests · state persistence (load/save/is_stale w/ unparseable ts) · 4 scanners (coverage threshold ladder + staleness-demotion · ruff prefix-routing F=warning S=critical UP=info · secrets clean+leak+unparseable-output · tech-debt TODO walk + large-file flag + generated-dir skip) · _worst_level rollup · run_in_background double-run guard · maybe_run_on_boot fresh-skip + stale-fire · refresh-coverage pytest worker (success + pytest-failed-but-coverage-written + internal error + timeout + followup scan_all + double-run guard) · 3 routes (/status, /run 202+409, /refresh-coverage 202+409)</div>
+        <div class="test-sub">72 tests · state persistence · 4 scanners (coverage + staleness · ruff prefix-routing · secrets · tech-debt) · _worst_level rollup · background-run guards · maybe_run_on_boot · refresh-coverage pytest worker · 4 routes (/status, /run, /refresh-coverage, /reset-emitted) · backlog auto-append (findings_to_backlog_entries severity filter + ruff S→P0 / F→P1 / UP-skipped + secrets P0 + large-file P2 + stale-coverage suppressed) · append_findings_to_backlog (priority-key anchor insertion + sequential numbering + dedup + missing-file graceful + no-anchor fallback) · emitted-fingerprint persistence (load/save/reset + malformed-json tolerance) · integration test _run_and_save chains scan→state→backlog</div>
       </div>
     </div>
     <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">
@@ -1163,7 +1163,7 @@
           <div style="flex:0 0 auto;min-width:120px;background:#ff80ab0a;border:1px solid #ff80ab44;border-radius:8px;padding:10px 12px;text-align:center">
             <div style="font-size:16px;margin-bottom:4px">🧪</div>
             <div style="color:var(--pink);font-weight:700;font-size:10px">3. PYTEST</div>
-            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">2,613 tests · 86% cov · ~60s</div>
+            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">2,637 tests · 86% cov · ~60s</div>
           </div>
           <div style="display:flex;align-items:center;padding:0 4px;color:var(--pink);font-size:14px">→</div>
 
@@ -1305,7 +1305,7 @@
 
 
 <div class="footer">
-  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 2,613 tests · ~21,480 lines</span>
+  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 2,637 tests · ~21,480 lines</span>
   <span>github.com/shigsdev/windesktopmgr · Updated 2026-05-18</span>
 </div>
 

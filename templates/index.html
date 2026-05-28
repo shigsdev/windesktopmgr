@@ -7981,6 +7981,26 @@ async function util_loadCodeHealth(opts) {
   ).join("");
 }
 
+async function util_resetEmitted() {
+  // Clears the dedup memory so the next scan re-emits all current
+  // findings to the project backlog. Useful after the user has
+  // hand-pruned the auto-generated rows or wants a "rebuild from
+  // scratch" run.
+  if (!confirm("Reset emitted-findings memory? The next scan will re-append every current finding to the project backlog (deduped against the same memory, so reruns after that won't re-add)." )) {
+    return;
+  }
+  try {
+    const r = await fetch("/api/codehealth/reset-emitted", {method:"POST"});
+    if (!r.ok) {
+      alert("Reset failed: " + r.status);
+      return;
+    }
+    alert("✅ Emitted-findings memory cleared. Click ▶ Scan now to re-emit.");
+  } catch (e) {
+    alert("Reset failed: " + e.message);
+  }
+}
+
 async function util_refreshCoverage() {
   // Re-runs pytest --cov against the primary repo so .coverage gets
   // freshened. The backend kicks off a thread; we poll status until
@@ -11303,7 +11323,10 @@ function renderSystemInfo(d, upgrades) {
     <div id="util-codehealth">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
         <div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)">Code Health</div>
-        <div style="font-size:10px;color:var(--muted)">Coverage · ruff · secrets · tech-debt — runs on demand and on tray boot if &gt;7 days stale</div>
+        <div style="font-size:10px;color:var(--muted)">Coverage · ruff · secrets · tech-debt — runs on demand and on tray boot if &gt;7 days stale · findings auto-append to project backlog (deduped)</div>
+        <button onclick="util_resetEmitted()"
+                title="Clear the dedup memory so findings re-emit to backlog on next scan. Use if you've manually cleaned up the auto-generated rows."
+                style="margin-left:auto;background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:10px;font-family:var(--font-mono)">↺ Reset emitted</button>
       </div>
       <div id="util-ch-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px">Loading…</div>
       <div id="util-ch-empty" style="display:none;padding:20px;text-align:center;font-size:12px;color:var(--muted);border:1px dashed var(--border);border-radius:8px;margin-top:8px">

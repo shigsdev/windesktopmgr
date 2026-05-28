@@ -40,6 +40,7 @@ Severity ladder (UI uses this to colour the cards):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -59,6 +60,18 @@ except Exception:  # noqa: BLE001
 
 _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(_REPO_ROOT, "codehealth_state.json")
+# Tracks which scan-finding fingerprints have already been appended to
+# the project backlog -- prevents re-appending the same finding on
+# every rescan. Separate file from STATE_FILE so a state reset doesn't
+# wipe the dedup memory.
+EMITTED_FILE = os.path.join(_REPO_ROOT, "codehealth_emitted.json")
+
+# Path to the project backlog markdown. Lives in Claude project memory
+# outside the repo. Overridable via env var so tests / CI can redirect.
+BACKLOG_PATH = os.environ.get(
+    "WINDESKTOPMGR_BACKLOG_PATH",
+    os.path.expanduser(r"~\.claude\projects\C--shigsapps-windesktopmgr\memory\project_backlog.md"),
+)
 
 # Auto-scan on tray boot if state is older than this. PR-2 makes this
 # configurable via the UI; PR-1 hardcodes a week.
@@ -520,6 +533,19 @@ def _run_and_save() -> None:
         result = scan_all()
         save_state(result)
         _log.info("codehealth scan complete -- worst level: %s", result.get("worst_level"))
+        # PR-2 sub-task B: turn findings into backlog rows. Best-effort
+        # -- backlog file lives outside the repo (Claude project memory)
+        # so it might be missing on a different machine; skip silently
+        # in that case rather than failing the scan.
+        try:
+            emit_result = append_findings_to_backlog(result)
+            _log.info(
+                "codehealth backlog: %d appended, %d skipped (already emitted)",
+                emit_result.get("appended", 0),
+                emit_result.get("skipped", 0),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("codehealth backlog append failed (non-fatal): %s", exc)
     except Exception as exc:  # noqa: BLE001
         _log.exception("codehealth scan crashed: %s", exc)
     finally:
@@ -694,3 +720,308 @@ def refresh_coverage_in_background() -> bool:
     thread = threading.Thread(target=_refresh_coverage_and_rescan, daemon=True, name="CodeHealthCoverageRefresh")
     thread.start()
     return True
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Scan findings -> project backlog (#51 PR-2 sub-task B, 2026-05-27)
+#
+# User asked: "if we find things on the scans, automated or manual,
+# it should add them to the backlog". This turns scan results into
+# trackable backlog rows so a real-bug ruff finding or a secret leak
+# doesn't get scrolled past in a card grid -- it becomes a P0 line
+# item in project memory.
+#
+# Dedup: each finding hashes to a stable fingerprint based on its
+# identity (category + the specific bug location / file / rule code).
+# Emitted fingerprints persist in codehealth_emitted.json so reruns
+# don't pile up duplicate rows.
+#
+# Filter: only WARNING and CRITICAL findings get a row by default.
+# Info-level signals (TODOs, coverage ≥80%, UP-class ruff modernisations)
+# would spam the backlog with low-value rows. Tech-debt large-file
+# findings get an info-level row because they're stable + actionable
+# at a project-level (split this file vs leave the TODO).
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _fingerprint(category: str, ident: str) -> str:
+    """Stable 12-char hex fingerprint for a finding. Used to dedupe
+    repeated emissions of the same finding across scan reruns."""
+    h = hashlib.sha256(f"{category}::{ident}".encode()).hexdigest()
+    return h[:12]
+
+
+def load_emitted_fingerprints() -> set[str]:
+    """Read the set of fingerprints we've already pushed to the backlog.
+    Returns empty set if the file is missing or malformed."""
+    if not os.path.exists(EMITTED_FILE):
+        return set()
+    try:
+        with open(EMITTED_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and isinstance(data.get("fingerprints"), list):
+            return {str(x) for x in data["fingerprints"]}
+        if isinstance(data, list):
+            return {str(x) for x in data}
+        return set()
+    except (OSError, json.JSONDecodeError):
+        return set()
+
+
+def save_emitted_fingerprints(fingerprints: set[str]) -> bool:
+    payload = {
+        "updated_at": _now_iso(),
+        "fingerprints": sorted(fingerprints),
+    }
+    return _atomic_write_json(EMITTED_FILE, payload)
+
+
+def findings_to_backlog_entries(scan_result: dict) -> list[dict]:
+    """Convert a scan_all() result into a list of backlog-worthy entries.
+
+    Each entry::
+
+        {
+          "fingerprint": "abc123def456",
+          "category": "Security|Code Bug|Code Health|Tech Debt",
+          "title": "<one-line summary>",
+          "severity": "info|warning|critical",
+          "priority": "P0|P1|P2",
+          "body": "<longer description>",
+          "source": "ruff|secrets|coverage|tech_debt"
+        }
+
+    Filters:
+      - Coverage: only emit when level is warning/critical AND data is
+        fresh (don't fire on stale .coverage -- false signal)
+      - ruff: only F-prefix (correctness) and S-prefix (security);
+        skip UP/PIE/etc. modernisation noise
+      - secrets: always emit at critical
+      - tech_debt: emit large-file flags (info-level), skip TODO list
+        (too noisy + most TODOs are intentional)
+    """
+    entries: list[dict] = []
+    scanners = scan_result.get("scanners", {}) if isinstance(scan_result, dict) else {}
+
+    # ── Coverage ────────────────────────────────────────────────────
+    cov = scanners.get("coverage") or {}
+    cov_level = cov.get("level")
+    cov_stale = bool(cov.get("is_stale"))
+    if cov_level in ("warning", "critical") and not cov_stale:
+        pct = cov.get("count", 0)
+        entries.append(
+            {
+                "fingerprint": _fingerprint("coverage", f"below_80_{cov_level}"),
+                "category": "Code Health",
+                "title": f"Test coverage at {pct}% (below 80% target)",
+                "severity": cov_level,
+                "priority": "P1" if cov_level == "warning" else "P0",
+                "body": (
+                    f"Coverage scanner detected {pct}% line coverage. "
+                    f"Action: identify uncovered files via `pytest --cov-report=term-missing` "
+                    f"and add tests for the worst offenders."
+                ),
+                "source": "coverage",
+            }
+        )
+
+    # ── ruff ────────────────────────────────────────────────────────
+    ruff = scanners.get("ruff") or {}
+    for finding in ruff.get("details") or []:
+        if not isinstance(finding, dict):
+            continue
+        code = (finding.get("code") or "").upper()
+        m = re.match(r"^[A-Z]+", code)
+        prefix = m.group(0) if m else ""
+        # Only correctness (F) + security (S) + bugbear (B) get backlogged.
+        # UP/PIE/SIM/etc. are style improvements -- don't spam.
+        if prefix not in ("F", "S", "B"):
+            continue
+        fpath = finding.get("file") or ""
+        fline = finding.get("line") or 0
+        msg = finding.get("message") or ""
+        ident = f"{code}:{fpath}:{fline}"
+        is_security = prefix == "S"
+        entries.append(
+            {
+                "fingerprint": _fingerprint("ruff", ident),
+                "category": "Security" if is_security else "Code Bug",
+                "title": f"ruff {code} in {fpath}:{fline} — {msg[:80]}",
+                "severity": "critical" if is_security else "warning",
+                "priority": "P0" if is_security else "P1",
+                "body": (
+                    f"ruff rule `{code}` flagged {fpath}:{fline}. Message: {msg}. "
+                    f"Resolve by editing the file or, if it's a false positive, "
+                    f"add a justified `# noqa: {code}` comment."
+                ),
+                "source": "ruff",
+            }
+        )
+
+    # ── secrets ─────────────────────────────────────────────────────
+    secrets = scanners.get("secrets") or {}
+    if secrets.get("level") == "critical":
+        # Count goes into the fingerprint so a NEW leak triggers a new
+        # row even though "secrets detected" is the same shape. Slight
+        # over-emission risk but security >> dedup-precision.
+        count = secrets.get("count", 0)
+        entries.append(
+            {
+                "fingerprint": _fingerprint("secrets", f"count_{count}"),
+                "category": "Security",
+                "title": f"{count} potential secret(s) detected by repo scanner",
+                "severity": "critical",
+                "priority": "P0",
+                "body": (
+                    "Output is redacted by the scanner. Run "
+                    "`python scripts/check_repo_secrets.py --all` to see the matched lines "
+                    "with redacted token values. Follow docs/security/git-credentials.md "
+                    "for the rotation playbook."
+                ),
+                "source": "secrets",
+            }
+        )
+
+    # ── tech debt: large files ──────────────────────────────────────
+    tech = scanners.get("tech_debt") or {}
+    details = tech.get("details") or {}
+    if isinstance(details, dict):
+        for lf in details.get("large_files") or []:
+            if not isinstance(lf, dict):
+                continue
+            fname = lf.get("file") or ""
+            lines = lf.get("lines") or 0
+            entries.append(
+                {
+                    "fingerprint": _fingerprint("tech_debt", f"large:{fname}"),
+                    "category": "Tech Debt",
+                    "title": f"{fname} is {lines:,} lines (target <5,000)",
+                    "severity": "info",
+                    "priority": "P2",
+                    "body": (
+                        f"File `{fname}` is {lines:,} lines. Past 5,000 lines, "
+                        f"split into focused modules so future grep/diff/review work doesn't "
+                        f"thrash. Suggested split criteria: pure parsers, route handlers, "
+                        f"orchestration, dashboard surface."
+                    ),
+                    "source": "tech_debt",
+                }
+            )
+
+    return entries
+
+
+def _next_backlog_number(text: str) -> int:
+    """Find the highest existing `| N |` row number in the backlog and
+    return N+1. Defaults to 100 if no numbered rows exist (very unusual
+    but handle gracefully)."""
+    nums = re.findall(r"^\| (\d+) \|", text, re.MULTILINE)
+    if not nums:
+        return 100
+    return max(int(n) for n in nums) + 1
+
+
+def _format_backlog_row(num: int, entry: dict, today: str) -> str:
+    """Produce a single Markdown table row matching the existing
+    backlog schema (`| N | Feature | Effort | Priority |`)."""
+    sev = entry["severity"]
+    sev_emoji = {"critical": "🚨", "warning": "⚠", "info": "🔍"}.get(sev, "🔍")
+    title = (
+        f"**{sev_emoji} Scan finding: {entry['title']}** "
+        f"Auto-detected by codehealth on {today}. {entry['body']} "
+        f"Severity: {sev}. Source: {entry['source']}. "
+        f"Fingerprint: `{entry['fingerprint']}`. "
+        f"_Resolve by fixing the underlying issue; the next scan will "
+        f"NOT re-emit (dedup by fingerprint). Move this row to Done "
+        f"when shipped._"
+    )
+    # Escape pipe characters so they don't break the markdown table.
+    title = title.replace("|", r"\|")
+    return f"| {num} | {title} | Small | {entry['priority']} |"
+
+
+def append_findings_to_backlog(scan_result: dict, backlog_path: str | None = None) -> dict:
+    """Append new scan findings (not already emitted) to the project
+    backlog markdown. Returns a result dict::
+
+        {"ok": bool,
+         "appended": int,
+         "skipped": int,           # already-emitted count
+         "fingerprints": [<new>],
+         "backlog_path": str,
+         "error": str | None}
+
+    Best-effort: if the backlog file doesn't exist (e.g. fresh
+    machine without Claude project memory), returns ok=False with a
+    descriptive error rather than raising.
+    """
+    path = backlog_path or BACKLOG_PATH
+    result: dict[str, Any] = {
+        "ok": False,
+        "appended": 0,
+        "skipped": 0,
+        "fingerprints": [],
+        "backlog_path": path,
+        "error": None,
+    }
+    if not os.path.exists(path):
+        result["error"] = f"backlog not found at {path}"
+        return result
+
+    candidates = findings_to_backlog_entries(scan_result)
+    emitted = load_emitted_fingerprints()
+    new_entries = [e for e in candidates if e["fingerprint"] not in emitted]
+    result["skipped"] = len(candidates) - len(new_entries)
+    if not new_entries:
+        result["ok"] = True
+        return result
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError as exc:
+        result["error"] = f"backlog read failed: {exc}"
+        return result
+
+    next_num = _next_backlog_number(text)
+    today = datetime.now().strftime("%Y-%m-%d")
+    new_rows = [_format_backlog_row(next_num + i, entry, today) for i, entry in enumerate(new_entries)]
+    block = "\n".join(new_rows) + "\n"
+
+    # Insert before "**Priority key:**" anchor (lives at the bottom of
+    # the Backlog table) so new rows land inside the table, not after
+    # the priority key. Falls back to appending if anchor is missing.
+    anchor = "**Priority key:**"
+    text = text.replace(anchor, block + "\n" + anchor, 1) if anchor in text else text.rstrip() + "\n\n" + block
+
+    # Atomic write so a crash mid-write doesn't corrupt the backlog.
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except OSError as exc:
+        result["error"] = f"backlog write failed: {exc}"
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        return result
+
+    # Persist the new fingerprints so reruns don't re-emit.
+    emitted.update(e["fingerprint"] for e in new_entries)
+    save_emitted_fingerprints(emitted)
+
+    result["ok"] = True
+    result["appended"] = len(new_entries)
+    result["fingerprints"] = [e["fingerprint"] for e in new_entries]
+    return result
+
+
+def reset_emitted_fingerprints() -> bool:
+    """Wipe the emitted-fingerprints memory so the next scan will
+    re-emit findings that were previously appended. Used by the
+    "Re-emit findings" admin action / when the user has manually
+    cleaned up old rows and wants the scanner to repopulate."""
+    return save_emitted_fingerprints(set())
