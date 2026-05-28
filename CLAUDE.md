@@ -9,6 +9,10 @@ No step may be skipped. No exceptions.
 1. Code the change
 2. ruff check + format       →  python -m ruff check . && python -m ruff format .
 3. pytest                    →  python -m pytest tests/ -n auto   (parallel, ~48s)
+3a. /code-review             →  invoke the code-review skill against the pending diff.
+                                High-priority findings MUST be resolved or justified
+                                in the commit message BEFORE step 5. (Plugin: code-
+                                review@claude-plugins-official, installed 2026-05-28.)
 4. Update architecture.html  →  REQUIRED if any of the triggers below apply
 5. git commit + push branch  →  open PR, merge to main (pre-commit + pre-push hooks)
 6. deploy + verify           →  pull main into the primary repo, restart the tray,
@@ -194,7 +198,31 @@ pre-commit install
 pre-commit run --all-files
 ```
 
-### 4. What each tool catches
+### 4. /code-review (added 2026-05-28)
+
+After pytest passes and BEFORE committing, invoke the code-review skill
+against the pending diff:
+
+```
+/code-review
+```
+
+(Plugin: `code-review@claude-plugins-official`, installed at user scope.)
+
+The skill reads recently modified code with confidence-based filtering
+and reports only high-priority issues — logic bugs, security
+vulnerabilities, missed edge cases, broken patterns — that ruff and
+pytest don't catch. Each finding MUST be either:
+
+- **Resolved** in a follow-up commit on the same branch before merge, OR
+- **Justified** inline (one-sentence reason in the commit body explaining
+  why the finding is a false positive or an accepted trade-off).
+
+NEVER merge a PR with unresolved + unjustified high-priority code-review
+findings. The skill is the second pair of eyes that catches what pytest
+green-checked through.
+
+### 5. What each tool catches
 
 | Tool | Catches |
 |------|---------|
@@ -204,6 +232,7 @@ pre-commit run --all-files
 | **ruff B** | Common bugs (mutable defaults, broad exceptions) |
 | **ruff SIM** | Unnecessary complexity, duplicate code patterns |
 | **ruff UP** | Python version upgrades (use modern syntax) |
+| **/code-review** | Logic bugs, security gaps, edge cases, broken patterns ruff misses |
 
 ---
 
@@ -470,6 +499,7 @@ Phase 3  Coding Standards
 Phase 4  Quality Gates
   [ ] ruff check + format
   [ ] pytest (all pass, ≥80% coverage)
+  [ ] /code-review (high-priority findings resolved or justified)
   [ ] pre-commit hooks passed
   [ ] python dev.py verify (post-restart live check)
 Phase 5  Tests
