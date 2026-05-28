@@ -342,6 +342,44 @@ class TestGetFileHistoryState:
         assert state["health"]["level"] == "info"
         assert "need elevation" in state["health"]["reason"].lower()
 
+    def test_fresh_catalog_demotes_missing_store_to_info(self, backup_tmp, tmp_path):
+        """Cross-check guard 2026-05-27: even when the store probe says
+        missing, a fresh catalog mtime proves File History IS writing.
+        Demote critical -> info so the user doesn't see a panic message
+        against a working backup. The user's exact failure: catalog age
+        was 0.04 days but the store probe falsely fired critical."""
+        drive = tmp_path / "drive"
+        drive.mkdir()
+        # NOTE: do NOT create the store folder -- probe will return False.
+        xml = _REAL_FH_XML.replace("<TargetUrl>E:\\</TargetUrl>", f"<TargetUrl>{drive}\\</TargetUrl>")
+        backup_tmp["fh_config"].write_text(xml, encoding="utf-8")
+        # Create a FRESH catalog (just-now mtime) so backups are clearly
+        # happening.
+        backup_tmp["fh_catalog"].write_bytes(b"x" * 1024)
+        state = backup.get_file_history_state()
+        # Probe still says False -- we didn't make the folder.
+        assert state["target_backup_store_exists"] is False
+        # But health is info, NOT critical, because catalog is fresh.
+        assert state["health"]["level"] == "info", (
+            f"fresh catalog should demote store-missing to info; got {state['health']}"
+        )
+        assert "backups are running" in state["health"]["reason"].lower()
+
+    def test_missing_store_with_stale_catalog_still_critical(self, backup_tmp, tmp_path):
+        """Inverse of the above: when BOTH signals agree (store probe
+        says missing AND catalog is stale or absent), fire critical.
+        The original PR #50 use-case must still work."""
+        drive = tmp_path / "drive"
+        drive.mkdir()
+        xml = _REAL_FH_XML.replace("<TargetUrl>E:\\</TargetUrl>", f"<TargetUrl>{drive}\\</TargetUrl>")
+        backup_tmp["fh_config"].write_text(xml, encoding="utf-8")
+        # No catalog file at all -- catalog_age_days is None -> firing
+        # critical preserved.
+        state = backup.get_file_history_state()
+        assert state["target_backup_store_exists"] is False
+        assert state["health"]["level"] == "critical"
+        assert "missing" in state["health"]["reason"].lower()
+
     def test_healthy_when_target_and_store_exist(self, backup_tmp, tmp_path):
         drive = tmp_path / "drive"
         store = drive / "higs7" / "SHIGS78-PC24" / "Data"
