@@ -131,6 +131,48 @@ class TestScanCoverage:
         result = codehealth.scan_coverage()
         assert result["ok"] is False
 
+    def test_stale_coverage_demotes_severity_and_tags_summary(self, ch_tmp, mocker, monkeypatch):
+        """User report 2026-05-27: card showed '57.1% (warning)' against a
+        16-day-old .coverage file. Stale data must not drive severity --
+        downgrade to info and tag the summary as stale so the user knows
+        not to trust the number."""
+        import os
+        import time
+
+        cov_path = ch_tmp["tmp"] / ".coverage"
+        cov_path.write_bytes(b"")
+        # Set the file's mtime to 10 days ago.
+        ten_days_ago = time.time() - (10 * 86400)
+        os.utime(cov_path, (ten_days_ago, ten_days_ago))
+        monkeypatch.setattr(codehealth, "_REPO_ROOT", str(ch_tmp["tmp"]))
+        mock_proc = mocker.MagicMock()
+        mock_proc.returncode = 0
+        # Would normally be 'warning' at 57.1% -- but staleness demotes to info.
+        mock_proc.stdout = json.dumps({"totals": {"percent_covered": 57.1}, "files": {}})
+        mocker.patch("codehealth.subprocess.run", return_value=mock_proc)
+        result = codehealth.scan_coverage()
+        assert result["is_stale"] is True
+        assert result["level"] == "info", f"stale .coverage must NOT drive warning/critical; got {result['level']}"
+        assert "stale" in result["summary"].lower()
+        assert "57.1%" in result["summary"]  # number still shown
+        assert result["coverage_age_days"] is not None and result["coverage_age_days"] >= 9.5
+
+    def test_fresh_coverage_uses_real_severity(self, ch_tmp, mocker, monkeypatch):
+        """The inverse: a fresh .coverage file with the same 57.1% MUST
+        fire warning. Staleness is the override -- when data is fresh,
+        the threshold ladder applies normally."""
+        cov_path = ch_tmp["tmp"] / ".coverage"
+        cov_path.write_bytes(b"")  # mtime = now -> NOT stale
+        monkeypatch.setattr(codehealth, "_REPO_ROOT", str(ch_tmp["tmp"]))
+        mock_proc = mocker.MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = json.dumps({"totals": {"percent_covered": 57.1}, "files": {}})
+        mocker.patch("codehealth.subprocess.run", return_value=mock_proc)
+        result = codehealth.scan_coverage()
+        assert result["is_stale"] is False
+        assert result["level"] == "warning"
+        assert "stale" not in result["summary"].lower()
+
 
 # ─── scan_ruff ──────────────────────────────────────────────────────
 

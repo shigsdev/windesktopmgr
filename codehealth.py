@@ -168,9 +168,25 @@ def _empty_result(name: str, error: str) -> dict:
     }
 
 
+COVERAGE_STALE_DAYS = 3
+"""If .coverage hasn't been touched in this many days, the percentage
+is treated as stale -- the card shows the number with a (Xd old) tag
+AND the severity is downgraded so we don't fire warning/critical
+against historical data. PR-2's "Refresh coverage" button will let
+the user trigger a fresh pytest --cov run from the UI."""
+
+
 def scan_coverage() -> dict:
     """Read the existing .coverage file via the coverage CLI's JSON
     exporter. Does NOT re-run pytest (~48s) -- that's the PR-2 button.
+
+    Staleness handling (added 2026-05-27 after user report): the
+    .coverage file in the primary repo gets stale when test runs
+    happen in worktrees (which is the standard dev flow). A 16-day-
+    old 57.1% reading misled the user into thinking coverage had
+    dropped. Fix: if .coverage mtime is older than COVERAGE_STALE_DAYS,
+    report the number with explicit ``stale`` framing AND demote the
+    severity (don't fire warning/critical against historical data).
     """
     started = datetime.now()
     cov_file = os.path.join(_REPO_ROOT, ".coverage")
@@ -187,6 +203,16 @@ def scan_coverage() -> dict:
             "duration_ms": int((finished - started).total_seconds() * 1000),
             "error": ".coverage file not found",
         }
+
+    # Capture mtime BEFORE running the exporter (coverage json may
+    # touch the file in some configurations -- safer to read first).
+    try:
+        cov_mtime = datetime.fromtimestamp(os.path.getmtime(cov_file))
+        cov_age_days = (datetime.now() - cov_mtime).total_seconds() / 86400.0
+    except OSError:
+        cov_mtime = None
+        cov_age_days = None
+
     try:
         proc = subprocess.run(
             ["python", "-m", "coverage", "json", "-o", "-", "--quiet"],
@@ -217,23 +243,40 @@ def scan_coverage() -> dict:
         ),
         key=lambda x: x["percent"],
     )[:5]
-    if pct >= 80:
+
+    is_stale = cov_age_days is not None and cov_age_days >= COVERAGE_STALE_DAYS
+
+    if is_stale:
+        # Don't trust a stale number for severity assignment.  Show it
+        # but tag as info -- the user knows it's historical and can
+        # refresh via PR-2's button (or by running pytest manually).
+        level = "info"
+        summary = (
+            f"{pct:.1f}% line coverage (stale -- last updated {cov_age_days:.1f}d ago; run pytest --cov to refresh)"
+        )
+    elif pct >= 80:
         level = "ok"
+        summary = f"{pct:.1f}% line coverage"
     elif pct >= 50:
         level = "warning"
+        summary = f"{pct:.1f}% line coverage"
     else:
         level = "critical"
+        summary = f"{pct:.1f}% line coverage"
     finished = datetime.now()
     return {
         "ok": True,
         "level": level,
         "count": int(pct),  # integer % for sort/threshold logic
-        "summary": f"{pct:.1f}% line coverage",
+        "summary": summary,
         "details": worst,
         "started_at": started.isoformat(timespec="seconds"),
         "finished_at": finished.isoformat(timespec="seconds"),
         "duration_ms": int((finished - started).total_seconds() * 1000),
         "error": None,
+        "coverage_mtime": cov_mtime.isoformat(timespec="seconds") if cov_mtime else None,
+        "coverage_age_days": round(cov_age_days, 2) if cov_age_days is not None else None,
+        "is_stale": is_stale,
     }
 
 
