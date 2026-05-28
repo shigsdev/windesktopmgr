@@ -13,6 +13,13 @@ No step may be skipped. No exceptions.
                                 High-priority findings MUST be resolved or justified
                                 in the commit message BEFORE step 5. (Plugin: code-
                                 review@claude-plugins-official, installed 2026-05-28.)
+3b. /code-simplifier         →  RECOMMENDED for refactor-heavy PRs (>200 LOC, dense
+                                new logic, or "tidy up the surrounding code" intent).
+                                Optional for small focused changes. Findings are
+                                suggestions, not gates -- accept or reject per
+                                judgement; document accepted simplifications in the
+                                commit body. (Plugin: code-simplifier@claude-plugins-
+                                official, installed 2026-05-28.)
 4. Update architecture.html  →  REQUIRED if any of the triggers below apply
 5. git commit + push branch  →  open PR, merge to main (pre-commit + pre-push hooks)
 6. deploy + verify           →  pull main into the primary repo, restart the tray,
@@ -222,7 +229,28 @@ NEVER merge a PR with unresolved + unjustified high-priority code-review
 findings. The skill is the second pair of eyes that catches what pytest
 green-checked through.
 
-### 5. What each tool catches
+### 5. /code-simplifier (added 2026-05-28, OPTIONAL)
+
+For refactor-heavy PRs (>200 LOC, dense new logic, or "tidy up the
+surrounding code" intent), invoke after pytest passes:
+
+```
+/code-simplifier
+```
+
+(Plugin: `code-simplifier@claude-plugins-official`, installed at user
+scope.)
+
+The skill suggests clarity / consistency / maintainability improvements
+WITHOUT changing functionality. Findings are SUGGESTIONS, not gates --
+accept or reject per judgement. Accepted simplifications should be
+documented in the commit body so the reviewer knows what changed and why.
+
+Skip for small focused changes (<50 LOC, single function, bug fixes) --
+the overhead-to-benefit ratio isn't there. Use for: new module / new
+feature / cleanup PR / "this file got messy" follow-up.
+
+### 6. What each tool catches
 
 | Tool | Catches |
 |------|---------|
@@ -233,6 +261,7 @@ green-checked through.
 | **ruff SIM** | Unnecessary complexity, duplicate code patterns |
 | **ruff UP** | Python version upgrades (use modern syntax) |
 | **/code-review** | Logic bugs, security gaps, edge cases, broken patterns ruff misses |
+| **/code-simplifier** | Clarity / consistency / maintainability — suggestions, not gates |
 
 ---
 

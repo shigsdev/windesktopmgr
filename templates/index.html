@@ -7981,6 +7981,33 @@ async function util_loadCodeHealth(opts) {
   ).join("");
 }
 
+function util_copyCmd(cmd, btn) {
+  // Copy a slash command to clipboard. Both code-review and code-
+  // simplifier are Claude Code skills -- the tray can't invoke them,
+  // so the right UX is "make it one click to paste into a Claude
+  // session" rather than a button that does nothing useful.
+  //
+  // Unified promise chain handles BOTH error paths (code-review
+  // finding 2026-05-28): synchronous TypeError when
+  // navigator.clipboard is undefined on an older browser AND async
+  // rejections from writeText (permission denied / unfocused doc).
+  // The previous try/catch only caught the sync case.
+  Promise.resolve()
+    .then(() => navigator.clipboard.writeText(cmd))
+    .then(() => {
+      const orig = btn.textContent;
+      btn.textContent = "✓ Copied";
+      btn.style.color = "var(--green)";
+      setTimeout(() => {
+        btn.textContent = orig;
+        btn.style.color = "var(--muted)";
+      }, 1500);
+    })
+    .catch(e => {
+      alert("Couldn't copy to clipboard: " + (e && e.message ? e.message : e));
+    });
+}
+
 async function util_resetEmitted() {
   // Clears the dedup memory so the next scan re-emits all current
   // findings to the project backlog. Useful after the user has
@@ -11331,6 +11358,69 @@ function renderSystemInfo(d, upgrades) {
       <div id="util-ch-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px">Loading…</div>
       <div id="util-ch-empty" style="display:none;padding:20px;text-align:center;font-size:12px;color:var(--muted);border:1px dashed var(--border);border-radius:8px;margin-top:8px">
         No scan has completed yet. Click <strong style="color:var(--cyan)">▶ Scan now</strong> above (takes ~3-5 s).
+      </div>
+    </div>
+
+    <!-- ── Code Tools section (Claude Code plugins, added 2026-05-28) ── -->
+    <div id="util-code-tools" style="margin-top:28px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)">Code Tools</div>
+        <div style="font-size:10px;color:var(--muted)">Claude Code plugins for review &amp; refactor — invoke from your Claude Code session</div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px">
+
+        <!-- code-review -->
+        <div style="background:var(--card);border:1px solid var(--border);border-left:3px solid var(--cyan);
+                    border-radius:8px;padding:14px 16px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <span style="font-size:18px">🔍</span>
+            <div style="flex:1;font-size:13px;font-weight:700;color:var(--text-bright)">/code-review</div>
+            <span style="font-size:9px;text-transform:uppercase;font-weight:800;letter-spacing:.04em;
+                         color:var(--cyan);border:1px solid var(--cyan);padding:2px 7px;border-radius:8px">MANDATORY</span>
+          </div>
+          <div style="font-size:12px;color:var(--text);line-height:1.5;margin-bottom:8px">
+            Reviews the pending diff for logic bugs, security gaps, missed edge cases, and broken patterns that <code style="color:var(--cyan)">ruff</code> + <code style="color:var(--cyan)">pytest</code> don't catch. Confidence-filtered: only surfaces high-priority issues.
+          </div>
+          <div style="font-size:10px;color:var(--muted);line-height:1.4;margin-bottom:8px">
+            <strong style="color:var(--text-bright)">When to use:</strong> every code change, between pytest and commit.<br>
+            <strong style="color:var(--text-bright)">Workflow position:</strong> Phase 4 quality gate (mandatory per CLAUDE.md).<br>
+            <strong style="color:var(--text-bright)">Resolution:</strong> fix findings in a follow-up commit OR justify inline in the commit body.
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;padding-top:8px;border-top:1px solid var(--border)">
+            <code id="util-cr-cmd" style="flex:1;background:var(--surface);color:var(--cyan);padding:4px 8px;border-radius:4px;font-size:11px;font-family:var(--font-mono)">/code-review</code>
+            <button onclick="util_copyCmd('/code-review', this)"
+                    style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:10px;font-family:var(--font-mono)">📋 Copy</button>
+          </div>
+        </div>
+
+        <!-- code-simplifier -->
+        <div style="background:var(--card);border:1px solid var(--border);border-left:3px solid var(--blue);
+                    border-radius:8px;padding:14px 16px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <span style="font-size:18px">✨</span>
+            <div style="flex:1;font-size:13px;font-weight:700;color:var(--text-bright)">/code-simplifier</div>
+            <span style="font-size:9px;text-transform:uppercase;font-weight:800;letter-spacing:.04em;
+                         color:var(--blue);border:1px solid var(--blue);padding:2px 7px;border-radius:8px">OPTIONAL</span>
+          </div>
+          <div style="font-size:12px;color:var(--text);line-height:1.5;margin-bottom:8px">
+            Suggests clarity / consistency / maintainability improvements <strong>without</strong> changing functionality. Findings are suggestions, not gates — accept or reject per judgement.
+          </div>
+          <div style="font-size:10px;color:var(--muted);line-height:1.4;margin-bottom:8px">
+            <strong style="color:var(--text-bright)">When to use:</strong> refactor-heavy PRs (&gt;200 LOC), dense new logic, "tidy up" intent.<br>
+            <strong style="color:var(--text-bright)">When to skip:</strong> small focused changes (&lt;50 LOC, single function, bug fixes).<br>
+            <strong style="color:var(--text-bright)">Documentation:</strong> note accepted simplifications in the commit body.
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;padding-top:8px;border-top:1px solid var(--border)">
+            <code id="util-cs-cmd" style="flex:1;background:var(--surface);color:var(--blue);padding:4px 8px;border-radius:4px;font-size:11px;font-family:var(--font-mono)">/code-simplifier</code>
+            <button onclick="util_copyCmd('/code-simplifier', this)"
+                    style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:10px;font-family:var(--font-mono)">📋 Copy</button>
+          </div>
+        </div>
+
+      </div>
+      <div style="margin-top:10px;font-size:10px;color:var(--muted);line-height:1.4">
+        Both plugins installed at user scope from <code style="color:var(--text-bright)">claude-plugins-official</code> (2026-05-28).
+        These are Claude Code skills, not tray-side scanners — the tray can't invoke them. Copy the command, paste into your Claude Code session.
       </div>
     </div>
   </div>
