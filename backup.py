@@ -695,8 +695,14 @@ def _probe_backup_store(full_store: str) -> tuple[bool | None, str]:
         # under ACL denial.
         return None, "parent dir not listable -- can't determine (may need elevation)"
     except FileNotFoundError:
-        # Parent itself doesn't exist. The whole tree is missing.
-        return False, "parent dir doesn't exist"
+        # Parent dir doesn't exist (or appears not to). This could be
+        # genuinely missing OR an ACL traversal denial pretending to
+        # be FileNotFoundError -- on Windows the two are indistinguish-
+        # able from the syscall. Return False conservatively; the
+        # catalog-age cross-check in get_file_history_state() will
+        # demote this to "info" when the catalog mtime proves backups
+        # ARE actually happening (the actual user scenario 2026-05-27).
+        return False, "parent dir doesn't exist (or ACL traversal denied)"
     except OSError as exc:
         return None, f"parent scan failed: {exc}"
 
@@ -849,13 +855,36 @@ def get_file_history_state() -> dict:
             "level": "critical",
             "reason": f"Target drive '{target_url}' is not accessible -- File History believes it's running but backups are NOT being saved",
         }
-    elif result["target_backup_store_exists"] is False:
+    elif result["target_backup_store_exists"] is False and (
+        result["catalog_age_days"] is None or result["catalog_age_days"] > _FH_CATALOG_STALE_DAYS
+    ):
+        # Probe says missing AND the catalog is stale (or absent) --
+        # both signals agree, backups are NOT happening. The catalog
+        # cross-check (added 2026-05-27 after a false-critical against
+        # an ACL-restricted-but-working store) is what keeps this
+        # verdict honest: if the catalog was written in the last 7
+        # days, File History IS writing to the target regardless of
+        # what our store-folder probe says about ACL visibility.
         result["health"] = {
             "level": "critical",
             "reason": (
                 f"Target drive '{target_url}' is reachable but the backup store folder "
                 f"'{(target.get('backup_store_path') or '').rstrip('/')}' is missing -- "
-                f"backups are NOT being saved to disk"
+                f"backups are NOT being saved to disk (catalog also stale)"
+            ),
+        }
+    elif result["target_backup_store_exists"] is False:
+        # Probe says missing but catalog is fresh -- backups ARE
+        # happening, probe must be a false negative (ACL). Demote to
+        # info; surface the conflicting signals so the user can verify
+        # manually if they want to.
+        result["health"] = {
+            "level": "info",
+            "reason": (
+                f"Backup store probe reported missing but catalog updated "
+                f"{result['catalog_age_days']:.1f} days ago -- backups are "
+                f"running (probe may be ACL-restricted; manual verification "
+                f"recommended). Probe: {result.get('target_backup_store_probe') or 'unknown'}"
             ),
         }
     elif result["target_backup_store_exists"] is None and (target.get("backup_store_path") or ""):
