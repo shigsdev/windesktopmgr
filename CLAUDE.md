@@ -426,6 +426,40 @@ pytest -m playwright --no-cov
 PLAYWRIGHT_SMOKE=1 python dev.py verify
 ```
 
+**Playwright MCP vs. pytest-playwright — division of labor (added 2026-05-28)**
+
+The `playwright@claude-plugins-official` plugin registers Microsoft's
+official Playwright MCP server (via `npx @playwright/mcp@latest`),
+exposing `mcp__playwright__*` tools that let Claude drive a browser
+interactively from a session. It is NOT a replacement for the pytest-
+playwright suite. The two have orthogonal jobs:
+
+| Need | Tool |
+|------|------|
+| Block bad code from merging | pytest-playwright (runs in CI / pre-push) |
+| Parametrize over N inputs (e.g. 20 tabs in `TAB_IDS`) | pytest-playwright (`@pytest.mark.parametrize`) |
+| Bisect "when did this start failing?" | pytest-playwright (git + pytest are deterministic) |
+| Share fixtures with the rest of the test suite | pytest-playwright |
+| Catch regressions when no human is watching | pytest-playwright |
+| Pre-write exploration — find stable selectors before writing a test | Playwright MCP |
+| Debug a failing pytest-playwright test interactively | Playwright MCP |
+| One-off post-deploy "does this thing render?" smoke | Playwright MCP |
+| Visual / layout / screenshot checks | Playwright MCP |
+
+**Hard rule**: when you add a NEW user-visible feature, the regression
+gate goes into `tests/test_playwright_smoke.py`. Drive the live tray
+with the MCP plugin first if you want to explore the DOM before writing
+the assertion -- but the asserted behaviour MUST land in the pytest
+suite, not as a chat-driven manual check that disappears at session
+end. The pytest-playwright suite has caught real bugs that an MCP-only
+flow would have missed (PR #54 backup-tab visibility, PR #56 list-
+editor persistence) because those bugs only surface on user actions
+NOBODY was thinking to manually verify.
+
+Use MCP for the "feels like" debugging that pytest assertions are bad
+at (layout, color, animation timing). Use pytest-playwright for "is
+this functional behavior still correct."
+
 ---
 
 ## Running tests
