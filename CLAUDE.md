@@ -37,6 +37,15 @@ the diagram rots and the checklist is a lie. Triggers:
 - New or removed tab in `templates/index.html`
 - Test count or coverage percentage changed
 
+**Shortcut**: when only the test-count / endpoint-count / line-count
+chips need refreshing (the most common drift), invoke `/arch-update`
+(skill in `.claude/skills/arch-update/SKILL.md`) instead of editing
+chips by hand. The skill computes new values from source-of-truth
+commands (`pytest --collect-only`, route grep, `find ... wc -l`),
+applies idempotent edits, and reports a diff. Use the skill first,
+then manually edit anything it doesn't cover (new file chips, new
+module sections, color-coded status changes).
+
 If none of those triggers apply, mark Phase 9 `architecture.html` as ⏭️ Skipped
 with a one-line reason in the SOP Compliance Report. Never silently skip.
 
