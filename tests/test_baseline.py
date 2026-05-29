@@ -2252,6 +2252,348 @@ class TestBaselineDashboardConcern:
 # ══════════════════════════════════════════════════════════════════════
 
 
+class TestAnalyzeClusterEvents:
+    """Pattern-matcher for cluster events. Surfaces a 'likely cause'
+    one-line summary at the top of the Examine modal so the user
+    doesn't have to scroll through 20 events and identify the salient
+    ones by eye. Added 2026-05-28 after user report.
+    """
+
+    def test_no_events_returns_no_clear_cause(self):
+        result = baseline.analyze_cluster_events(
+            event_log_entries=[], windows_updates=[], update_history=[], bios_changes=[]
+        )
+        assert result["has_signals"] is False
+        assert result["primary_cause"] is None
+        assert (
+            "widen the look-back" in result["summary_line"].lower()
+            or "no correlating" in result["summary_line"].lower()
+        )
+
+    def test_service_install_is_primary_cause(self):
+        """User's actual scenario 2026-05-26: McAfee installed a service.
+        The Service Control Manager 7045 event should be the primary."""
+        events = [
+            {
+                "provider": "Service Control Manager",
+                "event_id": 7045,
+                "channel": "System",
+                "time": "2026-05-26T16:05:21",
+                "message": 'A service was installed in the system. Service Name: McAfee Scheduled Task - (McAfee Scheduled Task - (mc-sustainability)) Service File Name: "C:\\Program Files\\McAfee\\wps\\1.39.160.1\\sustainability\\mc-sustainability.exe"',
+            },
+        ]
+        result = baseline.analyze_cluster_events(
+            event_log_entries=events, windows_updates=[], update_history=[], bios_changes=[]
+        )
+        assert result["has_signals"] is True
+        assert "Service installed" in result["primary_cause"]
+        # Should extract the inner-most parenthesized name (mc-sustainability)
+        assert "mc-sustainability" in result["primary_cause"]
+        assert "Likely cause:" in result["summary_line"]
+        # CODE-REVIEW FIX 2026-05-28: assert the extracted name is the
+        # CLEAN inner service id, not the whole tail of the message.
+        # Previously this test passed by accident because "mc-sustainability"
+        # was a substring of the long unparsed tail.
+        assert "C:\\" not in result["primary_cause"], f"file-path leak: {result['primary_cause']!r}"
+        assert "Service File Name" not in result["primary_cause"], f"field-marker leak: {result['primary_cause']!r}"
+        assert len(result["primary_cause"]) < 80, (
+            f"primary_cause too long ({len(result['primary_cause'])} chars): {result['primary_cause']!r}"
+        )
+
+    def test_service_install_plain_name_no_parens(self):
+        """When the service name has no parens (most Windows services),
+        the extractor should pass it through unchanged, not garble it."""
+        events = [
+            {
+                "provider": "Service Control Manager",
+                "event_id": 7045,
+                "time": "2026-05-26T10:00:00",
+                "message": 'A service was installed in the system. Service Name: WinDefend Service File Name: "C:\\Windows\\System32\\sc.exe"',
+            },
+        ]
+        result = baseline.analyze_cluster_events(
+            event_log_entries=events, windows_updates=[], update_history=[], bios_changes=[]
+        )
+        assert "WinDefend" in result["primary_cause"]
+        assert "C:\\" not in result["primary_cause"]
+        assert "Service File Name" not in result["primary_cause"]
+
+    def test_noise_events_dont_create_signals(self):
+        """Bluetooth + time-service + config-change-monitor with no
+        message should be filtered, not surfaced as signals."""
+        events = [
+            {
+                "provider": "Microsoft-Windows-Kernel-General",
+                "event_id": 1,
+                "time": "2026-05-26T16:47:46",
+                "message": "The system time has changed",
+            },
+            {
+                "provider": "Microsoft-Windows-Kernel-General",
+                "event_id": 24,
+                "time": "2026-05-26T16:47:46",
+                "message": "tz refresh",
+            },
+            {
+                "provider": "Microsoft-Windows-Time-Service",
+                "event_id": 37,
+                "time": "2026-05-26T16:47:46",
+                "message": "ntp",
+            },
+            {"provider": "BTHUSB", "event_id": 5, "time": "2026-05-26T12:18:03", "message": "bluetooth"},
+            {
+                "provider": "Microsoft-Windows-DeviceAssociationService",
+                "event_id": 3503,
+                "time": "2026-05-26T12:39:57",
+                "message": "endpoint",
+            },
+            {
+                "provider": "Microsoft-Windows-Configuration-Change-Monitor",
+                "event_id": 1,
+                "time": "2026-05-26T13:02:09",
+                "message": "",
+            },
+        ]
+        result = baseline.analyze_cluster_events(
+            event_log_entries=events, windows_updates=[], update_history=[], bios_changes=[]
+        )
+        assert result["has_signals"] is False
+        assert result["noise_filtered"] == 6
+        assert "benign" in result["summary_line"].lower() or "noise" in result["summary_line"].lower()
+
+    def test_service_install_beats_windows_update_in_priority(self):
+        """When both a service install AND Windows Update activity are
+        present, the service install wins (it's the more specific cause)."""
+        events = [
+            {
+                "provider": "Microsoft-Windows-WindowsUpdateClient",
+                "event_id": 44,
+                "time": "2026-05-26T14:57:19",
+                "message": "WU download",
+            },
+            {
+                "provider": "Service Control Manager",
+                "event_id": 7045,
+                "time": "2026-05-26T16:05:21",
+                "message": "Service Name: foo-service",
+            },
+        ]
+        result = baseline.analyze_cluster_events(
+            event_log_entries=events, windows_updates=[], update_history=[], bios_changes=[]
+        )
+        assert "Service installed" in result["primary_cause"]
+        # Other signals are listed too
+        assert any("Windows Update" in s["summary"] for s in result["signals"])
+
+    def test_tpm_secure_boot_failure_is_warning(self):
+        events = [
+            {
+                "provider": "Microsoft-Windows-TPM-WMI",
+                "event_id": 1796,
+                "time": "2026-05-26T16:20:46",
+                "message": "SBAT fail",
+            },
+        ]
+        result = baseline.analyze_cluster_events(
+            event_log_entries=events, windows_updates=[], update_history=[], bios_changes=[]
+        )
+        assert result["has_signals"] is True
+        assert result["signals"][0]["level"] == "warning"
+        assert "Secure Boot" in result["primary_cause"]
+
+    def test_dedup_multiple_windows_update_events(self):
+        """The user's actual scenario had 4 identical WU events at 14:57.
+        These should dedup to a single 'Windows Update activity' signal."""
+        events = [
+            {
+                "provider": "Microsoft-Windows-WindowsUpdateClient",
+                "event_id": 44,
+                "time": "2026-05-26T14:57:19",
+                "message": "WU",
+            },
+            {
+                "provider": "Microsoft-Windows-WindowsUpdateClient",
+                "event_id": 44,
+                "time": "2026-05-26T14:57:27",
+                "message": "WU",
+            },
+            {
+                "provider": "Microsoft-Windows-WindowsUpdateClient",
+                "event_id": 44,
+                "time": "2026-05-26T14:57:32",
+                "message": "WU",
+            },
+            {
+                "provider": "Microsoft-Windows-WindowsUpdateClient",
+                "event_id": 44,
+                "time": "2026-05-26T14:57:19",
+                "message": "WU",
+            },
+        ]
+        result = baseline.analyze_cluster_events(
+            event_log_entries=events, windows_updates=[], update_history=[], bios_changes=[]
+        )
+        wu_signals = [s for s in result["signals"] if s["category"] == "update_activity"]
+        assert len(wu_signals) == 1
+
+    def test_update_history_surfaces_as_signal(self):
+        events = []
+        update_history = [
+            {
+                "title": "Cumulative Update for Windows 11 KB5099999",
+                "result": "Succeeded",
+                "date": "2026-05-26T14:57:00",
+            },
+        ]
+        result = baseline.analyze_cluster_events(
+            event_log_entries=events, windows_updates=[], update_history=update_history, bios_changes=[]
+        )
+        assert result["has_signals"] is True
+        assert any("Update Session" in s["summary"] for s in result["signals"])
+
+    def test_bios_changes_surface_as_warning(self):
+        result = baseline.analyze_cluster_events(
+            event_log_entries=[],
+            windows_updates=[],
+            update_history=[],
+            bios_changes=[{"timestamp": "2026-05-26T13:00:00", "changes": [{"field": "secureboot"}]}],
+        )
+        assert any(s["category"] == "bios_change" and s["level"] == "warning" for s in result["signals"])
+
+    def test_full_user_scenario_2026_05_26(self):
+        """Reproduce the user's exact scenario: 4h window probe surfaced
+        2 Kernel time-change events, 2 tz refreshes, 2 Time-Service syncs,
+        2 Configuration-Change-Monitor empty events, 1 TPM SBAT fail, 1
+        Service install (McAfee mc-sustainability), 4 Windows Update
+        events, 1 DeviceAssociation, 1 BTHUSB. Total = 20 events.
+        Expected primary cause: McAfee service install. Plus +Windows
+        Update, +TPM SBAT warning, +noise filtered.
+        """
+        events = [
+            {
+                "provider": "Microsoft-Windows-Kernel-General",
+                "event_id": 1,
+                "time": "2026-05-26T16:47:46",
+                "message": "time change",
+            },
+            {
+                "provider": "Microsoft-Windows-Kernel-General",
+                "event_id": 24,
+                "time": "2026-05-26T16:47:46",
+                "message": "tz",
+            },
+            {
+                "provider": "Microsoft-Windows-Kernel-General",
+                "event_id": 1,
+                "time": "2026-05-26T16:47:46",
+                "message": "time change",
+            },
+            {
+                "provider": "Microsoft-Windows-Kernel-General",
+                "event_id": 24,
+                "time": "2026-05-26T16:47:46",
+                "message": "tz",
+            },
+            {
+                "provider": "Microsoft-Windows-Time-Service",
+                "event_id": 35,
+                "time": "2026-05-26T16:47:46",
+                "message": "sync",
+            },
+            {
+                "provider": "Microsoft-Windows-Kernel-General",
+                "event_id": 1,
+                "time": "2026-05-26T16:47:46",
+                "message": "time delta 1364ms",
+            },
+            {
+                "provider": "Microsoft-Windows-Kernel-General",
+                "event_id": 24,
+                "time": "2026-05-26T16:47:46",
+                "message": "tz",
+            },
+            {
+                "provider": "Microsoft-Windows-Time-Service",
+                "event_id": 37,
+                "time": "2026-05-26T16:47:45",
+                "message": "valid",
+            },
+            {
+                "provider": "Microsoft-Windows-TPM-WMI",
+                "event_id": 1796,
+                "time": "2026-05-26T16:20:46",
+                "message": "SBAT failed",
+            },
+            {
+                "provider": "Service Control Manager",
+                "event_id": 7040,
+                "time": "2026-05-26T16:05:22",
+                "message": "start type of the McAfee Scheduled Task - (mc-sustainability) service was changed from demand start to disabled",
+            },
+            {
+                "provider": "Service Control Manager",
+                "event_id": 7045,
+                "time": "2026-05-26T16:05:21",
+                "message": "A service was installed. Service Name: McAfee Scheduled Task - (McAfee Scheduled Task - (mc-sustainability))",
+            },
+            {
+                "provider": "Microsoft-Windows-WindowsUpdateClient",
+                "event_id": 44,
+                "time": "2026-05-26T14:57:32",
+                "message": "download",
+            },
+            {
+                "provider": "Microsoft-Windows-WindowsUpdateClient",
+                "event_id": 44,
+                "time": "2026-05-26T14:57:27",
+                "message": "download",
+            },
+            {
+                "provider": "Microsoft-Windows-WindowsUpdateClient",
+                "event_id": 44,
+                "time": "2026-05-26T14:57:19",
+                "message": "download",
+            },
+            {
+                "provider": "Microsoft-Windows-WindowsUpdateClient",
+                "event_id": 44,
+                "time": "2026-05-26T14:57:19",
+                "message": "download",
+            },
+            {
+                "provider": "Microsoft-Windows-Configuration-Change-Monitor",
+                "event_id": 1,
+                "time": "2026-05-26T13:02:09",
+                "message": "",
+            },
+            {
+                "provider": "Microsoft-Windows-Configuration-Change-Monitor",
+                "event_id": 1,
+                "time": "2026-05-26T13:02:09",
+                "message": "",
+            },
+            {
+                "provider": "Microsoft-Windows-DeviceAssociationService",
+                "event_id": 3503,
+                "time": "2026-05-26T12:39:57",
+                "message": "endpoint failure",
+            },
+            {"provider": "BTHUSB", "event_id": 5, "time": "2026-05-26T12:18:03", "message": "hci"},
+            {"provider": "BTHUSB", "event_id": 16, "time": "2026-05-26T12:17:09", "message": "auth fail"},
+        ]
+        result = baseline.analyze_cluster_events(
+            event_log_entries=events, windows_updates=[], update_history=[], bios_changes=[]
+        )
+        # Primary should be the service install.
+        assert "Service installed" in result["primary_cause"]
+        assert "mc-sustainability" in result["primary_cause"]
+        # Should have multiple signals (service install + WU + TPM warning + service start-change)
+        assert len(result["signals"]) >= 3
+        # Noise filter should have captured the kernel/time/btusb/dasvc/config-monitor events.
+        # Count: 4 kernel + 2 time-service + 1 dasvc + 2 btusb + 2 config-monitor = 11
+        assert result["noise_filtered"] >= 10
+
+
 class TestGatherClusterContext:
     """Cluster-context helper: returns Windows Updates + BIOS audit
     changes whose timestamps fall in the cluster's (expanded) window.

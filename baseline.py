@@ -2101,6 +2101,13 @@ def gather_cluster_context(
     except Exception:  # noqa: BLE001 -- best-effort
         pass
 
+    analysis = analyze_cluster_events(
+        event_log_entries=event_log_entries,
+        windows_updates=windows_updates,
+        update_history=update_history,
+        bios_changes=bios_changes,
+    )
+
     return {
         "ok": True,
         "window": {
@@ -2110,6 +2117,7 @@ def gather_cluster_context(
             "expanded_ended": expanded_end.isoformat(timespec="seconds"),
             "seconds": pad,
         },
+        "analysis": analysis,
         "windows_updates": windows_updates,
         "bios_audit_changes": bios_changes,
         "update_history": update_history,
@@ -2120,6 +2128,274 @@ def gather_cluster_context(
             "update_history": len(update_history),
             "event_log_entries": len(event_log_entries),
         },
+    }
+
+
+# ── Cluster analysis (added 2026-05-28 after user report) ──
+# User report: the Cluster Examine modal showed two empty
+# Microsoft-Windows-Configuration-Change-Monitor events and no analysis.
+# After widening the window to 4h they found the real signals (McAfee
+# service install, Windows Update activity, time-service jumps).
+# The system should pattern-match these events and surface a one-line
+# "likely cause" at the top of the modal so the user doesn't have to
+# scroll through 20 events and recognize the salient ones by eye.
+
+# Provider/event-id rules. Each entry maps a (provider, event_id) tuple
+# OR (provider, None) wildcard to a rule. Each rule produces a signal
+# {category, severity, summary, evidence}.
+#
+# Severity ordering for "primary cause" selection (lower index = higher
+# priority): service_install > msi_install > driver_install >
+# update_activity > security_warning > everything else. Noise rules
+# don't produce signals but bump the noise_filtered counter.
+_CLUSTER_SIGNAL_RULES: list[dict] = [
+    # ── Real causes ──────────────────────────────────────────────────
+    {
+        "provider": "Service Control Manager",
+        "event_ids": {7045},
+        "category": "service_install",
+        "severity": "info",
+        "summary_template": "Service installed: {name}",
+        "name_regex": r"Service Name:\s*([^\r\n]+)",
+        "priority": 0,
+    },
+    {
+        "provider": "Service Control Manager",
+        "event_ids": {7040},
+        "category": "service_changed",
+        "severity": "info",
+        "summary_template": "Service start type changed: {name}",
+        "name_regex": r"start type of the ([^\(\r\n]+?) (?:\([^)]*\) )?service was changed",
+        "priority": 1,
+    },
+    {
+        "provider": "MsiInstaller",
+        "event_ids": {1033, 1034, 1036, 11707, 11708, 11724},
+        "category": "msi_install",
+        "severity": "info",
+        "summary_template": "MSI installer activity: {product}",
+        "name_regex": r"(?:Product:\s*|Windows Installer (?:installed|removed|reconfigured) the product\.\s*)([^\.\r\n\-]+?)(?:\s*\.|\s*--|\s*Product Version|\r|\n|$)",
+        "priority": 2,
+    },
+    {
+        "provider": "Microsoft-Windows-WindowsUpdateClient",
+        "event_ids": {19, 20, 43, 44},
+        "category": "update_activity",
+        "severity": "info",
+        "summary_template": "Windows Update activity",
+        "name_regex": None,  # No name extraction
+        "priority": 3,
+    },
+    {
+        "provider": "Microsoft-Windows-TPM-WMI",
+        "event_ids": {1796},
+        "category": "security_warning",
+        "severity": "warning",
+        "summary_template": "Secure Boot SBAT update failed (TPM-WMI 1796)",
+        "name_regex": None,
+        "priority": 5,
+    },
+    # ── Benign noise (no signal, just counted) ──────────────────────
+    {
+        "provider": "Microsoft-Windows-Kernel-General",
+        "event_ids": {1, 24},  # time change, tz refresh
+        "noise": True,
+    },
+    {
+        "provider": "Microsoft-Windows-Time-Service",
+        "event_ids": None,  # any
+        "noise": True,
+    },
+    {
+        "provider": "BTHUSB",
+        "event_ids": None,
+        "noise": True,
+    },
+    {
+        "provider": "Microsoft-Windows-DeviceAssociationService",
+        "event_ids": None,
+        "noise": True,
+    },
+    {
+        "provider": "Microsoft-Windows-Configuration-Change-Monitor",
+        "event_ids": None,
+        "noise": True,  # The empty-message events the user saw
+    },
+]
+
+
+def _match_signal_rule(event: dict) -> dict | None:
+    """Return the matching rule for an event (or None)."""
+    provider = (event.get("provider") or "").strip()
+    eid = event.get("event_id")
+    for rule in _CLUSTER_SIGNAL_RULES:
+        if rule["provider"] != provider:
+            continue
+        rule_ids = rule.get("event_ids")
+        if rule_ids is not None and eid not in rule_ids:
+            continue
+        return rule
+    return None
+
+
+def _extract_clean_name(msg: str, name_regex: str) -> str:
+    """Extract a clean service / product name from an event log message.
+
+    Handles the messy reality of inline (newline-stripped) messages
+    and McAfee-style nested parens. Code-review finding 2026-05-28:
+    the original ``r"Service Name:\\s*([^\\r\\n]+)"`` captured the
+    entire tail of the message (including the file path) when the
+    300-char display had no embedded newlines, defeating the
+    parenthesis post-processor.
+
+    Pipeline:
+      1. Run the rule's regex; bail if no match.
+      2. Strip everything from any later " Service <Field>:" marker
+         onward (handles inline messages where newlines were collapsed).
+      3. Trim trailing punctuation ("- ", whitespace).
+      4. Iteratively unwrap innermost ``(...)`` until none nested,
+         since McAfee's outer wrapper is a longer category name and
+         the inner is the actual service id.
+    """
+    m = re.search(name_regex, msg, re.IGNORECASE)
+    if not m:
+        return ""
+    name = m.group(1).strip()
+    # Inline-message guard: cut off at the next "Service <field>:" marker.
+    name = re.split(
+        r"\s+Service (?:File Name|Type|Start Type|Account|Display Name|Description):",
+        name,
+        maxsplit=1,
+    )[0].strip()
+    # Trim trailing punctuation chains like "Foo - "
+    name = name.rstrip("- \t")
+    # Unwrap nested parens: take the innermost. Loop in case there's
+    # more than two levels of nesting.
+    for _ in range(10):
+        inner = re.findall(r"\(([^()]+)\)", name)
+        if not inner:
+            break
+        name = inner[-1].strip()
+    return name
+
+
+def analyze_cluster_events(
+    event_log_entries: list[dict],
+    windows_updates: list[dict],
+    update_history: list[dict],
+    bios_changes: list[dict],
+) -> dict:
+    """Pattern-match cluster events into signals + a primary cause.
+
+    Returns::
+
+        {
+          "primary_cause": str | None,    # Top-priority signal summary
+          "signals": [{level, summary, category, evidence}, ...],
+          "noise_filtered": int,
+          "has_signals": bool,
+          "summary_line": str,            # Pre-formatted for the modal
+        }
+    """
+    signals: list[dict] = []
+    noise_count = 0
+    seen_categories: set[str] = set()  # Dedup: one signal per category per (key)
+
+    for ev in event_log_entries or []:
+        rule = _match_signal_rule(ev)
+        if rule is None:
+            continue
+        if rule.get("noise"):
+            noise_count += 1
+            continue
+        # Extract a name/product if the rule has a regex. Uses the
+        # shared _extract_clean_name helper which handles inline
+        # messages + nested parens (code-review fix 2026-05-28).
+        msg = ev.get("message") or ""
+        name = _extract_clean_name(msg, rule["name_regex"]) if rule.get("name_regex") else ""
+        summary = (rule["summary_template"]).format(name=name or "<unknown>", product=name or "<unknown>")
+        # Dedup multiple events of the same category+name to one signal.
+        dedup_key = f"{rule['category']}::{name}"
+        if dedup_key in seen_categories:
+            continue
+        seen_categories.add(dedup_key)
+        signals.append(
+            {
+                "level": rule["severity"],
+                "category": rule["category"],
+                "summary": summary,
+                "priority": rule["priority"],
+                "evidence": {
+                    "event_id": ev.get("event_id"),
+                    "provider": ev.get("provider"),
+                    "channel": ev.get("channel"),
+                    "time": ev.get("time"),
+                    "message_snippet": msg[:160],
+                },
+            }
+        )
+
+    # Also surface non-event-log sources as signals so the analysis line
+    # captures "Windows Update history showed 3 cumulative updates" type
+    # findings.
+    if update_history:
+        latest = update_history[0]
+        signals.append(
+            {
+                "level": "info",
+                "category": "update_history",
+                "summary": f"Update Session shows: {latest.get('title', '<unknown>')[:80]}",
+                "priority": 3,
+                "evidence": {"time": latest.get("date"), "count": len(update_history)},
+            }
+        )
+    if bios_changes:
+        signals.append(
+            {
+                "level": "warning",
+                "category": "bios_change",
+                "summary": f"BIOS audit recorded {len(bios_changes)} change(s) in window",
+                "priority": 4,
+                "evidence": {"count": len(bios_changes)},
+            }
+        )
+    if windows_updates:
+        signals.append(
+            {
+                "level": "info",
+                "category": "hotfix",
+                "summary": f"Get-HotFix recorded {len(windows_updates)} legacy hotfix(es)",
+                "priority": 3,
+                "evidence": {"count": len(windows_updates)},
+            }
+        )
+
+    # Pick primary cause: lowest priority number wins.
+    primary_cause = None
+    if signals:
+        sorted_signals = sorted(signals, key=lambda s: (s.get("priority", 99), s.get("level", "info")))
+        primary_cause = sorted_signals[0]["summary"]
+
+    # Pre-format the one-line summary for the modal header.
+    if primary_cause:
+        extra = len(signals) - 1
+        summary_line = f"Likely cause: {primary_cause}"
+        if extra > 0:
+            summary_line += f" (+{extra} other signal{'s' if extra != 1 else ''} in window)"
+    elif noise_count > 0:
+        summary_line = (
+            f"No clear cause detected — {noise_count} benign event(s) "
+            f"in window (time-sync, Bluetooth, config-monitor noise)."
+        )
+    else:
+        summary_line = "No correlating events in window. Widen the look-back or check Update history below."
+
+    return {
+        "primary_cause": primary_cause,
+        "signals": sorted(signals, key=lambda s: s.get("priority", 99)),
+        "noise_filtered": noise_count,
+        "has_signals": len(signals) > 0,
+        "summary_line": summary_line,
     }
 
 
