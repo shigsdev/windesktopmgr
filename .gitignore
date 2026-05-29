@@ -81,12 +81,15 @@ desktop.ini
 *.swp
 *.swo
 # .claude/ contains both local-only state (settings.json, launch.json,
-# worktrees/) AND checked-in project automations (skills/). Ignore the
-# contents by default but re-include skills/ as a tracked subtree --
-# git can't re-include into a wholesale-ignored directory, so we ignore
-# the contents (.claude/*) rather than the directory itself.
+# worktrees/) AND checked-in project automations (skills/, commands/).
+# Ignore the contents by default but re-include the automation
+# subtrees as tracked -- git can't re-include into a wholesale-ignored
+# directory, so we ignore the contents (.claude/*) rather than the
+# directory itself.
 .claude/*
 !.claude/skills/
 !.claude/skills/**
+!.claude/commands/
+!.claude/commands/**
 scripts/_probe_dumps/
 backups/

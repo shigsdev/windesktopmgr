@@ -39,12 +39,20 @@ the diagram rots and the checklist is a lie. Triggers:
 
 **Shortcut**: when only the test-count / endpoint-count / line-count
 chips need refreshing (the most common drift), invoke `/arch-update`
-(skill in `.claude/skills/arch-update/SKILL.md`) instead of editing
-chips by hand. The skill computes new values from source-of-truth
-commands (`pytest --collect-only`, route grep, `find ... wc -l`),
-applies idempotent edits, and reports a diff. Use the skill first,
-then manually edit anything it doesn't cover (new file chips, new
-module sections, color-coded status changes).
+(slash command in `.claude/commands/arch-update.md`) instead of
+editing chips by hand. The command computes new values from
+source-of-truth commands (`pytest --collect-only`, route grep,
+`find ... wc -l`), applies idempotent edits, and reports a diff.
+Use the command first, then manually edit anything it doesn't cover
+(new file chips, new module sections, color-coded status changes).
+
+The matching skill at `.claude/skills/arch-update/SKILL.md` lets
+Claude invoke the same workflow programmatically via the Skill tool;
+the slash command is for interactive use from your Claude session.
+
+**One-time setup**: if `/arch-update` returns "Unknown command",
+restart your Claude session (or open a new one) so the project's
+slash-command registry reloads.
 
 If none of those triggers apply, mark Phase 9 `architecture.html` as ⏭️ Skipped
 with a one-line reason in the SOP Compliance Report. Never silently skip.
