@@ -6664,6 +6664,7 @@ async function bl_examineCluster(idx, windowSeconds) {
   const biosChanges = data.bios_audit_changes || [];
   const wuHistory = data.update_history || [];
   const evtEntries = data.event_log_entries || [];
+  const analysis = data.analysis || null;
   const totalSignals = wus.length + biosChanges.length + wuHistory.length + evtEntries.length;
 
   const wuRows = wus.length
@@ -6687,6 +6688,37 @@ async function bl_examineCluster(idx, windowSeconds) {
         Drill into the individual events below by clicking through to the entry-history modal.
       </div>` : "";
 
+  // Analysis banner — pattern-matched "likely cause" headline at the top
+  // of the modal. Added 2026-05-28 after user report that they had to
+  // widen the window to 4h and scroll through 20 events to find the
+  // McAfee install + Windows Update activity by eye. The banner does
+  // that pattern-matching automatically; for a stronger signal it
+  // colours the left border green/orange/red by severity.
+  let analysisBanner = "";
+  if (analysis && analysis.has_signals) {
+    const sigLevel = (analysis.signals[0] && analysis.signals[0].level) || "info";
+    const borderColor = sigLevel === "critical" ? "var(--red)" : sigLevel === "warning" ? "var(--orange)" : "var(--cyan)";
+    const otherSignalRows = (analysis.signals || []).slice(1, 6).map(s => {
+      const lvlColor = s.level === "critical" ? "var(--red)" : s.level === "warning" ? "var(--orange)" : "var(--muted)";
+      const ev = s.evidence || {};
+      const ts = ev.time ? `<span style="font-family:var(--font-mono);font-size:10px;color:var(--muted)">${escHtml(ev.time)}</span> · ` : "";
+      return `<div style="font-size:11px;padding:2px 0">${ts}<span style="color:${lvlColor};font-weight:600">[${escHtml(s.level)}]</span> ${escHtml(s.summary)}</div>`;
+    }).join("");
+    const noiseFooter = analysis.noise_filtered > 0
+      ? `<div style="font-size:10px;color:var(--muted);margin-top:8px;padding-top:6px;border-top:1px solid var(--border)">${analysis.noise_filtered} benign event(s) filtered (time-sync, Bluetooth, config-monitor noise).</div>`
+      : "";
+    analysisBanner = `<div style="padding:12px 14px;background:var(--card);border:1px solid var(--border);border-left:4px solid ${borderColor};border-radius:6px;margin-bottom:14px">
+        <div style="font-size:13px;font-weight:700;color:var(--text-bright);margin-bottom:6px">🎯 ${escHtml(analysis.summary_line)}</div>
+        ${otherSignalRows ? `<div style="margin-top:8px">${otherSignalRows}</div>` : ""}
+        ${noiseFooter}
+      </div>`;
+  } else if (analysis && analysis.noise_filtered > 0 && totalSignals > 0) {
+    // Events exist but they're all noise. Tell the user explicitly.
+    analysisBanner = `<div style="padding:12px 14px;background:var(--surface);border:1px solid var(--border);border-left:4px solid var(--muted);border-radius:6px;font-size:11px;color:var(--muted);margin-bottom:14px">
+        🎯 ${escHtml(analysis.summary_line)}
+      </div>`;
+  }
+
   modal.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
       <div style="font-size:16px;font-weight:700;color:var(--text-bright)">🔍 What happened around ${escHtml(new Date(cluster.started_at).toLocaleString())}?</div>
@@ -6708,6 +6740,7 @@ async function bl_examineCluster(idx, windowSeconds) {
     <div style="font-size:10px;color:var(--muted);margin-bottom:14px;padding:6px 10px;background:var(--surface);border-radius:4px;line-height:1.4">
       💡 The cluster timestamp marks when DRIFT was DETECTED (you opened the Baseline tab). The actual changes typically happen 5–15 minutes earlier. If the default 15-min window finds nothing, widen the look-back.
     </div>
+    ${analysisBanner}
     ${noSignalNote}
     <div style="margin-bottom:16px">
       <div style="font-size:13px;font-weight:700;color:var(--text-bright);margin-bottom:6px">📜 Update history (Microsoft.Update.Session) (${wuHistory.length})</div>
