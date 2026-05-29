@@ -2318,6 +2318,55 @@ class TestAnalyzeClusterEvents:
         assert "C:\\" not in result["primary_cause"]
         assert "Service File Name" not in result["primary_cause"]
 
+    def test_service_start_type_change_with_nested_parens(self):
+        """Live regression 2026-05-28: SCM 7040 against the McAfee
+        message format with NESTED parens emitted "<unknown>" instead
+        of the inner service id. Same root cause as the 7045 bug --
+        the regex's optional `\\(...\\)` group only matched one level
+        of parens and failed entirely on `Foo - (Foo - (id))`.
+        Fix: use the same _extract_clean_name pipeline as 7045.
+        """
+        events = [
+            {
+                "provider": "Service Control Manager",
+                "event_id": 7040,
+                "channel": "System",
+                "time": "2026-05-26T16:05:22",
+                "message": (
+                    "The start type of the McAfee Scheduled Task - "
+                    "(McAfee Scheduled Task - (mc-sustainability)) service "
+                    "was changed from demand start to disabled."
+                ),
+            },
+        ]
+        result = baseline.analyze_cluster_events(
+            event_log_entries=events, windows_updates=[], update_history=[], bios_changes=[]
+        )
+        assert result["has_signals"] is True
+        # Must extract "mc-sustainability" not "<unknown>" and not the
+        # outer "McAfee Scheduled Task" wrapper.
+        assert "mc-sustainability" in result["primary_cause"], (
+            f"7040 nested-parens extraction failed: {result['primary_cause']!r}"
+        )
+        assert "<unknown>" not in result["primary_cause"]
+        assert "demand start" not in result["primary_cause"]  # tail leak guard
+        assert len(result["primary_cause"]) < 80
+
+    def test_service_start_type_change_plain_name(self):
+        events = [
+            {
+                "provider": "Service Control Manager",
+                "event_id": 7040,
+                "time": "2026-05-26T16:05:22",
+                "message": "The start type of the BITS service was changed from auto start to disabled.",
+            },
+        ]
+        result = baseline.analyze_cluster_events(
+            event_log_entries=events, windows_updates=[], update_history=[], bios_changes=[]
+        )
+        assert "BITS" in result["primary_cause"]
+        assert "<unknown>" not in result["primary_cause"]
+
     def test_noise_events_dont_create_signals(self):
         """Bluetooth + time-service + config-change-monitor with no
         message should be filtered, not surfaced as signals."""
