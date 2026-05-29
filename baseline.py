@@ -2165,7 +2165,16 @@ _CLUSTER_SIGNAL_RULES: list[dict] = [
         "category": "service_changed",
         "severity": "info",
         "summary_template": "Service start type changed: {name}",
-        "name_regex": r"start type of the ([^\(\r\n]+?) (?:\([^)]*\) )?service was changed",
+        # Live regression 2026-05-28: the previous regex
+        # ``start type of the ([^\(\r\n]+?) (?:\([^)]*\) )?service was changed``
+        # excluded ``(`` from the capture and only matched ONE paren
+        # group as the suffix. It failed entirely on the nested-parens
+        # McAfee form: ``...the McAfee Scheduled Task - (McAfee
+        # Scheduled Task - (mc-sustainability)) service was changed...``
+        # -- the whole regex didn't match, leaving name="" -> "<unknown>".
+        # Fix: broad capture between literal markers; let
+        # _extract_clean_name iteratively unwrap to the inner id.
+        "name_regex": r"start type of the (.+?) service was changed",
         "priority": 1,
     },
     {
