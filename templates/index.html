@@ -7900,8 +7900,9 @@ function util_renderScannerCard(name, label, icon, result, opts) {
   // the coverage card so the user can trigger a fresh pytest --cov
   // run from the UI when .coverage gets stale (the 2026-05-27 bug).
   const extraControl = (opts && opts.extraControl) || "";
+  const detailsBlock = util_renderScannerDetails(name, result);
   return `
-    <div style="background:var(--card);border:1px solid var(--border);border-left:3px solid ${color};
+    <div data-scanner="${esc(name)}" style="background:var(--card);border:1px solid var(--border);border-left:3px solid ${color};
                 border-radius:8px;padding:14px 16px">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
         <span style="font-size:18px">${icon}</span>
@@ -7914,7 +7915,66 @@ function util_renderScannerCard(name, label, icon, result, opts) {
         <span>${esc(ts)} · ${esc(dur)}</span>
         ${extraControl}
       </div>
+      ${detailsBlock}
     </div>`;
+}
+
+function util_renderScannerDetails(name, result) {
+  // Build the expandable "ⓘ N details" disclosure for a scanner card.
+  // Each scanner stores its findings in result.details with a DIFFERENT
+  // shape, so we branch per scanner:
+  //   coverage  -> list of {file, percent}     (lowest-coverage files)
+  //   ruff      -> list of {code, message, file, line}  (top findings)
+  //   secrets   -> always [] (redacted); we surface a count-only note
+  //   tech_debt -> DICT {todos:[{file,line,text}], large_files:[{file,lines}]}
+  // Returns "" when there's nothing useful to show (clean scanner), so
+  // the card stays compact. Native <details> = no JS state to wire and
+  // it survives the poll re-render cleanly (collapsed default).
+  const d = result.details;
+  const rows = [];
+  let count = 0;
+
+  if (name === "tech_debt" && d && !Array.isArray(d)) {
+    const large = d.large_files || [];
+    const todos = d.todos || [];
+    count = large.length + todos.length;
+    if (large.length) {
+      rows.push(`<div style="color:var(--text-bright);font-weight:600;margin:2px 0">Oversized files (≥5,000 lines)</div>`);
+      large.forEach(f => rows.push(
+        `<div>${esc(f.file || "?")} · <span style="color:var(--orange)">${Number(f.lines || 0).toLocaleString()} lines</span></div>`
+      ));
+    }
+    if (todos.length) {
+      rows.push(`<div style="color:var(--text-bright);font-weight:600;margin:8px 0 2px">TODO / FIXME markers</div>`);
+      todos.forEach(t => rows.push(
+        `<div>${esc(t.file || "?")}:${esc(String(t.line ?? ""))} · <span style="color:var(--muted)">${esc((t.text || "").slice(0, 90))}</span></div>`
+      ));
+    }
+  } else if (name === "coverage" && Array.isArray(d) && d.length) {
+    count = d.length;
+    rows.push(`<div style="color:var(--text-bright);font-weight:600;margin:2px 0">Lowest-coverage files</div>`);
+    d.forEach(f => rows.push(
+      `<div>${esc(f.file || "?")} · <span style="color:${Number(f.percent || 0) < 50 ? 'var(--red)' : 'var(--orange)'}">${Number(f.percent || 0).toFixed(1)}%</span></div>`
+    ));
+  } else if (name === "ruff" && Array.isArray(d) && d.length) {
+    count = d.length;
+    rows.push(`<div style="color:var(--text-bright);font-weight:600;margin:2px 0">Top findings</div>`);
+    d.forEach(f => rows.push(
+      `<div><span style="color:var(--orange)">${esc(f.code || "?")}</span> ${esc(f.file || "")}:${esc(String(f.line ?? ""))} · <span style="color:var(--muted)">${esc((f.message || "").slice(0, 90))}</span></div>`
+    ));
+  } else if (name === "secrets" && Number(result.count || 0) > 0) {
+    count = Number(result.count);
+    rows.push(`<div style="color:var(--muted)">${count} potential match${count !== 1 ? 'es' : ''} — output redacted for security. See docs/security/git-credentials.md.</div>`);
+  }
+
+  if (!rows.length) return "";
+  return `
+      <details data-scanner-details="${esc(name)}" data-detail-count="${count}" style="margin-top:8px">
+        <summary style="cursor:pointer;color:var(--cyan);font-size:10px;font-family:var(--font-mono);user-select:none;list-style:none">ⓘ ${count} detail${count !== 1 ? 's' : ''}</summary>
+        <div style="margin-top:6px;font-size:11px;color:var(--text);line-height:1.5;font-family:var(--font-mono);max-height:240px;overflow:auto;word-break:break-word">
+          ${rows.join("")}
+        </div>
+      </details>`;
 }
 
 async function util_loadCodeHealth(opts) {
