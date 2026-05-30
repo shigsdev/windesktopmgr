@@ -1730,6 +1730,20 @@ class TestDashboardSummaryRoute:
             },
         )
 
+        # Baseline drift (backlog #14 + #44) — same reasoning. The dashboard
+        # emits an info "drift detected" concern from baseline.recent_drift()
+        # and a warning "cross-surface cluster" concern from
+        # baseline.load_history() -> baseline.correlation_alert(). Both read
+        # the real baseline_history.json / baseline_snapshot.json on disk,
+        # which on a dev machine with genuine drift makes the clean-state
+        # test non-deterministic ('overall' came back 'warning'). Stub them
+        # to a no-drift baseline so the assertion is hermetic.
+        import baseline as _bl
+
+        mocker.patch.object(_bl, "recent_drift", return_value=[])
+        mocker.patch.object(_bl, "load_history", return_value=[])
+        mocker.patch.object(_bl, "correlation_alert", return_value=None)
+
     def test_returns_200_with_structure(self, client, mocker):
         self._mock_dashboard_deps(mocker)
         resp = client.get("/api/dashboard/summary")

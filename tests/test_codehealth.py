@@ -460,6 +460,163 @@ class TestCodeHealthRoutes:
         assert data["ok"] is False
         assert "already running" in data["error"]
 
+    def test_status_exposes_scanner_registry_and_running_scanner(self, client, ch_tmp):
+        r = client.get("/api/codehealth/status")
+        data = r.get_json()
+        # New fields for the per-card Run buttons (#53 follow-up).
+        assert data["scanner_names"] == codehealth.scanner_names()
+        assert "coverage" in data["scanner_names"]
+        assert data["running_scanner"] is None  # idle on first run
+
+
+# ─── Scanner registry + scan_one / scanner_names ────────────────────
+
+
+class TestScannerRegistry:
+    def test_scanner_names_returns_expected_order(self):
+        assert codehealth.scanner_names() == ["coverage", "ruff", "secrets", "tech_debt"]
+
+    def test_scanner_names_returns_a_copy(self):
+        # Mutating the returned list must not corrupt the registry.
+        names = codehealth.scanner_names()
+        names.append("bogus")
+        assert "bogus" not in codehealth.scanner_names()
+
+    def test_scan_all_runs_every_registered_scanner(self, mocker):
+        # Each scan_<name> is resolved via the module namespace, so
+        # patching by attribute must be honoured by scan_all.
+        for name in codehealth.scanner_names():
+            mocker.patch(
+                f"codehealth.scan_{name}",
+                return_value={"ok": True, "level": "ok", "count": 0, "summary": name},
+            )
+        result = codehealth.scan_all()
+        assert set(result["scanners"].keys()) == set(codehealth.scanner_names())
+        assert result["worst_level"] == "ok"
+
+    def test_scan_one_merges_into_existing_state(self, ch_tmp, mocker):
+        # Seed a full prior scan with coverage at warning.
+        codehealth.save_state(
+            {
+                "started_at": "2026-05-29T10:00:00",
+                "finished_at": "2026-05-29T10:00:05",
+                "worst_level": "warning",
+                "scanners": {
+                    "coverage": {"level": "warning", "count": 78, "summary": "78%"},
+                    "ruff": {"level": "ok", "count": 0, "summary": "clean"},
+                },
+            }
+        )
+        mocker.patch(
+            "codehealth.scan_ruff",
+            return_value={"ok": True, "level": "ok", "count": 0, "summary": "still clean"},
+        )
+        merged = codehealth.scan_one("ruff")
+        # Only ruff was re-run; coverage card is preserved untouched.
+        assert merged["scanners"]["coverage"]["count"] == 78
+        assert merged["scanners"]["ruff"]["summary"] == "still clean"
+        # worst_level recomputed across the merged set (coverage still warning).
+        assert merged["worst_level"] == "warning"
+        # Persisted to disk.
+        assert codehealth.load_state()["scanners"]["ruff"]["summary"] == "still clean"
+
+    def test_scan_one_first_run_with_no_prior_state(self, ch_tmp, mocker):
+        mocker.patch(
+            "codehealth.scan_secrets",
+            return_value={"ok": True, "level": "ok", "count": 0, "summary": "clean"},
+        )
+        merged = codehealth.scan_one("secrets")
+        assert list(merged["scanners"].keys()) == ["secrets"]
+        assert merged["worst_level"] == "ok"
+        assert merged["finished_at"]
+
+    def test_scan_one_unknown_name_raises_keyerror(self, ch_tmp):
+        with pytest.raises(KeyError):
+            codehealth.scan_one("bogus")
+
+    def test_scan_one_recomputes_worst_level_downward(self, ch_tmp, mocker):
+        # Prior secrets=critical; re-running it clean should drop worst_level.
+        codehealth.save_state(
+            {
+                "finished_at": "2026-05-29T10:00:00",
+                "worst_level": "critical",
+                "scanners": {
+                    "secrets": {"level": "critical", "count": 1, "summary": "leak"},
+                    "ruff": {"level": "ok", "count": 0, "summary": "clean"},
+                },
+            }
+        )
+        mocker.patch(
+            "codehealth.scan_secrets",
+            return_value={"ok": True, "level": "ok", "count": 0, "summary": "clean"},
+        )
+        merged = codehealth.scan_one("secrets")
+        assert merged["worst_level"] == "ok"
+
+
+class TestRunOneInBackground:
+    def test_unknown_scanner_raises_keyerror(self, ch_tmp):
+        with pytest.raises(KeyError):
+            codehealth.run_one_in_background("bogus")
+
+    def test_skips_when_already_running(self, ch_tmp, monkeypatch):
+        monkeypatch.setattr(codehealth, "_running", True)
+        assert codehealth.run_one_in_background("ruff") is False
+
+    def test_starts_thread_for_valid_scanner(self, ch_tmp, mocker):
+        mock_thread = mocker.patch("codehealth.threading.Thread")
+        assert codehealth.run_one_in_background("ruff") is True
+        assert mock_thread.return_value.start.call_count == 1
+
+    def test_run_one_and_save_clears_running_flag(self, ch_tmp, mocker):
+        mocker.patch(
+            "codehealth.scan_ruff",
+            return_value={"ok": True, "level": "ok", "count": 0, "summary": "clean"},
+        )
+        codehealth._run_one_and_save("ruff")
+        assert codehealth.is_running() is False
+        assert codehealth.running_scanner() is None
+        # Result was persisted.
+        assert codehealth.load_state()["scanners"]["ruff"]["summary"] == "clean"
+
+    def test_run_one_and_save_survives_scanner_crash(self, ch_tmp, mocker):
+        mocker.patch("codehealth.scan_ruff", side_effect=RuntimeError("boom"))
+        # Must not raise; must clear the guard so the UI isn't stuck.
+        codehealth._run_one_and_save("ruff")
+        assert codehealth.is_running() is False
+        assert codehealth.running_scanner() is None
+
+
+class TestRunOneRoute:
+    def test_run_one_kicks_off_scanner(self, client, ch_tmp, mocker):
+        mocker.patch("codehealth.run_one_in_background", return_value=True)
+        r = client.post("/api/codehealth/run/ruff")
+        assert r.status_code == 202
+        data = r.get_json()
+        assert data["ok"] is True
+        assert data["started"] is True
+
+    def test_run_one_unknown_scanner_returns_404(self, client, ch_tmp):
+        r = client.post("/api/codehealth/run/bogus")
+        assert r.status_code == 404
+        data = r.get_json()
+        assert data["ok"] is False
+        assert "unknown scanner" in data["error"]
+
+    def test_run_one_conflict_when_already_running(self, client, ch_tmp, mocker):
+        mocker.patch("codehealth.run_one_in_background", return_value=False)
+        r = client.post("/api/codehealth/run/secrets")
+        assert r.status_code == 409
+        data = r.get_json()
+        assert data["ok"] is False
+        assert "already running" in data["error"]
+
+    def test_run_one_validates_before_spawning(self, client, ch_tmp, mocker):
+        # An unknown scanner must 404 WITHOUT ever calling the runner.
+        spy = mocker.patch("codehealth.run_one_in_background", return_value=True)
+        client.post("/api/codehealth/run/bogus")
+        assert spy.call_count == 0
+
 
 # ─── Coverage refresh (PR-2 of #51) ─────────────────────────────────
 

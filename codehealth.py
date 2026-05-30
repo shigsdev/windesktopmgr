@@ -94,6 +94,10 @@ _run_lock = threading.Lock()
 # True while a background scan thread is in flight. Guards against
 # double-runs when the user mashes the "Run now" button.
 _running = False
+# Name of the single scanner currently running via run_one_in_background,
+# or None when idle / running the full scan_all sweep. Lets the UI show
+# a spinner on just the card being re-run.
+_running_scanner: str | None = None
 # True while a "Refresh coverage" job is in flight (the pytest --cov
 # run that takes 30-90s). Reported as is_refreshing_coverage in
 # /api/codehealth/status so the UI can show progress + disable the
@@ -161,6 +165,12 @@ def is_stale(state: dict, days: int = STALE_DAYS) -> bool:
 
 def is_running() -> bool:
     return _running
+
+
+def running_scanner() -> str | None:
+    """Name of the single scanner currently re-running via a per-card
+    button, or None when idle or running the full scan_all sweep."""
+    return _running_scanner
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -503,21 +513,69 @@ def _worst_level(scanners: dict) -> str:
     return _LEVEL_ORDER[worst_idx]
 
 
+# Registry of scanners, in card display order. This is the SINGLE place
+# to add a new scanner: append its name here and define a matching
+# ``scan_<name>()`` function. Both scan_all() (the run-all sweep) and
+# scan_one() (the per-card "Run" buttons + /api/codehealth/run/<scanner>)
+# pick it up automatically -- no other backend edits needed.
+_SCANNER_ORDER = ["coverage", "ruff", "secrets", "tech_debt"]
+
+
+def scanner_names() -> list[str]:
+    """Registered scanner names, in display order. Used by the route to
+    validate the <scanner> path param and by the UI to render one card
+    (+ Run button) per scanner. Returns a fresh copy so callers can't
+    mutate the registry."""
+    return list(_SCANNER_ORDER)
+
+
+def _scanner_fn(name: str):
+    """Resolve a scanner name to its ``scan_<name>`` function via the
+    module namespace, so tests that monkeypatch e.g. ``codehealth.scan_ruff``
+    are honoured by scan_all / scan_one. Raises KeyError for an
+    unregistered name."""
+    if name not in _SCANNER_ORDER:
+        raise KeyError(name)
+    return globals()[f"scan_{name}"]
+
+
 def scan_all() -> dict:
-    """Run all four scanners synchronously. ~3-5 s on this repo."""
+    """Run every registered scanner synchronously. ~3-5 s on this repo."""
     started = _now_iso()
-    scanners = {
-        "coverage": scan_coverage(),
-        "ruff": scan_ruff(),
-        "secrets": scan_secrets(),
-        "tech_debt": scan_tech_debt(),
-    }
+    scanners = {name: _scanner_fn(name)() for name in _SCANNER_ORDER}
     return {
         "started_at": started,
         "finished_at": _now_iso(),
         "worst_level": _worst_level(scanners),
         "scanners": scanners,
     }
+
+
+def scan_one(name: str) -> dict:
+    """Run a SINGLE registered scanner and merge its fresh result into
+    the persisted state, leaving the other cards untouched. Recomputes
+    ``worst_level`` + ``finished_at`` across the merged set and saves.
+    Returns the updated full state. Raises KeyError for an unknown name.
+
+    Backs the per-card "Run" buttons -- re-running just code-bugs /
+    secrets / tech-debt must NOT blow away the (expensive) coverage
+    card, which is only refreshed via the pytest path."""
+    fn = _scanner_fn(name)  # KeyError if unknown -- callers validate first
+    result = fn()
+    with _state_lock:
+        prior = load_state()
+        scanners = prior.get("scanners")
+        if not isinstance(scanners, dict):
+            scanners = {}
+        scanners[name] = result
+        merged = {
+            "started_at": prior.get("started_at") or result.get("started_at") or _now_iso(),
+            "finished_at": _now_iso(),
+            "worst_level": _worst_level(scanners),
+            "scanners": scanners,
+        }
+        save_state(merged)
+    return merged
 
 
 def _run_and_save() -> None:
@@ -561,6 +619,47 @@ def run_in_background() -> bool:
         if _running:
             return False
     thread = threading.Thread(target=_run_and_save, daemon=True, name="CodeHealthScan")
+    thread.start()
+    return True
+
+
+def _run_one_and_save(name: str) -> None:
+    """Thread body for a single-scanner run. Shares the ``_running``
+    guard with scan_all so the global "Scan now" button and a per-card
+    "Run" button can't overlap and race on the state file. Records the
+    in-flight scanner name so the UI can show which card is spinning.
+    Best-effort backlog append, same as _run_and_save."""
+    global _running, _running_scanner
+    with _run_lock:
+        if _running:
+            return
+        _running = True
+        _running_scanner = name
+    try:
+        merged = scan_one(name)
+        _log.info("codehealth single scan complete (%s) -- worst level: %s", name, merged.get("worst_level"))
+        try:
+            append_findings_to_backlog(merged)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("codehealth backlog append failed (non-fatal): %s", exc)
+    except Exception as exc:  # noqa: BLE001
+        _log.exception("codehealth single scan crashed (%s): %s", name, exc)
+    finally:
+        with _run_lock:
+            _running = False
+            _running_scanner = None
+
+
+def run_one_in_background(name: str) -> bool:
+    """Kick off a single-scanner background run if no scan is already in
+    flight. Returns True if a new thread started, False if a scan was
+    already running. Raises KeyError for an unregistered scanner name
+    (the route validates and 404s before calling this)."""
+    _scanner_fn(name)  # validate -- KeyError propagates to the caller
+    with _run_lock:
+        if _running:
+            return False
+    thread = threading.Thread(target=_run_one_and_save, args=(name,), daemon=True, name=f"CodeHealthScan-{name}")
     thread.start()
     return True
 

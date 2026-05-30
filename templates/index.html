@@ -7993,22 +7993,50 @@ async function util_loadCodeHealth(opts) {
   grid.style.display = "grid";
   if (empty) empty.style.display = "none";
 
-  // Per-card extra controls. The Coverage card gets a Refresh button
-  // that re-runs pytest --cov so the user can fix stale .coverage
-  // data from inside the UI (PR-2 of #51, fixes the 2026-05-27 bug).
-  const covCtrl = refreshingCov
-    ? `<span style="color:var(--cyan)">refreshing…</span>`
-    : `<button onclick="util_refreshCoverage()"
-                style="background:transparent;border:1px solid var(--border);color:var(--cyan);
-                       padding:2px 8px;border-radius:4px;cursor:pointer;font-size:10px;font-family:var(--font-mono)"
-                title="Re-runs pytest --cov to refresh the .coverage file (~60s)">↻ Refresh</button>`;
+  // Card label + icon per scanner. Cards are rendered by iterating the
+  // API's scanner_names (extensible: a new backend scanner auto-renders
+  // here, falling back to a humanised label + 🔧 if it's not in the map).
+  const SCANNER_META = {
+    coverage:  ["Test Coverage",     "🧪"],
+    ruff:      ["Code Bugs (ruff)",  "🪲"],
+    secrets:   ["Security / Secrets","🔒"],
+    tech_debt: ["Tech Debt",         "🧹"],
+  };
+  // Drive the card order off the registry the API reports; fall back to
+  // whatever keys the scan result carries (older state without the field).
+  const order = (payload.scanner_names && payload.scanner_names.length)
+    ? payload.scanner_names
+    : Object.keys(scanners);
+  const runningScanner = payload.running_scanner;
 
-  const cards = [
-    ["coverage",  "Test Coverage",   "🧪", scanners.coverage   || {}, {extraControl: covCtrl}],
-    ["ruff",      "Code Bugs (ruff)","🪲", scanners.ruff       || {}, null],
-    ["secrets",   "Security / Secrets","🔒", scanners.secrets  || {}, null],
-    ["tech_debt", "Tech Debt",       "🧹", scanners.tech_debt  || {}, null],
-  ];
+  const cards = order.map(name => {
+    const [label, icon] = SCANNER_META[name] || [util_humanise(name), "🔧"];
+    let extraControl;
+    if (name === "coverage") {
+      // Coverage's per-card action is the expensive pytest --cov refresh
+      // (re-reading the same .coverage yields the same number), kept on
+      // its own endpoint. (PR-2 of #51, fixes the 2026-05-27 stale bug.)
+      extraControl = refreshingCov
+        ? `<span style="color:var(--cyan)">refreshing…</span>`
+        : `<button onclick="util_refreshCoverage()"
+                    style="background:transparent;border:1px solid var(--border);color:var(--cyan);
+                           padding:2px 8px;border-radius:4px;cursor:pointer;font-size:10px;font-family:var(--font-mono)"
+                    title="Re-runs pytest --cov to refresh the .coverage file (~60s)">↻ Refresh</button>`;
+    } else {
+      // Cheap scanners get a per-card "↻ Run" that re-runs only this
+      // scanner. Disabled (shows "running…") while any scan is in flight;
+      // the card whose scanner is active gets the explicit spinner.
+      extraControl = (runningScanner === name)
+        ? `<span style="color:var(--cyan)">running…</span>`
+        : `<button onclick="util_runScanner('${name}')" ${anyInFlight ? "disabled" : ""}
+                    style="background:transparent;border:1px solid var(--border);
+                           color:${anyInFlight ? "var(--muted)" : "var(--cyan)"};
+                           padding:2px 8px;border-radius:4px;cursor:${anyInFlight ? "default" : "pointer"};
+                           font-size:10px;font-family:var(--font-mono)"
+                    title="Re-run just this scanner">↻ Run</button>`;
+    }
+    return [name, label, icon, scanners[name] || {}, {extraControl}];
+  });
   grid.innerHTML = refreshErrorBanner + cards.map(([_, label, icon, r, opts]) =>
     util_renderScannerCard(_, label, icon, r, opts)
   ).join("");
@@ -8082,6 +8110,33 @@ async function util_refreshCoverage() {
     await util_loadCodeHealth();
   } catch (e) {
     alert("Coverage refresh failed to start: " + e.message);
+  }
+}
+
+function util_humanise(name) {
+  // "tech_debt" -> "Tech Debt". Fallback label for scanners not in
+  // SCANNER_META (so a future backend scanner still renders a card).
+  return String(name).replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+}
+
+async function util_runScanner(name) {
+  // Re-run a single scanner via POST /api/codehealth/run/<name>. Leaves
+  // the other cards untouched. The status poll flips the per-card
+  // spinner + the global button back when is_running clears.
+  try {
+    const r = await fetch("/api/codehealth/run/" + encodeURIComponent(name), {method:"POST"});
+    if (r.status === 409) {            // a scan is already in flight
+      await util_loadCodeHealth();
+      return;
+    }
+    if (!r.ok) {                       // 404 unknown scanner / other
+      const data = await r.json().catch(()=>({}));
+      alert("Couldn't run " + name + ": " + (data.error || r.status));
+      return;
+    }
+    await util_loadCodeHealth();        // render spinner state; poll does the rest
+  } catch (e) {
+    alert("Couldn't run " + name + ": " + e.message);
   }
 }
 
