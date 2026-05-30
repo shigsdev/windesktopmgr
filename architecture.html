@@ -193,7 +193,7 @@
       <button type="button" onclick="exportPDF()" title="Open the browser print dialog — choose 'Save as PDF'" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--yellow);border:none;cursor:pointer;border-right:1px solid var(--border)">Export PDF</button>
       <button type="button" onclick="exportHTML()" title="Download a self-contained copy of this diagram" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--blue);border:none;cursor:pointer">Export HTML</button>
     </div>
-    <div class="badge" style="color:var(--green);border-color:#00e67633">2,670 tests · 86% coverage</div>
+    <div class="badge" style="color:var(--green);border-color:#00e67633">2,412 tests · 86% coverage</div>
     <div class="badge">
       <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
     </div>
@@ -807,7 +807,7 @@
 
   <!-- ── LAYER 7: TEST SUITE ──────────────────────────────────── -->
   <div class="row row-tests" id="layer-tests">
-    <div class="row-label">🧪 Test Suite — 2,670 tests · pytest · 86% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
+    <div class="row-label">🧪 Test Suite — 2,412 tests · pytest · 86% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
       <div class="test-chip">
         <div class="test-title">test_routes.py</div>
@@ -815,7 +815,9 @@
       </div>
       <div class="test-chip">
         <div class="test-title">test_powershell.py</div>
-        <div class="test-sub">445 tests · WMI mocking · subprocess mocking · win32com Windows-Update COM mocking · single-item normalization · timeouts · cloud attrs · NVIDIA fuzzy PFID · WU fallback · update cache (version-aware invalidation · thread-safe · empty-version guard) · API read cap · version-string guard · branch detection · expand.exe (no-PS catalog parse)</div>
+        <div class="test-sub">315 tests · WMI mocking · subprocess mocking · win32com Windows-Update COM mocking · single-item normalization · timeouts · update cache (version-aware invalidation · thread-safe · empty-version guard) · expand.exe (no-PS catalog parse) · driver/NVIDIA/disk groups split to test_drivers_disk.py</div>
+        <div class="test-file">test_drivers_disk.py</div>
+        <div class="test-sub">130 tests · driver health · NVIDIA detection/API · fuzzy PFID · WU fallback · disk analyzer + quickwins (split from test_powershell.py for size, #56)</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_system_health_diag.py</div>
@@ -855,7 +857,11 @@
       </div>
       <div class="test-chip">
         <div class="test-title">test_homenet.py</div>
-        <div class="test-sub">291 tests · Verizon · Orbi SOAP · SNMP · ARP · credentials · blueprint routes · IEEE OUI lookup · mDNS · randomized-MAC detection · category substring patterns · topology builder (#9) · Verizon MoCA bridge auto-discovery (#42) · per-bridge column layout · phantom-BSSID filter · remote reboot (#16) · router config backups (manual; scheduler reverted 2026-05-11) · ConnAPMAC validation + debug capture (2026-05-12 firmware quirk) · Blink-Sync-Module false-positive guard · clickable infra column headers · atomic inventory save + fail-loud load · Commscope/Arris bridge auto-tag guard</div>
+        <div class="test-sub">209 tests · Verizon · Orbi SOAP · SNMP · ARP · credentials · blueprint routes · IEEE OUI lookup · mDNS · randomized-MAC detection · category substring patterns · ConnAPMAC validation + debug capture (2026-05-12 firmware quirk) · Blink-Sync-Module false-positive guard · atomic inventory save + fail-loud load (topology/reboot/backup groups split to test_homenet_topology.py, #57)</div>
+      </div>
+      <div class="test-chip">
+        <div class="test-title">test_homenet_topology.py</div>
+        <div class="test-sub">107 tests · topology builder (#9) · Verizon MoCA bridge auto-discovery (#42) · per-bridge column layout · phantom-BSSID filter · remote reboot (#16) · router config backups (manual; scheduler reverted 2026-05-11) · backup health (split from test_homenet.py for size, #57)</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_logging.py</div>
@@ -1163,7 +1169,7 @@
           <div style="flex:0 0 auto;min-width:120px;background:#ff80ab0a;border:1px solid #ff80ab44;border-radius:8px;padding:10px 12px;text-align:center">
             <div style="font-size:16px;margin-bottom:4px">🧪</div>
             <div style="color:var(--pink);font-weight:700;font-size:10px">3. PYTEST</div>
-            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">2,670 tests · 86% cov · ~60s</div>
+            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">2,412 tests · 86% cov · ~60s</div>
           </div>
           <div style="display:flex;align-items:center;padding:0 4px;color:var(--pink);font-size:14px">→</div>
 
@@ -1305,7 +1311,7 @@
 
 
 <div class="footer">
-  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 2,670 tests · ~37,101 lines</span>
+  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 2,412 tests · ~37,101 lines</span>
   <span>github.com/shigsdev/windesktopmgr · Updated 2026-05-18</span>
 </div>
 
