@@ -9647,6 +9647,8 @@ def codehealth_status_route():
          "state": {<scan result> or {}},
          "is_stale": <bool>,                          # last_run > STALE_DAYS ago, or never run
          "is_running": <bool>,                        # background scan currently in flight
+         "running_scanner": <str|None>,               # name of the single scanner re-running, or None
+         "scanner_names": [<str>, ...],               # registered scanners, in card order
          "is_refreshing_coverage": <bool>,            # pytest --cov refresh in flight (PR-2 of #51)
          "coverage_refresh_last_result": <dict|None>, # last refresh outcome (stdout/stderr tail)
          "stale_days_threshold": <int>}
@@ -9661,6 +9663,8 @@ def codehealth_status_route():
             "state": state,
             "is_stale": codehealth.is_stale(state),
             "is_running": codehealth.is_running(),
+            "running_scanner": codehealth.running_scanner(),
+            "scanner_names": codehealth.scanner_names(),
             "is_refreshing_coverage": codehealth.is_refreshing_coverage(),
             "coverage_refresh_last_result": codehealth.get_coverage_refresh_last_result(),
             "stale_days_threshold": codehealth.STALE_DAYS,
@@ -9678,6 +9682,31 @@ def codehealth_run_route():
     ``/api/codehealth/status`` until ``is_running`` flips back to false.
     """
     started = codehealth.run_in_background()
+    if not started:
+        return jsonify({"ok": False, "started": False, "error": "scan already running"}), 409
+    return jsonify({"ok": True, "started": True}), 202
+
+
+@app.route("/api/codehealth/run/<scanner>", methods=["POST"])
+def codehealth_run_one_route(scanner):
+    """Re-run a SINGLE scanner (coverage / ruff / secrets / tech_debt)
+    in the background, leaving the other cards untouched. Backs the
+    per-card "↻ Run" buttons.
+
+    Returns 202 + ``{"ok": true, "started": true}`` on success.
+    404 + ``{"ok": false, "error": "unknown scanner"}`` for an
+    unregistered name. 409 + ``{"ok": false, "started": false}`` if any
+    scan (global or single) is already in flight. UI polls
+    ``/api/codehealth/status`` until ``is_running`` flips back to false.
+
+    Note: the coverage card's expensive pytest path stays on
+    ``/api/codehealth/refresh-coverage``; ``run/coverage`` here just
+    re-reads the existing .coverage file (cheap), same as the run-all
+    sweep does.
+    """
+    if scanner not in codehealth.scanner_names():
+        return jsonify({"ok": False, "error": f"unknown scanner: {scanner}"}), 404
+    started = codehealth.run_one_in_background(scanner)
     if not started:
         return jsonify({"ok": False, "started": False, "error": "scan already running"}), 409
     return jsonify({"ok": True, "started": True}), 202
