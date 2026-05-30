@@ -382,7 +382,8 @@ Prefix all tab-specific functions with tab abbreviation to prevent global scope 
 `hn` = Home Network, `cred` = Credentials, `rem` = Remediation, `db` = Dashboard,
 `drv` = Drivers, `bsod` = BSOD, `su` = Startup, `dk` = Disk, `net` = Network,
 `upd` = Updates, `ev` = Events, `proc` = Processes, `th` = Thermals, `svc` = Services,
-`hh` = Health History, `tl` = Timeline, `mem` = Memory, `bios` = BIOS, `si` = SysInfo.
+`hh` = Health History, `tl` = Timeline, `mem` = Memory, `bios` = BIOS, `si` = SysInfo,
+`bl` = Baseline, `bk` = Backup, `cc` = CloudCopy (Backup §3), `util` = Utilities (code-health scanners).
 
 ---
 
@@ -395,6 +396,12 @@ tests/
 ├── test_summarizers.py    # All summarize_*() functions
 ├── test_routes.py         # Flask API endpoints
 └── test_powershell.py     # All subprocess.run / PowerShell call sites
+
+# The four files above are the original core layer. The suite has since grown
+# to ~36 test_*.py files — roughly one per module (test_codehealth.py,
+# test_backup.py, test_baseline.py, test_cloudcopy.py, test_tray.py,
+# test_playwright_smoke.py, etc.). New module → new tests/test_<module>.py
+# mirroring these patterns.
 ```
 
 ---
@@ -482,7 +489,7 @@ this functional behavior still correct."
 ## Running tests
 
 ```bash
-# All tests (serial — cleanest output, ~3m37s for 1,800+ tests)
+# All tests (serial — cleanest output, ~3m37s for 2,670+ tests)
 pytest tests/ -v
 
 # All tests in parallel (backlog #30, recommended for fast iteration)
