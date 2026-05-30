@@ -1350,9 +1350,10 @@ class TestDriverTabNvidiaCard:
             """
         )
         assert nv["found"], "NVIDIA card is not inside #driver-grid — it must be in the matrix"
-        assert nv["status"] in ("up_to_date", "update_available"), (
-            f"NVIDIA grid card has unexpected data-driver-status {nv['status']!r}"
-        )
+        assert nv["status"] in (
+            "up_to_date",
+            "update_available",
+        ), f"NVIDIA grid card has unexpected data-driver-status {nv['status']!r}"
 
         actionable = [e for e in errors if "favicon" not in e.lower()]
         assert not actionable, f"console errors on the Drivers tab: {actionable}"
@@ -1589,3 +1590,133 @@ class TestTrendsDrilldownModal:
             f"{result['total'] - result['withClick']} of {result['total']} Trends cards "
             "are missing the openTrendDrilldown onclick handler"
         )
+
+
+class TestCodeHealthCardDetails:
+    """Utilities-tab code-health cards must expose their findings, not
+    just a one-line summary. The 2026-05-30 bug: the Tech Debt card's
+    'INFO' was a non-clickable severity pill, and the backend's rich
+    ``details`` (the 14 TODOs + 4 oversized files, the lowest-coverage
+    files, the ruff findings) were computed but never rendered -- so the
+    card looked like it had a broken info button.
+
+    The fix renders a ``<details data-scanner-details=...>`` disclosure
+    on every card that HAS findings, with a count that matches the
+    backend. A clean scanner (e.g. ruff with 0 findings) renders NO
+    disclosure so the card stays compact.
+
+    Assertion model: the authoritative findings come from
+    ``/api/codehealth/status``; the rendered disclosures come from
+    ``[data-scanner-details]`` under ``#util-ch-grid``. Each scanner's
+    expected detail count is derived from its result shape (tech_debt
+    is a dict of todos+large_files; coverage/ruff are lists; secrets is
+    count-only).
+    """
+
+    def _goto_utilities(self, page):
+        page.evaluate("switchTab('utilities')")
+        # util_loadCodeHealth() renders the grid; wait for it to settle
+        # to real cards (not the 'Loading…' placeholder).
+        page.wait_for_function(
+            """
+            () => {
+                const el = document.getElementById('util-ch-grid');
+                if (!el) return false;
+                return el.textContent.trim() !== 'Loading…'
+                    && el.querySelector('[data-scanner]') !== null;
+            }
+            """,
+            timeout=15_000,
+        )
+
+    def _expected_counts(self, page):
+        """Per-scanner expected detail count, derived from the live API
+        the same way the renderer does."""
+        return page.evaluate(
+            """
+            fetch('/api/codehealth/status').then(r => r.json()).then(j => {
+                const sc = (j.state && j.state.scanners) || {};
+                const out = {};
+                for (const [name, res] of Object.entries(sc)) {
+                    const d = res.details;
+                    let count = 0;
+                    if (name === 'tech_debt' && d && !Array.isArray(d)) {
+                        count = (d.large_files || []).length + (d.todos || []).length;
+                    } else if ((name === 'coverage' || name === 'ruff') && Array.isArray(d)) {
+                        count = d.length;
+                    } else if (name === 'secrets') {
+                        count = Number(res.count || 0);
+                    }
+                    out[name] = count;
+                }
+                return out;
+            })
+            """
+        )
+
+    def test_cards_with_findings_render_a_details_disclosure(self, loaded_page):
+        page, _ = loaded_page
+        self._goto_utilities(page)
+        expected = self._expected_counts(page)
+
+        # At least one scanner should have findings on a real repo
+        # (tech_debt always has oversized files + TODOs here). If not,
+        # skip rather than assert a vacuous truth.
+        if not any(v > 0 for v in expected.values()):
+            pytest.skip("no scanner reported findings -- nothing to expand")
+
+        rendered = page.evaluate(
+            """
+            (() => {
+                const out = {};
+                document.querySelectorAll('#util-ch-grid [data-scanner-details]').forEach(el => {
+                    out[el.getAttribute('data-scanner-details')] =
+                        Number(el.getAttribute('data-detail-count'));
+                });
+                return out;
+            })()
+            """
+        )
+
+        # Every scanner with findings must have a disclosure whose count
+        # matches the backend; every clean scanner must NOT have one.
+        for name, exp in expected.items():
+            if exp > 0:
+                assert name in rendered, (
+                    f"{name} has {exp} findings but renders no <details> disclosure "
+                    f"(the original Tech-Debt bug). Rendered: {rendered}"
+                )
+                assert rendered[name] == exp, (
+                    f"{name} disclosure shows {rendered[name]} details but backend reports {exp}"
+                )
+            else:
+                assert name not in rendered, f"{name} is clean (0 findings) but still renders a details disclosure"
+
+    def test_tech_debt_details_lists_oversized_files_and_todos(self, loaded_page):
+        """The specific card from the bug report: expanding Tech Debt
+        must surface the actual oversized-file names + line counts, not
+        just the summary count."""
+        page, _ = loaded_page
+        self._goto_utilities(page)
+
+        info = page.evaluate(
+            """
+            (() => {
+                const card = document.querySelector('#util-ch-grid [data-scanner="tech_debt"]');
+                if (!card) return {found: false};
+                const det = card.querySelector('[data-scanner-details="tech_debt"]');
+                if (!det) return {found: true, hasDetails: false};
+                // Expand it (native <details>) and read the body text.
+                det.open = true;
+                return {found: true, hasDetails: true, text: det.textContent};
+            })()
+            """
+        )
+        assert info["found"], "tech_debt card not rendered on utilities tab"
+        assert info["hasDetails"], "tech_debt card has no details disclosure -- the info button bug is back"
+        # The body should name at least one oversized file with a line
+        # count. windesktopmgr.py is always >5,000 lines on this repo.
+        assert "windesktopmgr.py" in info["text"], (
+            f"tech_debt details don't list the oversized files: {info['text'][:200]}"
+        )
+        assert "lines" in info["text"], "tech_debt details missing line-count labels"
