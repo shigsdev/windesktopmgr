@@ -15,6 +15,7 @@ import queue
 import subprocess
 from unittest.mock import MagicMock
 
+import bsod
 import windesktopmgr as wdm
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -336,42 +337,42 @@ class TestLoadBsodCache:
     def test_loads_from_file(self, mocker, tmp_path):
         f = tmp_path / "bsod_cache.json"
         f.write_text(json.dumps({"0x0000009f": {"name": "DRIVER_POWER_STATE_FAILURE"}}))
-        mocker.patch("windesktopmgr.BSOD_CACHE_FILE", str(f))
-        wdm._load_bsod_cache()
-        assert "0x0000009f" in wdm._bsod_cache
+        mocker.patch("bsod.BSOD_CACHE_FILE", str(f))
+        bsod._load_bsod_cache()
+        assert "0x0000009f" in bsod._bsod_cache
 
     def test_missing_file(self, mocker, tmp_path):
-        mocker.patch("windesktopmgr.BSOD_CACHE_FILE", str(tmp_path / "nope.json"))
-        wdm._load_bsod_cache()
-        assert wdm._bsod_cache == {}
+        mocker.patch("bsod.BSOD_CACHE_FILE", str(tmp_path / "nope.json"))
+        bsod._load_bsod_cache()
+        assert bsod._bsod_cache == {}
 
     def test_corrupt_json(self, mocker, tmp_path):
         f = tmp_path / "bsod_cache.json"
         f.write_text("not json!")
-        mocker.patch("windesktopmgr.BSOD_CACHE_FILE", str(f))
-        wdm._load_bsod_cache()
-        assert wdm._bsod_cache == {}
+        mocker.patch("bsod.BSOD_CACHE_FILE", str(f))
+        bsod._load_bsod_cache()
+        assert bsod._bsod_cache == {}
 
 
 class TestSaveBsodCache:
     def test_writes_json(self, mocker, tmp_path):
         f = tmp_path / "bsod_cache.json"
-        mocker.patch("windesktopmgr.BSOD_CACHE_FILE", str(f))
-        wdm._bsod_cache = {"0x00000139": {"name": "test"}}
-        wdm._save_bsod_cache()
+        mocker.patch("bsod.BSOD_CACHE_FILE", str(f))
+        bsod._bsod_cache = {"0x00000139": {"name": "test"}}
+        bsod._save_bsod_cache()
         data = json.loads(f.read_text())
         assert "0x00000139" in data
 
 
 class TestLookupStopCodeWindows:
     def test_known_code_returns_result(self):
-        result = wdm._lookup_stop_code_windows("0x0000009f")
+        result = bsod._lookup_stop_code_windows("0x0000009f")
         assert result is not None
         assert result["source"] == "windows_bugcheck_table"
         assert "DRIVER_POWER_STATE_FAILURE" in result["name"]
 
     def test_unknown_code_returns_none(self):
-        assert wdm._lookup_stop_code_windows("0xdeadbeef") is None
+        assert bsod._lookup_stop_code_windows("0xdeadbeef") is None
 
 
 class TestLookupStopCodeWeb:
@@ -388,75 +389,75 @@ class TestLookupStopCodeWeb:
                 ]
             },
         )
-        result = wdm._lookup_stop_code_web("0x0000000a")
+        result = bsod._lookup_stop_code_web("0x0000000a")
         assert result is not None
         assert result["source"] == "microsoft_learn"
 
     def test_empty_results_returns_none(self, mocker):
         _mock_urlopen(mocker, {"results": []})
-        assert wdm._lookup_stop_code_web("0xdeadbeef") is None
+        assert bsod._lookup_stop_code_web("0xdeadbeef") is None
 
     def test_network_error_returns_none(self, mocker):
         mocker.patch("windesktopmgr.urllib.request.urlopen", side_effect=Exception("fail"))
-        assert wdm._lookup_stop_code_web("0x0000000a") is None
+        assert bsod._lookup_stop_code_web("0x0000000a") is None
 
 
 class TestGetStopCodeInfo:
     def setup_method(self):
-        self._orig_cache = dict(wdm._bsod_cache)
-        self._orig_flight = set(wdm._bsod_in_flight)
-        wdm._bsod_queue = queue.Queue()
+        self._orig_cache = dict(bsod._bsod_cache)
+        self._orig_flight = set(bsod._bsod_in_flight)
+        bsod._bsod_queue = queue.Queue()
 
     def teardown_method(self):
-        wdm._bsod_cache = self._orig_cache
-        wdm._bsod_in_flight = self._orig_flight
-        wdm._bsod_queue = queue.Queue()
+        bsod._bsod_cache = self._orig_cache
+        bsod._bsod_in_flight = self._orig_flight
+        bsod._bsod_queue = queue.Queue()
 
     def test_empty_code_returns_none(self):
-        assert wdm.get_stop_code_info("") is None
+        assert bsod.get_stop_code_info("") is None
 
     def test_static_kb_hit(self):
         # 0x0000000a is IRQL_NOT_LESS_OR_EQUAL — should be in RECOMMENDATIONS_DB
-        result = wdm.get_stop_code_info("0x0000000a")
+        result = bsod.get_stop_code_info("0x0000000a")
         if result:
             assert result["source"] == "static_kb"
 
     def test_driver_context_enrichment(self):
-        result = wdm.get_stop_code_info("0x0000000a", faulty_driver="ntoskrnl.exe")
+        result = bsod.get_stop_code_info("0x0000000a", faulty_driver="ntoskrnl.exe")
         if result and "driver_context" in result:
             assert "ntoskrnl" in result["driver_context"].lower()
 
     def test_cache_hit(self):
-        wdm._bsod_cache["0xaabbccdd"] = {"source": "cached", "title": "Test Code"}
-        result = wdm.get_stop_code_info("0xaabbccdd")
+        bsod._bsod_cache["0xaabbccdd"] = {"source": "cached", "title": "Test Code"}
+        result = bsod.get_stop_code_info("0xaabbccdd")
         assert result is not None
         assert result["source"] == "cached"
 
     def test_cache_hit_with_driver_context(self):
-        wdm._bsod_cache["0xaabbccdd"] = {"source": "cached", "title": "Test"}
-        result = wdm.get_stop_code_info("0xaabbccdd", faulty_driver="nvlddmkm.sys")
+        bsod._bsod_cache["0xaabbccdd"] = {"source": "cached", "title": "Test"}
+        result = bsod.get_stop_code_info("0xaabbccdd", faulty_driver="nvlddmkm.sys")
         if result and "driver_context" in result:
             assert "nvlddmkm" in result["driver_context"].lower()
 
     def test_queues_unknown_code(self):
-        wdm._bsod_cache = {}
-        wdm._bsod_in_flight = set()
-        result = wdm.get_stop_code_info("0xdeadbeef")
+        bsod._bsod_cache = {}
+        bsod._bsod_in_flight = set()
+        result = bsod.get_stop_code_info("0xdeadbeef")
         assert result is None
-        assert not wdm._bsod_queue.empty()
+        assert not bsod._bsod_queue.empty()
 
     def test_no_duplicate_queue(self):
-        wdm._bsod_cache = {}
-        code_norm = wdm._normalise_stop_code("0xdeadbeef")
-        wdm._bsod_in_flight = {code_norm}
-        wdm.get_stop_code_info("0xdeadbeef")
-        assert wdm._bsod_queue.empty()
+        bsod._bsod_cache = {}
+        code_norm = bsod._normalise_stop_code("0xdeadbeef")
+        bsod._bsod_in_flight = {code_norm}
+        bsod.get_stop_code_info("0xdeadbeef")
+        assert bsod._bsod_queue.empty()
 
 
 class TestGetBsodCacheStatus:
     def test_returns_stats(self):
-        wdm._bsod_cache = {"0x0a": {"title": "T", "source": "s", "fetched": ""}}
-        status = wdm.get_bsod_cache_status()
+        bsod._bsod_cache = {"0x0a": {"title": "T", "source": "s", "fetched": ""}}
+        status = bsod.get_bsod_cache_status()
         assert status["total_cached"] == 1
 
 
@@ -955,20 +956,20 @@ class TestIsThisMonth:
 
         now = datetime.now(timezone.utc)
         ts = now.isoformat()
-        assert wdm._is_this_month(ts) is True
+        assert bsod._is_this_month(ts) is True
 
     def test_old_date_returns_false(self):
-        assert wdm._is_this_month("2020-01-01T00:00:00Z") is False
+        assert bsod._is_this_month("2020-01-01T00:00:00Z") is False
 
     def test_garbage_returns_false(self):
-        assert wdm._is_this_month("not-a-date") is False
+        assert bsod._is_this_month("not-a-date") is False
 
 
 class TestBuildBsodAnalysis:
     def test_empty_events_returns_structure(self, mocker):
-        mocker.patch("windesktopmgr.get_bsod_events", return_value=[])
+        mocker.patch("bsod.get_bsod_events", return_value=[])
         mocker.patch("windesktopmgr.os.path.isdir", return_value=False)
-        result = wdm.build_bsod_analysis()
+        result = bsod.build_bsod_analysis()
         assert "summary" in result
         assert "crashes" in result
         assert "timeline" in result
@@ -982,9 +983,9 @@ class TestBuildBsodAnalysis:
                 "Id": 1001,
             }
         ]
-        mocker.patch("windesktopmgr.get_bsod_events", return_value=events)
+        mocker.patch("bsod.get_bsod_events", return_value=events)
         mocker.patch("windesktopmgr.os.path.isdir", return_value=False)
-        result = wdm.build_bsod_analysis()
+        result = bsod.build_bsod_analysis()
         assert result["summary"]["total_crashes"] >= 0  # may or may not parse depending on format
 
 

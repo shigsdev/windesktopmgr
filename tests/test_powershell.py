@@ -31,6 +31,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import bsod
 import disk
 import remediation
 import windesktopmgr as wdm
@@ -2321,17 +2322,17 @@ class TestGetBsodEvents:
 
     def test_happy_path_returns_list(self, mocker):
         mocker.patch("windesktopmgr._query_event_log_xpath", return_value=list(self.HELPER_ROWS))
-        result = wdm.get_bsod_events()
+        result = bsod.get_bsod_events()
         assert isinstance(result, list)
 
     def test_happy_path_returns_correct_count(self, mocker):
         mocker.patch("windesktopmgr._query_event_log_xpath", return_value=list(self.HELPER_ROWS))
-        result = wdm.get_bsod_events()
+        result = bsod.get_bsod_events()
         assert len(result) == 2
 
     def test_happy_path_has_expected_fields(self, mocker):
         mocker.patch("windesktopmgr._query_event_log_xpath", return_value=list(self.HELPER_ROWS))
-        result = wdm.get_bsod_events()
+        result = bsod.get_bsod_events()
         for item in result:
             # Legacy PS shape: EventId / TimeCreated / ProviderName / Message
             assert "EventId" in item
@@ -2341,7 +2342,7 @@ class TestGetBsodEvents:
 
     def test_helper_queries_correct_event_ids_and_log(self, mocker):
         m = mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
-        wdm.get_bsod_events()
+        bsod.get_bsod_events()
         args, _ = m.call_args
         assert args[0] == "System"
         xpath = args[1]
@@ -2350,19 +2351,19 @@ class TestGetBsodEvents:
 
     def test_empty_returns_empty_list(self, mocker):
         mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
-        result = wdm.get_bsod_events()
+        result = bsod.get_bsod_events()
         assert result == []
 
     def test_helper_exception_returns_empty_list(self, mocker):
         mocker.patch("windesktopmgr._query_event_log_xpath", side_effect=RuntimeError("boom"))
-        result = wdm.get_bsod_events()
+        result = bsod.get_bsod_events()
         assert result == []
 
     def test_no_powershell_invoked(self, mocker):
         """Regression guard — get_bsod_events must not shell out to PS."""
         mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
         ps = mocker.patch("windesktopmgr.subprocess.run")
-        wdm.get_bsod_events()
+        bsod.get_bsod_events()
         assert ps.call_count == 0
 
 
@@ -2866,10 +2867,10 @@ class TestWorkerTaskDoneSafety:
     def test_bsod_worker_no_task_done_on_empty(self, mocker):
         import queue as q
 
-        mock_queue = mocker.patch("windesktopmgr._bsod_queue")
+        mock_queue = mocker.patch("bsod._bsod_queue")
         mock_queue.get.side_effect = [q.Empty, KeyboardInterrupt]
         try:
-            wdm._bsod_lookup_worker()
+            bsod._bsod_lookup_worker()
         except KeyboardInterrupt:
             pass
         mock_queue.task_done.assert_not_called()

@@ -26,6 +26,7 @@ import pytest
 if sys.platform != "win32":
     pytest.skip("Integration tests require Windows", allow_module_level=True)
 
+import bsod
 import disk
 import windesktopmgr as wdm
 
@@ -151,7 +152,7 @@ class TestGetStartupItemsIntegration:
 
 class TestGetBsodEventsIntegration:
     def test_returns_list(self):
-        result = wdm.get_bsod_events()
+        result = bsod.get_bsod_events()
         assert isinstance(result, list)
 
 

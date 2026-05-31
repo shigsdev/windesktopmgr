@@ -24,6 +24,7 @@ if PROJECT_ROOT not in sys.path:
 
 import pytest
 
+import bsod
 import disk
 import homenet
 import windesktopmgr as wdm
@@ -127,14 +128,14 @@ def reset_globals():
     wdm._scan_status = {"status": "idle", "progress": 0, "message": "Ready to scan"}
 
     # Knowledge caches (normally loaded from JSON on startup)
-    wdm._bsod_cache.clear()
+    bsod._bsod_cache.clear()
     wdm._event_cache.clear()
     wdm._startup_cache.clear()
     wdm._process_cache.clear()
     wdm._services_cache.clear()
 
     # In-flight sets / queues — drain without blocking
-    wdm._bsod_in_flight.clear()
+    bsod._bsod_in_flight.clear()
     wdm._lookup_in_flight.clear()
     wdm._startup_in_flight.clear()
     wdm._process_in_flight.clear()
@@ -171,7 +172,7 @@ def reset_globals():
     yield  # run the test
 
     # Post-test cleanup (same as pre-test for symmetry)
-    wdm._bsod_cache.clear()
+    bsod._bsod_cache.clear()
     wdm._event_cache.clear()
     wdm._startup_cache.clear()
     wdm._process_cache.clear()

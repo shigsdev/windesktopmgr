@@ -5,6 +5,7 @@ Tests for all summarize_* functions — pure Python, no subprocess required.
 
 from datetime import datetime, timedelta, timezone
 
+import bsod
 import windesktopmgr as wdm
 
 
@@ -249,21 +250,21 @@ class TestSummarizeDrivers:
 
 class TestSummarizeBsod:
     def test_zero_crashes_returns_ok(self):
-        result = wdm.summarize_bsod(_bsod_data([]))
+        result = bsod.summarize_bsod(_bsod_data([]))
         assert result["status"] == "ok"
         assert "stable" in result["headline"].lower()
 
     def test_more_than_3_this_month_critical(self):
         crashes = [_crash("HYPERVISOR_ERROR")] * 5
         data = _bsod_data(crashes, this_month=5)
-        result = wdm.summarize_bsod(data)
+        result = bsod.summarize_bsod(data)
         levels = [i["level"] for i in result["insights"]]
         assert "critical" in levels
 
     def test_avg_uptime_below_24h_critical(self):
         crashes = [_crash("HYPERVISOR_ERROR")]
         data = _bsod_data(crashes, avg_uptime=12, this_month=1)
-        result = wdm.summarize_bsod(data)
+        result = bsod.summarize_bsod(data)
         levels = [i["level"] for i in result["insights"]]
         assert "critical" in levels
 
@@ -276,7 +277,7 @@ class TestSummarizeBsod:
         ]
         crashes = [_crash("HYPERVISOR_ERROR")] * 4
         data = _bsod_data(crashes, timeline=timeline, this_month=4)
-        result = wdm.summarize_bsod(data)
+        result = bsod.summarize_bsod(data)
         texts = " ".join(i["text"] for i in result["insights"])
         assert "trending" in texts.lower() or result["status"] in ("warning", "critical")
 
@@ -289,12 +290,12 @@ class TestSummarizeBsod:
         ]
         crashes = [_crash("HYPERVISOR_ERROR")] * 5
         data = _bsod_data(crashes, timeline=timeline, this_month=0)
-        result = wdm.summarize_bsod(data)
+        result = bsod.summarize_bsod(data)
         texts = " ".join(i["text"] for i in result["insights"])
         assert "trending" in texts.lower() or "downward" in texts.lower()
 
     def test_result_has_required_keys(self):
-        result = wdm.summarize_bsod(_bsod_data([]))
+        result = bsod.summarize_bsod(_bsod_data([]))
         assert "status" in result
         assert "headline" in result
         assert "insights" in result
