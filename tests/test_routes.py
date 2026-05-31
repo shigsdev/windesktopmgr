@@ -14,6 +14,7 @@ import pytest
 
 import bsod
 import events
+import processes
 import windesktopmgr as wdm
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -934,21 +935,18 @@ class TestGlossarySafeProcessesInvariant:
         """The _assert_glossary_in_safe_processes() runs at import time;
         if the invariant breaks, import itself raises. Re-run here so
         the failure points at this test rather than at a cryptic import."""
-        import windesktopmgr as wdm
 
-        wdm._assert_glossary_in_safe_processes()
+        processes._assert_glossary_in_safe_processes()
 
     def test_memcompression_is_in_safe_processes(self):
         """User specifically asked about this one -- lock it down."""
-        import windesktopmgr as wdm
 
-        assert "memcompression" in wdm.SAFE_PROCESSES
+        assert "memcompression" in processes.SAFE_PROCESSES
 
     def test_vmmem_is_in_safe_processes(self):
-        import windesktopmgr as wdm
 
-        assert "vmmem" in wdm.SAFE_PROCESSES
-        assert "vmmemwsl" in wdm.SAFE_PROCESSES
+        assert "vmmem" in processes.SAFE_PROCESSES
+        assert "vmmemwsl" in processes.SAFE_PROCESSES
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3041,7 +3039,7 @@ class TestDiskRunToolRoute:
 def mem_snooze_tmp(tmp_path, monkeypatch):
     """Redirect the snooze file to a per-test tmp path so nothing touches the real store."""
     target = tmp_path / "memory_snoozes.json"
-    monkeypatch.setattr(wdm, "MEMORY_SNOOZE_FILE", str(target))
+    monkeypatch.setattr(processes, "MEMORY_SNOOZE_FILE", str(target))
     return target
 
 

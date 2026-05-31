@@ -6,6 +6,7 @@ Tests for all summarize_* functions — pure Python, no subprocess required.
 from datetime import datetime, timedelta, timezone
 
 import bsod
+import processes
 import windesktopmgr as wdm
 from events import summarize_events
 
@@ -629,7 +630,7 @@ class TestSummarizeProcesses:
         }
 
     def test_empty_processes_ok(self):
-        result = wdm.summarize_processes(self._data([]))
+        result = processes.summarize_processes(self._data([]))
         assert result["status"] == "ok"
 
     def test_critical_memory_hog_critical_status(self):
@@ -639,7 +640,7 @@ class TestSummarizeProcesses:
             flag="critical",
             info={"plain": "Memory Hog", "what": "Uses lots of RAM", "publisher": "Unknown", "safe_kill": True},
         )
-        result = wdm.summarize_processes(self._data([hog], flagged=[hog]))
+        result = processes.summarize_processes(self._data([hog], flagged=[hog]))
         assert result["status"] == "critical"
 
     def test_critical_safe_kill_false_action(self):
@@ -649,7 +650,7 @@ class TestSummarizeProcesses:
             flag="critical",
             info={"plain": "Windows Defender", "what": "Security", "publisher": "Microsoft", "safe_kill": False},
         )
-        result = wdm.summarize_processes(self._data([hog], flagged=[hog]))
+        result = processes.summarize_processes(self._data([hog], flagged=[hog]))
         actions = " ".join(i["action"] for i in result["insights"])
         assert "do not kill" in actions.lower() or "system" in actions.lower()
 
@@ -660,7 +661,7 @@ class TestSummarizeProcesses:
             flag="critical",
             info={"plain": "Chrome", "what": "Browser", "publisher": "Google", "safe_kill": True},
         )
-        result = wdm.summarize_processes(self._data([hog], flagged=[hog]))
+        result = processes.summarize_processes(self._data([hog], flagged=[hog]))
         actions = " ".join(i["action"] for i in result["insights"])
         assert "safe to kill" in actions.lower()
 
@@ -671,13 +672,13 @@ class TestSummarizeProcesses:
             flag="warning",
             info={"plain": "Slack", "what": "Chat app", "publisher": "Slack", "safe_kill": True},
         )
-        result = wdm.summarize_processes(self._data([warn], flagged=[warn]))
+        result = processes.summarize_processes(self._data([warn], flagged=[warn]))
         assert result["status"] == "warning"
 
     def test_normal_processes_ok(self):
         p1 = _process("chrome.exe", mem_mb=300)
         p2 = _process("notepad.exe", mem_mb=10)
-        result = wdm.summarize_processes(self._data([p1, p2]))
+        result = processes.summarize_processes(self._data([p1, p2]))
         assert result["status"] == "ok"
 
 

@@ -15,6 +15,8 @@ import platform
 import subprocess
 import sys
 
+import processes
+
 # Project root on sys.path
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, ROOT)
@@ -111,13 +113,13 @@ def main():
         # in-process winreg + pathlib + the Schedule.Service COM API
         # (backlog #28 close-out), so there is no subprocess stdout to
         # capture.
-        ("get_process_list", wdm.get_process_list, ["ps_process_list.json"]),
+        ("get_process_list", processes.get_process_list, ["ps_process_list.json"]),
         # get_thermals and get_system_timeline no longer shell out to PowerShell
         # — thermals uses the in-process ``wmi`` + ``psutil`` packages and the
         # timeline uses win32evtlog + get_update_history() (backlog #28
         # close-out), so there is no subprocess stdout to capture.
         ("get_services_list", wdm.get_services_list, ["ps_services_list.json"]),
-        ("get_memory_analysis", wdm.get_memory_analysis, ["ps_memory_analysis.json", "ps_memory_sysinfo.json"]),
+        ("get_memory_analysis", processes.get_memory_analysis, ["ps_memory_analysis.json", "ps_memory_sysinfo.json"]),
         ("get_current_bios", wdm.get_current_bios, ["ps_bios.json"]),
         ("get_credentials_network_health", wdm.get_credentials_network_health, ["ps_credentials.json"]),
         ("get_event_log_entries", lambda: wdm.get_event_log_entries(50), ["ps_event_log.json"]),
