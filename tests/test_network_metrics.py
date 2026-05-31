@@ -26,17 +26,18 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import windesktopmgr as wdm
+import network as net
+import windesktopmgr as wdm  # noqa: F401 -- public network funcs resolve via wdm re-export in other tests
 
 
 @pytest.fixture(autouse=True)
 def _reset_net_samples():
     """Wipe the throughput-baseline dict between tests so order doesn't matter."""
-    with wdm._net_samples_lock:
-        wdm._last_net_samples.clear()
+    with net._net_samples_lock:
+        net._last_net_samples.clear()
     yield
-    with wdm._net_samples_lock:
-        wdm._last_net_samples.clear()
+    with net._net_samples_lock:
+        net._last_net_samples.clear()
 
 
 def _fake_counters(nic_bytes: dict) -> dict:
@@ -62,7 +63,7 @@ class TestMeasureTcpLatency:
         # perf_counter advances exactly 0.0425 s -> 42.5 ms
         times = iter([1000.0000, 1000.0425])
         mocker.patch("windesktopmgr.time.perf_counter", side_effect=lambda: next(times))
-        result = wdm._measure_tcp_latency(("1.1.1.1", 53))
+        result = net._measure_tcp_latency(("1.1.1.1", 53))
         assert result == 42.5
 
     def test_timeout_returns_none(self, mocker):
@@ -70,35 +71,35 @@ class TestMeasureTcpLatency:
 
         # socket.timeout is a TimeoutError alias in Py 3.10+; use the builtin.
         mocker.patch.object(socket, "create_connection", side_effect=TimeoutError("timed out"))
-        assert wdm._measure_tcp_latency(("1.1.1.1", 53)) is None
+        assert net._measure_tcp_latency(("1.1.1.1", 53)) is None
 
     def test_oserror_returns_none(self, mocker):
         import socket
 
         mocker.patch.object(socket, "create_connection", side_effect=OSError("connection refused"))
-        assert wdm._measure_tcp_latency(("1.1.1.1", 53)) is None
+        assert net._measure_tcp_latency(("1.1.1.1", 53)) is None
 
     def test_gaierror_returns_none(self, mocker):
         import socket
 
         mocker.patch.object(socket, "create_connection", side_effect=socket.gaierror("DNS fail"))
-        assert wdm._measure_tcp_latency(("nonexistent.invalid", 53)) is None
+        assert net._measure_tcp_latency(("nonexistent.invalid", 53)) is None
 
 
 class TestLoopbackDetector:
     def test_windows_loopback_name(self):
-        assert wdm._is_loopback_adapter("Loopback Pseudo-Interface 1") is True
+        assert net._is_loopback_adapter("Loopback Pseudo-Interface 1") is True
 
     def test_linux_loopback_short_name(self):
-        assert wdm._is_loopback_adapter("lo") is True
+        assert net._is_loopback_adapter("lo") is True
 
     def test_real_nic_names_false(self):
-        assert wdm._is_loopback_adapter("Ethernet") is False
-        assert wdm._is_loopback_adapter("Wi-Fi") is False
-        assert wdm._is_loopback_adapter("eth0") is False
+        assert net._is_loopback_adapter("Ethernet") is False
+        assert net._is_loopback_adapter("Wi-Fi") is False
+        assert net._is_loopback_adapter("eth0") is False
         # Adapter whose name contains "loop" but NOT "loopback" must not be filtered.
         # Real-world case: Hyper-V creates "vEthernet (Default Switch)"-style names.
-        assert wdm._is_loopback_adapter("vEthernet (Loop)") is False
+        assert net._is_loopback_adapter("vEthernet (Loop)") is False
 
 
 class TestGetNetworkMetrics:
@@ -137,7 +138,7 @@ class TestGetNetworkMetrics:
             mocker.patch("windesktopmgr.psutil.net_connections", return_value=conns)
 
         # Latency: patch _measure_tcp_latency directly for determinism
-        mocker.patch("windesktopmgr._measure_tcp_latency", return_value=lat_ms)
+        mocker.patch("network._measure_tcp_latency", return_value=lat_ms)
 
     def test_first_call_throughput_is_zero(self, mocker):
         """No baseline -> rate uncomputable -> 0 Mbps, not None."""
@@ -187,7 +188,7 @@ class TestGetNetworkMetrics:
         counters2 = _fake_counters({"Ethernet": (1_000_000, 500_000)})
         mocker.patch("windesktopmgr.psutil.net_io_counters", side_effect=[counters1, counters2])
         mocker.patch("windesktopmgr.psutil.net_connections", return_value=[])
-        mocker.patch("windesktopmgr._measure_tcp_latency", return_value=1.0)
+        mocker.patch("network._measure_tcp_latency", return_value=1.0)
         # Freeze time: T=1000.0, T+1=1001.0
         mocker.patch("windesktopmgr.time.time", side_effect=[1000.0, 1001.0])
 
@@ -212,7 +213,7 @@ class TestGetNetworkMetrics:
         )
         mocker.patch("windesktopmgr.psutil.net_io_counters", side_effect=[counters1, counters2])
         mocker.patch("windesktopmgr.psutil.net_connections", return_value=[])
-        mocker.patch("windesktopmgr._measure_tcp_latency", return_value=1.0)
+        mocker.patch("network._measure_tcp_latency", return_value=1.0)
         mocker.patch("windesktopmgr.time.time", side_effect=[1000.0, 1001.0])
 
         wdm.get_network_metrics()
@@ -227,7 +228,7 @@ class TestGetNetworkMetrics:
         counters2 = _fake_counters({"Ethernet": (1_000, 2_000)})  # reset
         mocker.patch("windesktopmgr.psutil.net_io_counters", side_effect=[counters1, counters2])
         mocker.patch("windesktopmgr.psutil.net_connections", return_value=[])
-        mocker.patch("windesktopmgr._measure_tcp_latency", return_value=1.0)
+        mocker.patch("network._measure_tcp_latency", return_value=1.0)
         mocker.patch("windesktopmgr.time.time", side_effect=[1000.0, 1001.0])
 
         wdm.get_network_metrics()
@@ -242,7 +243,7 @@ class TestGetNetworkMetrics:
         counters2 = _fake_counters({"Ethernet": (1000, 1000)})
         mocker.patch("windesktopmgr.psutil.net_io_counters", side_effect=[counters, counters2])
         mocker.patch("windesktopmgr.psutil.net_connections", return_value=[])
-        mocker.patch("windesktopmgr._measure_tcp_latency", return_value=1.0)
+        mocker.patch("network._measure_tcp_latency", return_value=1.0)
         mocker.patch("windesktopmgr.time.time", side_effect=[1000.0, 1000.0])  # same ts!
 
         wdm.get_network_metrics()
@@ -266,7 +267,7 @@ class TestGetNetworkMetrics:
         counters = _fake_counters({"Ethernet": (0, 0)})
         mocker.patch("windesktopmgr.psutil.net_io_counters", return_value=counters)
         mocker.patch("windesktopmgr.psutil.net_connections", side_effect=RuntimeError("broken"))
-        mocker.patch("windesktopmgr._measure_tcp_latency", return_value=15.0)
+        mocker.patch("network._measure_tcp_latency", return_value=15.0)
 
         result = wdm.get_network_metrics()
         assert result["latency_ms"] == 15.0
