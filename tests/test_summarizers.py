@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 import bsod
 import processes
+import sysinfo
 import windesktopmgr as wdm
 from events import summarize_events
 
@@ -778,58 +779,58 @@ class TestSummarizeSysinfo:
         return d
 
     def test_returns_required_keys(self):
-        result = wdm.summarize_sysinfo(self._data())
+        result = sysinfo.summarize_sysinfo(self._data())
         assert {"status", "headline", "insights", "actions"} <= set(result.keys())
 
     def test_ok_status_for_normal_system(self):
-        result = wdm.summarize_sysinfo(self._data())
+        result = sysinfo.summarize_sysinfo(self._data())
         assert result["status"] == "ok"
 
     def test_headline_contains_manufacturer_and_cpu(self):
-        result = wdm.summarize_sysinfo(self._data())
+        result = sysinfo.summarize_sysinfo(self._data())
         assert "Dell" in result["headline"]
         assert "i9-14900K" in result["headline"]
 
     def test_warning_for_high_uptime(self):
-        result = wdm.summarize_sysinfo(self._data(uptime="15.00:00:00"))
+        result = sysinfo.summarize_sysinfo(self._data(uptime="15.00:00:00"))
         assert result["status"] == "warning"
         levels = [i["level"] for i in result["insights"]]
         assert "warning" in levels
 
     def test_info_for_moderate_uptime(self):
-        result = wdm.summarize_sysinfo(self._data(uptime="08.12:00:00"))
+        result = sysinfo.summarize_sysinfo(self._data(uptime="08.12:00:00"))
         # Moderate uptime should be info, not warning
         levels = [i["level"] for i in result["insights"]]
         assert "info" in levels
 
     def test_no_uptime_warning_for_short_uptime(self):
-        result = wdm.summarize_sysinfo(self._data(uptime="02.05:30:00"))
+        result = sysinfo.summarize_sysinfo(self._data(uptime="02.05:30:00"))
         levels = [i["level"] for i in result["insights"]]
         assert "warning" not in levels
 
     def test_warning_for_low_ram(self):
-        result = wdm.summarize_sysinfo(self._data(ram_gb=8))
+        result = sysinfo.summarize_sysinfo(self._data(ram_gb=8))
         assert result["status"] == "warning"
         texts = " ".join(i["text"] for i in result["insights"])
         assert "8" in texts
 
     def test_ok_for_sufficient_ram(self):
-        result = wdm.summarize_sysinfo(self._data(ram_gb=32))
+        result = sysinfo.summarize_sysinfo(self._data(ram_gb=32))
         texts = " ".join(i["text"] for i in result["insights"])
         assert "32" in texts
 
     def test_cpu_insight_present(self):
-        result = wdm.summarize_sysinfo(self._data())
+        result = sysinfo.summarize_sysinfo(self._data())
         texts = " ".join(i["text"] for i in result["insights"])
         assert "i9-14900K" in texts
 
     def test_os_insight_present(self):
-        result = wdm.summarize_sysinfo(self._data())
+        result = sysinfo.summarize_sysinfo(self._data())
         texts = " ".join(i["text"] for i in result["insights"])
         assert "Windows 11" in texts
 
     def test_empty_data_returns_warning(self):
-        result = wdm.summarize_sysinfo({})
+        result = sysinfo.summarize_sysinfo({})
         assert result["status"] == "warning"
         assert "unavailable" in result["headline"].lower()
         assert len(result["insights"]) > 0
@@ -837,23 +838,23 @@ class TestSummarizeSysinfo:
 
     def test_partial_data_does_not_crash(self):
         """Only Computer key present — should not raise."""
-        result = wdm.summarize_sysinfo({"Computer": {"Name": "TEST", "TotalRAM_GB": 16}})
+        result = sysinfo.summarize_sysinfo({"Computer": {"Name": "TEST", "TotalRAM_GB": 16}})
         assert "status" in result
 
     def test_actions_populated_on_high_uptime(self):
-        result = wdm.summarize_sysinfo(self._data(uptime="20.00:00:00"))
+        result = sysinfo.summarize_sysinfo(self._data(uptime="20.00:00:00"))
         assert len(result["actions"]) > 0
         assert "reboot" in result["actions"][0].lower()
 
     def test_memory_type_insight_ddr5(self):
         mem = [{"MemoryType": "DDR5", "ConfiguredClockSpeed": 5600, "Capacity": 17179869184}]
-        result = wdm.summarize_sysinfo(self._data(memory=mem))
+        result = sysinfo.summarize_sysinfo(self._data(memory=mem))
         texts = " ".join(i["text"] for i in result["insights"])
         assert "DDR5" in texts
 
     def test_memory_type_insight_ddr4(self):
         mem = [{"MemoryType": "DDR4", "ConfiguredClockSpeed": 3200, "Capacity": 8589934592}]
-        result = wdm.summarize_sysinfo(self._data(memory=mem))
+        result = sysinfo.summarize_sysinfo(self._data(memory=mem))
         texts = " ".join(i["text"] for i in result["insights"])
         assert "DDR4" in texts
         # DDR4 should be info level
@@ -869,20 +870,20 @@ class TestSummarizeSysinfo:
                 "AdapterRAM": 8589934592,
             }
         ]
-        result = wdm.summarize_sysinfo(self._data(gpu=gpu))
+        result = sysinfo.summarize_sysinfo(self._data(gpu=gpu))
         texts = " ".join(i["text"] for i in result["insights"])
         assert "NVIDIA" in texts
         assert "RTX 4060" in texts
 
     def test_sound_devices_insight(self):
         snd = [{"Name": "Realtek HD Audio", "Manufacturer": "Realtek", "Status": "OK"}]
-        result = wdm.summarize_sysinfo(self._data(sound=snd))
+        result = sysinfo.summarize_sysinfo(self._data(sound=snd))
         texts = " ".join(i["text"] for i in result["insights"])
         assert "audio" in texts.lower()
 
     def test_nic_hardware_insight(self):
         nic = [{"Name": "Killer E3100G", "Manufacturer": "Intel"}]
-        result = wdm.summarize_sysinfo(self._data(nic_hw=nic))
+        result = sysinfo.summarize_sysinfo(self._data(nic_hw=nic))
         texts = " ".join(i["text"] for i in result["insights"])
         assert "network" in texts.lower()
 
@@ -1372,7 +1373,7 @@ class TestSummarizeUpgrades:
         }
 
     def test_returns_opportunities_key(self):
-        result = wdm.summarize_upgrades({})
+        result = sysinfo.summarize_upgrades({})
         assert "opportunities" in result
         assert isinstance(result["opportunities"], list)
 
@@ -1380,7 +1381,7 @@ class TestSummarizeUpgrades:
         """Defensive: a totally-empty data dict (WMI failed entirely)
         must return an empty list -- never raise. The UI hides the panel
         on empty so the user just sees the inventory tables below."""
-        result = wdm.summarize_upgrades({})
+        result = sysinfo.summarize_upgrades({})
         assert result["opportunities"] == []
 
     def test_partial_slots_filled_recommends_expansion(self):
@@ -1391,7 +1392,7 @@ class TestSummarizeUpgrades:
             "Memory": [self._stick(16), self._stick(16)],
             "MemoryArray": [self._array(slots=4, max_gb=64)],
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         mem_ops = [o for o in result["opportunities"] if o["category"] == "memory"]
         assert len(mem_ops) >= 1
         op = mem_ops[0]
@@ -1410,7 +1411,7 @@ class TestSummarizeUpgrades:
             "Memory": [self._stick(8), self._stick(8), self._stick(8), self._stick(8)],
             "MemoryArray": [self._array(slots=4, max_gb=64)],
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         mem_ops = [o for o in result["opportunities"] if o["category"] == "memory"]
         assert mem_ops, "expected at least one memory opportunity"
         op = mem_ops[0]
@@ -1424,7 +1425,7 @@ class TestSummarizeUpgrades:
             "Memory": [self._stick(16), self._stick(16), self._stick(16), self._stick(16)],
             "MemoryArray": [self._array(slots=4, max_gb=64)],
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         mem_ops = [o for o in result["opportunities"] if o["category"] == "memory"]
         assert mem_ops
         assert mem_ops[0]["severity"] == "ok"
@@ -1436,7 +1437,7 @@ class TestSummarizeUpgrades:
             "Memory": [self._stick(16)],
             "MemoryArray": [self._array(slots=4, max_gb=64)],
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         warnings = [o for o in result["opportunities"] if o["severity"] == "warning"]
         assert any("single-channel" in o["headline"].lower() for o in warnings)
 
@@ -1448,7 +1449,7 @@ class TestSummarizeUpgrades:
             "Memory": [self._stick(16)],
             "MemoryArray": [self._array(slots=1, max_gb=32)],
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         assert not any("single-channel" in o["headline"].lower() for o in result["opportunities"])
 
     def test_missing_memory_array_skips_memory_opportunities(self):
@@ -1456,7 +1457,7 @@ class TestSummarizeUpgrades:
         can't compute headroom or free slots, so memory opportunities
         are silently skipped rather than guessed at."""
         data = {"Memory": [self._stick(16), self._stick(16)]}
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         # Single-channel doesn't fire here either since total_slots is unknown
         mem_ops = [o for o in result["opportunities"] if o["category"] == "memory"]
         assert mem_ops == []
@@ -1475,7 +1476,7 @@ class TestSummarizeUpgrades:
                 {"SlotDesignation": "PCIEX1_1", "CurrentUsage": "Available", "Description": "PCIe 3.0 x1"},
             ]
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         pcie_ops = [o for o in result["opportunities"] if o["category"] == "pcie"]
         assert len(pcie_ops) == 1
         op = pcie_ops[0]
@@ -1492,7 +1493,7 @@ class TestSummarizeUpgrades:
                 {"SlotDesignation": "PCIEX16_1", "CurrentUsage": "In Use", "Description": "PCIe 4.0 x16"},
             ]
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         assert not [o for o in result["opportunities"] if o["category"] == "pcie"]
 
     def test_spinning_disk_surfaces_ssd_migration(self):
@@ -1504,7 +1505,7 @@ class TestSummarizeUpgrades:
                 {"Model": "Samsung SSD 980 PRO 2TB", "Size": 2 * (1024**3) * 1000, "InterfaceType": "SCSI"},
             ]
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         storage = [o for o in result["opportunities"] if o["category"] == "storage"]
         assert storage, "expected an SSD-migration recommendation"
         # Only the WD drive should count -- not the Samsung NVMe
@@ -1518,7 +1519,7 @@ class TestSummarizeUpgrades:
                 {"Model": "Crucial MX500 SSD", "Size": 1 * (1024**3), "InterfaceType": "SATA"},
             ]
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         assert not [o for o in result["opportunities"] if o["category"] == "storage"]
 
     def test_opportunity_shape_is_stable(self):
@@ -1535,7 +1536,7 @@ class TestSummarizeUpgrades:
                 {"SlotDesignation": "PCIEX16_2", "CurrentUsage": "Available", "Description": "x16"},
             ],
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         for op in result["opportunities"]:
             assert {"category", "severity", "headline", "detail", "action"} <= set(op.keys())
             assert op["category"] in ("memory", "cpu", "gpu", "nic", "pcie", "storage")
@@ -1557,32 +1558,32 @@ class TestSummarizeUpgrades:
 
     def test_jedec_spec_ddr5(self):
         """DDR5-5600 → 'DDR5-5600 PC5-44800' (5600 × 8 = 44800 MB/s)."""
-        assert wdm._jedec_spec("DDR5", 5600) == "DDR5-5600 PC5-44800"
+        assert sysinfo._jedec_spec("DDR5", 5600) == "DDR5-5600 PC5-44800"
 
     def test_jedec_spec_ddr4(self):
-        assert wdm._jedec_spec("DDR4", 3200) == "DDR4-3200 PC4-25600"
+        assert sysinfo._jedec_spec("DDR4", 3200) == "DDR4-3200 PC4-25600"
 
     def test_jedec_spec_unknown_type_falls_back(self):
         """Unknown DDR generation -> just speed, no PC prefix."""
-        assert wdm._jedec_spec("DDR2", 800) == "DDR2-800"
+        assert sysinfo._jedec_spec("DDR2", 800) == "DDR2-800"
 
     def test_jedec_spec_empty_inputs_return_empty(self):
         """Don't synthesise garbage from missing inputs."""
-        assert wdm._jedec_spec("", 5600) == ""
-        assert wdm._jedec_spec("DDR5", 0) == ""
+        assert sysinfo._jedec_spec("", 5600) == ""
+        assert sysinfo._jedec_spec("DDR5", 0) == ""
 
     def test_mem_voltage_ddr5(self):
-        assert "1.1" in wdm._mem_voltage("DDR5")
+        assert "1.1" in sysinfo._mem_voltage("DDR5")
 
     def test_mem_voltage_ddr4(self):
-        assert "1.2" in wdm._mem_voltage("DDR4")
+        assert "1.2" in sysinfo._mem_voltage("DDR4")
 
     def test_mem_voltage_unknown_returns_empty(self):
-        assert wdm._mem_voltage("XYZ") == ""
+        assert sysinfo._mem_voltage("XYZ") == ""
 
     def test_oem_link_dell_uses_service_tag(self):
         """Dell-branded BIOS + non-empty SerialNumber → support URL with the tag."""
-        link = wdm._oem_support_url(
+        link = sysinfo._oem_support_url(
             {"Manufacturer": "Dell Inc.", "SerialNumber": "ABC1234"},
             {"Manufacturer": "Dell Inc."},
         )
@@ -1593,7 +1594,7 @@ class TestSummarizeUpgrades:
 
     def test_oem_link_unknown_oem_returns_none(self):
         """Don't fabricate URLs for OEMs we haven't validated against."""
-        link = wdm._oem_support_url(
+        link = sysinfo._oem_support_url(
             {"Manufacturer": "Acme Computers", "SerialNumber": "X"},
             {"Manufacturer": "Acme"},
         )
@@ -1601,19 +1602,19 @@ class TestSummarizeUpgrades:
 
     def test_oem_link_dell_no_serial_returns_none(self):
         """Empty Service Tag -> no link (would be a bad URL)."""
-        link = wdm._oem_support_url({"Manufacturer": "Dell Inc.", "SerialNumber": ""}, {})
+        link = sysinfo._oem_support_url({"Manufacturer": "Dell Inc.", "SerialNumber": ""}, {})
         assert link is None
-        link2 = wdm._oem_support_url({"Manufacturer": "Dell Inc.", "SerialNumber": "0"}, {})
+        link2 = sysinfo._oem_support_url({"Manufacturer": "Dell Inc.", "SerialNumber": "0"}, {})
         assert link2 is None
 
     def test_slot_numeric_index_extraction(self):
         """The GPU-blocking heuristic depends on parsing slot suffixes."""
-        assert wdm._slot_numeric_index("SLOT1") == 1
-        assert wdm._slot_numeric_index("PCIEX16_3") == 3
-        assert wdm._slot_numeric_index("PCI Express x4-2") == 2
+        assert sysinfo._slot_numeric_index("SLOT1") == 1
+        assert sysinfo._slot_numeric_index("PCIEX16_3") == 3
+        assert sysinfo._slot_numeric_index("PCI Express x4-2") == 2
         # Designations with no trailing digit -> None (e.g. M.2 WLAN)
-        assert wdm._slot_numeric_index("M.2 WLAN") is None
-        assert wdm._slot_numeric_index("") is None
+        assert sysinfo._slot_numeric_index("M.2 WLAN") is None
+        assert sysinfo._slot_numeric_index("") is None
 
     # ── #43 follow-up: GPU-blocking heuristic ──────────────────────────
 
@@ -1629,7 +1630,7 @@ class TestSummarizeUpgrades:
             {"SlotDesignation": "SLOT3", "CurrentUsage": "In Use", "Description": "x1"},
         ]
         gpus = [{"Name": "NVIDIA GeForce RTX 4060 Ti", "AdapterCompatibility": "NVIDIA"}]
-        blocked = wdm._estimate_gpu_blocked_slots(slots, gpus)
+        blocked = sysinfo._estimate_gpu_blocked_slots(slots, gpus)
         assert blocked == ["SLOT2"]
 
     def test_no_blocked_slot_when_no_discrete_gpu(self):
@@ -1639,7 +1640,7 @@ class TestSummarizeUpgrades:
             {"SlotDesignation": "SLOT2", "CurrentUsage": "Available", "Description": "x4"},
         ]
         gpus = [{"Name": "Intel UHD Graphics 770", "AdapterCompatibility": "Intel"}]
-        assert wdm._estimate_gpu_blocked_slots(slots, gpus) == []
+        assert sysinfo._estimate_gpu_blocked_slots(slots, gpus) == []
 
     def test_no_blocked_slot_when_adjacent_slot_already_in_use(self):
         """If the next slot is already populated, don't flag it -- the user
@@ -1649,7 +1650,7 @@ class TestSummarizeUpgrades:
             {"SlotDesignation": "SLOT2", "CurrentUsage": "In Use", "Description": "x4"},
         ]
         gpus = [{"Name": "RTX 4060 Ti", "AdapterCompatibility": "NVIDIA"}]
-        assert wdm._estimate_gpu_blocked_slots(slots, gpus) == []
+        assert sysinfo._estimate_gpu_blocked_slots(slots, gpus) == []
 
     def test_no_blocked_slot_when_no_pcie_slots_in_use(self):
         """No GPU home slot identified -> no blocking guess."""
@@ -1658,7 +1659,7 @@ class TestSummarizeUpgrades:
             {"SlotDesignation": "SLOT2", "CurrentUsage": "Available", "Description": "x4"},
         ]
         gpus = [{"Name": "RTX 4060 Ti", "AdapterCompatibility": "NVIDIA"}]
-        assert wdm._estimate_gpu_blocked_slots(slots, gpus) == []
+        assert sysinfo._estimate_gpu_blocked_slots(slots, gpus) == []
 
     # ── #43 follow-up: PCIe count subtracts blocked slots ─────────────
 
@@ -1674,7 +1675,7 @@ class TestSummarizeUpgrades:
             ],
             "GPU": [{"Name": "RTX 4060 Ti", "AdapterCompatibility": "NVIDIA"}],
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         pcie = next(o for o in result["opportunities"] if o["category"] == "pcie")
         # Out of 3 slots, 1 in use + 1 blocked = only SLOT3 truly free
         assert "1 of 3" in pcie["headline"]
@@ -1689,7 +1690,7 @@ class TestSummarizeUpgrades:
             "Memory": [self._stick(16, speed=5600, mtype="DDR5", form="SODIMM", part="CT16G56C46S5")],
             "MemoryArray": [self._array(slots=4, max_gb=64)],
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         mem = [o for o in result["opportunities"] if o["category"] == "memory"]
         # Find the expansion opportunity (not the single-channel warning)
         expansion = next(o for o in mem if "Add up to" in o["headline"])
@@ -1712,7 +1713,7 @@ class TestSummarizeUpgrades:
             "BIOS": {"Manufacturer": "Dell Inc.", "SerialNumber": "ABC1234"},
             "Baseboard": {"Manufacturer": "Dell Inc."},
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         mem = [o for o in result["opportunities"] if o["category"] == "memory"]
         expansion = next(o for o in mem if "Add up to" in o["headline"])
         assert any("dell.com" in link["url"] and "ABC1234" in link["url"] for link in expansion.get("links", []))
@@ -1724,7 +1725,7 @@ class TestSummarizeUpgrades:
             "MemoryArray": [self._array(slots=4, max_gb=64)],
             "BIOS": {"Manufacturer": "Acme", "SerialNumber": "X"},
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         mem = [o for o in result["opportunities"] if o["category"] == "memory"]
         expansion = next(o for o in mem if "Add up to" in o["headline"])
         assert expansion.get("links", []) == []
@@ -1742,7 +1743,7 @@ class TestSummarizeUpgrades:
                 "Architecture": "x64",
             }
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         cpu_ops = [o for o in result["opportunities"] if o["category"] == "cpu"]
         assert len(cpu_ops) == 1
         assert "LGA1700" in cpu_ops[0]["headline"]
@@ -1756,7 +1757,7 @@ class TestSummarizeUpgrades:
         """No socket info → no CPU opportunity (avoid noise on
         soldered-CPU laptops where SocketDesignation is empty)."""
         data = {"CPU": {"Name": "Apple M-something", "SocketDesignation": ""}}
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         assert not [o for o in result["opportunities"] if o["category"] == "cpu"]
 
     # ── #43 follow-up: GPU upgrade opportunity ────────────────────────
@@ -1768,7 +1769,7 @@ class TestSummarizeUpgrades:
             ],
             "GPU": [{"Name": "Intel UHD Graphics", "AdapterCompatibility": "Intel"}],  # iGPU only
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         gpu_ops = [o for o in result["opportunities"] if o["category"] == "gpu"]
         assert gpu_ops
         # Caveats must surface PSU + clearance since we can't measure them
@@ -1783,7 +1784,7 @@ class TestSummarizeUpgrades:
             ],
             "GPU": [{"Name": "iGPU"}],
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         assert not [o for o in result["opportunities"] if o["category"] == "gpu"]
 
     # ── #43 follow-up: NIC opportunities ──────────────────────────────
@@ -1794,7 +1795,7 @@ class TestSummarizeUpgrades:
                 {"SlotDesignation": "M.2 WLAN", "CurrentUsage": "Available", "Description": "M.2 WLAN slot"},
             ]
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         nic_ops = [o for o in result["opportunities"] if o["category"] == "nic"]
         assert any("Wi-Fi" in o["headline"] for o in nic_ops)
 
@@ -1804,7 +1805,7 @@ class TestSummarizeUpgrades:
                 {"SlotDesignation": "PCIEX1_1", "CurrentUsage": "Available", "Description": "x1"},
             ]
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         nic_ops = [o for o in result["opportunities"] if o["category"] == "nic"]
         assert any("GbE" in o["headline"] for o in nic_ops)
 
@@ -1817,7 +1818,7 @@ class TestSummarizeUpgrades:
                 {"SlotDesignation": "PCIEX16_2", "CurrentUsage": "Available", "Description": "x16"},
             ]
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         nic_wired = [o for o in result["opportunities"] if o["category"] == "nic" and "GbE" in o["headline"]]
         assert nic_wired == []
 
@@ -1839,7 +1840,7 @@ class TestSummarizeUpgrades:
                 {"SlotDesignation": "M.2 WLAN", "CurrentUsage": "Available", "Description": "M.2 WLAN slot"},
             ]
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         pcie_ops = [o for o in result["opportunities"] if o["category"] == "pcie"]
         assert pcie_ops == [], f"PCIe catch-all should not surface when only WLAN is free, got: {pcie_ops}"
         # But the NIC Wi-Fi opportunity SHOULD fire
@@ -1855,7 +1856,7 @@ class TestSummarizeUpgrades:
                 {"SlotDesignation": "M.2 PCIe SSD-2", "CurrentUsage": "Available", "Description": "M.2 NVMe slot"},
             ]
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         pcie_ops = [o for o in result["opportunities"] if o["category"] == "pcie"]
         assert pcie_ops == [], f"PCIe catch-all should not surface for M.2 SSD slots, got: {pcie_ops}"
 
@@ -1867,7 +1868,7 @@ class TestSummarizeUpgrades:
                 {"SlotDesignation": "M.2 WLAN", "CurrentUsage": "Available", "Description": "M.2 WLAN slot"},
             ]
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         nic_wired = [o for o in result["opportunities"] if o["category"] == "nic" and "GbE" in o["headline"]]
         assert nic_wired == []
 
@@ -1880,32 +1881,32 @@ class TestSummarizeUpgrades:
 
     def test_chipset_inference_intel_14gen_ddr5(self):
         """Intel Core i9-14900K + DDR5 -> Z790 family."""
-        assert wdm._infer_chipset("Intel(R) Core(TM) i9-14900K", "DDR5") == "Z790"
+        assert sysinfo._infer_chipset("Intel(R) Core(TM) i9-14900K", "DDR5") == "Z790"
 
     def test_chipset_inference_intel_12gen_ddr4(self):
         """Older 12th-gen on DDR4 -> Z690 family (lower DDR4 ceiling)."""
-        assert wdm._infer_chipset("Intel(R) Core(TM) i7-12700", "DDR4") == "Z690"
+        assert sysinfo._infer_chipset("Intel(R) Core(TM) i7-12700", "DDR4") == "Z690"
 
     def test_chipset_inference_amd_ryzen_7000_ddr5(self):
         """AMD Ryzen 7000 series on DDR5 -> X670E family."""
-        assert wdm._infer_chipset("AMD Ryzen 9 7950X", "DDR5") == "X670E"
+        assert sysinfo._infer_chipset("AMD Ryzen 9 7950X", "DDR5") == "X670E"
 
     def test_chipset_inference_amd_ryzen_5000_ddr4(self):
-        assert wdm._infer_chipset("AMD Ryzen 7 5800X", "DDR4") == "X570"
+        assert sysinfo._infer_chipset("AMD Ryzen 7 5800X", "DDR4") == "X570"
 
     def test_chipset_inference_unknown_returns_none(self):
         """Unrecognised CPU -> None (don't lie about the ceiling)."""
-        assert wdm._infer_chipset("Apple M3 Max", "LPDDR5") is None
-        assert wdm._infer_chipset("", "DDR5") is None
+        assert sysinfo._infer_chipset("Apple M3 Max", "LPDDR5") is None
+        assert sysinfo._infer_chipset("", "DDR5") is None
 
     def test_chipset_max_table_has_known_values(self):
         """Spot-check the static lookup table -- regression guard if
         someone edits the dict during a chipset launch."""
-        assert wdm._CHIPSET_MAX_RAM_GB["Z790"] == 192
-        assert wdm._CHIPSET_MAX_RAM_GB["X670E"] == 256
+        assert sysinfo._CHIPSET_MAX_RAM_GB["Z790"] == 192
+        assert sysinfo._CHIPSET_MAX_RAM_GB["X670E"] == 256
 
     def test_crucial_link_dell_uses_model_slug(self):
-        link = wdm._crucial_advisor_url({"Manufacturer": "Dell Inc.", "Model": "XPS 8960"})
+        link = sysinfo._crucial_advisor_url({"Manufacturer": "Dell Inc.", "Model": "XPS 8960"})
         assert link is not None
         label, url = link
         assert "crucial.com" in url
@@ -1914,10 +1915,10 @@ class TestSummarizeUpgrades:
 
     def test_crucial_link_unknown_oem_returns_none(self):
         """Don't fabricate Crucial URLs for OEMs we haven't validated."""
-        assert wdm._crucial_advisor_url({"Manufacturer": "Acme", "Model": "X"}) is None
+        assert sysinfo._crucial_advisor_url({"Manufacturer": "Acme", "Model": "X"}) is None
 
     def test_crucial_link_missing_model_returns_none(self):
-        assert wdm._crucial_advisor_url({"Manufacturer": "Dell", "Model": ""}) is None
+        assert sysinfo._crucial_advisor_url({"Manufacturer": "Dell", "Model": ""}) is None
 
     def test_per_slot_max_in_compat(self):
         """The "what's the biggest stick I can buy?" answer.
@@ -1928,7 +1929,7 @@ class TestSummarizeUpgrades:
             "Memory": [self._stick(16), self._stick(16)],
             "MemoryArray": [self._array(slots=2, max_gb=64)],
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         mem = next(o for o in result["opportunities"] if o["category"] == "memory")
         compat_dict = {c["label"]: c["value"] for c in mem.get("compat", [])}
         assert "Max stick size (per slot)" in compat_dict
@@ -1946,7 +1947,7 @@ class TestSummarizeUpgrades:
             "MemoryArray": [self._array(slots=2, max_gb=64)],
             "CPU": {"Name": "Intel(R) Core(TM) i9-14900K", "SocketDesignation": "LGA1700"},
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         mem = next(o for o in result["opportunities"] if o["category"] == "memory")
         compat_labels = [c["label"] for c in mem.get("compat", [])]
         assert any("Chipset ceiling" in lbl and "Z790" in lbl for lbl in compat_labels)
@@ -1959,7 +1960,7 @@ class TestSummarizeUpgrades:
             "MemoryArray": [self._array(slots=2, max_gb=64)],
             "CPU": {"Name": "Intel Core i9-14900K", "SocketDesignation": "LGA1700"},
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         mem = next(o for o in result["opportunities"] if o["category"] == "memory")
         all_caveats = " ".join(mem.get("caveats", []))
         # Should mention BOTH the chipset (Z790) and the actual cap (64)
@@ -1975,7 +1976,7 @@ class TestSummarizeUpgrades:
             "MemoryArray": [self._array(slots=4, max_gb=192)],
             "CPU": {"Name": "Intel Core i7-13700K", "SocketDesignation": "LGA1700"},
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         mem = next(o for o in result["opportunities"] if o["category"] == "memory")
         all_caveats = " ".join(mem.get("caveats", []))
         assert "supports" not in all_caveats or "192" not in all_caveats
@@ -1990,7 +1991,7 @@ class TestSummarizeUpgrades:
             "Computer": {"Model": "OptiPlex 7080"},
             "Baseboard": {"Manufacturer": "Dell Inc."},
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         mem = next(o for o in result["opportunities"] if o["category"] == "memory")
         crucial_links = [link for link in mem.get("links", []) if "crucial.com" in link.get("url", "")]
         assert crucial_links, "expected Crucial Advisor link in memory opportunity"
@@ -2005,7 +2006,7 @@ class TestSummarizeUpgrades:
             "Computer": {"Model": "OptiPlex 7080"},
             "Baseboard": {"Manufacturer": "Dell Inc."},
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         cpu_op = next(o for o in result["opportunities"] if o["category"] == "cpu")
         crucial = [link for link in cpu_op.get("links", []) if "crucial.com" in link.get("url", "")]
         assert crucial == []
@@ -2024,7 +2025,7 @@ class TestSummarizeUpgrades:
                 {"SlotDesignation": "SLOT3", "CurrentUsage": "In Use", "Description": "x1"},
             ]
         }
-        result = wdm.summarize_upgrades(data)
+        result = sysinfo.summarize_upgrades(data)
         pcie_ops = [o for o in result["opportunities"] if o["category"] == "pcie"]
         assert pcie_ops, "expected a PCIe opportunity for SLOT2"
         # 3 general slots (SLOT1/2/3), 1 truly free (SLOT2), so "1 of 3"
