@@ -12,6 +12,7 @@ import types
 
 import pytest
 
+import bsod
 import windesktopmgr as wdm
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -263,7 +264,7 @@ class TestBsodCacheRoute:
         assert resp.get_json()["total_cached"] == 0
 
     def test_populated_cache_reflected(self, client):
-        wdm._bsod_cache["0x00020001"] = {"title": "HYPERVISOR_ERROR"}
+        bsod._bsod_cache["0x00020001"] = {"title": "HYPERVISOR_ERROR"}
         resp = client.get("/api/bsod/cache")
         assert resp.get_json()["total_cached"] == 1
 
@@ -275,11 +276,11 @@ class TestBsodCacheRoute:
 
 class TestBsodCacheClearRoute:
     def test_clears_cache(self, client):
-        wdm._bsod_cache["0x00020001"] = {"title": "Test"}
+        bsod._bsod_cache["0x00020001"] = {"title": "Test"}
         resp = client.post("/api/bsod/cache/clear")
         assert resp.status_code == 200
         assert resp.get_json()["ok"] is True
-        assert len(wdm._bsod_cache) == 0
+        assert len(bsod._bsod_cache) == 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -289,13 +290,13 @@ class TestBsodCacheClearRoute:
 
 class TestBsodCacheDeleteRoute:
     def test_deletes_existing_entry(self, client):
-        wdm._bsod_cache["0x00020001"] = {"title": "HYPERVISOR_ERROR"}
+        bsod._bsod_cache["0x00020001"] = {"title": "HYPERVISOR_ERROR"}
         resp = client.delete("/api/bsod/cache/delete/0x00020001")
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["ok"] is True
         assert data["removed"] is True
-        assert "0x00020001" not in wdm._bsod_cache
+        assert "0x00020001" not in bsod._bsod_cache
 
     def test_missing_entry_removed_false(self, client):
         resp = client.delete("/api/bsod/cache/delete/0x99999999")

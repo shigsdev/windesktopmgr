@@ -55,6 +55,17 @@ metrics_history.json
 baseline_snapshot.json
 baseline_history.json
 
+# Backup tab runtime state (backlog #47 — wbadmin/File-History scan cache + action audit)
+backup_cache.json
+backup_actions_history.json
+
+# CloudCopy / OneDrive→iCloud replicator rules (backlog #46 runtime state)
+cloudcopy_rules.json
+
+# Codehealth scanner state (backlog #51 runtime state, regenerates on scan)
+codehealth_state.json
+codehealth_emitted.json
+
 # ── Sensitive / personal ───────────────────────────────────────────────────
 # Gmail credentials (encrypted, but best not committed)
 gmail_credentials.json

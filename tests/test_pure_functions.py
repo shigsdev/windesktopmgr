@@ -5,6 +5,7 @@ Tests for pure Python helper functions that require no Windows/subprocess calls.
 
 from datetime import datetime, timezone
 
+import bsod
 import windesktopmgr as wdm
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -115,27 +116,27 @@ class TestFindWuMatch:
 
 class TestNormaliseStopCode:
     def test_hypervisor_error(self):
-        assert wdm._normalise_stop_code("0x00020001") == "0x00020001"
+        assert bsod._normalise_stop_code("0x00020001") == "0x00020001"
 
     def test_short_hex_padded(self):
-        assert wdm._normalise_stop_code("0x9f") == "0x0000009f"
+        assert bsod._normalise_stop_code("0x9f") == "0x0000009f"
 
     def test_mid_length_hex(self):
-        assert wdm._normalise_stop_code("0x139") == "0x00000139"
+        assert bsod._normalise_stop_code("0x139") == "0x00000139"
 
     def test_uppercase_input(self):
-        assert wdm._normalise_stop_code("0X0000009F") == "0x0000009f"
+        assert bsod._normalise_stop_code("0X0000009F") == "0x0000009f"
 
     def test_empty_string(self):
-        assert wdm._normalise_stop_code("") == ""
+        assert bsod._normalise_stop_code("") == ""
 
     def test_non_hex_garbage(self):
         # Must not raise; returns lowercased input
-        result = wdm._normalise_stop_code("garbage")
+        result = bsod._normalise_stop_code("garbage")
         assert isinstance(result, str)
 
     def test_already_normalised(self):
-        assert wdm._normalise_stop_code("0x00000139") == "0x00000139"
+        assert bsod._normalise_stop_code("0x00000139") == "0x00000139"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
