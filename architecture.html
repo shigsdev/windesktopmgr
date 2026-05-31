@@ -287,7 +287,7 @@
 
   <!-- ── LAYER 2: FLASK BACKEND ───────────────────────────────── -->
   <div class="row row-flask" id="layer-flask">
-    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~6,883 lines + bsod.py · ~901 lines + events.py · ~656 lines + processes.py · ~1,674 lines + sysinfo.py · ~1,375 lines + dashboard.py · ~671 lines + credentials.py · ~706 lines + homenet.py Blueprint · ~3,892 lines + disk.py Blueprint · ~1,202 lines + remediation.py Blueprint · ~445 lines + nlq.py Blueprint · ~416 lines + baseline.py · ~2,549 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · applogging.py RotatingFileHandler · dashboard summary cache (30s TTL + single-flight background refresh) · request-log flood suppressor · SAFE_PROCESSES kill guard + SYSTEM_PROCESSES_GLOSSARY · pynvml GPU metrics collector · psutil+socket network metrics collector · mac-vendor-lookup IEEE OUI (~36k vendors) + zeroconf mDNS for device name resolution · baseline.py drift detection (startup + services + tasks)</div>
+    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~6,729 lines + bsod.py · ~901 lines + events.py · ~656 lines + processes.py · ~1,674 lines + sysinfo.py · ~1,375 lines + dashboard.py · ~671 lines + credentials.py · ~706 lines + thermals.py · ~185 lines + homenet.py Blueprint · ~3,892 lines + disk.py Blueprint · ~1,202 lines + remediation.py Blueprint · ~445 lines + nlq.py Blueprint · ~416 lines + baseline.py · ~2,549 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · applogging.py RotatingFileHandler · dashboard summary cache (30s TTL + single-flight background refresh) · request-log flood suppressor · SAFE_PROCESSES kill guard + SYSTEM_PROCESSES_GLOSSARY · pynvml GPU metrics collector · psutil+socket network metrics collector · mac-vendor-lookup IEEE OUI (~36k vendors) + zeroconf mDNS for device name resolution · baseline.py drift detection (startup + services + tasks)</div>
     <div style="margin-bottom:10px">
       <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes (73 endpoints)</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
@@ -681,7 +681,7 @@
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <div class="fs-chip">
             <div class="fs-title">windesktopmgr.py</div>
-            <div class="fs-sub">Flask backend · ~6,883 lines</div>
+            <div class="fs-sub">Flask backend · ~6,729 lines</div>
           </div>
           <div class="fs-chip" style="border-color:#ff6ec733">
             <div class="fs-title" style="color:var(--pink)">bsod.py</div>
@@ -706,6 +706,10 @@
           <div class="fs-chip" style="border-color:#ff6ec733">
             <div class="fs-title" style="color:var(--pink)">credentials.py</div>
             <div class="fs-sub">Credentials &amp; network-health module · ~706 lines · Credential Manager + MSAL token + SMB/NFS drives + Fast Startup + cred-failure events (#54 PR F)</div>
+          </div>
+          <div class="fs-chip" style="border-color:#ff6ec733">
+            <div class="fs-title" style="color:var(--pink)">thermals.py</div>
+            <div class="fs-sub">Temperature &amp; power module · ~185 lines · WMI thermal zones + OHM/LHM sensors + psutil CPU/mem/battery (#54 PR G)</div>
           </div>
           <div class="fs-chip" style="border-color:#448aff33">
             <div class="fs-title" style="color:var(--blue)">homenet.py</div>
