@@ -16,6 +16,7 @@ import subprocess
 from unittest.mock import MagicMock
 
 import bsod
+import events
 import windesktopmgr as wdm
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -50,36 +51,36 @@ class TestLoadEventCache:
     def test_loads_from_file(self, mocker, tmp_path):
         cache_file = tmp_path / "event_cache.json"
         cache_file.write_text(json.dumps({"7036": {"title": "Service Control Manager"}}))
-        mocker.patch("windesktopmgr.EVENT_CACHE_FILE", str(cache_file))
-        wdm._load_event_cache()
-        assert "7036" in wdm._event_cache
+        mocker.patch("events.EVENT_CACHE_FILE", str(cache_file))
+        events._load_event_cache()
+        assert "7036" in events._event_cache
 
     def test_missing_file_sets_empty(self, mocker, tmp_path):
-        mocker.patch("windesktopmgr.EVENT_CACHE_FILE", str(tmp_path / "nope.json"))
-        wdm._load_event_cache()
-        assert wdm._event_cache == {}
+        mocker.patch("events.EVENT_CACHE_FILE", str(tmp_path / "nope.json"))
+        events._load_event_cache()
+        assert events._event_cache == {}
 
     def test_corrupt_json_sets_empty(self, mocker, tmp_path):
         cache_file = tmp_path / "event_cache.json"
         cache_file.write_text("{corrupt")
-        mocker.patch("windesktopmgr.EVENT_CACHE_FILE", str(cache_file))
-        wdm._load_event_cache()
-        assert wdm._event_cache == {}
+        mocker.patch("events.EVENT_CACHE_FILE", str(cache_file))
+        events._load_event_cache()
+        assert events._event_cache == {}
 
 
 class TestSaveEventCache:
     def test_writes_json(self, mocker, tmp_path):
         cache_file = tmp_path / "event_cache.json"
-        mocker.patch("windesktopmgr.EVENT_CACHE_FILE", str(cache_file))
-        wdm._event_cache = {"100": {"title": "Test"}}
-        wdm._save_event_cache()
+        mocker.patch("events.EVENT_CACHE_FILE", str(cache_file))
+        events._event_cache = {"100": {"title": "Test"}}
+        events._save_event_cache()
         data = json.loads(cache_file.read_text())
         assert data["100"]["title"] == "Test"
 
     def test_save_error_no_raise(self, mocker):
-        mocker.patch("windesktopmgr.EVENT_CACHE_FILE", "/nonexistent/dir/cache.json")
-        wdm._event_cache = {"1": {}}
-        wdm._save_event_cache()  # should not raise
+        mocker.patch("events.EVENT_CACHE_FILE", "/nonexistent/dir/cache.json")
+        events._event_cache = {"1": {}}
+        events._save_event_cache()  # should not raise
 
 
 class TestLookupViaWindowsProvider:
@@ -94,30 +95,30 @@ class TestLookupViaWindowsProvider:
             }
         )
         _mock_run(mocker, stdout=ps_output)
-        result = wdm._lookup_via_windows_provider(7036, "Service Control Manager")
+        result = events._lookup_via_windows_provider(7036, "Service Control Manager")
         assert result is not None
         assert result["source"] == "windows_provider"
         assert "running state" in result["detail"]
 
     def test_empty_output_returns_none(self, mocker):
         _mock_run(mocker, stdout="")
-        assert wdm._lookup_via_windows_provider(9999, "Unknown") is None
+        assert events._lookup_via_windows_provider(9999, "Unknown") is None
 
     def test_empty_description_returns_none(self, mocker):
         ps_output = json.dumps({"Provider": "P", "Id": 1, "Description": "", "Level": "", "Keywords": ""})
         _mock_run(mocker, stdout=ps_output)
-        assert wdm._lookup_via_windows_provider(1, "Src") is None
+        assert events._lookup_via_windows_provider(1, "Src") is None
 
     def test_timeout_returns_none(self, mocker):
         _mock_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 20))
-        assert wdm._lookup_via_windows_provider(7036, "SCM") is None
+        assert events._lookup_via_windows_provider(7036, "SCM") is None
 
     def test_truncates_long_descriptions(self, mocker):
         ps_output = json.dumps(
             {"Provider": "P", "Id": 1, "Description": "A" * 500 + " %1 %2 placeholder", "Level": "", "Keywords": ""}
         )
         _mock_run(mocker, stdout=ps_output)
-        result = wdm._lookup_via_windows_provider(1, "Src")
+        result = events._lookup_via_windows_provider(1, "Src")
         assert len(result["detail"]) <= 402  # 400 + ellipsis
 
 
@@ -135,25 +136,25 @@ class TestLookupViaWeb:
                 ]
             },
         )
-        result = wdm._lookup_via_web(7036, "SCM")
+        result = events._lookup_via_web(7036, "SCM")
         assert result is not None
         assert result["source"] == "microsoft_learn"
         assert "7036" in result["title"]
 
     def test_empty_results_returns_none(self, mocker):
         _mock_urlopen(mocker, {"results": []})
-        assert wdm._lookup_via_web(9999, "Unknown") is None
+        assert events._lookup_via_web(9999, "Unknown") is None
 
     def test_network_error_returns_none(self, mocker):
         mocker.patch("windesktopmgr.urllib.request.urlopen", side_effect=Exception("timeout"))
-        assert wdm._lookup_via_web(7036, "SCM") is None
+        assert events._lookup_via_web(7036, "SCM") is None
 
 
 class TestEventLookupWorker:
     def test_processes_queue_item_windows_hit(self, mocker, tmp_path):
-        mocker.patch("windesktopmgr.EVENT_CACHE_FILE", str(tmp_path / "cache.json"))
-        wdm._event_cache = {}
-        wdm._lookup_in_flight = set()
+        mocker.patch("events.EVENT_CACHE_FILE", str(tmp_path / "cache.json"))
+        events._event_cache = {}
+        events._lookup_in_flight = set()
 
         ps_output = json.dumps(
             {"Provider": "SCM", "Id": 7036, "Description": "Service state changed.", "Level": "Info", "Keywords": ""}
@@ -161,11 +162,11 @@ class TestEventLookupWorker:
         _mock_run(mocker, stdout=ps_output)
 
         # Put item and stop worker after one iteration
-        wdm._lookup_queue = queue.Queue()
-        wdm._lookup_queue.put((7036, "Service Control Manager"))
+        events._lookup_queue = queue.Queue()
+        events._lookup_queue.put((7036, "Service Control Manager"))
 
         # Run one iteration manually
-        original_get = wdm._lookup_queue.get
+        original_get = events._lookup_queue.get
 
         call_count = [0]
 
@@ -175,101 +176,101 @@ class TestEventLookupWorker:
                 return original_get(timeout=0)
             raise queue.Empty()
 
-        mocker.patch.object(wdm._lookup_queue, "get", side_effect=one_shot_get)
+        mocker.patch.object(events._lookup_queue, "get", side_effect=one_shot_get)
 
         # Let the worker run — it'll process one item then hit Empty and loop
         # We break out by having get raise Empty on second call
         def run_one_iteration():
             got_item = False
             try:
-                event_id, source = wdm._lookup_queue.get(timeout=1)
+                event_id, source = events._lookup_queue.get(timeout=1)
                 got_item = True
                 cache_key = str(event_id)
-                with wdm._event_cache_lock:
-                    if cache_key in wdm._event_cache:
-                        wdm._lookup_in_flight.discard(event_id)
-                        wdm._lookup_queue.task_done()
+                with events._event_cache_lock:
+                    if cache_key in events._event_cache:
+                        events._lookup_in_flight.discard(event_id)
+                        events._lookup_queue.task_done()
                         return
-                result = wdm._lookup_via_windows_provider(event_id, source)
+                result = events._lookup_via_windows_provider(event_id, source)
                 if not result:
-                    result = wdm._lookup_via_web(event_id, source)
+                    result = events._lookup_via_web(event_id, source)
                 if not result:
                     result = {"source": "unknown", "title": f"Event ID {event_id}"}
-                with wdm._event_cache_lock:
-                    wdm._event_cache[cache_key] = result
-                wdm._save_event_cache()
+                with events._event_cache_lock:
+                    events._event_cache[cache_key] = result
+                events._save_event_cache()
             except queue.Empty:
                 pass
             finally:
                 try:
                     if got_item:
-                        with wdm._event_cache_lock:
-                            wdm._lookup_in_flight.discard(event_id)
-                        wdm._lookup_queue.task_done()
+                        with events._event_cache_lock:
+                            events._lookup_in_flight.discard(event_id)
+                        events._lookup_queue.task_done()
                 except Exception:
                     pass
 
         # Reset queue and add item
-        wdm._lookup_queue = queue.Queue()
-        wdm._lookup_queue.put((7036, "Service Control Manager"))
+        events._lookup_queue = queue.Queue()
+        events._lookup_queue.put((7036, "Service Control Manager"))
         run_one_iteration()
 
-        assert "7036" in wdm._event_cache
-        assert wdm._event_cache["7036"]["source"] == "windows_provider"
+        assert "7036" in events._event_cache
+        assert events._event_cache["7036"]["source"] == "windows_provider"
 
     def test_already_cached_skips_lookup(self, mocker, tmp_path):
-        mocker.patch("windesktopmgr.EVENT_CACHE_FILE", str(tmp_path / "cache.json"))
-        wdm._event_cache = {"7036": {"source": "cached", "title": "Already cached"}}
-        wdm._lookup_in_flight = {7036}
+        mocker.patch("events.EVENT_CACHE_FILE", str(tmp_path / "cache.json"))
+        events._event_cache = {"7036": {"source": "cached", "title": "Already cached"}}
+        events._lookup_in_flight = {7036}
         mock_ps = _mock_run(mocker, stdout="")
 
-        wdm._lookup_queue = queue.Queue()
-        wdm._lookup_queue.put((7036, "SCM"))
+        events._lookup_queue = queue.Queue()
+        events._lookup_queue.put((7036, "SCM"))
 
         # Process one item
-        event_id, source = wdm._lookup_queue.get(timeout=1)
+        event_id, source = events._lookup_queue.get(timeout=1)
         cache_key = str(event_id)
-        with wdm._event_cache_lock:
-            found = cache_key in wdm._event_cache
+        with events._event_cache_lock:
+            found = cache_key in events._event_cache
         if found:
-            with wdm._event_cache_lock:
-                wdm._lookup_in_flight.discard(event_id)
-            wdm._lookup_queue.task_done()
+            with events._event_cache_lock:
+                events._lookup_in_flight.discard(event_id)
+            events._lookup_queue.task_done()
 
         mock_ps.assert_not_called()
-        assert 7036 not in wdm._lookup_in_flight
+        assert 7036 not in events._lookup_in_flight
 
     def test_web_fallback_when_windows_fails(self, mocker, tmp_path):
-        mocker.patch("windesktopmgr.EVENT_CACHE_FILE", str(tmp_path / "cache.json"))
-        wdm._event_cache = {}
-        wdm._lookup_in_flight = set()
+        mocker.patch("events.EVENT_CACHE_FILE", str(tmp_path / "cache.json"))
+        events._event_cache = {}
+        events._lookup_in_flight = set()
 
         _mock_run(mocker, stdout="")  # Windows provider returns nothing
         _mock_urlopen(
             mocker, {"results": [{"title": "Event 100", "summary": "Web result", "url": "https://example.com"}]}
         )
 
-        wdm._lookup_queue = queue.Queue()
-        wdm._lookup_queue.put((100, "TestSource"))
+        events._lookup_queue = queue.Queue()
+        events._lookup_queue.put((100, "TestSource"))
 
-        event_id, source = wdm._lookup_queue.get(timeout=1)
-        result = wdm._lookup_via_windows_provider(event_id, source)
+        event_id, source = events._lookup_queue.get(timeout=1)
+        result = events._lookup_via_windows_provider(event_id, source)
         if not result:
-            result = wdm._lookup_via_web(event_id, source)
-        wdm._event_cache[str(event_id)] = result
-        wdm._lookup_queue.task_done()
+            result = events._lookup_via_web(event_id, source)
+        events._event_cache[str(event_id)] = result
+        events._lookup_queue.task_done()
 
-        assert wdm._event_cache["100"]["source"] == "microsoft_learn"
+        assert events._event_cache["100"]["source"] == "microsoft_learn"
 
     def test_placeholder_when_all_fail(self, mocker, tmp_path):
-        mocker.patch("windesktopmgr.EVENT_CACHE_FILE", str(tmp_path / "cache.json"))
-        wdm._event_cache = {}
+        mocker.patch("events.EVENT_CACHE_FILE", str(tmp_path / "cache.json"))
+        events._event_cache = {}
         _mock_run(mocker, stdout="")
         mocker.patch("windesktopmgr.urllib.request.urlopen", side_effect=Exception("fail"))
 
-        result = wdm._lookup_via_windows_provider(99999, "Fake")
+        result = events._lookup_via_windows_provider(99999, "Fake")
         assert result is None
-        result = wdm._lookup_via_web(99999, "Fake")
+        result = events._lookup_via_web(99999, "Fake")
         assert result is None
         # Worker would create placeholder
         placeholder = {
@@ -277,53 +278,53 @@ class TestEventLookupWorker:
             "title": "Event ID 99999",
             "detail": "No description found.",
         }
-        wdm._event_cache["99999"] = placeholder
-        assert wdm._event_cache["99999"]["source"] == "unknown"
+        events._event_cache["99999"] = placeholder
+        assert events._event_cache["99999"]["source"] == "unknown"
 
 
 class TestGetEventInfo:
     def setup_method(self):
-        self._orig_cache = dict(wdm._event_cache)
-        self._orig_flight = set(wdm._lookup_in_flight)
-        wdm._lookup_queue = queue.Queue()
+        self._orig_cache = dict(events._event_cache)
+        self._orig_flight = set(events._lookup_in_flight)
+        events._lookup_queue = queue.Queue()
 
     def teardown_method(self):
-        wdm._event_cache = self._orig_cache
-        wdm._lookup_in_flight = self._orig_flight
-        wdm._lookup_queue = queue.Queue()
+        events._event_cache = self._orig_cache
+        events._lookup_in_flight = self._orig_flight
+        events._lookup_queue = queue.Queue()
 
     def test_static_kb_hit(self):
-        if wdm.EVENT_KB:
-            eid = next(iter(wdm.EVENT_KB))
-            result = wdm.get_event_info(eid)
+        if events.EVENT_KB:
+            eid = next(iter(events.EVENT_KB))
+            result = events.get_event_info(eid)
             assert result is not None
 
     def test_cache_hit(self):
-        wdm._event_cache["12345"] = {"source": "test", "title": "Cached Event"}
-        result = wdm.get_event_info(12345)
+        events._event_cache["12345"] = {"source": "test", "title": "Cached Event"}
+        result = events.get_event_info(12345)
         assert result is not None
         assert result["title"] == "Cached Event"
 
     def test_queues_unknown_id(self):
-        wdm._event_cache = {}
-        wdm._lookup_in_flight = set()
-        result = wdm.get_event_info(77777, "TestSource")
+        events._event_cache = {}
+        events._lookup_in_flight = set()
+        result = events.get_event_info(77777, "TestSource")
         assert result is None  # not yet available
-        assert not wdm._lookup_queue.empty()
-        assert 77777 in wdm._lookup_in_flight
+        assert not events._lookup_queue.empty()
+        assert 77777 in events._lookup_in_flight
 
     def test_no_duplicate_queue(self):
-        wdm._event_cache = {}
-        wdm._lookup_in_flight = {88888}
-        result = wdm.get_event_info(88888, "Test")
+        events._event_cache = {}
+        events._lookup_in_flight = {88888}
+        result = events.get_event_info(88888, "Test")
         assert result is None
-        assert wdm._lookup_queue.empty()  # should not re-queue
+        assert events._lookup_queue.empty()  # should not re-queue
 
 
 class TestGetCacheStatus:
     def test_returns_stats(self):
-        wdm._event_cache = {"1": {"title": "T", "source": "s", "fetched": ""}}
-        status = wdm.get_cache_status()
+        events._event_cache = {"1": {"title": "T", "source": "s", "fetched": ""}}
+        status = events.get_cache_status()
         assert status["total_cached"] == 1
         assert len(status["entries"]) == 1
 
