@@ -33,6 +33,7 @@ import pytest
 
 import bsod
 import disk
+import events
 import remediation
 import windesktopmgr as wdm
 
@@ -2721,7 +2722,7 @@ class TestQueryEventLog:
 
     def test_happy_path_returns_list(self, mocker):
         mocker.patch("windesktopmgr._query_event_log_xpath", return_value=list(self.HELPER_ROWS))
-        result = wdm.query_event_log({"log": "System"})
+        result = events.query_event_log({"log": "System"})
         assert isinstance(result, list)
         assert len(result) == 2
         assert result[0]["Id"] == 7036
@@ -2733,53 +2734,53 @@ class TestQueryEventLog:
 
     def test_empty_returns_empty_list(self, mocker):
         mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
-        result = wdm.query_event_log({"log": "System"})
+        result = events.query_event_log({"log": "System"})
         assert result == []
 
     def test_helper_exception_returns_empty_list(self, mocker):
         mocker.patch("windesktopmgr._query_event_log_xpath", side_effect=RuntimeError("boom"))
-        result = wdm.query_event_log({"log": "System"})
+        result = events.query_event_log({"log": "System"})
         assert result == []
 
     def test_helper_called_with_log_name(self, mocker):
         m = mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
-        wdm.query_event_log({"log": "Application"})
+        events.query_event_log({"log": "Application"})
         assert m.call_args[0][0] == "Application"
 
     def test_level_filter_passed_as_xpath(self, mocker):
         """When caller passes level='Error', helper must receive xpath with Level=2."""
         m = mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
-        wdm.query_event_log({"log": "System", "level": "Error"})
+        events.query_event_log({"log": "System", "level": "Error"})
         xpath = m.call_args[0][1]
         assert "Level=2" in xpath
 
     def test_no_level_filter_uses_wildcard_xpath(self, mocker):
         m = mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
-        wdm.query_event_log({"log": "System"})
+        events.query_event_log({"log": "System"})
         xpath = m.call_args[0][1]
         assert xpath == "*"
 
     def test_max_events_honoured(self, mocker):
         m = mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
-        wdm.query_event_log({"log": "System", "max": 25})
+        events.query_event_log({"log": "System", "max": 25})
         assert m.call_args.kwargs.get("max_events") == 25
 
     def test_max_events_capped_at_500(self, mocker):
         m = mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
-        wdm.query_event_log({"log": "System", "max": 9999})
+        events.query_event_log({"log": "System", "max": 9999})
         assert m.call_args.kwargs.get("max_events") == 500
 
     def test_input_sanitization(self, mocker):
         """Log name is still sanitised with re.sub(r'[^\\w\\s\\-/]', '', log)."""
         m = mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
-        wdm.query_event_log({"log": '"; rm -rf /'})
+        events.query_event_log({"log": '"; rm -rf /'})
         safe = m.call_args[0][0]
         assert '";' not in safe
         assert "rm -rf" in safe  # letters/spaces survive, but dangerous chars don't
 
     def test_search_filter_applied_to_result(self, mocker):
         mocker.patch("windesktopmgr._query_event_log_xpath", return_value=list(self.HELPER_ROWS))
-        result = wdm.query_event_log({"log": "System", "search": "bugcheck"})
+        result = events.query_event_log({"log": "System", "search": "bugcheck"})
         assert len(result) == 1
         assert result[0]["Id"] == 1001
 
@@ -2797,14 +2798,14 @@ class TestQueryEventLog:
                 }
             ],
         )
-        result = wdm.query_event_log({"log": "System"})
+        result = events.query_event_log({"log": "System"})
         assert len(result[0]["Message"]) == 300
 
     def test_no_powershell_invoked(self, mocker):
         """Regression guard — query_event_log must not shell out to PS."""
         mocker.patch("windesktopmgr._query_event_log_xpath", return_value=[])
         ps = mocker.patch("windesktopmgr.subprocess.run")
-        wdm.query_event_log({"log": "System"})
+        events.query_event_log({"log": "System"})
         assert ps.call_count == 0
 
 
@@ -2878,10 +2879,10 @@ class TestWorkerTaskDoneSafety:
     def test_event_worker_no_task_done_on_empty(self, mocker):
         import queue as q
 
-        mock_queue = mocker.patch("windesktopmgr._lookup_queue")
+        mock_queue = mocker.patch("events._lookup_queue")
         mock_queue.get.side_effect = [q.Empty, KeyboardInterrupt]
         try:
-            wdm._lookup_worker()
+            events._lookup_worker()
         except KeyboardInterrupt:
             pass
         mock_queue.task_done.assert_not_called()
@@ -3437,42 +3438,42 @@ class TestLookupViaWindowsProvider:
 
     def test_happy_path_returns_dict_with_required_keys(self, mocker):
         _mock_run(mocker, stdout=self.SAMPLE)
-        result = wdm._lookup_via_windows_provider(41, "Microsoft-Windows-Kernel-Power")
+        result = events._lookup_via_windows_provider(41, "Microsoft-Windows-Kernel-Power")
         assert result is not None
         for key in ("source", "title", "detail", "fetched"):
             assert key in result
 
     def test_empty_output_returns_none(self, mocker):
         _mock_run(mocker, stdout="")
-        result = wdm._lookup_via_windows_provider(41, "Kernel-Power")
+        result = events._lookup_via_windows_provider(41, "Kernel-Power")
         assert result is None
 
     def test_malformed_json_returns_none(self, mocker):
         _mock_run(mocker, stdout="<error/>")
-        result = wdm._lookup_via_windows_provider(41, "Kernel-Power")
+        result = events._lookup_via_windows_provider(41, "Kernel-Power")
         assert result is None
 
     def test_timeout_returns_none(self, mocker):
         _mock_run(mocker, side_effect=subprocess.TimeoutExpired("powershell", 20))
-        result = wdm._lookup_via_windows_provider(41, "Kernel-Power")
+        result = events._lookup_via_windows_provider(41, "Kernel-Power")
         assert result is None
 
     def test_command_contains_event_id(self, mocker):
         m = _mock_run(mocker, stdout=self.SAMPLE)
-        wdm._lookup_via_windows_provider(41, "Kernel-Power")
+        events._lookup_via_windows_provider(41, "Kernel-Power")
         cmd = m.call_args[0][0][-1]
         assert "41" in cmd
 
     def test_command_contains_sanitized_source(self, mocker):
         m = _mock_run(mocker, stdout="")
-        wdm._lookup_via_windows_provider(41, "Kernel-Power")
+        events._lookup_via_windows_provider(41, "Kernel-Power")
         cmd = m.call_args[0][0][-1]
         assert "Kernel-Power" in cmd
 
     def test_source_injection_semicolons_stripped(self, mocker):
         """safe_source = re.sub(r"[^\\w \\-]", "", source) strips ; and \\ but keeps words."""
         m = _mock_run(mocker, stdout="")
-        wdm._lookup_via_windows_provider(41, "Kernel;Drop-DB")
+        events._lookup_via_windows_provider(41, "Kernel;Drop-DB")
         cmd = m.call_args[0][0][-1]
         # Semicolons and special chars are stripped
         assert ";" not in cmd
@@ -3482,7 +3483,7 @@ class TestLookupViaWindowsProvider:
     def test_empty_description_returns_none(self, mocker):
         no_desc = json.dumps({"Provider": "SomeProvider", "Id": 41, "Description": "", "Level": 2, "Keywords": ""})
         _mock_run(mocker, stdout=no_desc)
-        result = wdm._lookup_via_windows_provider(41, "SomeProvider")
+        result = events._lookup_via_windows_provider(41, "SomeProvider")
         assert result is None
 
 

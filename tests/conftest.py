@@ -26,6 +26,7 @@ import pytest
 
 import bsod
 import disk
+import events
 import homenet
 import windesktopmgr as wdm
 
@@ -129,14 +130,14 @@ def reset_globals():
 
     # Knowledge caches (normally loaded from JSON on startup)
     bsod._bsod_cache.clear()
-    wdm._event_cache.clear()
+    events._event_cache.clear()
     wdm._startup_cache.clear()
     wdm._process_cache.clear()
     wdm._services_cache.clear()
 
     # In-flight sets / queues — drain without blocking
     bsod._bsod_in_flight.clear()
-    wdm._lookup_in_flight.clear()
+    events._lookup_in_flight.clear()
     wdm._startup_in_flight.clear()
     wdm._process_in_flight.clear()
     wdm._services_in_flight.clear()
@@ -173,7 +174,7 @@ def reset_globals():
 
     # Post-test cleanup (same as pre-test for symmetry)
     bsod._bsod_cache.clear()
-    wdm._event_cache.clear()
+    events._event_cache.clear()
     wdm._startup_cache.clear()
     wdm._process_cache.clear()
     wdm._services_cache.clear()

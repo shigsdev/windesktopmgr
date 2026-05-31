@@ -13,6 +13,7 @@ import types
 import pytest
 
 import bsod
+import events
 import windesktopmgr as wdm
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -642,11 +643,11 @@ class TestEventsCacheRoute:
 
 class TestEventsCacheClearRoute:
     def test_clears_event_cache(self, client):
-        wdm._event_cache[41] = {"title": "Kernel Power Loss"}
+        events._event_cache[41] = {"title": "Kernel Power Loss"}
         resp = client.post("/api/events/cache/clear")
         assert resp.status_code == 200
         assert resp.get_json()["ok"] is True
-        assert len(wdm._event_cache) == 0
+        assert len(events._event_cache) == 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -656,7 +657,7 @@ class TestEventsCacheClearRoute:
 
 class TestEventsCacheDeleteRoute:
     def test_deletes_existing_event(self, client):
-        wdm._event_cache["41"] = {"title": "Kernel Power Loss"}
+        events._event_cache["41"] = {"title": "Kernel Power Loss"}
         resp = client.delete("/api/events/cache/delete/41")
         assert resp.status_code == 200
         data = resp.get_json()

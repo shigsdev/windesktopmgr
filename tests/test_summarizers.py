@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 import bsod
 import windesktopmgr as wdm
+from events import summarize_events
 
 
 def _recent_iso(days_ago: int = 10) -> str:
@@ -1053,38 +1054,38 @@ def _event(event_id, level="Information", source="TestSource", message="Test mes
 
 class TestSummarizeEvents:
     def test_empty_list_returns_ok(self):
-        result = wdm.summarize_events([])
+        result = summarize_events([])
         assert result["status"] == "ok"
         assert result["insights"] == []
 
     def test_normal_info_events_returns_ok(self):
         events = [_event(7036, "Information"), _event(7040, "Information")]
-        result = wdm.summarize_events(events)
+        result = summarize_events(events)
         assert result["status"] == "ok"
         assert "headline" in result
         assert "insights" in result
 
     def test_error_events_return_warning_or_critical(self):
         events = [_event(1001, "Error", "Microsoft-Windows-WER-SystemErrorReporting")]
-        result = wdm.summarize_events(events)
+        result = summarize_events(events)
         assert result["status"] in ("warning", "critical")
 
     def test_many_errors_returns_critical(self):
         # More than 10 real errors should trigger critical status
         events = [_event(9999, "Error", f"UnknownSource{i}", f"Error message {i}") for i in range(12)]
-        result = wdm.summarize_events(events)
+        result = summarize_events(events)
         assert result["status"] == "critical"
 
     def test_missing_keys_does_not_crash(self):
         # Events with missing keys should not raise
         events = [{"Id": 100}, {}, {"Level": "Error"}]
-        result = wdm.summarize_events(events)
+        result = summarize_events(events)
         assert "status" in result
         assert "insights" in result
 
     def test_result_has_expected_structure(self):
         events = [_event(7036, "Warning")]
-        result = wdm.summarize_events(events)
+        result = summarize_events(events)
         assert "status" in result
         assert "headline" in result
         assert "insights" in result
