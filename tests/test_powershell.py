@@ -34,6 +34,7 @@ import pytest
 import bsod
 import disk
 import events
+import processes
 import remediation
 import windesktopmgr as wdm
 
@@ -978,7 +979,7 @@ class TestGetProcessList:
 
     def test_happy_path_returns_structure(self, mocker):
         self._patch(mocker)
-        result = wdm.get_process_list()
+        result = processes.get_process_list()
         assert "processes" in result
         assert "total" in result
         assert "total_mem_mb" in result
@@ -986,26 +987,26 @@ class TestGetProcessList:
 
     def test_total_mem_summed(self, mocker):
         self._patch(mocker)
-        result = wdm.get_process_list()
+        result = processes.get_process_list()
         assert result["total_mem_mb"] == pytest.approx(520.0, abs=1)
 
     def test_cpu_is_cumulative_seconds(self, mocker):
         """Regression: CPU must preserve PS ``Get-Process .CPU`` semantics —
         cumulative seconds (user + system), NOT a percentage."""
         self._patch(mocker)
-        result = wdm.get_process_list()
+        result = processes.get_process_list()
         chrome = next(p for p in result["processes"] if p["Name"] == "chrome")
         assert chrome["CPU"] == pytest.approx(12.5, abs=0.1)
 
     def test_empty_output_returns_fallback(self, mocker):
         self._patch(mocker, procs=[])
-        result = wdm.get_process_list()
+        result = processes.get_process_list()
         assert result["processes"] == []
         assert result["total"] == 0
 
     def test_iter_exception_returns_fallback(self, mocker):
         mocker.patch("windesktopmgr.psutil.process_iter", side_effect=RuntimeError("oops"))
-        result = wdm.get_process_list()
+        result = processes.get_process_list()
         assert result["processes"] == []
         assert result["total"] == 0
         assert result["flagged"] == []
@@ -1021,7 +1022,7 @@ class TestGetProcessList:
 
         good = self.SAMPLE_PROCS[0]
         mocker.patch("windesktopmgr.psutil.process_iter", return_value=iter([good, Dead()]))
-        result = wdm.get_process_list()
+        result = processes.get_process_list()
         # Only the healthy proc should come through.
         assert result["total"] == 1
 
@@ -1029,12 +1030,12 @@ class TestGetProcessList:
         """Regression guard: backlog #24 removed PowerShell from this path."""
         ps_mock = mocker.patch("windesktopmgr.subprocess.run")
         self._patch(mocker)
-        wdm.get_process_list()
+        processes.get_process_list()
         assert ps_mock.call_count == 0
 
     def test_flagged_list_only_contains_flagged(self, mocker):
         self._patch(mocker)
-        result = wdm.get_process_list()
+        result = processes.get_process_list()
         for p in result["flagged"]:
             assert p["flag"] in ("warning", "critical")
 
@@ -1057,7 +1058,7 @@ class TestKillProcess:
 
     def test_success_returns_ok_true(self, mocker):
         self._patch(mocker)
-        result = wdm.kill_process(1234)
+        result = processes.kill_process(1234)
         assert result["ok"] is True
         assert result["error"] == ""
 
@@ -1065,7 +1066,7 @@ class TestKillProcess:
         import psutil as _psutil
 
         self._patch(mocker, kill_side_effect=_psutil.AccessDenied(pid=1234))
-        result = wdm.kill_process(1234)
+        result = processes.kill_process(1234)
         assert result["ok"] is False
         assert "Access is denied" in result["error"]
 
@@ -1073,19 +1074,19 @@ class TestKillProcess:
         import psutil as _psutil
 
         mocker.patch("windesktopmgr.psutil.Process", side_effect=_psutil.NoSuchProcess(pid=9999))
-        result = wdm.kill_process(9999)
+        result = processes.kill_process(9999)
         assert result["ok"] is False
         assert "No such process" in result["error"]
 
     def test_generic_exception_returns_ok_false(self, mocker):
         self._patch(mocker, kill_side_effect=RuntimeError("boom"))
-        result = wdm.kill_process(1234)
+        result = processes.kill_process(1234)
         assert result["ok"] is False
         assert "boom" in result["error"]
 
     def test_pid_is_integer_cast(self, mocker):
         m = self._patch(mocker)
-        wdm.kill_process(9999)
+        processes.kill_process(9999)
         # The int() cast is what prevents injection — verify psutil.Process
         # was called with a real integer, not whatever the caller passed.
         args, _ = m.call_args
@@ -1095,7 +1096,7 @@ class TestKillProcess:
     def test_non_integer_pid_is_cleanly_cast(self, mocker):
         """int() cast must prevent any garbage from reaching psutil."""
         m = self._patch(mocker)
-        wdm.kill_process(1234.9)
+        processes.kill_process(1234.9)
         args, _ = m.call_args
         assert args[0] == 1234
         assert isinstance(args[0], int)
@@ -1104,7 +1105,7 @@ class TestKillProcess:
         """Regression guard: no subprocess calls on this path after batch A."""
         ps_mock = mocker.patch("windesktopmgr.subprocess.run")
         self._patch(mocker)
-        wdm.kill_process(1234)
+        processes.kill_process(1234)
         assert ps_mock.call_count == 0
 
 
@@ -1711,7 +1712,7 @@ class TestGetMemoryAnalysis:
 
     def test_happy_path_keys(self, mocker):
         self._patch(mocker)
-        result = wdm.get_memory_analysis()
+        result = processes.get_memory_analysis()
         for key in (
             "total_mb",
             "used_mb",
@@ -1726,14 +1727,14 @@ class TestGetMemoryAnalysis:
 
     def test_totals_calculated(self, mocker):
         self._patch(mocker)
-        result = wdm.get_memory_analysis()
+        result = processes.get_memory_analysis()
         assert result["total_mb"] == 32768
         assert result["free_mb"] == 16000
         assert result["used_mb"] == 32768 - 16000
 
     def test_mcafee_detected(self, mocker):
         self._patch(mocker)
-        result = wdm.get_memory_analysis()
+        result = processes.get_memory_analysis()
         assert result["has_mcafee"] is True
         assert result["mcafee_mb"] > 0
 
@@ -1749,7 +1750,7 @@ class TestGetMemoryAnalysis:
             _fake_mem_proc(name="chrome", mem_mb=500.0),
         ]
         self._patch(mocker, procs=procs)
-        result = wdm.get_memory_analysis()
+        result = processes.get_memory_analysis()
         breakdown = result.get("mcafee_processes", [])
         assert len(breakdown) == 3, f"expected 3 McAfee siblings, got {breakdown}"
         # Reconciliation: the total must equal the sum of the breakdown
@@ -1772,14 +1773,14 @@ class TestGetMemoryAnalysis:
             _fake_mem_proc(name="chrome", mem_mb=1024.0),
         ]
         self._patch(mocker, procs=procs)
-        result = wdm.get_memory_analysis()
+        result = processes.get_memory_analysis()
         breakdown = result.get("defender_processes", [])
         assert len(breakdown) == 2
         assert round(sum(p["mem"] for p in breakdown), 0) == result["defender_mb"]
 
     def test_accounting_note_present(self, mocker):
         self._patch(mocker)
-        result = wdm.get_memory_analysis()
+        result = processes.get_memory_analysis()
         note = result.get("accounting_note", "")
         assert "RSS" in note or "WorkingSet" in note, (
             "memory response must include an accounting note explaining that vendor totals sum per-process RSS"
@@ -1810,7 +1811,7 @@ class TestGetMemoryAnalysis:
         ],
     )
     def test_categorise_process(self, process_name, expected_category):
-        assert wdm._categorise_process(process_name) == expected_category
+        assert processes._categorise_process(process_name) == expected_category
 
     def test_other_bucket_audit_surfaces_top_unclassified(self, mocker):
         """When 'other' crosses 5% of total RAM, the response should include
@@ -1823,7 +1824,7 @@ class TestGetMemoryAnalysis:
             _fake_mem_proc(name="chrome.exe", mem_mb=1500.0),  # different cat
         ]
         self._patch(mocker, procs=procs, vmem=_fake_vmem(total_mb=32000, available_mb=20000))
-        result = wdm.get_memory_analysis()
+        result = processes.get_memory_analysis()
         assert result["other_needs_audit"] is True
         top = result["other_top_unclassified"]
         assert len(top) == 3, f"expected 3 unclassified, got {top}"
@@ -1840,24 +1841,24 @@ class TestGetMemoryAnalysis:
             _fake_mem_proc(name="mystery.exe", mem_mb=300.0),  # small "other"
         ]
         self._patch(mocker, procs=procs, vmem=_fake_vmem(total_mb=32000, available_mb=10000))
-        result = wdm.get_memory_analysis()
+        result = processes.get_memory_analysis()
         assert result["other_needs_audit"] is False
 
     def test_top_procs_sorted_by_mem_descending(self, mocker):
         self._patch(mocker)
-        result = wdm.get_memory_analysis()
+        result = processes.get_memory_analysis()
         mems = [p["mem"] for p in result["top_procs"]]
         assert mems == sorted(mems, reverse=True)
 
     def test_virtual_memory_failure_returns_empty_dict(self, mocker):
         mocker.patch("windesktopmgr.psutil.process_iter", return_value=iter([]))
         mocker.patch("windesktopmgr.psutil.virtual_memory", side_effect=RuntimeError("boom"))
-        result = wdm.get_memory_analysis()
+        result = processes.get_memory_analysis()
         assert result == {}
 
     def test_process_iter_failure_returns_empty_dict(self, mocker):
         mocker.patch("windesktopmgr.psutil.process_iter", side_effect=RuntimeError("boom"))
-        result = wdm.get_memory_analysis()
+        result = processes.get_memory_analysis()
         assert result == {}
 
     def test_dead_process_is_skipped(self, mocker):
@@ -1873,7 +1874,7 @@ class TestGetMemoryAnalysis:
             return_value=iter([Dead(), self.SAMPLE_PROCS[0]]),
         )
         mocker.patch("windesktopmgr.psutil.virtual_memory", return_value=_fake_vmem())
-        result = wdm.get_memory_analysis()
+        result = processes.get_memory_analysis()
         # Chrome should still come through despite the dead process first.
         assert result["top_procs"][0]["name"] == "chrome"
 
@@ -1881,7 +1882,7 @@ class TestGetMemoryAnalysis:
         """Regression guard: no PS calls on this path after batch A."""
         ps_mock = mocker.patch("windesktopmgr.subprocess.run")
         self._patch(mocker)
-        wdm.get_memory_analysis()
+        processes.get_memory_analysis()
         assert ps_mock.call_count == 0
 
 
@@ -2890,10 +2891,10 @@ class TestWorkerTaskDoneSafety:
     def test_process_worker_no_task_done_on_empty(self, mocker):
         import queue as q
 
-        mock_queue = mocker.patch("windesktopmgr._process_queue")
+        mock_queue = mocker.patch("processes._process_queue")
         mock_queue.get.side_effect = [q.Empty, KeyboardInterrupt]
         try:
-            wdm._process_lookup_worker()
+            processes._process_lookup_worker()
         except KeyboardInterrupt:
             pass
         mock_queue.task_done.assert_not_called()
@@ -3566,7 +3567,9 @@ class TestLookupProcessViaFileinfo:
 
     def test_happy_path_returns_enrichment(self, mocker):
         self._mock_fileinfo(mocker)
-        result = wdm._lookup_process_via_fileinfo("chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+        result = processes._lookup_process_via_fileinfo(
+            "chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+        )
         assert result is not None
         assert result["publisher"] == "Google LLC"
         assert result["source"] == "file_version_info"
@@ -3575,7 +3578,7 @@ class TestLookupProcessViaFileinfo:
     def test_no_path_triggers_shutil_which(self, mocker):
         """When no path is given, shutil.which() is used to find the exe."""
         m = mocker.patch("windesktopmgr.shutil.which", return_value=None)
-        result = wdm._lookup_process_via_fileinfo("unknownapp", "")
+        result = processes._lookup_process_via_fileinfo("unknownapp", "")
         assert result is None
         # Should have tried both with and without .exe suffix
         assert m.call_count >= 1
@@ -3585,7 +3588,7 @@ class TestLookupProcessViaFileinfo:
     def test_empty_proc_name_returns_none(self, mocker):
         """Guard against empty proc_name."""
         m = mocker.patch("windesktopmgr.shutil.which")
-        result = wdm._lookup_process_via_fileinfo("", "")
+        result = processes._lookup_process_via_fileinfo("", "")
         assert result is None
         assert m.call_count == 0  # should never call which with empty name
 
@@ -3595,7 +3598,7 @@ class TestLookupProcessViaFileinfo:
             "windesktopmgr.shutil.which", return_value=r"C:\Program Files\Google\Chrome\Application\chrome.exe"
         )
         self._mock_fileinfo(mocker)
-        result = wdm._lookup_process_via_fileinfo("chrome", "")
+        result = processes._lookup_process_via_fileinfo("chrome", "")
         assert result is not None
         assert result["publisher"] == "Google LLC"
 
@@ -3603,23 +3606,27 @@ class TestLookupProcessViaFileinfo:
         self._mock_fileinfo(
             mocker, desc="Windows Explorer", company="Microsoft Corporation", product="Microsoft Windows"
         )
-        result = wdm._lookup_process_via_fileinfo("explorer", r"C:\Windows\explorer.exe")
+        result = processes._lookup_process_via_fileinfo("explorer", r"C:\Windows\explorer.exe")
         assert result is not None
         assert result["safe_kill"] is False
 
     def test_non_system_path_marks_safe_kill_true(self, mocker):
         self._mock_fileinfo(mocker)
-        result = wdm._lookup_process_via_fileinfo("chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+        result = processes._lookup_process_via_fileinfo(
+            "chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+        )
         assert result["safe_kill"] is True
 
     def test_empty_desc_and_company_returns_none(self, mocker):
         self._mock_fileinfo(mocker, desc="", company="", product="")
-        result = wdm._lookup_process_via_fileinfo("mystery", r"C:\mystery.exe")
+        result = processes._lookup_process_via_fileinfo("mystery", r"C:\mystery.exe")
         assert result is None
 
     def test_exception_returns_none(self, mocker):
         mocker.patch("windesktopmgr.win32api.GetFileVersionInfo", side_effect=Exception("file not found"))
-        result = wdm._lookup_process_via_fileinfo("chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+        result = processes._lookup_process_via_fileinfo(
+            "chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+        )
         assert result is None
 
 

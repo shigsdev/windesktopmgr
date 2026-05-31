@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 
 import bsod
 import events
+import processes
 import windesktopmgr as wdm
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -691,29 +692,29 @@ class TestLoadProcessCache:
     def test_loads_from_file(self, mocker, tmp_path):
         f = tmp_path / "process_cache.json"
         f.write_text(json.dumps({"chrome": {"plain": "Google Chrome"}}))
-        mocker.patch("windesktopmgr.PROCESS_CACHE_FILE", str(f))
-        wdm._load_process_cache()
-        assert "chrome" in wdm._process_cache
+        mocker.patch("processes.PROCESS_CACHE_FILE", str(f))
+        processes._load_process_cache()
+        assert "chrome" in processes._process_cache
 
     def test_missing_file(self, mocker, tmp_path):
-        mocker.patch("windesktopmgr.PROCESS_CACHE_FILE", str(tmp_path / "nope.json"))
-        wdm._load_process_cache()
-        assert wdm._process_cache == {}
+        mocker.patch("processes.PROCESS_CACHE_FILE", str(tmp_path / "nope.json"))
+        processes._load_process_cache()
+        assert processes._process_cache == {}
 
     def test_corrupt_json(self, mocker, tmp_path):
         f = tmp_path / "process_cache.json"
         f.write_text("{nope")
-        mocker.patch("windesktopmgr.PROCESS_CACHE_FILE", str(f))
-        wdm._load_process_cache()
-        assert wdm._process_cache == {}
+        mocker.patch("processes.PROCESS_CACHE_FILE", str(f))
+        processes._load_process_cache()
+        assert processes._process_cache == {}
 
 
 class TestSaveProcessCache:
     def test_writes_json(self, mocker, tmp_path):
         f = tmp_path / "process_cache.json"
-        mocker.patch("windesktopmgr.PROCESS_CACHE_FILE", str(f))
-        wdm._process_cache = {"chrome": {"plain": "Chrome"}}
-        wdm._save_process_cache()
+        mocker.patch("processes.PROCESS_CACHE_FILE", str(f))
+        processes._process_cache = {"chrome": {"plain": "Chrome"}}
+        processes._save_process_cache()
         data = json.loads(f.read_text())
         assert "chrome" in data
 
@@ -744,7 +745,7 @@ class TestLookupProcessViaFileinfo:
 
     def test_returns_parsed_result(self, mocker):
         self._mock_fileinfo(mocker)
-        result = wdm._lookup_process_via_fileinfo("chrome", "C:\\Program Files\\Google\\Chrome\\chrome.exe")
+        result = processes._lookup_process_via_fileinfo("chrome", "C:\\Program Files\\Google\\Chrome\\chrome.exe")
         assert result is not None
         assert result["source"] == "file_version_info"
         assert "Google" in result["publisher"]
@@ -752,28 +753,28 @@ class TestLookupProcessViaFileinfo:
     def test_empty_output_returns_none(self, mocker):
         """No translation pairs → returns None."""
         mocker.patch("windesktopmgr.win32api.GetFileVersionInfo", return_value=None)
-        result = wdm._lookup_process_via_fileinfo("chrome", "C:\\chrome.exe")
+        result = processes._lookup_process_via_fileinfo("chrome", "C:\\chrome.exe")
         assert result is None
 
     def test_no_desc_no_company_returns_none(self, mocker):
         self._mock_fileinfo(mocker, desc="", company="", product="")
-        result = wdm._lookup_process_via_fileinfo("test", "C:\\test.exe")
+        result = processes._lookup_process_via_fileinfo("test", "C:\\test.exe")
         assert result is None
 
     def test_system_path_not_safe_to_kill(self, mocker):
         self._mock_fileinfo(mocker, desc="Host Process", company="Microsoft", product="Windows")
-        result = wdm._lookup_process_via_fileinfo("svchost", "C:\\Windows\\System32\\svchost.exe")
+        result = processes._lookup_process_via_fileinfo("svchost", "C:\\Windows\\System32\\svchost.exe")
         assert result is not None
         assert result["safe_kill"] is False
 
     def test_no_path_tries_shutil_which(self, mocker):
         m = mocker.patch("windesktopmgr.shutil.which", return_value=None)
-        wdm._lookup_process_via_fileinfo("chrome", "")
+        processes._lookup_process_via_fileinfo("chrome", "")
         assert m.called
 
     def test_exception_returns_none(self, mocker):
         mocker.patch("windesktopmgr.win32api.GetFileVersionInfo", side_effect=Exception("file not found"))
-        result = wdm._lookup_process_via_fileinfo("test", "C:\\test.exe")
+        result = processes._lookup_process_via_fileinfo("test", "C:\\test.exe")
         assert result is None
 
 
@@ -783,62 +784,62 @@ class TestLookupProcessViaWeb:
             mocker,
             {"results": [{"title": "Chrome Process", "summary": "Browser process", "url": "https://example.com"}]},
         )
-        result = wdm._lookup_process_via_web("chrome")
+        result = processes._lookup_process_via_web("chrome")
         assert result is not None
         assert result["source"] == "microsoft_learn"
 
     def test_empty_results_returns_none(self, mocker):
         _mock_urlopen(mocker, {"results": []})
-        assert wdm._lookup_process_via_web("totallyunknown") is None
+        assert processes._lookup_process_via_web("totallyunknown") is None
 
     def test_network_error_returns_none(self, mocker):
         mocker.patch("windesktopmgr.urllib.request.urlopen", side_effect=Exception("fail"))
-        assert wdm._lookup_process_via_web("test") is None
+        assert processes._lookup_process_via_web("test") is None
 
 
 class TestGetProcessInfo:
     def setup_method(self):
-        self._orig_cache = dict(wdm._process_cache)
-        self._orig_flight = set(wdm._process_in_flight)
-        wdm._process_queue = queue.Queue()
+        self._orig_cache = dict(processes._process_cache)
+        self._orig_flight = set(processes._process_in_flight)
+        processes._process_queue = queue.Queue()
 
     def teardown_method(self):
-        wdm._process_cache = self._orig_cache
-        wdm._process_in_flight = self._orig_flight
-        wdm._process_queue = queue.Queue()
+        processes._process_cache = self._orig_cache
+        processes._process_in_flight = self._orig_flight
+        processes._process_queue = queue.Queue()
 
     def test_static_kb_exact_hit(self):
-        if wdm.PROCESS_KB:
-            key = next(iter(wdm.PROCESS_KB))
-            result = wdm.get_process_info(key)
+        if processes.PROCESS_KB:
+            key = next(iter(processes.PROCESS_KB))
+            result = processes.get_process_info(key)
             assert result is not None
             assert result["source"] == "static_kb"
 
     def test_static_kb_partial_match(self):
-        if wdm.PROCESS_KB:
-            key = next(iter(wdm.PROCESS_KB))
+        if processes.PROCESS_KB:
+            key = next(iter(processes.PROCESS_KB))
             # Try with .exe suffix to trigger partial match
-            result = wdm.get_process_info(key + ".exe")
+            result = processes.get_process_info(key + ".exe")
             assert result is not None
 
     def test_cache_hit(self):
-        wdm._process_cache["testproc"] = {"source": "cached", "plain": "Test Process"}
-        result = wdm.get_process_info("testproc")
+        processes._process_cache["testproc"] = {"source": "cached", "plain": "Test Process"}
+        result = processes.get_process_info("testproc")
         assert result is not None
         assert result["source"] == "cached"
 
     def test_queues_unknown_process(self):
-        wdm._process_cache = {}
-        wdm._process_in_flight = set()
-        result = wdm.get_process_info("totallyunknownproc")
+        processes._process_cache = {}
+        processes._process_in_flight = set()
+        result = processes.get_process_info("totallyunknownproc")
         assert result is None
-        assert not wdm._process_queue.empty()
+        assert not processes._process_queue.empty()
 
     def test_no_duplicate_queue(self):
-        wdm._process_cache = {}
-        wdm._process_in_flight = {"alreadyinflight"}
-        wdm.get_process_info("alreadyinflight")
-        assert wdm._process_queue.empty()
+        processes._process_cache = {}
+        processes._process_in_flight = {"alreadyinflight"}
+        processes.get_process_info("alreadyinflight")
+        assert processes._process_queue.empty()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

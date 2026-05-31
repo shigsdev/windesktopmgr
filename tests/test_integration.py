@@ -28,6 +28,7 @@ if sys.platform != "win32":
 
 import bsod
 import disk
+import processes
 import windesktopmgr as wdm
 
 pytestmark = pytest.mark.integration
@@ -100,14 +101,14 @@ class TestGetUpdateHistoryIntegration:
 
 class TestGetProcessListIntegration:
     def test_returns_dict_with_processes(self):
-        result = wdm.get_process_list()
+        result = processes.get_process_list()
         assert isinstance(result, dict)
         assert "processes" in result
         assert "total" in result
         assert result["total"] > 0
 
     def test_processes_have_name_and_pid(self):
-        result = wdm.get_process_list()
+        result = processes.get_process_list()
         for p in result["processes"][:5]:
             assert "Name" in p
             assert "PID" in p
@@ -166,14 +167,14 @@ class TestGetCurrentBiosIntegration:
 
 class TestGetMemoryAnalysisIntegration:
     def test_returns_dict_with_keys(self):
-        result = wdm.get_memory_analysis()
+        result = processes.get_memory_analysis()
         assert isinstance(result, dict)
         assert "total_mb" in result
         assert "used_mb" in result
         assert result["total_mb"] > 0
 
     def test_top_procs_populated(self):
-        result = wdm.get_memory_analysis()
+        result = processes.get_memory_analysis()
         assert len(result["top_procs"]) > 0
 
 

@@ -14,6 +14,7 @@ import types
 
 import pytest
 
+import processes
 import windesktopmgr as wdm
 from tests.conftest import MockResult, load_fixture
 
@@ -225,7 +226,7 @@ class TestGetProcessListSnapshot:
 
     def test_output_shape_matches_fixture(self):
         expected = load_fixture("parsed/parsed_get_process_list.json")
-        result = wdm.get_process_list()
+        result = processes.get_process_list()
         assert isinstance(result, dict)
         assert "processes" in result
         if result["processes"] and "processes" in expected and expected["processes"]:
@@ -237,7 +238,7 @@ class TestGetProcessListSnapshot:
             assert not missing, f"psutil output dropped keys: {missing}"
 
     def test_processes_have_required_keys(self):
-        result = wdm.get_process_list()
+        result = processes.get_process_list()
         procs = result.get("processes", [])
         if procs:
             proc = procs[0]
@@ -268,7 +269,7 @@ class TestGetMemoryAnalysisSnapshot:
             MockResult(stdout=sys_mem),
         ]
         expected = load_fixture("parsed/parsed_get_memory_analysis.json")
-        result = wdm.get_memory_analysis()
+        result = processes.get_memory_analysis()
         assert isinstance(result, dict)
         # Verify same top-level keys
         assert set(result.keys()) == set(expected.keys())

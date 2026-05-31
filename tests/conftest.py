@@ -28,6 +28,7 @@ import bsod
 import disk
 import events
 import homenet
+import processes
 import windesktopmgr as wdm
 
 # ── Production-file isolation (autouse, session-scoped) ───────────────────────
@@ -132,14 +133,14 @@ def reset_globals():
     bsod._bsod_cache.clear()
     events._event_cache.clear()
     wdm._startup_cache.clear()
-    wdm._process_cache.clear()
+    processes._process_cache.clear()
     wdm._services_cache.clear()
 
     # In-flight sets / queues — drain without blocking
     bsod._bsod_in_flight.clear()
     events._lookup_in_flight.clear()
     wdm._startup_in_flight.clear()
-    wdm._process_in_flight.clear()
+    processes._process_in_flight.clear()
     wdm._services_in_flight.clear()
 
     # Disk analyzer caches (_winsxs_cache persists DISM results for 1h).
@@ -176,7 +177,7 @@ def reset_globals():
     bsod._bsod_cache.clear()
     events._event_cache.clear()
     wdm._startup_cache.clear()
-    wdm._process_cache.clear()
+    processes._process_cache.clear()
     wdm._services_cache.clear()
 
 
