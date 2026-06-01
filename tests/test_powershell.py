@@ -2974,7 +2974,7 @@ class TestCheckDellBiosUpdate:
         import urllib.error
         import xml.etree.ElementTree as ET
 
-        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
+        mocker.patch("bios.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
         _mock_wmi(mocker, {"Win32_BIOS": [_wmi_obj(SerialNumber=service_tag)]})
         # Method 3 reuses get_windows_update_drivers() — mock it directly
         # rather than feeding a PowerShell response.
@@ -3013,12 +3013,14 @@ class TestCheckDellBiosUpdate:
             mocker.patch("tempfile.gettempdir", return_value=str(tmp_path))
             mocker.patch("uuid.uuid4", return_value=type("U", (), {"hex": "00000000"})())
 
-            mocker.patch("os.path.exists", side_effect=lambda p: True if "CommandUpdate" in p else _real_exists(p))
+            mocker.patch("os.path.exists", side_effect=lambda p: True if "CommandUpdate" in str(p) else _real_exists(p))
 
             # DCU exe subprocess call (direct, not PS)
             run_responses.append(type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})())
         else:
-            mocker.patch("os.path.exists", side_effect=lambda p: False if "CommandUpdate" in p else _real_exists(p))
+            mocker.patch(
+                "os.path.exists", side_effect=lambda p: False if "CommandUpdate" in str(p) else _real_exists(p)
+            )
 
         # The catalog path still spawns ONE subprocess: expand.exe (Windows OS
         # tool, not PowerShell). Mock it as a no-op success.
@@ -3125,7 +3127,7 @@ class TestCheckDellBiosUpdate:
             "release_notes": "",
         }
         cache_file.write_text(json.dumps(cached))
-        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(cache_file))
+        mocker.patch("bios.BIOS_CACHE_FILE", str(cache_file))
         m = mocker.patch("windesktopmgr.subprocess.run")
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         m.assert_not_called()
@@ -3282,10 +3284,10 @@ class TestCheckDellBiosCommandContent:
         import xml.etree.ElementTree as ET
 
         _real_exists = os.path.exists
-        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
+        mocker.patch("bios.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
         _mock_wmi(mocker, {"Win32_BIOS": [_wmi_obj(SerialNumber="9T46D14")]})
         mocker.patch("windesktopmgr.get_windows_update_drivers", return_value={})
-        mocker.patch("os.path.exists", side_effect=lambda p: False if "CommandUpdate" in p else _real_exists(p))
+        mocker.patch("os.path.exists", side_effect=lambda p: False if "CommandUpdate" in str(p) else _real_exists(p))
 
         # Fake CAB download — content doesn't need to be a real CAB because
         # expand.exe is also mocked.
@@ -3341,10 +3343,10 @@ class TestCheckDellBiosCommandContent:
     def test_dcu_calls_exe_not_powershell(self, mocker, tmp_path):
         """Regression: Batch D — DCU uses direct exe, no PS wrapper."""
         _real_exists = os.path.exists
-        mocker.patch("windesktopmgr.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
+        mocker.patch("bios.BIOS_CACHE_FILE", str(tmp_path / "bios.json"))
         _mock_wmi(mocker, {"Win32_BIOS": [_wmi_obj(SerialNumber="9T46D14")]})
         # DCU exe "exists"
-        mocker.patch("os.path.exists", side_effect=lambda p: True if "CommandUpdate" in p else _real_exists(p))
+        mocker.patch("os.path.exists", side_effect=lambda p: True if "CommandUpdate" in str(p) else _real_exists(p))
         scan_file = tmp_path / "dcu_scan_00000000.xml"
         scan_file.write_text('<update type="BIOS" version="2.23.0"/>', encoding="utf-8")
         mocker.patch("tempfile.gettempdir", return_value=str(tmp_path))
