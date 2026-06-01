@@ -598,6 +598,16 @@ def _lookup_process_via_fileinfo(proc_name: str, path: str) -> dict | None:
             path = shutil.which(safe_name + ".exe") or shutil.which(safe_name) or ""
     if not path:
         return None
+    # Security: a caller-supplied `path` arrives unsanitized from the
+    # /api/processes/lookup-unknowns request body. Refuse UNC / non-absolute
+    # paths so a crafted request can't make win32api.GetFileVersionInfo touch a
+    # remote SMB share (network callout) or a working-dir-relative file.
+    # Legitimate paths from get_process_list() are absolute local exe paths
+    # (psutil proc.exe()) and pass cleanly; a missing local file still just
+    # raises inside the try below and is swallowed -- no behaviour change.
+    if path.replace("/", "\\").startswith("\\\\") or not os.path.isabs(path):
+        print(f"[ProcessLookup] rejecting non-local path: {path!r}")
+        return None
     try:
         # Get language/codepage pair from the version resource
         lc_pairs = win32api.GetFileVersionInfo(path, "\\VarFileInfo\\Translation")

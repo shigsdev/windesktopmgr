@@ -3378,6 +3378,62 @@ class TestDashboardSummaryCache:
             assert key in data
 
 
+class TestDashboardLegacyThresholdFallback:
+    """Coverage gap #3: when alerts.evaluate_rules() raises, the dashboard
+    must fall back to hardcoded CPU/memory/disk thresholds so it never goes
+    silent about real pressure. A prior audit caught the disk path being
+    silently dropped in this branch — this locks all three concerns in."""
+
+    def _mock_high_pressure(self, mocker):
+        # thermals carries CPUPct (>=80 -> CPU warning); memory at ~94% (>90
+        # -> RAM critical); one disk drive at 96% (>=95 -> disk critical).
+        mocker.patch(
+            "windesktopmgr.get_thermals",
+            return_value={"temps": [], "perf": {"CPUPct": 85}, "fans": [], "has_rich": True},
+        )
+        mocker.patch(
+            "windesktopmgr.get_memory_analysis",
+            return_value={"total_mb": 32000, "used_mb": 30000, "free_mb": 2000, "top_procs": []},
+        )
+        mocker.patch(
+            "windesktopmgr.get_disk_health",
+            return_value={"drives": [{"Letter": "C", "PctUsed": 96, "FreeGB": 5.0}]},
+        )
+        mocker.patch("windesktopmgr.get_bios_status", return_value={"current": {}, "update": {}})
+        mocker.patch(
+            "windesktopmgr.get_credentials_network_health",
+            return_value={"onedrive_suspended": False, "fast_startup": False, "drives_down": []},
+        )
+        mocker.patch(
+            "windesktopmgr.get_driver_health",
+            return_value={"old_drivers": [], "problematic_drivers": [], "nvidia": None},
+        )
+        mocker.patch("windesktopmgr.get_gpu_metrics", return_value={})
+        mocker.patch("windesktopmgr.get_network_metrics", return_value={})
+        import task_watcher as _tw
+
+        mocker.patch.object(_tw, "get_all_task_health", return_value=[])
+
+    def test_fallback_surfaces_cpu_mem_disk_when_rules_engine_raises(self, mocker):
+        import windesktopmgr as wdm
+
+        self._mock_high_pressure(mocker)
+        # Force the rules engine to blow up so the except-branch fallback runs.
+        boom = mocker.patch("alerts.evaluate_rules", side_effect=RuntimeError("rules engine broken"))
+
+        data = wdm._compute_dashboard_summary()
+        assert boom.called, "test must actually exercise the failing-rules path"
+        titles = [c["title"] for c in data["concerns"]]
+
+        cpu = [c for c in data["concerns"] if "CPU at 85%" in c["title"]]
+        mem = [c for c in data["concerns"] if c["title"].startswith("RAM at")]
+        disk = [c for c in data["concerns"] if "Drive C" in c["title"] and "full" in c["title"]]
+
+        assert cpu and cpu[0]["level"] == "warning", f"missing CPU fallback concern in {titles}"
+        assert mem and mem[0]["level"] == "critical", f"missing memory fallback concern in {titles}"
+        assert disk and disk[0]["level"] == "critical", f"missing disk fallback concern in {titles}"
+
+
 # ── Request-log flood suppressor (perf hardening B) ──────────────────────────
 
 

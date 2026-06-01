@@ -2846,6 +2846,80 @@ class TestCredentialsNetworkPSCommands:
         assert ps_smb, "Could not find SMB script among captured PS commands"
         assert "$dialect2" not in ps_smb
 
+    # ── PS data-collection matrix (coverage gap #5) ──────────────────────────
+    # The two tests above only assert command-content with stdout="{}". These
+    # exercise the parse / normalization / fallback behaviour the SOP requires.
+
+    def _patch_ps(self, mocker, *, per_script=None, stdout=None, side_effect=None):
+        """Patch subprocess.run for get_credentials_network_health.
+
+        per_script: dict mapping a marker substring -> stdout string, routed by
+        inspecting the -Command arg, so each of the 6 scripts can return its
+        own realistic output regardless of thread completion order.
+        stdout: a single stdout returned for every script.
+        side_effect: an exception class/instance raised for every call.
+        """
+        if side_effect is not None:
+            return mocker.patch("windesktopmgr.subprocess.run", side_effect=side_effect)
+
+        def _run(*args, **kwargs):
+            ps = args[0][-1]
+            out = stdout if stdout is not None else "{}"
+            if per_script:
+                for marker, value in per_script.items():
+                    if marker in ps:
+                        out = value
+                        break
+            return type("R", (), {"stdout": out, "returncode": 0, "stderr": ""})()
+
+        return mocker.patch("windesktopmgr.subprocess.run", side_effect=_run)
+
+    def test_single_object_creds_normalized_to_list(self, mocker):
+        """A single PSCustomObject (PS emits {} not [{}] for one entry) must be
+        normalized to a one-element list, not left as a dict."""
+        one_cred = {"Target": "outlook.office365.com", "User": "me", "Type": "Generic"}
+        self._patch_ps(mocker, per_script={"cmdkey /list": json.dumps(one_cred)})
+        result = wdm.get_credentials_network_health()
+        assert isinstance(result["creds"], list)
+        assert len(result["creds"]) == 1
+        assert len(result["email_creds"]) == 1  # outlook/office target classified as email
+
+    def test_realistic_happy_path_parses_each_source(self, mocker):
+        """Feed realistic JSON to every script; the parsed fields surface."""
+        self._patch_ps(
+            mocker,
+            per_script={
+                "cmdkey /list": json.dumps([{"Target": "nas-synology", "User": "admin", "Type": "Generic"}]),
+                "HiberbootEnabled": json.dumps({"FastStartupEnabled": True}),
+                "Id=@(4625": json.dumps([{"Id": 4625, "TimeCreated": "2026-06-01T00:00:00"}]),
+            },
+        )
+        result = wdm.get_credentials_network_health()
+        assert any("nas" in str(c.get("Target", "")).lower() for c in result["nas_creds"])
+        assert result["fast_startup"] is True
+
+    def test_run_ps_exception_returns_safe_fallback(self, mocker):
+        """Any subprocess failure must degrade to safe empties, never raise."""
+        self._patch_ps(mocker, side_effect=OSError("powershell missing"))
+        result = wdm.get_credentials_network_health()
+        assert result["creds"] == []
+        assert result["email_creds"] == []
+        assert result["drives"] == []
+
+    def test_malformed_json_returns_safe_fallback(self, mocker):
+        """Garbage stdout must not raise — json.loads error → safe empties."""
+        self._patch_ps(mocker, stdout="}{ this is not json")
+        result = wdm.get_credentials_network_health()
+        assert result["creds"] == []
+        assert result["drives"] == []
+
+    def test_timeout_returns_safe_fallback(self, mocker):
+        """PowerShell timeout must degrade gracefully."""
+        self._patch_ps(mocker, side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=25))
+        result = wdm.get_credentials_network_health()
+        assert result["creds"] == []
+        assert result["drives"] == []
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Worker task_done safety — must not call task_done after queue.Empty

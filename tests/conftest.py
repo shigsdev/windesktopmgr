@@ -28,6 +28,7 @@ import bsod
 import disk
 import events
 import homenet
+import network
 import processes
 import windesktopmgr as wdm
 
@@ -147,6 +148,15 @@ def reset_globals():
     # Lives in the `disk` blueprint module after the backlog-#22 extraction.
     disk._winsxs_cache["ts"] = 0.0
     disk._winsxs_cache["data"] = None
+
+    # Throughput / CPU-percent delta accumulators. These persist a "previous
+    # sample" keyed by adapter/PID across calls; a prior test's baseline would
+    # make a later test's first get_network_metrics()/get_process_list() report
+    # a nonzero delta (order-dependent failures). Clear under their locks.
+    with processes._cpu_samples_lock:
+        processes._last_cpu_samples.clear()
+    with network._net_samples_lock:
+        network._last_net_samples.clear()
 
     # Dashboard summary cache (serves last-known-good for 30 s). Stale
     # cache between tests would cause later tests to "see" an earlier
