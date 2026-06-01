@@ -685,6 +685,45 @@ class TestSummarizeProcesses:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# summarize_memory  (coverage gap #2 — no dedicated test existed)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestSummarizeMemory:
+    def test_empty_data_ok(self):
+        result = processes.summarize_memory({})
+        assert result["status"] == "ok"
+        assert result["headline"] == "No memory data."
+        assert result["insights"] == []
+
+    def test_critical_when_pct_over_90(self):
+        result = processes.summarize_memory({"total_mb": 32000, "used_mb": 30000, "free_mb": 2000})
+        assert result["status"] == "critical"
+        assert any(i["level"] == "critical" for i in result["insights"])
+
+    def test_warning_when_pct_over_75(self):
+        result = processes.summarize_memory({"total_mb": 32000, "used_mb": 25600, "free_mb": 6400})
+        assert result["status"] == "warning"
+
+    def test_ok_and_normal_insight_when_under_75(self):
+        result = processes.summarize_memory({"total_mb": 32000, "used_mb": 8000, "free_mb": 24000})
+        assert result["status"] == "ok"
+        assert any("within normal limits" in i["text"] for i in result["insights"])
+
+    def test_browser_over_2000_emits_warning_insight(self):
+        result = processes.summarize_memory(
+            {"total_mb": 32000, "used_mb": 8000, "free_mb": 24000, "categories": {"browser": 2500}}
+        )
+        assert any(i["level"] == "warning" and "Browsers" in i["text"] for i in result["insights"])
+
+    def test_comms_over_1000_emits_info_insight(self):
+        result = processes.summarize_memory(
+            {"total_mb": 32000, "used_mb": 8000, "free_mb": 24000, "categories": {"comms": 1500}}
+        )
+        assert any(i["level"] == "info" and "Communication apps" in i["text"] for i in result["insights"])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # summarize_thermals
 # ══════════════════════════════════════════════════════════════════════════════
 

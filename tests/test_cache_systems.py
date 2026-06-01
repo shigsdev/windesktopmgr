@@ -777,6 +777,21 @@ class TestLookupProcessViaFileinfo:
         result = processes._lookup_process_via_fileinfo("test", "C:\\test.exe")
         assert result is None
 
+    def test_unc_path_rejected_without_touching_win32api(self, mocker):
+        """Security (scan finding #1): a caller-supplied UNC path from the
+        lookup-unknowns request body must be refused BEFORE win32api opens it,
+        so a crafted request can't trigger an SMB callout to an attacker host."""
+        gfvi = mocker.patch("windesktopmgr.win32api.GetFileVersionInfo")
+        for bad in (r"\\attacker\share\evil.dll", "//attacker/share/evil.dll", r"\\?\C:\x.exe"):
+            assert processes._lookup_process_via_fileinfo("evil", bad) is None
+        gfvi.assert_not_called()
+
+    def test_relative_path_rejected(self, mocker):
+        """A non-absolute (working-dir-relative) path is also refused."""
+        gfvi = mocker.patch("windesktopmgr.win32api.GetFileVersionInfo")
+        assert processes._lookup_process_via_fileinfo("evil", "..\\..\\evil.exe") is None
+        gfvi.assert_not_called()
+
 
 class TestLookupProcessViaWeb:
     def test_returns_result(self, mocker):

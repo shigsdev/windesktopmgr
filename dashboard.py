@@ -17,6 +17,12 @@ The 8 primary collectors are resolved from the ``windesktopmgr`` namespace
 at call time (lazy import inside ``_compute_dashboard_summary``) -- this
 both breaks the import cycle and keeps ``mocker.patch("windesktopmgr.X")``
 effective for the dashboard route tests.
+
+Exception: the per-process memory-snooze cross-check reaches DIRECTLY into
+the ``processes`` module (``processes._load_memory_snoozes()``,
+``processes.MEM_CRIT_MB``, ``processes.SAFE_PROCESSES``) via the top-level
+``import processes`` -- NOT through the windesktopmgr namespace. Tests that
+need to stub those must patch ``processes.X``, not ``windesktopmgr.X``.
 """
 
 import json
