@@ -42,6 +42,11 @@
     --radius:     8px;
     --font-head:  'Syne', sans-serif;
     --font-mono:  'JetBrains Mono', monospace;
+    /* Global UI tuning — bump --ui-scale for bigger text everywhere
+       (proportional zoom over the whole app), widen --content-w to
+       reclaim the side white-space on large monitors. */
+    --ui-scale:   1.2;
+    --content-w:  1500px;
   }
 
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -53,6 +58,7 @@
     font-size: 13px;
     min-height: 100vh;
     overflow-x: hidden;
+    zoom: var(--ui-scale);
   }
 
   body::before {
@@ -67,7 +73,7 @@
 
   .wrap {
     position: relative; z-index: 1;
-    max-width: 1280px; margin: 0 auto;
+    max-width: var(--content-w); margin: 0 auto;
     padding: 0 24px 48px;
   }
 
