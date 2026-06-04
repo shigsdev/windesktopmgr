@@ -54,6 +54,7 @@ metrics_history.json
 # Baseline / drift-detection (backlog #14 runtime state)
 baseline_snapshot.json
 baseline_history.json
+baseline_accept_watermark.json
 
 # Backup tab runtime state (backlog #47 — wbadmin/File-History scan cache + action audit)
 backup_cache.json
