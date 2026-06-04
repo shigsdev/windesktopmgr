@@ -57,6 +57,16 @@ except Exception:  # noqa: BLE001
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 BASELINE_FILE = os.path.join(APP_DIR, "baseline_snapshot.json")
 HISTORY_FILE = os.path.join(APP_DIR, "baseline_history.json")
+# Acceptance watermark: ISO timestamp of the most recent "accept current as
+# baseline" (the full clear-all-drift action). Drift history recorded at or
+# before this instant has been reconciled into the baseline, so the live
+# dashboard drift concerns must ignore it. Without this, a user who clicks
+# "Accept current as baseline" keeps seeing the now-resolved drift as "open"
+# on the dashboard for up to 24h until the history entries age out of the
+# rolling window (bug 2026-06-03). The Baseline tab's own history/timeline
+# intentionally still shows the FULL audit trail -- only the dashboard's
+# actionable "is there drift right now?" view is gated by the watermark.
+ACCEPT_WATERMARK_FILE = os.path.join(APP_DIR, "baseline_accept_watermark.json")
 
 MAX_HISTORY = 500
 DRIFT_ALERT_WINDOW = timedelta(hours=24)
@@ -386,6 +396,9 @@ def accept_current_as_baseline() -> dict:
     snapshot = take_snapshot()
     with _file_lock:
         if _atomic_write(BASELINE_FILE, snapshot):
+            # Mark every drift recorded up to now as reconciled so the
+            # dashboard stops reporting the just-cleared drift as open.
+            _save_accept_watermark(snapshot["timestamp"])
             return {"ok": True, "snapshot": snapshot, "error": None}
         return {"ok": False, "snapshot": snapshot, "error": "atomic write failed"}
 
@@ -551,6 +564,71 @@ def _append_history(entry: dict) -> bool:
         if len(history) > MAX_HISTORY:
             history = history[-MAX_HISTORY:]
         return _atomic_write(HISTORY_FILE, history)
+
+
+def _save_accept_watermark(timestamp: str) -> bool:
+    """Persist the acceptance watermark (best-effort).
+
+    Written when the full current state is promoted to baseline so the
+    dashboard can treat all drift recorded at or before ``timestamp`` as
+    resolved. A failed write is non-fatal -- the baseline still updated;
+    we just don't suppress the stale dashboard drift (pre-fix behaviour).
+    """
+    with _file_lock:
+        return _atomic_write(ACCEPT_WATERMARK_FILE, {"accepted_at": timestamp})
+
+
+def load_accept_watermark() -> datetime | None:
+    """Return the instant of the last baseline acceptance, or None.
+
+    None means the user has never run "accept current as baseline" (or the
+    watermark file is missing/corrupt) -- in which case no drift is
+    suppressed and the dashboard behaves exactly as before this fix.
+    """
+    with _file_lock:
+        if not os.path.exists(ACCEPT_WATERMARK_FILE):
+            return None
+        try:
+            with open(ACCEPT_WATERMARK_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+            return datetime.fromisoformat(data["accepted_at"])
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+            return None
+
+
+def drop_accepted(entries: list) -> list:
+    """Filter drift-history ``entries`` to those recorded AFTER the most
+    recent baseline acceptance.
+
+    Entries at or before the acceptance watermark describe drift the user
+    already reconciled by promoting the current state to baseline, so the
+    live dashboard concerns must exclude them. Behaviour:
+
+      * No watermark on record -> return ``entries`` unchanged.
+      * Entry timestamp strictly after the watermark -> kept.
+      * Entry timestamp at or before the watermark -> dropped (reconciled).
+      * Missing/unparseable timestamp -> KEPT (fail-open: never hide drift
+        we can't date).
+      * Non-dict junk entry -> dropped.
+
+    The acceptance instant uses strict ``>`` so the snapshot moment itself
+    (which defines the new baseline) counts as reconciled.
+    """
+    watermark = load_accept_watermark()
+    if watermark is None:
+        return entries
+    out: list = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            ts = datetime.fromisoformat(entry.get("timestamp", ""))
+        except (ValueError, TypeError):
+            out.append(entry)  # undateable -> keep (fail-open)
+            continue
+        if ts > watermark:
+            out.append(entry)
+    return out
 
 
 # ══════════════════════════════════════════════════════════════════════
