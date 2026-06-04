@@ -32,9 +32,11 @@ def baseline_tmp(tmp_path, monkeypatch):
     """Redirect both baseline files to tmp paths."""
     snap = tmp_path / "baseline_snapshot.json"
     hist = tmp_path / "baseline_history.json"
+    mark = tmp_path / "baseline_accept_watermark.json"
     monkeypatch.setattr(baseline, "BASELINE_FILE", str(snap))
     monkeypatch.setattr(baseline, "HISTORY_FILE", str(hist))
-    return {"snapshot": snap, "history": hist}
+    monkeypatch.setattr(baseline, "ACCEPT_WATERMARK_FILE", str(mark))
+    return {"snapshot": snap, "history": hist, "watermark": mark}
 
 
 def _fake_svc(
@@ -3111,3 +3113,113 @@ class TestAcceptClusterRoute:
         data = r.get_json()
         assert data["failed"] == 2
         assert data["accepted"] == 0
+
+
+class TestAcceptWatermark:
+    """Acceptance watermark + drop_accepted() — the fix for the bug where
+    drift cleared via "accept current as baseline" kept showing as open on
+    the dashboard for up to 24h (2026-06-03)."""
+
+    def test_save_and_load_roundtrip(self, baseline_tmp):
+        ts = "2026-06-03T12:00:00"
+        assert baseline._save_accept_watermark(ts) is True
+        loaded = baseline.load_accept_watermark()
+        assert loaded == datetime.fromisoformat(ts)
+
+    def test_load_missing_returns_none(self, baseline_tmp):
+        # No watermark file written yet.
+        assert baseline.load_accept_watermark() is None
+
+    def test_load_malformed_returns_none(self, baseline_tmp):
+        baseline_tmp["watermark"].write_text("{ this is not json", encoding="utf-8")
+        assert baseline.load_accept_watermark() is None
+
+    def test_load_missing_key_returns_none(self, baseline_tmp):
+        baseline_tmp["watermark"].write_text(json.dumps({"wrong": "shape"}), encoding="utf-8")
+        assert baseline.load_accept_watermark() is None
+
+    def test_load_unparseable_timestamp_returns_none(self, baseline_tmp):
+        baseline_tmp["watermark"].write_text(json.dumps({"accepted_at": "not-a-date"}), encoding="utf-8")
+        assert baseline.load_accept_watermark() is None
+
+    def test_accept_current_as_baseline_writes_watermark(self, baseline_tmp, mocker):
+        snap = {
+            "timestamp": "2026-06-03T09:30:00",
+            "startup": {"by_key": {}},
+            "services": {"by_key": {}},
+            "tasks": {"by_key": {}},
+            "counts": {"startup": 0, "services": 0, "tasks": 0},
+        }
+        mocker.patch.object(baseline, "take_snapshot", return_value=snap)
+        result = baseline.accept_current_as_baseline()
+        assert result["ok"] is True
+        # Watermark equals the accepted snapshot's timestamp.
+        assert baseline.load_accept_watermark() == datetime.fromisoformat(snap["timestamp"])
+
+    def test_accept_failure_does_not_write_watermark(self, baseline_tmp, mocker):
+        mocker.patch.object(
+            baseline,
+            "take_snapshot",
+            return_value={"timestamp": "2026-06-03T09:30:00"},
+        )
+        mocker.patch.object(baseline, "_atomic_write", return_value=False)
+        result = baseline.accept_current_as_baseline()
+        assert result["ok"] is False
+        assert baseline.load_accept_watermark() is None
+
+    def test_watermark_write_failure_is_nonfatal(self, baseline_tmp, mocker):
+        """Best-effort watermark: if ONLY the watermark write fails (baseline
+        write succeeds), the accept still reports ok -- the dashboard merely
+        falls back to pre-fix behaviour (no suppression) rather than erroring.
+        Code-review follow-up (2026-06-03)."""
+        snap = {
+            "timestamp": "2026-06-03T09:30:00",
+            "startup": {"by_key": {}},
+            "services": {"by_key": {}},
+            "tasks": {"by_key": {}},
+            "counts": {"startup": 0, "services": 0, "tasks": 0},
+        }
+        mocker.patch.object(baseline, "take_snapshot", return_value=snap)
+
+        real_write = baseline._atomic_write
+
+        def _selective(path, payload):
+            if path == baseline.ACCEPT_WATERMARK_FILE:
+                return False  # simulate watermark write failure only
+            return real_write(path, payload)
+
+        mocker.patch.object(baseline, "_atomic_write", side_effect=_selective)
+        result = baseline.accept_current_as_baseline()
+        assert result["ok"] is True  # accept itself still succeeds
+        assert baseline.load_accept_watermark() is None  # watermark not persisted
+
+    def test_drop_accepted_no_watermark_returns_unchanged(self, baseline_tmp):
+        entries = [
+            {"timestamp": "2026-06-03T08:00:00", "total_changes": 3},
+            {"timestamp": "2026-06-03T09:00:00", "total_changes": 1},
+        ]
+        assert baseline.drop_accepted(entries) == entries
+
+    def test_drop_accepted_filters_at_and_before_watermark(self, baseline_tmp):
+        baseline._save_accept_watermark("2026-06-03T09:00:00")
+        before = {"timestamp": "2026-06-03T08:00:00", "total_changes": 3}
+        at = {"timestamp": "2026-06-03T09:00:00", "total_changes": 9}
+        after = {"timestamp": "2026-06-03T10:00:00", "total_changes": 1}
+        out = baseline.drop_accepted([before, at, after])
+        # Strict `>`: the acceptance instant itself counts as reconciled.
+        assert out == [after]
+
+    def test_drop_accepted_keeps_undateable_entries_fail_open(self, baseline_tmp):
+        baseline._save_accept_watermark("2026-06-03T09:00:00")
+        no_ts = {"total_changes": 5}
+        bad_ts = {"timestamp": "garbage", "total_changes": 2}
+        good = {"timestamp": "2026-06-03T10:00:00", "total_changes": 1}
+        out = baseline.drop_accepted([no_ts, bad_ts, good])
+        # Never hide drift we can't date.
+        assert no_ts in out and bad_ts in out and good in out
+
+    def test_drop_accepted_drops_non_dict_junk(self, baseline_tmp):
+        baseline._save_accept_watermark("2026-06-03T09:00:00")
+        good = {"timestamp": "2026-06-03T10:00:00", "total_changes": 1}
+        out = baseline.drop_accepted(["junk", None, 42, good])
+        assert out == [good]

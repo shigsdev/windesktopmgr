@@ -338,7 +338,10 @@ def _compute_dashboard_summary() -> dict:
     try:
         import baseline
 
-        drift_entries = baseline.recent_drift()
+        # drop_accepted() excludes drift the user already reconciled via
+        # "accept current as baseline" -- without it, cleared drift keeps
+        # showing as open on the dashboard for up to 24h (bug 2026-06-03).
+        drift_entries = baseline.drop_accepted(baseline.recent_drift())
         if drift_entries:
             latest = drift_entries[-1]
             total = latest.get("total_changes", 0)
@@ -371,7 +374,7 @@ def _compute_dashboard_summary() -> dict:
         # 60 s. That's the canonical install / malware fingerprint and
         # warrants warning-level attention even if the underlying drift
         # count is small.
-        history_all = baseline.load_history()
+        history_all = baseline.drop_accepted(baseline.load_history())
         alert = baseline.correlation_alert(history_all, window_seconds=60, min_categories=3)
         if alert:
             cat_label = ", ".join(alert["categories"])

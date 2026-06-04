@@ -1763,6 +1763,54 @@ class TestDashboardSummaryRoute:
         assert data["overall"] == "ok"
         assert data["total"] == 0
 
+    # ── Baseline-drift acceptance watermark (bug 2026-06-03) ──
+    # The drift dashboard concern reads the rolling 24h drift HISTORY, not
+    # live drift. Before the fix, clearing drift via "accept current as
+    # baseline" left those history entries untouched, so the concern kept
+    # showing as open for up to 24h. drop_accepted() must exclude history
+    # at/before the acceptance watermark.
+
+    _DRIFT_ENTRY = {
+        "timestamp": "2026-06-03T10:00:00",
+        "total_changes": 3,
+        "drift": {"services": {"added": ["NewSvc"], "removed": [], "changed": []}},
+    }
+
+    def test_baseline_drift_concern_fires_without_watermark(self, client, mocker):
+        self._mock_dashboard_deps(mocker)
+        import baseline as _bl
+
+        mocker.patch.object(_bl, "recent_drift", return_value=[self._DRIFT_ENTRY])
+        mocker.patch.object(_bl, "load_history", return_value=[self._DRIFT_ENTRY])
+        mocker.patch.object(_bl, "load_accept_watermark", return_value=None)
+
+        resp = client.get("/api/dashboard/summary")
+        concerns = resp.get_json()["concerns"]
+        drift = [c for c in concerns if c.get("tab") == "baseline" and "drift detected" in c["title"]]
+        assert len(drift) == 1, "un-accepted drift must surface on the dashboard"
+
+    def test_accepted_drift_suppressed_by_watermark(self, client, mocker):
+        """User accepted the baseline AFTER the drift was recorded -> the
+        dashboard must not keep showing the now-reconciled drift as open."""
+        self._mock_dashboard_deps(mocker)
+        from datetime import datetime
+
+        import baseline as _bl
+
+        mocker.patch.object(_bl, "recent_drift", return_value=[self._DRIFT_ENTRY])
+        mocker.patch.object(_bl, "load_history", return_value=[self._DRIFT_ENTRY])
+        # Acceptance one minute after the 10:00:00 drift entry.
+        mocker.patch.object(
+            _bl,
+            "load_accept_watermark",
+            return_value=datetime(2026, 6, 3, 10, 1, 0),
+        )
+
+        resp = client.get("/api/dashboard/summary")
+        concerns = resp.get_json()["concerns"]
+        baseline_concerns = [c for c in concerns if c.get("tab") == "baseline"]
+        assert baseline_concerns == [], "accepted drift must not show as open"
+
     def test_orbi_mesh_unknown_concern_not_emitted(self, client, mocker, tmp_path):
         """Regression: 2026-05-13 user feedback was "I still see this error...
         are you checking post-deploy?". The Orbi RBRE960 emits a corrupted
