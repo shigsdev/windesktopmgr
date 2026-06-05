@@ -20,6 +20,7 @@ import json
 import subprocess
 
 import disk
+import gpu
 import windesktopmgr as wdm
 from tests.test_powershell import _mock_run, _mock_wmi, _wmi_obj
 
@@ -175,7 +176,7 @@ class TestGetNvidiaGpuInfo:
     def test_happy_path_with_smi_and_wmi(self, mocker):
         self._mock_smi(mocker, stdout="NVIDIA GeForce RTX 4060 Ti, 591.74\n")
         _mock_wmi(mocker, {"Win32_VideoController": [self.NV_GPU]})
-        result = wdm._get_nvidia_gpu_info()
+        result = gpu._get_nvidia_gpu_info()
         assert result is not None
         assert result["name"] == "NVIDIA GeForce RTX 4060 Ti"
         assert result["installed"] == "591.74"
@@ -184,7 +185,7 @@ class TestGetNvidiaGpuInfo:
     def test_no_smi_falls_back_to_wmi_only(self, mocker):
         self._mock_smi(mocker, exists=False)
         _mock_wmi(mocker, {"Win32_VideoController": [self.NV_GPU]})
-        result = wdm._get_nvidia_gpu_info()
+        result = gpu._get_nvidia_gpu_info()
         assert result is not None
         assert result["name"] == "NVIDIA GeForce RTX 4060 Ti"
         assert result["win_ver"] == "32.0.15.9174"
@@ -194,19 +195,19 @@ class TestGetNvidiaGpuInfo:
     def test_no_nvidia_gpu_returns_none(self, mocker):
         self._mock_smi(mocker, exists=False)
         _mock_wmi(mocker, {"Win32_VideoController": [self.INTEL_GPU]})
-        result = wdm._get_nvidia_gpu_info()
+        result = gpu._get_nvidia_gpu_info()
         assert result is None
 
     def test_empty_wmi_returns_none(self, mocker):
         self._mock_smi(mocker, exists=False)
         _mock_wmi(mocker, {"Win32_VideoController": []})
-        result = wdm._get_nvidia_gpu_info()
+        result = gpu._get_nvidia_gpu_info()
         assert result is None
 
     def test_wmi_exception_returns_none(self, mocker):
         self._mock_smi(mocker, exists=False)
         mocker.patch("windesktopmgr.wmi.WMI", side_effect=Exception("COM error"))
-        result = wdm._get_nvidia_gpu_info()
+        result = gpu._get_nvidia_gpu_info()
         assert result is None
 
     def test_smi_timeout_still_tries_wmi(self, mocker):
@@ -214,14 +215,14 @@ class TestGetNvidiaGpuInfo:
         _mock_wmi(mocker, {"Win32_VideoController": [self.NV_GPU]})
         # os.path.exists needs to be True for the smi path to be tried
         mocker.patch("windesktopmgr.os.path.exists", return_value=True)
-        result = wdm._get_nvidia_gpu_info()
+        result = gpu._get_nvidia_gpu_info()
         assert result is not None
         assert result["name"] == "NVIDIA GeForce RTX 4060 Ti"
 
     def test_output_contract_fields(self, mocker):
         self._mock_smi(mocker, exists=False)
         _mock_wmi(mocker, {"Win32_VideoController": [self.NV_GPU]})
-        result = wdm._get_nvidia_gpu_info()
+        result = gpu._get_nvidia_gpu_info()
         assert "name" in result
         assert "installed" in result
         assert "win_ver" in result
@@ -241,33 +242,33 @@ class TestDetectNvidiaDriverBranch:
         shim = tmp_path / "SHIM.json"
         shim.write_text(json.dumps({"NVDriver": {"IsCRD": True, "Version": 59579}}))
         mocker.patch("glob.glob", return_value=[str(shim)])
-        assert wdm._detect_nvidia_driver_branch() is True
+        assert gpu._detect_nvidia_driver_branch() is True
 
     def test_game_ready_detected_from_nvdriver(self, mocker, tmp_path):
         """IsCRD=False inside NVDriver → Game Ready."""
         shim = tmp_path / "SHIM.json"
         shim.write_text(json.dumps({"NVDriver": {"IsCRD": False, "Version": 59595}}))
         mocker.patch("glob.glob", return_value=[str(shim)])
-        assert wdm._detect_nvidia_driver_branch() is False
+        assert gpu._detect_nvidia_driver_branch() is False
 
     def test_legacy_top_level_iscrd_still_works(self, mocker, tmp_path):
         """Older SHIM.json format with IsCRD at top level."""
         shim = tmp_path / "SHIM.json"
         shim.write_text(json.dumps({"IsCRD": True}))
         mocker.patch("glob.glob", return_value=[str(shim)])
-        assert wdm._detect_nvidia_driver_branch() is True
+        assert gpu._detect_nvidia_driver_branch() is True
 
     def test_missing_shim_defaults_to_game_ready(self, mocker):
         """No SHIM.json → default to Game Ready (most common consumer config)."""
         mocker.patch("glob.glob", return_value=[])
-        assert wdm._detect_nvidia_driver_branch() is False
+        assert gpu._detect_nvidia_driver_branch() is False
 
     def test_nvdriver_takes_precedence_over_top_level(self, mocker, tmp_path):
         """If both exist, NVDriver.IsCRD wins."""
         shim = tmp_path / "SHIM.json"
         shim.write_text(json.dumps({"IsCRD": True, "NVDriver": {"IsCRD": False}}))
         mocker.patch("glob.glob", return_value=[str(shim)])
-        assert wdm._detect_nvidia_driver_branch() is False
+        assert gpu._detect_nvidia_driver_branch() is False
 
     def test_null_iscrd_in_nvdriver_falls_through(self, mocker, tmp_path):
         """NVDriver.IsCRD = null → falls through to top-level or default."""
@@ -275,7 +276,7 @@ class TestDetectNvidiaDriverBranch:
         shim.write_text(json.dumps({"NVDriver": {"IsCRD": None}}))
         mocker.patch("glob.glob", return_value=[str(shim)])
         # No top-level IsCRD either → defaults to Game Ready
-        assert wdm._detect_nvidia_driver_branch() is False
+        assert gpu._detect_nvidia_driver_branch() is False
 
 
 class TestQueryNvidiaApi:
@@ -304,13 +305,13 @@ class TestQueryNvidiaApi:
         mock_resp.__enter__ = mocker.MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = mocker.MagicMock(return_value=False)
         mocker.patch("urllib.request.urlopen", return_value=mock_resp)
-        result = wdm._query_nvidia_api(1022, studio=True)
+        result = gpu._query_nvidia_api(1022, studio=True)
         assert result is not None
         assert result["version"] == "595.79"
 
     def test_api_failure_returns_none(self, mocker):
         mocker.patch("urllib.request.urlopen", side_effect=Exception("timeout"))
-        result = wdm._query_nvidia_api(1022, studio=True)
+        result = gpu._query_nvidia_api(1022, studio=True)
         assert result is None
 
     def test_bad_success_flag_returns_none(self, mocker):
@@ -320,15 +321,15 @@ class TestQueryNvidiaApi:
         mock_resp.__enter__ = mocker.MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = mocker.MagicMock(return_value=False)
         mocker.patch("urllib.request.urlopen", return_value=mock_resp)
-        result = wdm._query_nvidia_api(1022, studio=True)
+        result = gpu._query_nvidia_api(1022, studio=True)
         assert result is None
 
     def test_studio_and_game_ready_both_callable(self, mocker):
         """Both studio=True and studio=False should work without errors."""
         mocker.patch("urllib.request.urlopen", side_effect=Exception("skip"))
         # Both calls should handle the exception gracefully and return None
-        assert wdm._query_nvidia_api(1022, studio=True) is None
-        assert wdm._query_nvidia_api(1022, studio=False) is None
+        assert gpu._query_nvidia_api(1022, studio=True) is None
+        assert gpu._query_nvidia_api(1022, studio=False) is None
 
     def test_response_read_is_size_capped(self, mocker):
         """The response body read must be bounded so a hijacked endpoint or
@@ -340,7 +341,7 @@ class TestQueryNvidiaApi:
         mock_resp.__enter__ = mocker.MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = mocker.MagicMock(return_value=False)
         mocker.patch("urllib.request.urlopen", return_value=mock_resp)
-        wdm._query_nvidia_api(1022, studio=True)
+        gpu._query_nvidia_api(1022, studio=True)
         # read() must be called with an explicit positive byte limit.
         mock_resp.read.assert_called_once()
         args, _kwargs = mock_resp.read.call_args
@@ -356,7 +357,7 @@ class TestQueryNvidiaApi:
         mock_resp.__enter__ = mocker.MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = mocker.MagicMock(return_value=False)
         mocker.patch("urllib.request.urlopen", return_value=mock_resp)
-        assert wdm._query_nvidia_api(1022, studio=True) is None
+        assert gpu._query_nvidia_api(1022, studio=True) is None
 
 
 class TestWinToNvidiaVersion:
@@ -410,12 +411,12 @@ class TestGetNvidiaUpdateInfo:
         """Mock _get_nvidia_gpu_info — returns GPU dict or None."""
         if gpu is None:
             gpu = self.GPU_INFO
-        mocker.patch("windesktopmgr._detect_nvidia_driver_branch", return_value=True)
-        return mocker.patch("windesktopmgr._get_nvidia_gpu_info", return_value=gpu)
+        mocker.patch("gpu._detect_nvidia_driver_branch", return_value=True)
+        return mocker.patch("gpu._get_nvidia_gpu_info", return_value=gpu)
 
     def _mock_api(self, mocker, result=None):
         """Mock _query_nvidia_api — returns API result dict or None."""
-        return mocker.patch("windesktopmgr._query_nvidia_api", return_value=result)
+        return mocker.patch("gpu._query_nvidia_api", return_value=result)
 
     def test_happy_path_api_update_available(self, mocker):
         self._mock_gpu(mocker)
@@ -429,8 +430,8 @@ class TestGetNvidiaUpdateInfo:
         assert "RTX 4060" in result["Name"]
 
     def test_no_nvidia_gpu_returns_none(self, mocker):
-        mocker.patch("windesktopmgr._get_nvidia_gpu_info", return_value=None)
-        mocker.patch("windesktopmgr._detect_nvidia_driver_branch", return_value=True)
+        mocker.patch("gpu._get_nvidia_gpu_info", return_value=None)
+        mocker.patch("gpu._detect_nvidia_driver_branch", return_value=True)
         result = wdm.get_nvidia_update_info()
         assert result is None
 
@@ -528,7 +529,7 @@ class TestGetNvidiaUpdateInfo:
                 return None
             return {"version": "596.49", "url": "", "date": "", "name": "Game Ready"}
 
-        mocker.patch("windesktopmgr._query_nvidia_api", side_effect=_side_effect)
+        mocker.patch("gpu._query_nvidia_api", side_effect=_side_effect)
         wdm.get_nvidia_update_info()
         out = capsys.readouterr().out
         assert "branch detection" in out
@@ -547,7 +548,7 @@ class TestGetNvidiaUpdateInfo:
                 return None  # Studio has nothing for this GPU
             return {"version": "596.49", "url": "", "date": "", "name": "Game Ready"}
 
-        api_mock = mocker.patch("windesktopmgr._query_nvidia_api", side_effect=_side_effect)
+        api_mock = mocker.patch("gpu._query_nvidia_api", side_effect=_side_effect)
         result = wdm.get_nvidia_update_info()
         # API should be called TWICE (primary + alt branch)
         assert api_mock.call_count == 2
@@ -558,7 +559,7 @@ class TestGetNvidiaUpdateInfo:
     def test_both_branches_fail_returns_no_update(self, mocker):
         """Both Studio and Game Ready APIs return None → no update found."""
         self._mock_gpu(mocker)
-        api_mock = mocker.patch("windesktopmgr._query_nvidia_api", return_value=None)
+        api_mock = mocker.patch("gpu._query_nvidia_api", return_value=None)
         self._mock_winreg_cache(mocker, entries=[])
         mocker.patch("windesktopmgr.get_windows_update_drivers", return_value=None)
         result = wdm.get_nvidia_update_info()
@@ -676,13 +677,13 @@ class TestGetNvidiaUpdateInfo:
             "installed": "595.79",
             "win_ver": "32.0.15.9579",
         }
-        mocker.patch("windesktopmgr._get_nvidia_gpu_info", return_value=updated_gpu)
+        mocker.patch("gpu._get_nvidia_gpu_info", return_value=updated_gpu)
 
         # Second call: must NOT serve the stale "Update Available" cache.
         # The API now returns 595.79 as latest (matches installed) -> no
         # update available.
         api_mock2 = mocker.patch(
-            "windesktopmgr._query_nvidia_api",
+            "gpu._query_nvidia_api",
             return_value={"version": "595.79", "url": "", "date": "", "name": "Studio"},
         )
         r2 = wdm.get_nvidia_update_info()
@@ -733,7 +734,7 @@ class TestGetNvidiaUpdateInfo:
         # The expensive API path must be skipped entirely.
         api_mock.assert_not_called()
         # Nothing cached -- a later call with a real version recomputes clean.
-        assert wdm._nvidia_update_cache["data"] is None
+        assert gpu._nvidia_update_cache["data"] is None
 
     def test_concurrent_calls_are_thread_safe(self, mocker):
         """get_nvidia_update_info() is called concurrently by the dashboard
@@ -764,44 +765,44 @@ class TestLookupNvidiaPfid:
     """
 
     def test_exact_match(self):
-        assert wdm._lookup_nvidia_pfid("NVIDIA GeForce RTX 4060 Ti") == 1022
+        assert gpu._lookup_nvidia_pfid("NVIDIA GeForce RTX 4060 Ti") == 1022
 
     def test_rtx_30_series_in_map(self):
-        assert wdm._lookup_nvidia_pfid("NVIDIA GeForce RTX 3080") == 889
+        assert gpu._lookup_nvidia_pfid("NVIDIA GeForce RTX 3080") == 889
 
     def test_rtx_20_series_in_map(self):
-        assert wdm._lookup_nvidia_pfid("NVIDIA GeForce RTX 2070 SUPER") == 855
+        assert gpu._lookup_nvidia_pfid("NVIDIA GeForce RTX 2070 SUPER") == 855
 
     def test_gtx_16_series_in_map(self):
-        assert wdm._lookup_nvidia_pfid("NVIDIA GeForce GTX 1660") == 845
+        assert gpu._lookup_nvidia_pfid("NVIDIA GeForce GTX 1660") == 845
 
     def test_missing_nvidia_prefix(self):
         """WMI sometimes returns 'GeForce RTX 4060 Ti' without NVIDIA prefix."""
-        assert wdm._lookup_nvidia_pfid("GeForce RTX 4060 Ti") == 1022
+        assert gpu._lookup_nvidia_pfid("GeForce RTX 4060 Ti") == 1022
 
     def test_extra_suffix_8gb(self):
         """nvidia-smi on some systems appends VRAM size."""
-        assert wdm._lookup_nvidia_pfid("NVIDIA GeForce RTX 4060 Ti 8GB") == 1022
+        assert gpu._lookup_nvidia_pfid("NVIDIA GeForce RTX 4060 Ti 8GB") == 1022
 
     def test_extra_suffix_16gb(self):
-        assert wdm._lookup_nvidia_pfid("NVIDIA GeForce RTX 4060 Ti 16GB") == 1022
+        assert gpu._lookup_nvidia_pfid("NVIDIA GeForce RTX 4060 Ti 16GB") == 1022
 
     def test_case_insensitive(self):
-        assert wdm._lookup_nvidia_pfid("nvidia geforce rtx 4060 ti") == 1022
+        assert gpu._lookup_nvidia_pfid("nvidia geforce rtx 4060 ti") == 1022
 
     def test_unknown_gpu_returns_none(self):
-        assert wdm._lookup_nvidia_pfid("NVIDIA Quadro P2000") is None
+        assert gpu._lookup_nvidia_pfid("NVIDIA Quadro P2000") is None
 
     def test_empty_string_returns_none(self):
-        assert wdm._lookup_nvidia_pfid("") is None
+        assert gpu._lookup_nvidia_pfid("") is None
 
     def test_extra_whitespace(self):
-        assert wdm._lookup_nvidia_pfid("  NVIDIA  GeForce  RTX  4060  Ti  ") == 1022
+        assert gpu._lookup_nvidia_pfid("  NVIDIA  GeForce  RTX  4060  Ti  ") == 1022
 
     def test_super_suffix_not_confused_with_base(self):
         """RTX 4080 SUPER (pfid 1041) must not match RTX 4080 (pfid 996)."""
-        assert wdm._lookup_nvidia_pfid("NVIDIA GeForce RTX 4080 SUPER") == 1041
-        assert wdm._lookup_nvidia_pfid("NVIDIA GeForce RTX 4080") == 996
+        assert gpu._lookup_nvidia_pfid("NVIDIA GeForce RTX 4080 SUPER") == 1041
+        assert gpu._lookup_nvidia_pfid("NVIDIA GeForce RTX 4080") == 996
 
 
 # ══════════════════════════════════════════════════════════════════════════════
