@@ -116,21 +116,21 @@ def _collect_startup() -> dict:
     return by_key
 
 
-def _collect_services_wmi_enrichment() -> dict:
-    """Per-service WMI enrichment -- the fields psutil doesn't expose.
+# Hard cap on the WMI Win32_Service enrichment (seconds). The enumeration
+# is a COM call that can HANG indefinitely when the WMI service (Winmgmt)
+# is wedged -- a hang is not an exception, so try/except can't rescue it.
+# This froze GET /api/baseline/drift for >90 s on 2026-06-04. The query
+# runs in an abandonable daemon thread bounded by this timeout.
+_WMI_ENRICH_TIMEOUT_S = 8.0
 
-    Returns ``{service_name: {field: value, ...}}`` for these extra fields:
-      - service_type   (Own Process / Share Process / Kernel Driver / ...)
-      - error_control  (Ignore / Normal / Severe / Critical)
-      - delayed_auto_start  (bool -- covert-persistence evasion pattern)
-      - desktop_interact    (bool -- highly suspicious on modern Windows)
-      - tag_id          (load order within service group)
-      - started         (bool -- running flag; context-only)
 
-    WMI.Win32_Service() is one round-trip for all services (~1-2 s on
-    this box) so even 327 services enrich in a single query. On failure
-    (WMI COM fault, insufficient rights) returns {} and the psutil path
-    keeps working without enrichment.
+def _wmi_service_enrichment_query() -> dict:
+    """Raw WMI Win32_Service enumeration. MUST run on a thread that has
+    called ``pythoncom.CoInitialize()``.
+
+    Split out from the timeout wrapper below so it can be driven directly
+    in tests. On any WMI fault (package missing, COM error, insufficient
+    rights) returns {} -- the psutil path keeps working without enrichment.
     """
     try:
         import wmi
@@ -162,6 +162,66 @@ def _collect_services_wmi_enrichment() -> dict:
         except Exception:  # noqa: BLE001 -- skip unreadable rows
             continue
     return out
+
+
+def _collect_services_wmi_enrichment(timeout_s: float = _WMI_ENRICH_TIMEOUT_S) -> dict:
+    """Per-service WMI enrichment -- the fields psutil doesn't expose.
+
+    Returns ``{service_name: {field: value, ...}}`` for these extra fields:
+      - service_type   (Own Process / Share Process / Kernel Driver / ...)
+      - error_control  (Ignore / Normal / Severe / Critical)
+      - delayed_auto_start  (bool -- covert-persistence evasion pattern)
+      - desktop_interact    (bool -- highly suspicious on modern Windows)
+      - tag_id          (load order within service group)
+      - started         (bool -- running flag; context-only)
+
+    WMI.Win32_Service() is one round-trip for all services (~1-2 s on this
+    box). It is, however, a COM call that can HANG indefinitely when the
+    WMI service (Winmgmt) is wedged -- the symptom that froze
+    /api/baseline/drift for >90 s (2026-06-04). A try/except cannot catch
+    a hang, so the query runs in a daemon worker thread (which CoInitializes
+    COM for itself, independent of the caller's thread) and is ABANDONED on
+    timeout, returning {} so the psutil path keeps working without
+    enrichment. An abandoned worker leaks one thread stuck in native COM
+    until the process exits -- an acceptable trade vs. freezing the request.
+    """
+    result: dict = {}
+    done = threading.Event()
+
+    def _worker():
+        nonlocal result
+        pythoncom = None
+        coinit_ok = False
+        try:
+            import pythoncom  # local: keep baseline import-light + non-Windows-safe
+
+            pythoncom.CoInitialize()
+            coinit_ok = True
+        except Exception:  # noqa: BLE001 -- pywin32 absent / CoInitialize faulted; query may still work
+            pass
+        try:
+            result = _wmi_service_enrichment_query()
+        except Exception as e:  # noqa: BLE001 -- belt-and-suspenders; the query already guards
+            _log.warning("WMI enrichment worker failed: %s", e)
+        finally:
+            # Only uninitialise if WE successfully initialised on this thread --
+            # an unbalanced CoUninitialize corrupts the thread's COM apartment.
+            if coinit_ok and pythoncom is not None:
+                try:
+                    pythoncom.CoUninitialize()
+                except Exception:  # noqa: BLE001
+                    pass
+            done.set()
+
+    threading.Thread(target=_worker, name="wmi-svc-enrich", daemon=True).start()
+    if not done.wait(timeout=timeout_s):
+        _log.warning(
+            "WMI Win32_Service enrichment exceeded %.0fs (Winmgmt likely wedged) -- "
+            "returning without enrichment; psutil service data is unaffected",
+            timeout_s,
+        )
+        return {}
+    return result
 
 
 def _collect_services() -> dict:

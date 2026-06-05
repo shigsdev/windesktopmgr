@@ -17,6 +17,8 @@ no real baseline / history on disk is touched.
 from __future__ import annotations
 
 import json
+import threading
+import time
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -233,9 +235,10 @@ class TestCollectors:
     def test_wmi_enrichment_failure_returns_empty_dict(self, mocker):
         """When wmi package is missing or COM fails, the enrichment function
         must return {} (not raise) so the psutil-only path still delivers."""
-        # Case 1: wmi import fails
+        # Case 1: wmi import fails -> the query returns {} (no enrichment).
+        # The import now lives in _wmi_service_enrichment_query, so assert there.
         mocker.patch.dict("sys.modules", {"wmi": None})
-        # No assertion here; just don't crash
+        assert baseline._wmi_service_enrichment_query() == {}
 
         # Case 2: WMI() constructor explodes
         import sys
@@ -246,6 +249,35 @@ class TestCollectors:
         mocker.patch.dict("sys.modules", {"wmi": mock_wmi_mod})
         got = baseline._collect_services_wmi_enrichment()
         assert got == {}
+
+    def test_wmi_enrichment_times_out_returns_empty(self, mocker):
+        """A WMI Win32_Service enumeration that HANGS (blocks, not raises)
+        must not freeze the caller -- the bounded daemon worker is
+        abandoned on timeout and the wrapper returns {} so the psutil
+        path still delivers. Regression for the 2026-06-04
+        /api/baseline/drift >90 s freeze (root cause: unbounded COM call).
+        """
+        release = threading.Event()
+
+        def _hang():
+            release.wait(timeout=5)  # block until released (or 5 s safety net)
+            return {"ShouldNeverSee": {}}
+
+        mocker.patch("baseline._wmi_service_enrichment_query", side_effect=_hang)
+        t0 = time.perf_counter()
+        got = baseline._collect_services_wmi_enrichment(timeout_s=0.2)
+        elapsed = time.perf_counter() - t0
+        release.set()  # let the abandoned worker thread exit cleanly
+        assert got == {}, "a hanging WMI query must degrade to {} (no enrichment), not block"
+        assert elapsed < 1.0, f"wrapper must return ~immediately on timeout; took {elapsed:.2f}s"
+
+    def test_wmi_enrichment_success_passes_through(self, mocker):
+        """Happy path: a prompt WMI query result is returned unchanged --
+        the timeout wrapper doesn't disturb enrichment when it works."""
+        payload = {"Dhcp": {"service_type": "Share Process", "started": True}}
+        mocker.patch("baseline._wmi_service_enrichment_query", return_value=payload)
+        got = baseline._collect_services_wmi_enrichment(timeout_s=5.0)
+        assert got == payload
 
     def test_desktop_interact_flip_is_critical(self):
         """Flipping desktop_interact False->True is a classic red flag."""
