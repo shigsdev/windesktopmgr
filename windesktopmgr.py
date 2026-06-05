@@ -320,8 +320,33 @@ def _wmi_conn():
     return wmi.WMI()
 
 
-def get_installed_drivers() -> list:
+def bounded_wmi_query(work, *, timeout_s: float = 8.0, fallback=None, label: str = "WMI query"):
+    """Run a WMI/COM query callable bounded by a wall-clock timeout, returning
+    ``fallback`` on timeout OR on any error.
+
+    A WMI enumeration (``c.Win32_*()``) is a COM call that blocks and cannot be
+    interrupted; when the WMI service (Winmgmt) is wedged it hangs forever and a
+    plain try/except can't rescue a hang. ``work`` runs in an abandonable daemon
+    worker (via ``_wu_run``) joined with ``timeout_s``; on timeout the orphaned
+    worker finishes on its own and we degrade to ``fallback`` -- matching the
+    existing WMI sites' "try/except -> safe default" behaviour, but bounded so a
+    wedged Winmgmt can't freeze the request (or leak unbounded stuck threads).
+
+    ``work`` MUST be self-contained (create its own ``_wmi_conn()`` /
+    ``wmi.WMI()`` inside) so COM is initialised on the worker thread.
+    """
     try:
+        return _wu_run(work, timeout_s, label)
+    except TimeoutError:
+        print(f"[bounded_wmi_query] {label} exceeded {timeout_s:.0f}s -- returning fallback")
+        return fallback
+    except Exception as e:  # noqa: BLE001 -- match the WMI sites' broad safe-default fallback
+        print(f"[bounded_wmi_query] {label} failed: {e}")
+        return fallback
+
+
+def get_installed_drivers() -> list:
+    def _work():
         c = _wmi_conn()
         result = []
         for d in c.Win32_PnPSignedDriver():
@@ -336,9 +361,8 @@ def get_installed_drivers() -> list:
                     }
                 )
         return result
-    except Exception as e:
-        print(f"[WMI error] {e}")
-        return []
+
+    return bounded_wmi_query(_work, timeout_s=8.0, fallback=[], label="installed drivers")
 
 
 def get_driver_health() -> dict:
@@ -351,9 +375,9 @@ def get_driver_health() -> dict:
     """
     _ms_providers = ("Microsoft", "Microsoft Windows", "Microsoft Corporation")
     cutoff = datetime.now() - timedelta(days=730)  # ~2 years
-    old = []
-    prob = []
-    try:
+
+    def _work():
+        old, prob = [], []
         c = _wmi_conn()
         for d in c.Win32_PnPSignedDriver():
             if not d.DriverVersion:
@@ -376,7 +400,7 @@ def get_driver_health() -> dict:
                                 "Date": drv_dt.strftime("%Y-%m-%d"),
                             }
                         )
-                except Exception:
+                except Exception:  # noqa: BLE001 -- skip an unparseable driver date
                     pass
 
         for ent in c.Win32_PnPEntity():
@@ -389,8 +413,9 @@ def get_driver_health() -> dict:
                         "Status": ent.Status or "",
                     }
                 )
-    except Exception as e:
-        print(f"[DriverHealth] {e}")
+        return old, prob
+
+    old, prob = bounded_wmi_query(_work, timeout_s=8.0, fallback=([], []), label="driver health")
 
     # NVIDIA update check via Python (API + fallback) — no extra PS overhead
     nvidia = get_nvidia_update_info()
@@ -4494,15 +4519,16 @@ def memory_snoozes_route():
 def warranty_data():
     """Collect Intel/Dell warranty readiness data."""
     try:
-        # CPU / BIOS / System info via WMI
-        try:
+        # CPU / BIOS / System info via WMI (bounded so a wedged Winmgmt can't
+        # hang the warranty route; degrades to {} like the old try/except).
+        def _sys_work():
             c = _wmi_conn()
             cpu_obj = c.Win32_Processor()[0]
             bios_obj = c.Win32_BIOS()[0]
             cs_obj = c.Win32_ComputerSystem()[0]
             bios_date_raw = bios_obj.ReleaseDate or ""
             bios_date = _wmi_date_to_str(bios_date_raw) if bios_date_raw else "Unknown"
-            sys_data = {
+            return {
                 "CPUName": (cpu_obj.Name or "").strip(),
                 "ProcessorId": cpu_obj.ProcessorId or "",
                 "SerialNumber": cpu_obj.SerialNumber or "N/A",
@@ -4512,8 +4538,8 @@ def warranty_data():
                 "Manufacturer": cs_obj.Manufacturer or "",
                 "Model": cs_obj.Model or "",
             }
-        except Exception:
-            sys_data = {}
+
+        sys_data = bounded_wmi_query(_sys_work, timeout_s=8.0, fallback={}, label="warranty sysinfo")
 
         cpu_name = sys_data.get("CPUName", "Unknown")
         is_affected = bool(re.search(r"i[579]-1[34]\d{3}", cpu_name))

@@ -25,6 +25,7 @@ Each PS test group covers:
 import json
 import os
 import subprocess
+import threading
 import time
 import types
 from datetime import datetime, timedelta, timezone
@@ -68,6 +69,9 @@ def _mock_wmi(mocker, classes=None):
     Returns the mock connection object so tests can further customise it.
     """
     classes = classes or {}
+    # WMI work now runs on _wu_run's worker thread; patch CoInitialize too so
+    # tests stay hermetic (no real COM init on the spawned thread).
+    mocker.patch("windesktopmgr.pythoncom.CoInitialize")
     mock_conn = mocker.MagicMock()
 
     for name, data in classes.items():
@@ -150,6 +154,41 @@ def _mock_rem_run(mocker, stdout="", returncode=0, stderr="", side_effect=None):
 # ══════════════════════════════════════════════════════════════════════════════
 # get_installed_drivers
 # ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestBoundedWmiQuery:
+    """The shared hang-bound for WMI/COM calls (bounded_wmi_query). Bounds a
+    blocking enumeration so a wedged Winmgmt can't freeze the request, degrading
+    to a safe fallback on timeout OR error (same contract every WMI site wants)."""
+
+    def test_happy_path_returns_work_result(self):
+        assert wdm.bounded_wmi_query(lambda: [1, 2, 3], timeout_s=5.0, fallback=[]) == [1, 2, 3]
+
+    def test_timeout_returns_fallback(self):
+        """A WMI query that HANGS (blocks, not raises) must not freeze the
+        caller -- the abandonable worker is joined with the timeout and the
+        fallback returned. This is the wedged-Winmgmt protection."""
+        release = threading.Event()
+
+        def _hang():
+            release.wait(timeout=5)  # block until released (5 s safety net)
+            return ["should-not-appear"]
+
+        t0 = time.perf_counter()
+        got = wdm.bounded_wmi_query(_hang, timeout_s=0.2, fallback=["fallback"], label="test")
+        elapsed = time.perf_counter() - t0
+        release.set()  # let the abandoned worker exit cleanly
+        assert got == ["fallback"], "a hanging WMI query must degrade to the fallback, not block"
+        assert elapsed < 1.0, f"must return ~immediately on timeout; took {elapsed:.2f}s"
+
+    def test_work_exception_returns_fallback(self):
+        """A COM fault inside the query degrades to the fallback (matches the
+        WMI sites' broad try/except), not a 500."""
+
+        def _boom():
+            raise RuntimeError("Winmgmt COM fault")
+
+        assert wdm.bounded_wmi_query(_boom, timeout_s=5.0, fallback={}, label="test") == {}
 
 
 class TestGetInstalledDrivers:

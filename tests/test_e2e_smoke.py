@@ -13,6 +13,7 @@ If fixtures are missing, tests are skipped (not failed).
 """
 
 import json
+import types
 
 import pytest
 
@@ -355,12 +356,30 @@ class TestHealthHeartbeatE2E:
 
 
 class TestDriverHealthE2E:
-    def test_parses_real_fixture_through_full_chain(self, mocker):
-        """Call get_driver_health() with real PS fixture — full parsing chain."""
-        _mock_single_ps(mocker, "ps_driver_health.json")
+    def test_parses_wmi_objects_through_full_chain(self, mocker):
+        """Call get_driver_health() through the full parsing chain with mocked
+        WMI objects — old-driver date filtering + problematic-device detection.
+
+        (get_driver_health switched from PowerShell to WMI; the previous
+        `_mock_single_ps` fixture was a dead no-op that silently exercised real
+        COM. Now hermetic: wmi.WMI + CoInitialize mocked, real assertions on the
+        parsed output.)"""
+        mocker.patch("windesktopmgr.pythoncom.CoInitialize")
+        old_driver = types.SimpleNamespace(
+            DeviceName="Ancient NIC",
+            DriverVersion="1.0.0.1",
+            DriverProviderName="Realtek",
+            DriverDate="20180101000000.000000+000",  # >2 years old → flagged
+        )
+        problem_dev = types.SimpleNamespace(Name="Broken Device", ConfigManagerErrorCode=10, Status="Error")
+        mock_conn = mocker.MagicMock()
+        mock_conn.Win32_PnPSignedDriver.return_value = [old_driver]
+        mock_conn.Win32_PnPEntity.return_value = [problem_dev]
+        mocker.patch("windesktopmgr.wmi.WMI", return_value=mock_conn)
         mocker.patch("windesktopmgr.get_nvidia_update_info", return_value=None)
+
         result = wdm.get_driver_health()
         assert isinstance(result, dict)
-        assert "old_drivers" in result
-        assert "problematic_drivers" in result
-        assert "nvidia" in result
+        assert result["old_drivers"] and result["old_drivers"][0]["DeviceName"] == "Ancient NIC"
+        assert result["problematic_drivers"] and result["problematic_drivers"][0]["ErrorCode"] == 10
+        assert result["nvidia"] is None
