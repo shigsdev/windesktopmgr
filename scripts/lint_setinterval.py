@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """lint_setinterval.py -- Flag unguarded setInterval / setTimeout recurring
-call sites in templates/index.html.
+call sites in static/js/app.js (the app's JS, extracted from
+templates/index.html in #55 PR 2).
 
 The 2026-04-18 incident: ``pollTimer = setInterval(pollStatus, 800);`` had
 no preceding ``clearInterval(pollTimer)``. Every user click on "Scan Now"
@@ -25,7 +26,7 @@ import re
 import sys
 from pathlib import Path
 
-TARGETS = [Path("templates/index.html")]
+TARGETS = [Path("static/js/app.js")]
 
 # Matches: `ident = setInterval(...)` (not `const/let/var ident`)
 ASSIGN_RE = re.compile(r"^\s*([A-Za-z_][\w$]*)\s*=\s*setInterval\s*\(")

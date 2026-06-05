@@ -3582,7 +3582,12 @@ class TestHeartbeatJsGuards:
     def _html(self) -> str:
         import pathlib
 
-        return (pathlib.Path(__file__).resolve().parents[1] / "templates" / "index.html").read_text(encoding="utf-8")
+        # Frontend source spans index.html + the extracted static/js/app.js
+        # (#55 PR 2). Read both so JS-content assertions still resolve.
+        root = pathlib.Path(__file__).resolve().parents[1]
+        html = (root / "templates" / "index.html").read_text(encoding="utf-8")
+        js = (root / "static" / "js" / "app.js").read_text(encoding="utf-8")
+        return html + "\n" + js
 
     def test_fetch_timeout_is_at_least_five_seconds(self):
         """2-second timeout was too tight under browser-connection-cap pressure."""
@@ -3623,7 +3628,12 @@ class TestFavicon:
     def _html(self) -> str:
         import pathlib
 
-        return (pathlib.Path(__file__).resolve().parents[1] / "templates" / "index.html").read_text(encoding="utf-8")
+        # Frontend source spans index.html + the extracted static/js/app.js
+        # (#55 PR 2). Read both so JS-content assertions still resolve.
+        root = pathlib.Path(__file__).resolve().parents[1]
+        html = (root / "templates" / "index.html").read_text(encoding="utf-8")
+        js = (root / "static" / "js" / "app.js").read_text(encoding="utf-8")
+        return html + "\n" + js
 
     def test_link_rel_icon_tags_present(self):
         html = self._html()

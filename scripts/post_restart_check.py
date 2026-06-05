@@ -245,7 +245,7 @@ def check_idle_poll_rate(host: str) -> bool:
         print(
             f"  {RED}FAILED{RESET}: {rate:.1f} req/s (threshold {IDLE_RATE_THRESHOLD} r/s, {hits} hits in {IDLE_SAMPLE_WINDOW_S}s)"
         )
-        print(f"    {DIM}possible poll-accumulator leak — check setInterval call sites in templates/index.html{RESET}")
+        print(f"    {DIM}possible poll-accumulator leak — check setInterval call sites in static/js/app.js{RESET}")
         return False
     print(f"  {GREEN}{rate:.1f} req/s{RESET} ({hits} hits in {IDLE_SAMPLE_WINDOW_S}s)")
     return True
