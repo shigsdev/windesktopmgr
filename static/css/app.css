@@ -18,8 +18,16 @@
     --text:       #c8d6e8;
     --text-dim:   #6b7a90;
     --text-bright:#e8f2ff;
+    --ink-faint:  #3a4456;
+    /* Accent highlights + phosphor glows (instrument-cluster reskin) */
+    --cyan-hi:    #7ff0fb;
+    --orange-hi:  #ffb24d;
+    --green-hi:   #6effc0;
+    --glow-cyan:  rgba(0,212,255,.28);
+    --glow-orange:rgba(255,112,67,.30);
+    --glow-green: rgba(0,229,160,.26);
     --radius:     8px;
-    --font-head:  'Syne', sans-serif;
+    --font-head:  'Chakra Petch', sans-serif;
     --font-mono:  'JetBrains Mono', monospace;
     /* Global UI tuning — bump --ui-scale for bigger text everywhere
        (proportional zoom over the whole app), widen --content-w to
@@ -31,7 +39,11 @@
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   body {
-    background: var(--bg);
+    background:
+      radial-gradient(1100px 640px at 82% -8%, var(--glow-orange), transparent 60%),
+      radial-gradient(900px 720px at -6% 108%, var(--glow-cyan), transparent 55%),
+      var(--bg);
+    background-attachment: fixed;
     color: var(--text);
     font-family: var(--font-mono);
     font-size: 13px;
@@ -48,6 +60,22 @@
       linear-gradient(90deg, rgba(0,212,255,.03) 1px, transparent 1px);
     background-size: 40px 40px;
     pointer-events: none; z-index: 0;
+    /* Fade the grid toward the edges so it reads as instrument backdrop,
+       not graph paper. */
+    -webkit-mask-image: radial-gradient(125% 120% at 60% 18%, #000 52%, transparent 100%);
+            mask-image: radial-gradient(125% 120% at 60% 18%, #000 52%, transparent 100%);
+  }
+
+  /* Faint scanline grain on the backdrop — texture, not noise. Sits at
+     z-index:0 (with the grid) BELOW .wrap's content, so it only shows
+     through the gutters/margins and can never blend over a modal or
+     light popup. pointer-events:none so it never intercepts clicks. */
+  body::after {
+    content: '';
+    position: fixed; inset: 0;
+    pointer-events: none; z-index: 0;
+    background: repeating-linear-gradient(0deg, rgba(255,255,255,.008) 0 1px, transparent 1px 3px);
+    mix-blend-mode: overlay;
   }
 
   .wrap {
@@ -65,7 +93,7 @@
 
   .logo-area h1 {
     font-family: var(--font-head);
-    font-size: 28px; font-weight: 800;
+    font-size: 28px; font-weight: 700;
     color: var(--text-bright); letter-spacing: -0.5px; line-height: 1;
   }
 
@@ -216,7 +244,7 @@
 
   .stat-card .value {
     font-family: var(--font-head); font-size: 36px;
-    font-weight: 800; line-height: 1;
+    font-weight: 700; line-height: 1;
   }
 
   .stat-card.s-cyan   .value { color: var(--cyan); }
@@ -571,4 +599,62 @@
   }
   a.action-link:hover {
     background: var(--cyan); color: var(--bg);
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     Instrument Cluster reskin (PR1) — chrome, accents, texture.
+     A purely additive layer appended last: it refines the existing
+     components via box-shadow / pseudo-elements / text-shadow only.
+     No `background` overrides (so status border-lefts survive), no DOM
+     or JS changes — the Playwright contracts (element IDs, data-*,
+     switchTab, inline display show/hide) are all untouched.
+     ═══════════════════════════════════════════════════════════════ */
+
+  /* Machined depth + a faint top sheen on the structural panels. */
+  .stat-card, .chart-card, .summary-banner.loaded {
+    position: relative;
+    box-shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 14px 38px rgba(0,0,0,.42);
+  }
+
+  /* Engineering corner crop-marks on the KPI stat tiles. */
+  .stat-card::before, .stat-card::after {
+    content: ''; position: absolute; width: 10px; height: 10px;
+    pointer-events: none; opacity: .45; border-color: var(--ink-faint);
+  }
+  .stat-card::before { top: 7px; left: 7px; border-top: 1px solid; border-left: 1px solid; }
+  .stat-card::after  { bottom: 7px; right: 7px; border-bottom: 1px solid; border-right: 1px solid; }
+
+  /* Stat values: phosphor glow keyed to their accent colour. */
+  .stat-card.s-cyan   .value { text-shadow: 0 0 18px var(--glow-cyan); }
+  .stat-card.s-orange .value { text-shadow: 0 0 18px var(--glow-orange); }
+  .stat-card.s-green  .value { text-shadow: 0 0 18px var(--glow-green); }
+
+  /* Brand wordmark — cyan halo on the accent span. */
+  .logo-area h1 span { text-shadow: 0 0 22px var(--glow-cyan); }
+
+  /* Status dot on the system badge — richer halo. */
+  .sys-badge .dot { box-shadow: 0 0 10px var(--green), 0 0 0 3px var(--green-dim); }
+
+  /* Tab rail: a heat→cool seam under the nav + an active-tab glow. */
+  .page-nav { position: relative; }
+  .page-nav::after {
+    content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px;
+    background: linear-gradient(90deg,
+      var(--orange), var(--orange-hi) 18%, transparent 42%, var(--cyan) 86%, var(--cyan-hi));
+    opacity: .7; pointer-events: none;
+  }
+  .page-tab.active {
+    box-shadow: 0 0 18px -6px var(--glow-cyan);
+    text-shadow: 0 0 14px var(--glow-cyan);
+  }
+
+  /* Primary action button — machined glow at rest. */
+  .btn-action { box-shadow: 0 0 0 1px rgba(0,212,255,.25), 0 6px 22px -8px var(--glow-cyan); }
+
+  /* Driver cards: subtle machined shadow (no crop-marks — the grid is dense). */
+  .driver-card { box-shadow: 0 10px 30px -12px rgba(0,0,0,.5); }
+
+  /* Honour reduced-motion for the badge pulse. */
+  @media (prefers-reduced-motion: reduce) {
+    .sys-badge .dot { animation: none; }
   }
