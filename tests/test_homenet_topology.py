@@ -1813,7 +1813,11 @@ class TestTopologyDiagramPerBridgeColumns:
     def _index_html() -> str:
         from pathlib import Path
 
-        return (Path(__file__).parent.parent / "templates" / "index.html").read_text(encoding="utf-8")
+        # Frontend source = index.html + extracted static/js/app.js (#55 PR 2).
+        root = Path(__file__).parent.parent
+        html = (root / "templates" / "index.html").read_text(encoding="utf-8")
+        js = (root / "static" / "js" / "app.js").read_text(encoding="utf-8")
+        return html + "\n" + js
 
     def test_topology_renderer_loops_over_bridges_for_columns(self):
         """Each bridge MUST get its own column entry. Look for the

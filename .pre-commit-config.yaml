@@ -33,11 +33,16 @@ repos:
         stages: [pre-push]
 
       - id: lint-setinterval
-        name: lint-setinterval (no unguarded timer leaks in index.html)
+        name: lint-setinterval (no unguarded timer leaks in static/js/app.js)
         entry: python scripts/lint_setinterval.py
         language: system
         pass_filenames: false
-        files: 'templates/index\.html$'
+        # All frontend JS lives in static/js/app.js since #55 PR 2; index.html
+        # is now JS-free markup. The script scans that file (TARGETS), and this
+        # glob fires the hook when it's staged. Assumption: no inline <script>
+        # returns to index.html -- if one ever does, add it back to TARGETS +
+        # this glob, or the timer-leak guard silently won't cover it.
+        files: 'static/js/app\.js$'
         stages: [pre-commit]
 
       - id: check-repo-secrets

@@ -457,7 +457,11 @@ class TestJsSlugMatchesPythonSlug(unittest.TestCase):
     def test_js_helper_present_with_expected_regex(self):
         from pathlib import Path
 
-        index_html = (Path(__file__).parent.parent / "templates" / "index.html").read_text(encoding="utf-8")
+        # slugifyConcern lives in the extracted static/js/app.js (#55 PR 2).
+        root = Path(__file__).parent.parent
+        index_html = (root / "templates" / "index.html").read_text(encoding="utf-8") + (
+            root / "static" / "js" / "app.js"
+        ).read_text(encoding="utf-8")
         # JS should contain the canonical regex sequence
         assert "function slugifyConcern" in index_html
         # Lowercases + collapses non-alnum to '-' + trims

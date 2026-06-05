@@ -1235,7 +1235,11 @@ class TestLoadBiosAuditFrontendCoverage:
     def _index_html() -> str:
         from pathlib import Path
 
-        return (Path(__file__).parent.parent / "templates" / "index.html").read_text(encoding="utf-8")
+        # Frontend source = index.html + extracted static/js/app.js (#55 PR 2).
+        root = Path(__file__).parent.parent
+        html = (root / "templates" / "index.html").read_text(encoding="utf-8")
+        js = (root / "static" / "js" / "app.js").read_text(encoding="utf-8")
+        return html + "\n" + js
 
     def test_load_bios_audit_handles_every_known_kind(self):
         """Every kind that bios_audit.HistoryEntry can emit must have a
