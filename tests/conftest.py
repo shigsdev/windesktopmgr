@@ -167,6 +167,12 @@ def reset_globals():
     # a prior test's cached result doesn't bleed into the next test.
     wdm._reset_nvidia_update_cache()
 
+    # Baseline WMI service-enrichment cache (45 s TTL). Reset so a prior
+    # test's cached/stale enrichment doesn't leak into the next test.
+    import baseline
+
+    baseline._reset_wmi_enrich_cache()
+
     # Request-log flood suppressor state -- a prior test's requests must
     # not cause a later test's first request to be silently suppressed
     # as a duplicate.

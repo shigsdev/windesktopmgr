@@ -279,6 +279,73 @@ class TestCollectors:
         got = baseline._collect_services_wmi_enrichment(timeout_s=5.0)
         assert got == payload
 
+    def test_wmi_enrichment_caches_successful_result(self, mocker):
+        """A successful enumeration is cached for the TTL -- a second call
+        within the window reuses it WITHOUT re-querying WMI (so repeated
+        snapshots in one Baseline-tab session don't re-pay the WMI cost)."""
+        first = {"Dhcp": {"started": True}}
+        m = mocker.patch("baseline._wmi_service_enrichment_query", return_value=first)
+        assert baseline._collect_services_wmi_enrichment(timeout_s=5.0) == first
+        assert m.call_count == 1
+        # Second call within the TTL: even though the query would now return
+        # something different, the cached value is served and WMI is not hit.
+        m.return_value = {"Other": {}}
+        assert baseline._collect_services_wmi_enrichment(timeout_s=5.0) == first
+        assert m.call_count == 1, "cache hit must not re-query WMI"
+
+    def test_wmi_enrichment_serves_stale_cache_on_timeout(self, mocker):
+        """Once a result is cached, a later HANG (after the TTL expires)
+        serves the stale cache -- degraded but not empty -- so a wedged WMI
+        doesn't drop the security-metadata fields entirely."""
+        good = {"Dhcp": {"started": True}}
+        mocker.patch("baseline._wmi_service_enrichment_query", return_value=good)
+        assert baseline._collect_services_wmi_enrichment(timeout_s=5.0) == good  # populates cache
+
+        # Force the cache to look expired so the next call refreshes...
+        with baseline._wmi_enrich_cache_lock:
+            baseline._wmi_enrich_cache["ts"] = 0.0
+        # ...but now the query hangs -> the wrapper must serve the stale cache.
+        release = threading.Event()
+
+        def _hang():
+            release.wait(timeout=5)
+            return {"NEW": {}}
+
+        mocker.patch("baseline._wmi_service_enrichment_query", side_effect=_hang)
+        got = baseline._collect_services_wmi_enrichment(timeout_s=0.2)
+        release.set()
+        assert got == good, "a timeout with a populated cache must serve the stale enrichment"
+
+    def test_wmi_enrichment_inflight_guard_bounds_workers(self, mocker):
+        """While one enumeration is stuck on a wedged WMI, a concurrent call
+        must NOT spawn a second abandonable worker -- it returns the cache
+        immediately. Bounds the COM-thread leak to one and keeps repeated
+        snapshots fast during a wedge (the inventory re-snapshot case)."""
+        seed = {"Dhcp": {"started": True}}
+        mocker.patch("baseline._wmi_service_enrichment_query", return_value=seed)
+        assert baseline._collect_services_wmi_enrichment(timeout_s=5.0) == seed  # caches seed
+
+        # Expire the cache so the next call tries to refresh, but make the
+        # query hang so the worker stays in-flight.
+        with baseline._wmi_enrich_cache_lock:
+            baseline._wmi_enrich_cache["ts"] = 0.0
+        release = threading.Event()
+        calls = {"n": 0}
+
+        def _hang():
+            calls["n"] += 1
+            release.wait(timeout=5)
+            return {"NEW": {}}
+
+        mocker.patch("baseline._wmi_service_enrichment_query", side_effect=_hang)
+        # Call A: spawns the (hanging) worker, times out, serves stale seed.
+        assert baseline._collect_services_wmi_enrichment(timeout_s=0.2) == seed
+        # Call B WHILE the worker is still stuck: must serve the cache WITHOUT
+        # spawning a second worker -- the query is not invoked again.
+        assert baseline._collect_services_wmi_enrichment(timeout_s=0.2) == seed
+        release.set()
+        assert calls["n"] == 1, "in-flight guard must prevent a second concurrent WMI worker"
+
     def test_desktop_interact_flip_is_critical(self):
         """Flipping desktop_interact False->True is a classic red flag."""
         old = {
@@ -524,6 +591,50 @@ class TestSnapshot:
         assert snap["services"]["by_key"] == {"Dhcp": {"name": "Dhcp"}}
         assert snap["tasks"]["by_key"] == {r"\T1": {"name": "T1"}}
         assert snap["counts"] == {"startup": 1, "services": 1, "tasks": 1}
+
+    def test_take_snapshot_runs_collectors_concurrently(self, mocker):
+        """The three collectors are independent and must run in PARALLEL --
+        wall time should track the slowest, not the sum. Regression for the
+        2026-06-04 slow Baseline tab: sequential collectors + a sluggish WMI
+        service stacked to ~13 s and blew the tab's load budget."""
+
+        def _slow(ret):
+            def _fn():
+                time.sleep(0.3)
+                return ret
+
+            return _fn
+
+        mocker.patch("baseline._collect_startup", side_effect=_slow({"s::1": {"name": "1"}}))
+        mocker.patch("baseline._collect_services", side_effect=_slow({"Dhcp": {"name": "Dhcp"}}))
+        mocker.patch("baseline._collect_scheduled_tasks", side_effect=_slow({r"\T": {"name": "T"}}))
+
+        t0 = time.perf_counter()
+        snap = baseline.take_snapshot()
+        elapsed = time.perf_counter() - t0
+
+        # Sequential would be ~0.9 s; concurrent ~0.3 s. Assert well under the sum.
+        assert elapsed < 0.6, f"collectors did not run concurrently (took {elapsed:.2f}s; sum would be ~0.9s)"
+        # Behaviour preserved: all three categories collected + merged unchanged.
+        assert snap["counts"] == {"startup": 1, "services": 1, "tasks": 1}
+        assert snap["services"]["by_key"] == {"Dhcp": {"name": "Dhcp"}}
+
+    def test_take_snapshot_raises_when_collector_exceeds_budget(self, mocker):
+        """If a collector stalls past the ceiling (e.g. psutil.win_service_iter
+        wedged on a degraded SCM), take_snapshot RAISES rather than hanging
+        forever or substituting {} (which would record false 'all removed'
+        drift). Regression for the 2026-06-04 47 s psutil stall."""
+        mocker.patch("baseline._SNAPSHOT_COLLECTOR_TIMEOUT_S", 0.3)
+        mocker.patch("baseline._collect_startup", return_value={})
+        mocker.patch("baseline._collect_scheduled_tasks", return_value={})
+
+        def _stall():
+            time.sleep(2)  # well past the 0.3 s budget
+            return {"Dhcp": {"name": "Dhcp"}}
+
+        mocker.patch("baseline._collect_services", side_effect=_stall)
+        with pytest.raises(RuntimeError, match="timed out"):
+            baseline.take_snapshot()
 
 
 # ── Diff semantics ─────────────────────────────────────────────────
