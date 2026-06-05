@@ -43,6 +43,9 @@ def _fixture_to_wmi_objs(ps_fixture):
 
 def _mock_wmi_snap(mocker, classes):
     """Patch wmi.WMI() for snapshot tests with a dict of class name → list of objects."""
+    # WMI work now runs on _wu_run's worker thread; patch CoInitialize too so
+    # tests stay hermetic (no real COM init on the spawned thread).
+    mocker.patch("windesktopmgr.pythoncom.CoInitialize")
     mock_conn = mocker.MagicMock()
     for name, data in classes.items():
         setattr(mock_conn, name, mocker.MagicMock(return_value=data))
