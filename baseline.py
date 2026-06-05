@@ -35,6 +35,7 @@ Public API:
 
 from __future__ import annotations
 
+import concurrent.futures
 import csv
 import io
 import json
@@ -42,6 +43,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -120,8 +122,32 @@ def _collect_startup() -> dict:
 # is a COM call that can HANG indefinitely when the WMI service (Winmgmt)
 # is wedged -- a hang is not an exception, so try/except can't rescue it.
 # This froze GET /api/baseline/drift for >90 s on 2026-06-04. The query
-# runs in an abandonable daemon thread bounded by this timeout.
+# runs in an abandonable daemon thread bounded by this timeout. When WMI is
+# healthy the enumeration is ~1-2 s (well under the bound) and its result
+# populates the cache below; a genuinely wedged WMI is abandoned here and
+# the snapshot proceeds without enrichment (or with the cached value).
 _WMI_ENRICH_TIMEOUT_S = 8.0
+
+# Short-TTL cache for the enrichment. Service security-metadata changes
+# rarely, so repeated snapshots within one Baseline-tab session reuse a
+# recent result instead of each re-paying the multi-second (sometimes
+# hanging) WMI enumeration. It also lets us serve last-known-good on a
+# timeout, so a wedged WMI degrades to slightly-stale fields rather than
+# dropping enrichment entirely.
+_WMI_ENRICH_CACHE_TTL = 45.0  # seconds
+# "inflight" guards against spawning a second abandonable worker while one is
+# already stuck on a wedged WMI -- bounds the COM-thread leak to one and keeps
+# repeated snapshots fast (they serve the cache instead of waiting again).
+_wmi_enrich_cache: dict = {"data": None, "ts": 0.0, "inflight": False}
+_wmi_enrich_cache_lock = threading.Lock()
+
+
+def _reset_wmi_enrich_cache() -> None:
+    """Test hook: drop the cache so enrichment state can't bleed across tests."""
+    with _wmi_enrich_cache_lock:
+        _wmi_enrich_cache["data"] = None
+        _wmi_enrich_cache["ts"] = 0.0
+        _wmi_enrich_cache["inflight"] = False
 
 
 def _wmi_service_enrichment_query() -> dict:
@@ -182,14 +208,27 @@ def _collect_services_wmi_enrichment(timeout_s: float = _WMI_ENRICH_TIMEOUT_S) -
     a hang, so the query runs in a daemon worker thread (which CoInitializes
     COM for itself, independent of the caller's thread) and is ABANDONED on
     timeout, returning {} so the psutil path keeps working without
-    enrichment. An abandoned worker leaks one thread stuck in native COM
-    until the process exits -- an acceptable trade vs. freezing the request.
+    enrichment. Results are cached (short TTL) so repeated snapshots don't
+    re-pay the WMI cost, and an IN-FLIGHT GUARD ensures only one worker runs
+    at a time -- so while a worker is stuck on a wedged WMI, concurrent calls
+    return the cache (or {}) immediately instead of each spawning and leaking
+    another COM thread. The single abandoned worker dies with the process.
     """
-    result: dict = {}
+    # Fast paths under the lock: fresh cache -> serve it; a worker already
+    # enumerating -> serve what we have (don't pile on a second leaked thread).
+    now = time.monotonic()
+    with _wmi_enrich_cache_lock:
+        cached = _wmi_enrich_cache["data"]
+        if cached is not None and (now - _wmi_enrich_cache["ts"]) < _WMI_ENRICH_CACHE_TTL:
+            return cached
+        if _wmi_enrich_cache["inflight"]:
+            return cached if cached is not None else {}
+        _wmi_enrich_cache["inflight"] = True
+
     done = threading.Event()
 
     def _worker():
-        nonlocal result
+        res: dict = {}
         pythoncom = None
         coinit_ok = False
         try:
@@ -200,7 +239,7 @@ def _collect_services_wmi_enrichment(timeout_s: float = _WMI_ENRICH_TIMEOUT_S) -
         except Exception:  # noqa: BLE001 -- pywin32 absent / CoInitialize faulted; query may still work
             pass
         try:
-            result = _wmi_service_enrichment_query()
+            res = _wmi_service_enrichment_query()
         except Exception as e:  # noqa: BLE001 -- belt-and-suspenders; the query already guards
             _log.warning("WMI enrichment worker failed: %s", e)
         finally:
@@ -211,17 +250,48 @@ def _collect_services_wmi_enrichment(timeout_s: float = _WMI_ENRICH_TIMEOUT_S) -
                     pythoncom.CoUninitialize()
                 except Exception:  # noqa: BLE001
                     pass
+            # Publish the result even if the caller already timed out and
+            # abandoned us -- the NEXT call then gets a warm cache -- and clear
+            # the in-flight flag so a future call may refresh again.
+            with _wmi_enrich_cache_lock:
+                if res:  # cache only a successful, non-empty enumeration
+                    _wmi_enrich_cache["data"] = res
+                    _wmi_enrich_cache["ts"] = time.monotonic()
+                _wmi_enrich_cache["inflight"] = False
             done.set()
 
-    threading.Thread(target=_worker, name="wmi-svc-enrich", daemon=True).start()
-    if not done.wait(timeout=timeout_s):
+    try:
+        threading.Thread(target=_worker, name="wmi-svc-enrich", daemon=True).start()
+    except RuntimeError as e:
+        # OS refused a new thread -- clear the flag we just set so enrichment
+        # isn't silently disabled for the rest of the process lifetime.
+        _log.warning("WMI enrichment thread creation failed (%s) -- skipping enrichment", e)
+        with _wmi_enrich_cache_lock:
+            _wmi_enrich_cache["inflight"] = False
+            return _wmi_enrich_cache["data"] if _wmi_enrich_cache["data"] is not None else {}
+
+    if done.wait(timeout=timeout_s):
+        with _wmi_enrich_cache_lock:
+            data = _wmi_enrich_cache["data"]
+        return data if data is not None else {}
+
+    # Timed out -- the worker keeps running in the background (inflight stays
+    # True so concurrent callers won't pile on). Serve last-known-good
+    # enrichment if we have one, else {}; psutil service data is unaffected.
+    with _wmi_enrich_cache_lock:
+        stale = _wmi_enrich_cache["data"]
+    if stale is not None:
         _log.warning(
-            "WMI Win32_Service enrichment exceeded %.0fs (Winmgmt likely wedged) -- "
-            "returning without enrichment; psutil service data is unaffected",
+            "WMI Win32_Service enrichment exceeded %.0fs (Winmgmt likely wedged) -- serving cached enrichment",
             timeout_s,
         )
-        return {}
-    return result
+        return stale
+    _log.warning(
+        "WMI Win32_Service enrichment exceeded %.0fs (Winmgmt likely wedged), no cache -- "
+        "psutil service data is unaffected",
+        timeout_s,
+    )
+    return {}
 
 
 def _collect_services() -> dict:
@@ -255,31 +325,41 @@ def _collect_services() -> dict:
         "disabled": "Disabled",
     }
 
-    wmi_by_name = _collect_services_wmi_enrichment()
+    # Run the WMI enrichment CONCURRENTLY with the psutil iteration -- both
+    # take a few seconds (more when WMI is sluggish) and are independent, so
+    # overlapping them roughly halves this collector's wall time vs. running
+    # them back-to-back. The enrichment is itself hang-bounded.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="svc-wmi") as ex:
+        enrich_future = ex.submit(_collect_services_wmi_enrichment)
 
-    try:
-        for svc in psutil.win_service_iter():
-            try:
-                d = svc.as_dict()
-            except Exception:  # noqa: BLE001 -- skip unreadable services
-                continue
-            name = d.get("name") or ""
-            if not name:
-                continue
-            entry = {
-                "name": name,
-                "display_name": d.get("display_name") or "",
-                "description": d.get("description") or "",
-                "start_mode": _start_map.get((d.get("start_type") or "").lower(), d.get("start_type") or ""),
-                "status": _status_map.get((d.get("status") or "").lower(), d.get("status") or ""),
-                "username": d.get("username") or "",
-                "image_path": d.get("binpath") or "",
-            }
-            # Merge WMI enrichment (service_type, error_control, flags, etc.)
-            entry.update(wmi_by_name.get(name, {}))
-            by_key[name] = entry
-    except Exception as e:  # noqa: BLE001
-        _log.warning("services enumeration failed: %s", e)
+        try:
+            for svc in psutil.win_service_iter():
+                try:
+                    d = svc.as_dict()
+                except Exception:  # noqa: BLE001 -- skip unreadable services
+                    continue
+                name = d.get("name") or ""
+                if not name:
+                    continue
+                by_key[name] = {
+                    "name": name,
+                    "display_name": d.get("display_name") or "",
+                    "description": d.get("description") or "",
+                    "start_mode": _start_map.get((d.get("start_type") or "").lower(), d.get("start_type") or ""),
+                    "status": _status_map.get((d.get("status") or "").lower(), d.get("status") or ""),
+                    "username": d.get("username") or "",
+                    "image_path": d.get("binpath") or "",
+                }
+        except Exception as e:  # noqa: BLE001
+            _log.warning("services enumeration failed: %s", e)
+
+        wmi_by_name = enrich_future.result()
+
+    # Merge WMI enrichment (service_type, error_control, flags, ...) into the
+    # psutil rows. Only services psutil saw get enriched -- same as before.
+    for name, extra in wmi_by_name.items():
+        if name in by_key:
+            by_key[name].update(extra)
 
     return by_key
 
@@ -376,13 +456,33 @@ def _collect_scheduled_tasks() -> dict:
 # SNAPSHOT
 # ══════════════════════════════════════════════════════════════════════
 
+# Overall ceiling for each collector future in take_snapshot. Generous --
+# on a healthy box every collector returns in <2 s -- it exists only to keep
+# take_snapshot bounded if a collector's OWN bound fails to fire (notably
+# psutil.win_service_iter(), which has no timeout and can stall when the SCM /
+# service-query subsystem is degraded). On timeout we RAISE rather than
+# substitute {} (which would read as "all items removed" -> false drift).
+_SNAPSHOT_COLLECTOR_TIMEOUT_S = 45.0
+
 
 def take_snapshot() -> dict:
     """Capture a full current-state snapshot across all three categories.
 
-    Runs collectors sequentially -- they're each fast enough (services
-    ~100 ms, tasks ~500 ms, startup ~2 s via PowerShell) that parallelism
-    adds thread-launch overhead without meaningful wall-time savings.
+    The three collectors are INDEPENDENT and each can be slow -- services
+    via WMI is 1-2 s when healthy but several seconds when the WMI service
+    is degraded, schtasks ~3 s, startup ~2 s via PowerShell. They run
+    CONCURRENTLY so wall time is the slowest collector (~5 s) rather than
+    their sum (~13 s when WMI is sluggish). The old sequential path
+    assumed every collector was fast; that assumption broke down under a
+    degraded WMI service and made the Baseline tab feel stuck.
+
+    Most collectors are internally bounded (WMI enrichment hard timeout,
+    schtasks subprocess timeout=30, startup via PowerShell subprocess). The
+    notable exception is psutil.win_service_iter() inside _collect_services,
+    which has NO timeout and can stall when the SCM is degraded -- so each
+    collector future is additionally capped by ``_SNAPSHOT_COLLECTOR_TIMEOUT_S``
+    and a breach RAISES (rather than returning {}, which would look like every
+    item vanished and record false drift). Bounded either way; never infinite.
 
     Returns a dict shape:
         {
@@ -392,12 +492,38 @@ def take_snapshot() -> dict:
             "tasks":    {"by_key": {...}},
             "counts": {"startup": N, "services": N, "tasks": N},
         }
+
+    Raises RuntimeError if any collector exceeds the ceiling (a sign the
+    service-query subsystem is wedged; the caller surfaces an error instead
+    of hanging forever or recording bogus drift).
     """
+    budget = _SNAPSHOT_COLLECTOR_TIMEOUT_S
+    # Not using `with ... as ex:` -- its __exit__ does shutdown(wait=True),
+    # which would re-block on a hung collector and defeat the timeout. We
+    # collect with explicit per-future timeouts and shut down without waiting.
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="snap")
+    try:
+        f_startup = ex.submit(_collect_startup)
+        f_services = ex.submit(_collect_services)
+        f_tasks = ex.submit(_collect_scheduled_tasks)
+        try:
+            startup = f_startup.result(timeout=budget)
+            services = f_services.result(timeout=budget)
+            tasks = f_tasks.result(timeout=budget)
+        except concurrent.futures.TimeoutError as e:
+            _log.error("take_snapshot: a collector exceeded %.0fs -- service subsystem degraded?", budget)
+            raise RuntimeError(
+                f"baseline snapshot timed out after {budget:.0f}s -- the service-query "
+                f"subsystem (WMI/SCM) may be wedged; a reboot usually clears it"
+            ) from e
+    finally:
+        ex.shutdown(wait=False)  # don't block on a hung collector thread
+
     snap = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "startup": {"by_key": _collect_startup()},
-        "services": {"by_key": _collect_services()},
-        "tasks": {"by_key": _collect_scheduled_tasks()},
+        "startup": {"by_key": startup},
+        "services": {"by_key": services},
+        "tasks": {"by_key": tasks},
     }
     snap["counts"] = {
         "startup": len(snap["startup"]["by_key"]),
