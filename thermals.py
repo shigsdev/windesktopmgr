@@ -34,9 +34,14 @@ def get_thermals() -> dict:
     (backlog #28 close-out): thermal zones + OHM/LHM sensors via the ``wmi``
     package, CPU/memory/battery via ``psutil``. No PowerShell subprocess.
     """
-    temps: list = []
-    fans: list = []
-    try:
+
+    # The three WMI enumerations below are blocking COM calls that hang
+    # forever when Winmgmt is wedged, so run them bounded (see
+    # bounded_wmi_query). On timeout/error we degrade to empty temps+fans and
+    # fall through to the psutil perf block + the standard "no sensors" note.
+    def _wmi_work():
+        temps: list = []
+        fans: list = []
         pythoncom.CoInitialize()
         # CPU temps — MSAcpi_ThermalZoneTemperature lives in root\wmi and
         # reports decikelvin (value / 10 - 273.15 = Celsius). InstanceName
@@ -72,9 +77,11 @@ def get_thermals() -> dict:
                 fans.append({"Name": f.Name, "ActiveCooling": f.ActiveCooling, "DesiredSpeed": f.DesiredSpeed})
         except Exception:  # noqa: BLE001
             pass
-    except Exception as e:  # noqa: BLE001 — COM / WMI setup failure
-        print(f"[Thermals] error: {e}")
-        return {"temps": [], "perf": {}, "fans": [], "has_rich": False, "note": str(e)}
+        return temps, fans
+
+    from windesktopmgr import bounded_wmi_query  # lazy: wdm-resident, breaks import cycle
+
+    temps, fans = bounded_wmi_query(_wmi_work, timeout_s=8.0, fallback=([], []), label="thermals WMI")
 
     # CPU utilisation / memory / battery via psutil — no WMI, no subprocess.
     try:
