@@ -1258,11 +1258,16 @@ class TestGetThermals:
         assert result["temps"][0]["TempC"] == 55.2
 
     def test_wmi_failure_returns_fallback(self, mocker):
+        """A WMI/COM failure degrades to empty temps+fans, but the psutil perf
+        block (CPU%/RAM) is independent and still runs -- the WMI work is now
+        isolated behind bounded_wmi_query, so a WMI fault no longer discards
+        the CPU/RAM telemetry the way the old early-return did."""
         mocker.patch("windesktopmgr.pythoncom.CoInitialize", side_effect=RuntimeError("COM init failed"))
         result = wdm.get_thermals()
         assert result["temps"] == []
-        assert result["perf"] == {}
+        assert result["fans"] == []
         assert result["has_rich"] is False
+        assert "CPUPct" in result["perf"]  # psutil perf survives a WMI fault now
 
     def test_temps_query_uses_root_wmi_namespace(self, mocker):
         wmi_mock = self._make_mock(mocker)
@@ -1958,6 +1963,23 @@ class TestGetCurrentBios:
         mocker.patch("windesktopmgr.wmi.WMI", side_effect=Exception("COM error"))
         result = wdm.get_current_bios()
         assert result == {}
+
+    def test_get_service_tag_happy_path(self, mocker):
+        """_get_service_tag() reads the Dell service tag from Win32_BIOS."""
+        import bios
+
+        _mock_wmi(mocker, {"Win32_BIOS": [_wmi_obj(SerialNumber="ABC1234")]})
+        assert bios._get_service_tag() == "ABC1234"
+
+    def test_get_service_tag_returns_empty_on_wmi_fault(self, mocker):
+        """_get_service_tag() is bounded -- a WMI fault (or hang) degrades to
+        '' so the Dell BIOS-update check falls back to the generic support URL
+        instead of hanging or 500ing."""
+        import bios
+
+        mocker.patch("windesktopmgr.pythoncom.CoInitialize")
+        mocker.patch("windesktopmgr.wmi.WMI", side_effect=Exception("WMI down"))
+        assert bios._get_service_tag() == ""
 
     def test_missing_release_date_handled_gracefully(self, mocker):
         bios_no_date = _wmi_obj(

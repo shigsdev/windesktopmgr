@@ -198,6 +198,15 @@ class TestGetNvidiaGpuInfo:
         result = gpu._get_nvidia_gpu_info()
         assert result is None
 
+    def test_wmi_error_returns_none(self, mocker):
+        """With no nvidia-smi AND a WMI video-controller fault (or hang), the
+        WMI lookup is bounded via bounded_wmi_query and degrades to no-info, so
+        _get_nvidia_gpu_info returns None rather than raising or hanging."""
+        self._mock_smi(mocker, exists=False)
+        mocker.patch("windesktopmgr.pythoncom.CoInitialize")
+        mocker.patch("windesktopmgr.wmi.WMI", side_effect=Exception("WMI down"))
+        assert gpu._get_nvidia_gpu_info() is None
+
     def test_empty_wmi_returns_none(self, mocker):
         self._mock_smi(mocker, exists=False)
         _mock_wmi(mocker, {"Win32_VideoController": []})

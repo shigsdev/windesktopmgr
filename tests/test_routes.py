@@ -2643,13 +2643,23 @@ class TestSysinfoRoute:
         d = r.get_json()["data"]
         assert isinstance(d["Disks"], list)
 
-    def test_wmi_exception_returns_partial(self, client, mocker):
+    def test_wmi_exception_returns_stale(self, client, mocker):
+        """A WMI fault (or hang) degrades to empty data + stale=True. The WMI
+        collection now runs inside bounded_wmi_query on a worker thread, which
+        swallows the fault and returns the safe fallback so the route marks the
+        payload stale instead of 500ing or hanging. The bound trades the exact
+        exception text for a generic 'unavailable' signal; the stale flag is
+        the contract the UI reads. Data is empty (not partial) because the
+        worker returns its own local dict -- it never mutates shared state,
+        which would race the main thread on timeout."""
+        mocker.patch("windesktopmgr.pythoncom.CoInitialize")
         mocker.patch("windesktopmgr.wmi.WMI", side_effect=Exception("WMI crashed"))
         r = client.get("/api/sysinfo/data")
         d = r.get_json()
         assert d["status"] == "partial"
         assert d["stale"] is True
-        assert "WMI crashed" in d["error"]
+        assert d["error"]  # a (now generic) error detail is present
+        assert d["data"] == {}  # empty on failure, thread-safe
 
     def test_returns_collected_at(self, client, mocker):
         self._setup_wmi(mocker)

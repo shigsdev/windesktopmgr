@@ -81,8 +81,13 @@ def collect_sysinfo() -> dict:
     collected_at = datetime.now(timezone.utc).isoformat()
     stale = False
     error_detail = None
-    data = {}
-    try:
+
+    # All the WMI enumerations below are blocking COM calls that hang forever
+    # when Winmgmt is wedged, so build the inventory inside a bounded worker
+    # (see bounded_wmi_query). On timeout/fault we get None back and mark the
+    # payload stale -- same signal the old try/except produced.
+    def _wmi_work():
+        data = {}
         c = _wmi_conn()
         os_obj = c.Win32_OperatingSystem()[0]
         cs_obj = c.Win32_ComputerSystem()[0]
@@ -366,10 +371,16 @@ def collect_sysinfo() -> dict:
                 }
             )
         data["PCIeSlots"] = slots
+        return data
 
-    except Exception as e:
+    from windesktopmgr import bounded_wmi_query  # lazy: wdm-resident, breaks import cycle
+
+    data = bounded_wmi_query(_wmi_work, timeout_s=15.0, fallback=None, label="sysinfo WMI")
+    if data is None:
+        # Timed out or COM-faulted -- mark stale like the old except did.
+        data = {}
         stale = True
-        error_detail = str(e)
+        error_detail = "WMI/SCM unavailable (timed out or faulted)"
 
     # Upgrade opportunities (#43). Computed from the inventory we just
     # collected so the UI gets one round-trip's worth of data instead of

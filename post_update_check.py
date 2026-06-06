@@ -90,7 +90,17 @@ def get_latest_hotfix() -> dict | None:
     Uses the ``wmi`` package (already in ``requirements.txt`` for Batch B) —
     no PowerShell subprocess.
     """
-    try:
+
+    def _work():
+        # Win32_QuickFixEngineering is a blocking COM enumeration -- it must
+        # CoInitialize on this (bounded) worker thread, which has no COM by
+        # default, exactly like _wmi_conn() does for the windesktopmgr sites.
+        try:
+            import pythoncom
+
+            pythoncom.CoInitialize()
+        except Exception:  # noqa: BLE001 — pywin32 absent / already initialised
+            pass
         import wmi
 
         conn = wmi.WMI()
@@ -109,9 +119,12 @@ def get_latest_hotfix() -> dict | None:
         # are monotonically increasing so higher KB => newer when dates tie).
         hotfixes.sort(key=lambda h: (h["InstalledOn"], h["HotFixID"]), reverse=True)
         return hotfixes[0]
-    except Exception as e:
-        print(f"[post_update_check] WMI hotfix query failed: {e}", file=sys.stderr)
-        return None
+
+    # Bounded so a wedged Winmgmt can't hang the post-deploy check or leak a
+    # stuck COM thread; degrades to None like the old try/except.
+    from windesktopmgr import bounded_wmi_query
+
+    return bounded_wmi_query(_work, timeout_s=8.0, fallback=None, label="latest hotfix")
 
 
 def _normalize_installed_date(raw: str) -> str:

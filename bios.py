@@ -47,12 +47,26 @@ def _insight(level: str, text: str, action: str = "") -> dict:
     return {"level": level, "text": text, "action": action}
 
 
-def get_current_bios() -> dict:
-    # _wmi_conn lives in windesktopmgr; lazy-import to break the cycle and
-    # keep mocker.patch("windesktopmgr._wmi_conn") effective (#54 PR J).
-    from windesktopmgr import _wmi_conn
+def _get_service_tag() -> str:
+    """Dell service tag from WMI Win32_BIOS, bounded so a wedged Winmgmt can't
+    hang the BIOS-update check or leak a stuck COM thread."""
 
-    try:
+    def _work():
+        from windesktopmgr import _wmi_conn  # lazy: wdm-resident, breaks import cycle
+
+        return _wmi_conn().Win32_BIOS()[0].SerialNumber or ""
+
+    from windesktopmgr import bounded_wmi_query  # lazy: wdm-resident, breaks import cycle
+
+    return bounded_wmi_query(_work, timeout_s=8.0, fallback="", label="Dell service tag")
+
+
+def get_current_bios() -> dict:
+    # _wmi_conn / bounded_wmi_query live in windesktopmgr; lazy-import to break
+    # the cycle and keep mocker.patch("windesktopmgr._wmi_conn") effective.
+    def _work():
+        from windesktopmgr import _wmi_conn
+
         c = _wmi_conn()
         bios = c.Win32_BIOS()[0]
         board = c.Win32_BaseBoard()[0]
@@ -61,7 +75,7 @@ def get_current_bios() -> dict:
         if raw_date and len(raw_date) >= 8:
             try:
                 bios_date = datetime.strptime(raw_date[:8], "%Y%m%d").strftime("%B %d, %Y")
-            except Exception:
+            except Exception:  # noqa: BLE001 — unparseable BIOS date, fall back to raw
                 bios_date = raw_date[:8]
         return {
             "BIOSVersion": bios.SMBIOSBIOSVersion,
@@ -71,9 +85,10 @@ def get_current_bios() -> dict:
             "BoardMfr": board.Manufacturer,
             "BIOSDateFormatted": bios_date,
         }
-    except Exception as e:
-        print(f"[BIOS] get current error: {e}")
-        return {}
+
+    from windesktopmgr import bounded_wmi_query  # lazy: wdm-resident, breaks import cycle
+
+    return bounded_wmi_query(_work, timeout_s=8.0, fallback={}, label="current BIOS")
 
 
 def check_dell_bios_update(board_product: str, current_version: str) -> dict:
@@ -86,10 +101,10 @@ def check_dell_bios_update(board_product: str, current_version: str) -> dict:
       3. Windows Update pending driver check — catches BIOS updates via WU
     Results cached for 24 hours.
     """
-    # _wmi_conn (service-tag lookup) + get_windows_update_drivers (WU fallback)
-    # live in windesktopmgr; lazy-import to break the cycle and keep
-    # mocker.patch("windesktopmgr.X") effective (#54 PR J).
-    from windesktopmgr import _wmi_conn, get_windows_update_drivers
+    # get_windows_update_drivers (WU fallback) lives in windesktopmgr;
+    # lazy-import to break the cycle and keep mocker.patch effective. The
+    # service-tag WMI lookup is bounded via _get_service_tag() above.
+    from windesktopmgr import get_windows_update_drivers
 
     # ── Check cache ────────────────────────────────────────────────────────────
     try:
@@ -102,14 +117,11 @@ def check_dell_bios_update(board_product: str, current_version: str) -> dict:
     except Exception:
         pass
 
-    # Get service tag dynamically from WMI
+    # Get service tag dynamically from WMI (bounded)
     service_tag = ""
-    try:
-        tag = _wmi_conn().Win32_BIOS()[0].SerialNumber
-        if tag and len(tag) >= 5:
-            service_tag = tag
-    except Exception:
-        pass
+    tag = _get_service_tag()
+    if tag and len(tag) >= 5:
+        service_tag = tag
 
     result = {
         "checked_at": datetime.now(timezone.utc).isoformat(),
@@ -327,7 +339,7 @@ def check_dell_bios_update(board_product: str, current_version: str) -> dict:
     # If we didn't get it at the top (e.g. timeout), try once more
     if not result.get("service_tag"):
         try:
-            tag = _wmi_conn().Win32_BIOS()[0].SerialNumber
+            tag = _get_service_tag()
             if tag and len(tag) >= 5:
                 result["service_tag"] = tag
                 result["download_url"] = (

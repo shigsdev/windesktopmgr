@@ -84,19 +84,24 @@ def _get_nvidia_gpu_info() -> dict | None:
     except Exception:
         pass
 
-    # Get Windows driver version from WMI
-    try:
+    # Get Windows driver version from WMI (bounded -- a wedged Winmgmt must not
+    # hang the GPU-info path or leak a stuck COM thread).
+    def _wmi_work():
         from windesktopmgr import _wmi_conn  # lazy: wdm-resident, breaks import cycle
 
         c = _wmi_conn()
         for vc in c.Win32_VideoController():
             if vc.Name and "NVIDIA" in vc.Name.upper():
-                win_ver = vc.DriverVersion or ""
-                if not gpu_name:
-                    gpu_name = vc.Name
-                break
-    except Exception:
-        pass
+                return {"found": True, "win_ver": vc.DriverVersion or "", "name": vc.Name}
+        return {"found": False}
+
+    from windesktopmgr import bounded_wmi_query  # lazy: wdm-resident, breaks import cycle
+
+    vc_info = bounded_wmi_query(_wmi_work, timeout_s=8.0, fallback={"found": False}, label="GPU video controller")
+    if vc_info.get("found"):
+        win_ver = vc_info["win_ver"]
+        if not gpu_name:
+            gpu_name = vc_info["name"]
 
     if not gpu_name:
         return None
