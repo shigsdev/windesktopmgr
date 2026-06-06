@@ -362,7 +362,11 @@ def get_installed_drivers() -> list:
                 )
         return result
 
-    return bounded_wmi_query(_work, timeout_s=8.0, fallback=[], label="installed drivers")
+    # 20s (not the 8s default): Win32_PnPSignedDriver enumerates every signed
+    # driver (~330 on this box, ~4-5s healthy) and spikes past 8s under load --
+    # an 8s bound fired spurious empty fallbacks. 20s covers the load spike
+    # while still bounding a genuinely wedged Winmgmt.
+    return bounded_wmi_query(_work, timeout_s=20.0, fallback=[], label="installed drivers")
 
 
 def get_driver_health() -> dict:
@@ -415,7 +419,9 @@ def get_driver_health() -> dict:
                 )
         return old, prob
 
-    old, prob = bounded_wmi_query(_work, timeout_s=8.0, fallback=([], []), label="driver health")
+    # 20s (not the 8s default): enumerates Win32_PnPSignedDriver + Win32_PnPEntity
+    # (~4-5s healthy, spikes under load) -- same rationale as get_installed_drivers.
+    old, prob = bounded_wmi_query(_work, timeout_s=20.0, fallback=([], []), label="driver health")
 
     # NVIDIA update check via Python (API + fallback) — no extra PS overhead
     nvidia = get_nvidia_update_info()
