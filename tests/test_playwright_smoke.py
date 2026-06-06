@@ -1094,7 +1094,15 @@ class TestBaselineTabCoverage:
                     || (nodrift && nodrift.style.display !== 'none');
             }
             """,
-            timeout=15_000,
+            # 35s, not 15s: the first baseline-drift call does a real
+            # enumeration whose bounded worst-case is ~30s -- schtasks runs as a
+            # subprocess with a 30s timeout, alongside the WMI service-enrichment
+            # (8s bound) and startup scan (parallel). It's ~8s cold in isolation
+            # but balloons under the resource contention of a full-suite run
+            # (many concurrent tray operations). 35s covers the bounded ceiling
+            # + contention headroom; every underlying call is still hang-bounded
+            # so this widens headroom, never masks a hang. Warm calls ~3s.
+            timeout=35_000,
         )
 
     def test_baseline_tab_renders_without_console_errors(self, loaded_page):
@@ -1236,14 +1244,15 @@ class TestBaselineTabCoverage:
                 return !!document.getElementById('bl-inv-toggle');
             }
             """,
-            timeout=15_000,
+            # 35s: same cold baseline-drift settle as _goto_baseline (see note there).
+            timeout=35_000,
         )
 
         # Expand inventory + wait for at least one row to render
         page.evaluate("blToggleInventory()")
         page.wait_for_function(
             "() => document.querySelectorAll('#bl-inv-body .bl-inv-row').length > 0",
-            timeout=15_000,
+            timeout=25_000,
         )
 
         # Reproduce the bug: null the cache to simulate what loadBaseline did
@@ -1263,7 +1272,10 @@ class TestBaselineTabCoverage:
         # path) or fail gracefully with the "no longer present" message.
         # The OLD failure mode would leave the "Item data missing from
         # cache" string in the panel; that's the regression we're guarding
-        # against. Wait up to 8s for the re-fetch to settle.
+        # against. The cache-miss recovery re-fetches /api/baseline/snapshot,
+        # i.e. a full bounded take_snapshot (~30s worst case), so allow 35s --
+        # same rationale as the settle waits above (heavy under full-suite
+        # contention; isolation runs settle in a couple seconds).
         page.wait_for_function(
             """
             () => {
@@ -1275,7 +1287,7 @@ class TestBaselineTabCoverage:
                 return !txt.includes('Refreshing inventory') && !txt.includes('Item data missing from cache');
             }
             """,
-            timeout=10_000,
+            timeout=35_000,
         )
 
         # Final assertion: the OLD error string must NOT be present anywhere
