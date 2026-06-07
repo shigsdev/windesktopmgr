@@ -180,6 +180,40 @@ class TestTabNavigationSmoke:
         )
 
 
+# ── Left instrument-rail navigation (redesign PR3) ─────────────────
+#
+# The top two-row tab bar was replaced by a fixed vertical rail. Items keep
+# the .page-tab class + data-page value, so the parametrised switchTab smoke
+# above (which drives switchTab directly) already covers show/hide for every
+# tab. These guard the rail STRUCTURE and that CLICKING a rail item -- the
+# user's real interaction, exercising the click handler not switchTab -- still
+# navigates.
+
+
+class TestLeftRailNav:
+    def test_rail_renders_with_grouped_tabs(self, loaded_page):
+        page, _ = loaded_page
+        assert page.evaluate("!!document.querySelector('.rail')"), "left rail (.rail) not rendered"
+        assert page.evaluate("!!document.querySelector('.rail-group')"), "rail group headings not rendered"
+        pages = page.evaluate("Array.from(document.querySelectorAll('.rail .page-tab')).map(b => b.dataset.page)")
+        assert len(pages) >= 20, f"expected the full tab set in the rail, got {len(pages)}: {pages}"
+        # Spot-check a tab from each of the three groups survived the move.
+        for key in ("dashboard", "thermals", "drivers", "baseline", "homenet", "architecture"):
+            assert key in pages, f"rail missing nav item data-page={key!r}"
+
+    def test_clicking_rail_item_navigates(self, loaded_page):
+        """Clicking a rail button (not calling switchTab directly) must still
+        activate it and show its page -- proves the click handler is wired to
+        the new rail markup."""
+        page, _ = loaded_page
+        page.click(".rail .page-tab[data-page='architecture']")
+        page.wait_for_timeout(400)
+        active = page.evaluate("document.querySelector('.page-tab.active')?.dataset.page")
+        assert active == "architecture", f"rail click didn't activate the item (active={active!r})"
+        disp = page.evaluate("document.getElementById('page-architecture').style.display")
+        assert disp != "none", "clicking the rail item didn't reveal #page-architecture"
+
+
 # ── Backup tab Section 3 — exclusion-list editor persistence ──────
 #
 # Bug history: PR-1 of #46 wired the + button to call cc_addItem +

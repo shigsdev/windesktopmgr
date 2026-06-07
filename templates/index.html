@@ -38,37 +38,46 @@
     </div>
   </header>
 
-  <!-- Page nav — two rows -->
-  <nav class="page-nav" style="flex-direction:column;gap:0;border-bottom:1px solid var(--border)">
-    <div style="display:flex;flex-wrap:wrap;gap:0;border-bottom:1px solid var(--border)">
+  <!-- Left instrument-rail navigation (redesign PR3). Fixed at the viewport's
+       left edge (body has padding-left to make room). Each item KEEPS the
+       .page-tab class + data-page value so switchTab(), the existing click
+       handler, and the .page-tab.active state machinery are all unchanged --
+       only the container + styling changed from the old top two-row nav. -->
+  <aside class="rail">
+    <div class="rail-brand"><span class="rail-led"></span><span class="rail-wm">WIN<b>DESKTOP</b>MGR</span></div>
+    <nav class="rail-nav">
+      <div class="rail-group">System</div>
       <button class="page-tab active" data-page="dashboard">🏠 Dashboard</button>
-      <button class="page-tab" data-page="drivers">⟳ Driver Manager</button>
-      <button class="page-tab" data-page="bsod">⚠ BSOD Dashboard</button>
-      <button class="page-tab" data-page="startup">🚀 Startup Manager</button>
-      <button class="page-tab" data-page="disk">💾 Disk Health</button>
-      <button class="page-tab" data-page="network">🌐 Network Monitor</button>
-      <button class="page-tab" data-page="updates">🔄 Update History</button>
-      <button class="page-tab" data-page="events">📋 Event Log</button>
-    </div>
-    <div style="display:flex;flex-wrap:wrap;gap:0;background:#00000022">
-      <button class="page-tab" data-page="processes">⚡ Processes</button>
-      <button class="page-tab" data-page="thermals">🌡 Temps &amp; Power</button>
-      <button class="page-tab" data-page="services">⚙ Services</button>
       <button class="page-tab" data-page="health-history">📈 Health History</button>
-      <button class="page-tab" data-page="timeline">⏱ System Timeline</button>
-      <button class="page-tab" data-page="memory">🧠 Memory Analysis</button>
-      <button class="page-tab" data-page="bios">🔩 BIOS &amp; Firmware</button>
-      <button class="page-tab" data-page="credentials">🔐 Credentials &amp; Network</button>
+      <button class="page-tab" data-page="timeline">⏱ Timeline</button>
+      <button class="page-tab" data-page="processes">⚡ Processes</button>
+      <button class="page-tab" data-page="services">⚙ Services</button>
+      <button class="page-tab" data-page="events">📋 Event Log</button>
       <button class="page-tab" data-page="sysinfo">🖥 System Info</button>
-      <button class="page-tab" data-page="remediation">🔧 Remediation</button>
-      <button class="page-tab" data-page="homenet">🏠 Home Network</button>
+
+      <div class="rail-group">Hardware</div>
+      <button class="page-tab" data-page="thermals">🌡 Temps &amp; Power</button>
+      <button class="page-tab" data-page="drivers">⟳ Drivers</button>
+      <button class="page-tab" data-page="disk">💾 Disk Health</button>
+      <button class="page-tab" data-page="memory">🧠 Memory</button>
+      <button class="page-tab" data-page="bios">🔩 BIOS &amp; Firmware</button>
+      <button class="page-tab" data-page="network">🌐 Network</button>
+
+      <div class="rail-group">Maintenance</div>
+      <button class="page-tab" data-page="startup">🚀 Startup</button>
+      <button class="page-tab" data-page="updates">🔄 Updates</button>
       <button class="page-tab" data-page="baseline">📐 Baseline</button>
       <button class="page-tab" data-page="backup">📦 Backup</button>
+      <button class="page-tab" data-page="bsod">⚠ BSOD</button>
+      <button class="page-tab" data-page="credentials">🔐 Credentials</button>
+      <button class="page-tab" data-page="homenet">🏠 Home Network</button>
+      <button class="page-tab" data-page="remediation">🔧 Remediation</button>
       <button class="page-tab" data-page="utilities">🛠 Utilities</button>
       <button class="page-tab" data-page="logs">📜 Logs</button>
       <button class="page-tab" data-page="architecture">🏗 Architecture</button>
-    </div>
-  </nav>
+    </nav>
+    <div class="rail-foot"><span class="rf-on">● ONLINE</span> · :5000</div>
+  </aside>
 
   <!-- NLQ Chat Bar -->
   <div class="nlq-bar" id="nlq-bar">

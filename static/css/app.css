@@ -34,6 +34,9 @@
        reclaim the side white-space on large monitors. */
     --ui-scale:   1.2;
     --content-w:  1500px;
+    /* Width of the fixed left instrument rail (redesign PR3). body has a
+       matching padding-left so content clears it. */
+    --rail-w:     222px;
   }
 
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -49,6 +52,11 @@
     font-size: 13px;
     min-height: 100vh;
     overflow-x: hidden;
+    /* Make room for the fixed left rail (redesign PR3). The rail is
+       position:fixed so it escapes this padding and sits in the freed strip;
+       the page-content children (.wrap + the top-level #page-* divs) shift
+       right. Fixed modals + the fixed body backdrop ignore this padding. */
+    padding-left: var(--rail-w);
     zoom: var(--ui-scale);
   }
 
@@ -724,4 +732,81 @@
 
   @media (prefers-reduced-motion: reduce) {
     .dg-arc { animation: none; }
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     Left instrument-rail navigation (redesign PR3). Fixed at the
+     viewport's left edge; body padding-left makes room. Items keep the
+     .page-tab class, so rail styles are scoped to `.rail .page-tab`
+     (higher specificity) to override the old top-tab appearance.
+     ═══════════════════════════════════════════════════════════════ */
+  .rail {
+    position: fixed; left: 0; top: 0; bottom: 0; width: var(--rail-w);
+    z-index: 50; display: flex; flex-direction: column;
+    background: linear-gradient(180deg, rgba(255,255,255,.02), transparent 14%), var(--surface);
+    border-right: 1px solid var(--border);
+    overflow-y: auto; overflow-x: hidden;
+    padding: 16px 12px 12px;
+  }
+  /* heat→cool seam down the rail's right edge (matches the concept). */
+  .rail::after {
+    content: ''; position: absolute; right: -1px; top: 0; bottom: 0; width: 1px;
+    background: linear-gradient(180deg, var(--orange), transparent 16%, transparent 84%, var(--cyan));
+    opacity: .55; pointer-events: none;
+  }
+  .rail-brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 14px; }
+  .rail-led {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex: none;
+    box-shadow: 0 0 0 3px var(--green-dim), 0 0 12px var(--green);
+    animation: pulse 2.4s ease-in-out infinite;
+  }
+  .rail-wm {
+    font-family: var(--font-head); font-weight: 700; font-size: 14px;
+    letter-spacing: .12em; color: var(--text-bright);
+  }
+  .rail-wm b { color: var(--orange-hi); }
+  .rail-nav { display: flex; flex-direction: column; gap: 1px; }
+  .rail-group {
+    font-family: var(--font-head); font-size: 9px; font-weight: 600; letter-spacing: .24em;
+    text-transform: uppercase; color: var(--ink-faint); padding: 14px 10px 5px;
+  }
+  /* Rail items — full override of the old top-tab .page-tab styling. */
+  .rail .page-tab {
+    display: flex; align-items: center; gap: 9px;
+    width: 100%; text-align: left; justify-content: flex-start;
+    padding: 8px 11px; border: 1px solid transparent; border-bottom: 1px solid transparent;
+    border-radius: var(--radius); margin: 0; position: relative;
+    background: transparent; color: var(--text-dim);
+    font-size: 11.5px; font-weight: 600; letter-spacing: .02em; text-transform: none;
+    /* nowrap (no overflow:hidden) so the active accent bar at left:-12px isn't
+       clipped; the rail's own overflow-x:hidden bounds any long label. */
+    white-space: nowrap;
+    transition: background .15s, color .15s;
+  }
+  .rail .page-tab:hover { color: var(--text); background: rgba(255,255,255,.03); }
+  .rail .page-tab.active {
+    color: var(--text-bright);
+    background: linear-gradient(90deg, var(--cyan-dim), transparent 92%);
+    border-color: rgba(0,212,255,.22); border-bottom-color: rgba(0,212,255,.22);
+    /* Reset the reskin's global .page-tab.active outer glow -- the rail uses
+       the left accent bar (::before) for the active cue instead. */
+    box-shadow: none; text-shadow: none;
+  }
+  .rail .page-tab.active::before {
+    content: ''; position: absolute; left: -12px; top: 7px; bottom: 7px; width: 3px;
+    border-radius: 2px; background: var(--cyan); box-shadow: 0 0 12px var(--glow-cyan);
+  }
+  .rail-foot {
+    margin-top: auto; padding: 12px 10px 4px; border-top: 1px solid var(--border);
+    font-size: 10px; color: var(--ink-faint); letter-spacing: .08em;
+  }
+  .rail-foot .rf-on { color: var(--green); }
+
+  /* Desktop-first app, but keep the rail usable on a narrow window. */
+  @media (max-width: 760px) {
+    :root { --rail-w: 168px; }
+    .rail .page-tab { font-size: 10.5px; padding: 7px 9px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .rail-led { animation: none; }
   }
