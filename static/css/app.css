@@ -810,3 +810,131 @@
   @media (prefers-reduced-motion: reduce) {
     .rail-led { animation: none; }
   }
+
+  /* ═══════════════════════════════════════════════════════════════
+     THERMALS REDESIGN (PR4) — data-driven instrument cluster.
+     Hero gauges reuse .db-gauges/.db-gauge above. Below: per-core
+     grid, cooling-device cards, detailed sensor rows, and the
+     LibreHardwareMonitor install CTA shown when no per-core
+     thermal-sensor provider is registered on this machine.
+     ═══════════════════════════════════════════════════════════════ */
+  .th-h3 {
+    font-family: var(--font-head); font-size: 13px; font-weight: 700;
+    letter-spacing: .16em; text-transform: uppercase; color: var(--text-bright);
+    margin: 0 0 14px; padding-bottom: 7px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* ── Per-core temperature grid ── */
+  .th-cores {
+    display: grid; gap: 10px;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  }
+  .th-core {
+    position: relative; background: var(--card);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 11px 12px 13px;
+    box-shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 8px 22px rgba(0,0,0,.35);
+  }
+  .th-core-name {
+    font-family: var(--font-head); font-size: 10px; font-weight: 600;
+    letter-spacing: .12em; text-transform: uppercase; color: var(--text-dim);
+  }
+  .th-core-temp {
+    font-family: var(--font-mono); font-size: 22px; font-weight: 600; line-height: 1.1;
+    color: var(--text-bright); margin: 4px 0 9px;
+  }
+  /* Bar sits in a recessed track; width + color are set inline from temp. */
+  .th-core-bar {
+    height: 4px; border-radius: 2px; min-width: 2px;
+    box-shadow: 0 0 8px -1px currentColor;
+    background: var(--cyan);
+    transition: width .5s cubic-bezier(.16,.84,.27,1);
+  }
+
+  /* ── LibreHardwareMonitor install CTA ── */
+  .th-cta {
+    display: flex; align-items: flex-start; gap: 16px;
+    background: linear-gradient(180deg, rgba(255,178,77,.05), transparent 60%), var(--card);
+    border: 1px solid var(--border-hi); border-radius: var(--radius);
+    padding: 18px 20px; margin-top: 26px;
+  }
+  .th-cta-icon {
+    font-size: 28px; line-height: 1; flex: 0 0 auto;
+    filter: drop-shadow(0 0 10px var(--glow-orange));
+  }
+  .th-cta-body { display: flex; flex-direction: column; gap: 6px; }
+  .th-cta-title {
+    font-family: var(--font-head); font-size: 14px; font-weight: 700;
+    color: var(--text-bright); letter-spacing: .02em;
+  }
+  .th-cta-sub {
+    font-size: 12px; line-height: 1.55; color: var(--text-dim); max-width: 760px;
+  }
+
+  /* ── Cooling-device cards ── */
+  .th-fans {
+    display: grid; gap: 12px;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  }
+  .th-fan {
+    position: relative; text-align: center;
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 16px 12px 14px;
+    box-shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 8px 22px rgba(0,0,0,.35);
+  }
+  .th-fan-name {
+    font-family: var(--font-head); font-size: 10px; font-weight: 600;
+    letter-spacing: .14em; text-transform: uppercase; color: var(--text-dim);
+    margin-bottom: 10px;
+  }
+  .th-fan-blade {
+    font-size: 34px; line-height: 1; color: var(--cyan);
+    text-shadow: 0 0 16px var(--glow-cyan);
+  }
+  .th-fan-blade.spin { animation: spin 3s linear infinite; }
+  .th-fan-val {
+    font-family: var(--font-mono); font-size: 12px; font-weight: 700;
+    letter-spacing: .04em; color: var(--text); margin-top: 10px;
+  }
+  /* Idle fan: dimmed, no glow, blade parked. */
+  .th-fan.th-fan-idle { opacity: .55; }
+  .th-fan.th-fan-idle .th-fan-blade {
+    color: var(--muted); text-shadow: none; animation: none;
+  }
+  .th-fan.th-fan-idle .th-fan-val { color: var(--muted); }
+
+  /* ── Detailed sensor rows ── */
+  .th-sensor {
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 11px 14px;
+  }
+  .th-sensor-top {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  }
+  .th-sensor-name {
+    font-family: var(--font-head); font-size: 12px; font-weight: 600;
+    letter-spacing: .04em; color: var(--text);
+  }
+  .th-sensor-temp {
+    font-family: var(--font-mono); font-size: 15px; font-weight: 700;
+    color: var(--text-bright);
+  }
+  .th-sensor-track {
+    height: 4px; border-radius: 2px; background: var(--border);
+    margin-top: 8px; overflow: hidden;
+  }
+  .th-sensor-fill {
+    height: 100%; border-radius: 2px; min-width: 2px;
+    box-shadow: 0 0 8px -1px currentColor;
+    transition: width .5s cubic-bezier(.16,.84,.27,1);
+  }
+  .th-sensor-meta {
+    font-size: 10px; letter-spacing: .04em; color: var(--ink-faint);
+    text-transform: uppercase; margin-top: 6px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .th-fan-blade.spin { animation: none; }
+    .th-core-bar, .th-sensor-fill { transition: none; }
+  }

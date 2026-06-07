@@ -797,6 +797,125 @@ class TestDashboardGauges:
                 )
 
 
+# ── Thermals tab redesign (PR4) ────────────────────────────────────
+
+
+class TestThermalsRedesign:
+    """Redesign PR4. The Thermals tab is a data-driven instrument cluster:
+    a hero gauge row (reusing the dashboard renderer), a per-core grid OR a
+    LibreHardwareMonitor install CTA, and one cooling-device card per fan.
+
+    These assert behaviour that only surfaces on the user action of opening
+    the tab -- the gauge fan-out, the cores-vs-CTA branch, and the fan
+    cards -- per the visual-smoke-isn't-correctness memo (assert data-*
+    attrs and the fallback branch, not just "an element exists")."""
+
+    def _goto(self, page):
+        page.evaluate("switchTab('thermals')")
+        # Server bounds the thermals fan-out (perf + temps + gpu) similarly to
+        # the dashboard summary; allow a cold first render.
+        page.wait_for_function(
+            "() => document.getElementById('th-content')"
+            " && document.getElementById('th-content').style.display !== 'none'",
+            timeout=45_000,
+        )
+
+    def test_hero_gauges_match_api(self, loaded_page):
+        """One tile per API gauge, in order -- the tab reuses renderGauges()
+        against /api/thermals/data's `gauges`, same contract as the dashboard."""
+        page, _ = loaded_page
+        self._goto(page)
+        result = page.evaluate(
+            """() => {
+                const dom = Array.from(document.querySelectorAll('#th-gauge-row .db-gauge'))
+                                 .map(t => t.dataset.gaugeKey);
+                return fetch('/api/thermals/data')
+                    .then(r => r.json())
+                    .then(d => ({ api: (d.gauges || []).map(g => g.key), dom }));
+            }"""
+        )
+        assert result["api"], "thermals endpoint reported no gauges"
+        assert result["dom"] == result["api"], (
+            f"rendered hero gauges {result['dom']} don't match the API's {result['api']}"
+        )
+
+    def test_unavailable_gauge_shows_dash(self, loaded_page):
+        """A null reading (e.g. CPU temp with no thermal provider on this box)
+        renders '—' with data-gauge-available=false, never a bogus 0."""
+        page, _ = loaded_page
+        self._goto(page)
+        info = page.evaluate(
+            """() => Array.from(document.querySelectorAll('#th-gauge-row .db-gauge')).map(t => ({
+                key: t.dataset.gaugeKey,
+                available: t.dataset.gaugeAvailable,
+                num: ((t.querySelector('.dg-num') || {}).textContent || '').trim(),
+            }))"""
+        )
+        assert info, "no hero gauge tiles rendered"
+        for g in info:
+            if g["available"] == "false":
+                assert "—" in g["num"], f"unavailable gauge {g['key']} should show '—', got {g['num']!r}"
+
+    def test_cores_grid_xor_install_cta(self, loaded_page):
+        """Exactly one of the per-core grid / the LHM install CTA is shown,
+        driven by whether the API returned 'CPU Core #N' sensors. On a box
+        with no per-core provider the CTA shows; if LHM is installed the grid
+        auto-populates instead. Never both, never neither."""
+        page, _ = loaded_page
+        self._goto(page)
+        state = page.evaluate(
+            """() => {
+                const vis = id => {
+                    const e = document.getElementById(id);
+                    return !!e && getComputedStyle(e).display !== 'none';
+                };
+                return fetch('/api/thermals/data').then(r => r.json()).then(d => {
+                    const temps = Array.isArray(d.temps) ? d.temps : [];
+                    const cores = temps.filter(t => /core\\s*#?\\d+/i.test(String(t.Name || '')));
+                    return {
+                        hasCores: cores.length > 0,
+                        gridShown: vis('th-cores-section'),
+                        ctaShown: vis('th-cores-cta'),
+                        coreCells: document.querySelectorAll('#th-cores .th-core').length,
+                    };
+                });
+            }"""
+        )
+        assert state["gridShown"] != state["ctaShown"], (
+            f"cores grid and CTA must be mutually exclusive, got grid={state['gridShown']} cta={state['ctaShown']}"
+        )
+        if state["hasCores"]:
+            assert state["gridShown"], "API returned per-core sensors but the grid is hidden"
+            assert state["coreCells"] > 0, "cores grid shown but no .th-core cells rendered"
+        else:
+            assert state["ctaShown"], "no per-core sensors but the install CTA is hidden"
+
+    def test_fan_cards_one_per_cooling_device(self, loaded_page):
+        """One .th-fan card per fan from the API; active fans carry the
+        spinning-blade class so the cooling state is visible at a glance."""
+        page, _ = loaded_page
+        self._goto(page)
+        state = page.evaluate(
+            """() => fetch('/api/thermals/data').then(r => r.json()).then(d => {
+                const fans = Array.isArray(d.fans) ? d.fans : [];
+                const sec = document.getElementById('th-fans-section');
+                return {
+                    apiFans: fans.length,
+                    cards: document.querySelectorAll('#th-fans .th-fan').length,
+                    spinning: document.querySelectorAll('#th-fans .th-fan-blade.spin').length,
+                    secShown: !!sec && getComputedStyle(sec).display !== 'none',
+                };
+            })"""
+        )
+        if state["apiFans"]:
+            assert state["secShown"], "API reported fans but the cooling-devices section is hidden"
+            assert state["cards"] == state["apiFans"], (
+                f"expected {state['apiFans']} fan cards, rendered {state['cards']}"
+            )
+        else:
+            assert not state["secShown"], "no fans from API but the section is shown"
+
+
 # ── Network Topology Diagram (#9) ──────────────────────────────────
 
 

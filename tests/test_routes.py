@@ -987,6 +987,54 @@ class TestThermalsDataRoute:
         resp = client.get("/api/thermals/data")
         assert resp.content_type.startswith("application/json")
 
+    def test_includes_gauges_and_gpu_available(self, client, mocker):
+        """Redesign PR4: the route augments thermals with hero `gauges`
+        (reusing dashboard._build_gauges) and a `gpu_available` flag so the
+        instrument-cluster tab can render its radial gauge row."""
+        mocker.patch(
+            "windesktopmgr.get_thermals",
+            return_value={
+                "temps": [],
+                "perf": {"CPUPct": 22.0, "MemUsedMB": 8000, "MemTotalMB": 16000},
+                "fans": [],
+                "has_rich": False,
+                "note": "",
+            },
+        )
+        mocker.patch(
+            "windesktopmgr.get_gpu_metrics",
+            return_value={"available": True, "temp_c": 46, "utilization_pct": 33},
+        )
+        resp = client.get("/api/thermals/data")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["gpu_available"] is True
+        by_key = {g["key"]: g for g in data.get("gauges", [])}
+        assert list(by_key) == ["cpu_load", "cpu_temp", "gpu_temp", "gpu_util", "memory"]
+        # Values must actually flow through from the mocked GPU/perf, not just
+        # the keys -- guards against a silently-null gauge (real gpu.py uses
+        # `utilization_pct`, not `util_pct`).
+        assert by_key["gpu_temp"]["value"] == 46
+        assert by_key["gpu_util"]["value"] == 33
+        assert by_key["cpu_load"]["value"] == 22.0
+
+    def test_gauge_build_failure_degrades_gracefully(self, client, mocker):
+        """If gauge construction raises, the route still returns the thermals
+        payload with safe `gauges`/`gpu_available` fallbacks -- never a 500."""
+        mocker.patch(
+            "windesktopmgr.get_thermals",
+            return_value={"temps": [], "perf": {}, "fans": [], "has_rich": False, "note": ""},
+        )
+        mocker.patch(
+            "windesktopmgr.get_gpu_metrics",
+            side_effect=RuntimeError("gpu probe exploded"),
+        )
+        resp = client.get("/api/thermals/data")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["gauges"] == []
+        assert data["gpu_available"] is False
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GET  /api/services/list
