@@ -1760,7 +1760,8 @@ let _thAutoTimer  = null;
 
 async function loadThermals() {
   try {
-    document.getElementById("th-loading").style.display = "block";
+    const ld = document.getElementById("th-loading");
+    if (ld) { ld.style.display = "block"; ld.textContent = "Loading thermal data…"; }
     document.getElementById("th-content").style.display = "none";
     const r = await fetch("/api/thermals/data");
     _thermalsData = await r.json();
@@ -1768,64 +1769,129 @@ async function loadThermals() {
     fetchSummary("thermals", _thermalsData, "summary-thermals");
   } catch(e) {
     console.error("Failed to load thermals:", e);
+    // Surface the failure instead of leaving "Loading thermal data…" up
+    // forever -- the 10s auto-refresh would otherwise spin silently.
+    const ld = document.getElementById("th-loading");
+    if (ld) { ld.style.display = "block"; ld.textContent = "Failed to load thermal data. Will retry on next refresh."; }
+    document.getElementById("th-content").style.display = "none";
   }
 }
 
+// Thermals tab — instrument-cluster redesign (PR4). Built with DOM methods +
+// textContent (no innerHTML -> XSS-proof). Renders hero radial gauges, a
+// per-core temperature grid (auto-populates when LibreHardwareMonitor exposes
+// "CPU Core #N" sensors; else an install CTA), cooling-device cards, and the
+// detailed sensor list. Sections hide themselves when their data is absent.
 function renderThermals() {
   if (!_thermalsData) return;
-  const d    = _thermalsData;
+  const d = _thermalsData;
   const perf = d.perf || {};
-  const esc  = s => String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+  const temps = Array.isArray(d.temps) ? d.temps : [];
+  const fans = Array.isArray(d.fans) ? d.fans : [];
 
-  const cpu  = perf.CPUPct||0;
-  const memU = perf.MemUsedMB||0;
-  const memT = perf.MemTotalMB||1;
-  const memP = Math.round(memU/memT*100);
+  const cpu = perf.CPUPct || 0;
+  const memU = perf.MemUsedMB || 0;
+  const memT = perf.MemTotalMB || 1;
+  const memP = Math.round(memU / memT * 100);
 
-  document.getElementById("th-cpu").textContent     = cpu + "%";
-  document.getElementById("th-ram").textContent     = memP + "%";
-  document.getElementById("th-sensors").textContent = (d.temps||[]).length;
+  const setText = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+  setText("th-cpu", cpu + "%");
+  setText("th-ram", memP + "%");
+  setText("th-sensors", temps.length);
+  const peak = temps.length ? Math.max(...temps.map(t => t.TempC || 0)) : null;
+  setText("th-peak", peak !== null ? peak + "°C" : "—");
 
-  const temps     = d.temps||[];
-  const peakTemp  = temps.length ? Math.max(...temps.map(t=>t.TempC||0)) : null;
-  document.getElementById("th-peak").textContent = peakTemp !== null ? peakTemp + "°C" : "—";
+  // Hero radial gauges (reuse the dashboard renderer; same 5 readouts).
+  renderGauges(document.getElementById("th-gauge-row"), d.gauges || []);
 
-  // Temp sensor cards
-  const tempColor = t => t.TempC>=95?"var(--red)":t.TempC>=80?"var(--orange)":"var(--cyan)";
-  const tempsHtml = temps.length ? temps.map(t => {
-    const pct  = Math.min(100, Math.round((t.TempC-20)/80*100));
-    const col  = tempColor(t);
-    return `<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px">
-      <div style="display:flex;justify-content:space-between;margin-bottom:8px">
-        <span style="font-size:13px;font-weight:600">${esc(t.Name)}</span>
-        <span style="font-size:20px;font-weight:800;color:${col}">${t.TempC}°C</span>
-      </div>
-      <div style="background:#ffffff11;border-radius:4px;height:6px">
-        <div style="background:${col};height:100%;border-radius:4px;width:${pct}%;transition:width .5s"></div>
-      </div>
-      <div style="font-size:10px;color:var(--muted);margin-top:4px">${esc(t.Source||"")} — ${esc(t.status||"")}</div>
-    </div>`;
-  }).join("")
-  : `<div style="color:var(--muted);font-size:13px;padding:12px">No temperature sensors found via WMI.</div>`;
-  document.getElementById("th-temps-grid").innerHTML = tempsHtml;
+  const mk = (cls, text) => {
+    const x = document.createElement("div");
+    if (cls) x.className = cls;
+    if (text != null) x.textContent = text;
+    return x;
+  };
+  const isCore = t => /core\s*#?\d+/i.test(String(t.Name || ""));
+  const tempColor = c => c >= 95 ? "var(--red)" : c >= 80 ? "var(--orange)" : c >= 65 ? "var(--cyan-hi)" : "var(--cyan)";
 
-  if (d.note) document.getElementById("th-note").textContent = d.note;
+  // ── Per-core grid (LHM "CPU Core #N") OR install CTA ──
+  const cores = temps.filter(isCore);
+  const coresEl = document.getElementById("th-cores");
+  coresEl.textContent = "";
+  if (cores.length) {
+    document.getElementById("th-cores-section").style.display = "";
+    document.getElementById("th-cores-cta").style.display = "none";
+    cores.forEach(t => {
+      const c = t.TempC || 0;
+      const cell = mk("th-core");
+      cell.appendChild(mk("th-core-name", String(t.Name || "").replace(/cpu\s*/i, "")));
+      cell.appendChild(mk("th-core-temp", c + "°"));
+      const bar = mk("th-core-bar");
+      bar.style.width = Math.max(0, Math.min(100, Math.round(c))) + "%";
+      bar.style.background = tempColor(c);
+      cell.appendChild(bar);
+      coresEl.appendChild(cell);
+    });
+  } else {
+    document.getElementById("th-cores-section").style.display = "none";
+    const cta = document.getElementById("th-cores-cta");
+    cta.style.display = "";
+    cta.textContent = "";
+    cta.appendChild(mk("th-cta-icon", "🌡"));
+    const body = mk("th-cta-body");
+    body.appendChild(mk("th-cta-title", "Per-core CPU temperatures need LibreHardwareMonitor"));
+    body.appendChild(mk("th-cta-sub", d.note ||
+      "Install LibreHardwareMonitor and run it once as Administrator to register its WMI provider — the per-core grid and the CPU-temp gauge populate automatically."));
+    cta.appendChild(body);
+  }
 
-  // Resource gauges
-  const gauge = (label, pct, val, col) =>
-    `<div><div style="display:flex;justify-content:space-between;margin-bottom:6px">
-      <span style="font-size:13px;font-weight:600">${label}</span>
-      <span style="font-size:18px;font-weight:800;color:${col}">${val}</span>
-    </div>
-    <div style="background:#ffffff11;border-radius:6px;height:10px">
-      <div style="background:${col};height:100%;border-radius:6px;width:${pct}%;transition:width .5s"></div>
-    </div></div>`;
+  // ── Cooling-device cards ──
+  const fansEl = document.getElementById("th-fans");
+  fansEl.textContent = "";
+  if (fans.length) {
+    document.getElementById("th-fans-section").style.display = "";
+    fans.forEach((f, i) => {
+      const active = f.ActiveCooling !== false;
+      const rpm = (f.DesiredSpeed != null && f.DesiredSpeed !== "") ? f.DesiredSpeed : null;
+      const card = mk("th-fan" + (active ? "" : " th-fan-idle"));
+      card.appendChild(mk("th-fan-name", (f.Name || "Fan") + (fans.length > 1 ? " " + (i + 1) : "")));
+      const blade = mk("th-fan-blade" + (active ? " spin" : ""));
+      blade.textContent = "✲";
+      card.appendChild(blade);
+      card.appendChild(mk("th-fan-val", rpm != null ? rpm + " rpm" : (active ? "Active" : "Idle")));
+      fansEl.appendChild(card);
+    });
+  } else {
+    document.getElementById("th-fans-section").style.display = "none";
+  }
 
-  const cpuCol = cpu>=90?"var(--red)":cpu>=60?"var(--orange)":"var(--cyan)";
-  const ramCol = memP>=90?"var(--red)":memP>=75?"var(--orange)":"var(--cyan)";
-  document.getElementById("th-gauges").innerHTML =
-    gauge("CPU Utilisation", cpu, cpu+"%", cpuCol) +
-    gauge("RAM Usage", memP, `${memU.toLocaleString()} / ${memT.toLocaleString()} MB`, ramCol);
+  // ── Detailed temperature-sensor list (non-core LHM/OHM sensors) ──
+  const others = temps.filter(t => !isCore(t));
+  const grid = document.getElementById("th-temps-grid");
+  grid.textContent = "";
+  if (others.length) {
+    document.getElementById("th-sensors-section").style.display = "";
+    others.forEach(t => {
+      const c = t.TempC || 0;
+      const col = tempColor(c);
+      const row = mk("th-sensor");
+      const top = mk("th-sensor-top");
+      top.appendChild(mk("th-sensor-name", t.Name || ""));
+      const val = mk("th-sensor-temp", c + "°C");
+      val.style.color = col;
+      top.appendChild(val);
+      row.appendChild(top);
+      const track = mk("th-sensor-track");
+      const fill = mk("th-sensor-fill");
+      fill.style.width = Math.min(100, Math.round((c - 20) / 80 * 100)) + "%";
+      fill.style.background = col;
+      track.appendChild(fill);
+      row.appendChild(track);
+      row.appendChild(mk("th-sensor-meta", (t.Source || "") + " — " + (t.status || "")));
+      grid.appendChild(row);
+    });
+  } else {
+    document.getElementById("th-sensors-section").style.display = "none";
+  }
 
   document.getElementById("th-loading").style.display = "none";
   document.getElementById("th-content").style.display = "";
@@ -3313,12 +3379,11 @@ async function loadDashboard() {
   }
 }
 
-// Instrument-cluster radial gauges (redesign PR2). Renders the dashboard
-// summary `gauges` list into #db-gauges via DOM methods + textContent (no
-// innerHTML -> XSS-proof). A null value renders an unavailable "—" dial
-// (missing sensor / no GPU) rather than a bogus 0.
-function renderGauges(gauges) {
-  const el = document.getElementById("db-gauges");
+// Instrument-cluster radial gauges (redesign PR2; reused by Thermals in PR4).
+// Renders a `gauges` list into the given element `el` via DOM methods +
+// textContent (no innerHTML -> XSS-proof). A null value renders an
+// unavailable "—" dial (missing sensor / no GPU) rather than a bogus 0.
+function renderGauges(el, gauges) {
   if (!el) return;
   el.textContent = "";
   if (!Array.isArray(gauges) || !gauges.length) { el.style.display = "none"; return; }
@@ -3422,7 +3487,7 @@ function renderDashboard(d) {
   }
 
   // ── Instrument-cluster hero gauges (redesign PR2) ───────────────────────────
-  renderGauges(d.gauges || []);
+  renderGauges(document.getElementById("db-gauges"), d.gauges || []);
 
   // ── Concern cards ─────────────────────────────────────────────────────────
   const levelColor  = l => l==="critical"?"var(--red)":l==="warning"?"var(--orange)":"var(--cyan)";

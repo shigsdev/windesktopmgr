@@ -3380,7 +3380,23 @@ def processes_glossary_route():
 
 @app.route("/api/thermals/data")
 def thermals_data():
-    return jsonify(get_thermals())
+    data = get_thermals()
+    # Augment with radial-gauge readouts (redesign PR4) -- reuse the dashboard
+    # gauge builder so the thermals hero row matches the dashboard exactly.
+    # GPU temp/util come from the GPU metrics: CPU thermal sensors are often
+    # absent without LibreHardwareMonitor, so the GPU fills the row with real
+    # thermal data. Bonus-only -- a failure here must never break the route.
+    try:
+        import dashboard
+
+        gpu = get_gpu_metrics()
+        data["gpu_available"] = bool(isinstance(gpu, dict) and gpu.get("available"))
+        data["gauges"] = dashboard._build_gauges({"thermals": data, "gpu": gpu})
+    except Exception as e:  # noqa: BLE001
+        print(f"[thermals] gauge build failed: {e}")
+        data.setdefault("gauges", [])
+        data.setdefault("gpu_available", False)
+    return jsonify(data)
 
 
 @app.route("/api/services/list")

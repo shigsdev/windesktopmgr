@@ -882,18 +882,31 @@
     </div>
     <div id="th-loading" style="text-align:center;padding:40px;color:var(--muted)">Loading thermal data…</div>
     <div id="th-content" style="display:none">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
-        <!-- Temperature sensors -->
-        <div>
-          <h3 style="margin:0 0 12px;font-size:14px;color:var(--muted)">Temperature Sensors</h3>
-          <div id="th-temps-grid" style="display:flex;flex-direction:column;gap:10px"></div>
-          <div id="th-note" style="margin-top:12px;font-size:12px;color:var(--muted);font-style:italic"></div>
-        </div>
-        <!-- CPU & RAM gauges -->
-        <div>
-          <h3 style="margin:0 0 12px;font-size:14px;color:var(--muted)">System Resources</h3>
-          <div id="th-gauges" style="display:flex;flex-direction:column;gap:16px"></div>
-        </div>
+      <!-- Instrument hero gauges (redesign PR4): CPU load · CPU temp · GPU
+           core · GPU util · memory. Reuses the dashboard gauge renderer; CPU
+           temp shows "—" when no thermal-sensor provider is present. -->
+      <div id="th-gauge-row" class="db-gauges"></div>
+
+      <!-- Per-core temperatures. Auto-populates when LibreHardwareMonitor /
+           OpenHardwareMonitor registers its WMI provider (per-core "CPU Core
+           #N" sensors); otherwise #th-cores-cta shows the install prompt. -->
+      <div id="th-cores-section" style="margin-top:26px;display:none">
+        <h3 class="th-h3">Per-Core Temperatures</h3>
+        <div id="th-cores" class="th-cores"></div>
+      </div>
+      <div id="th-cores-cta" class="th-cta" style="display:none"></div>
+
+      <!-- Cooling devices / fans. -->
+      <div id="th-fans-section" style="margin-top:26px;display:none">
+        <h3 class="th-h3">Cooling Devices</h3>
+        <div id="th-fans" class="th-fans"></div>
+      </div>
+
+      <!-- Detailed temperature sensors (LHM/OHM rows, when present). -->
+      <div id="th-sensors-section" style="margin-top:26px;display:none">
+        <h3 class="th-h3">Temperature Sensors</h3>
+        <div id="th-temps-grid" style="display:flex;flex-direction:column;gap:10px"></div>
+        <div id="th-note" style="margin-top:12px;font-size:12px;color:var(--muted);font-style:italic"></div>
       </div>
     </div>
   </div>
