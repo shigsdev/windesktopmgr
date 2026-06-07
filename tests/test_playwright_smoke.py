@@ -699,6 +699,70 @@ class TestTrendsCardCoverage:
         assert not dupes, f"duplicate data-metric cards: {dupes}"
 
 
+# ── Dashboard hero gauges (redesign PR2) ───────────────────────────
+#
+# The instrument-cluster radial gauges render from the dashboard summary's
+# `gauges` list. Same contract shape as TestTrendsCardCoverage: every gauge
+# the API reports must render exactly one tile, in order. Per the
+# visual-smoke-isn't-correctness lesson we assert the data-* attrs and the
+# unavailable->"—" fallback, not just "a gauge exists".
+
+
+class TestDashboardGauges:
+    """One rendered tile per API gauge, in order; unavailable readings show
+    "—" (missing sensor / no GPU), available ones show a number."""
+
+    def _wait_gauges(self, page):
+        page.evaluate("switchTab('dashboard')")
+        # The summary fan-out is heavy/cold (bounded at 45s server-side), so
+        # allow up to 45s for the first render; warm renders are instant.
+        page.wait_for_function(
+            "() => document.querySelectorAll('#db-gauges .db-gauge').length > 0",
+            timeout=45_000,
+        )
+
+    def test_rendered_gauges_match_api(self, loaded_page):
+        page, _errors = loaded_page
+        self._wait_gauges(page)
+        # Read the rendered tiles AND the API gauges in one evaluate so the 30s
+        # dashboard re-render can't race between two separate reads.
+        result = page.evaluate(
+            """() => {
+                const dom = Array.from(document.querySelectorAll('#db-gauges .db-gauge'))
+                                 .map(t => t.dataset.gaugeKey);
+                return fetch('/api/dashboard/summary')
+                    .then(r => r.json())
+                    .then(d => ({ api: (d.gauges || []).map(g => g.key), dom }));
+            }"""
+        )
+        assert result["api"], "dashboard summary reported no gauges"
+        assert result["dom"] == result["api"], (
+            f"rendered gauge tiles {result['dom']} don't match the API's gauges {result['api']} -- "
+            f"renderGauges() in app.js must emit one tile per gauge, in order"
+        )
+
+    def test_unavailable_gauge_shows_dash_not_zero(self, loaded_page):
+        """A null reading (no CPU thermal provider, absent GPU) must render
+        '—' with data-gauge-available=false -- never a bogus 0."""
+        page, _errors = loaded_page
+        self._wait_gauges(page)
+        info = page.evaluate(
+            """() => Array.from(document.querySelectorAll('#db-gauges .db-gauge')).map(t => ({
+                key: t.dataset.gaugeKey,
+                available: t.dataset.gaugeAvailable,
+                num: ((t.querySelector('.dg-num') || {}).textContent || '').trim(),
+            }))"""
+        )
+        assert info, "no gauge tiles rendered"
+        for g in info:
+            if g["available"] == "false":
+                assert "—" in g["num"], f"unavailable gauge {g['key']} should show '—', got {g['num']!r}"
+            else:
+                assert any(c.isdigit() for c in g["num"]), (
+                    f"available gauge {g['key']} should show a numeric reading, got {g['num']!r}"
+                )
+
+
 # ── Network Topology Diagram (#9) ──────────────────────────────────
 
 

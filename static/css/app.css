@@ -658,3 +658,70 @@
   @media (prefers-reduced-motion: reduce) {
     .sys-badge .dot { animation: none; }
   }
+
+  /* ═══════════════════════════════════════════════════════════════
+     Instrument Cluster — Dashboard hero gauges (redesign PR2).
+     Radial conic-ring dials that sweep up on render; colour is set
+     per-gauge via --col (JS thresholds), null values render a muted
+     "—" dial via .dg-unavail.
+     ═══════════════════════════════════════════════════════════════ */
+  @property --sweep { syntax: '<number>'; inherits: false; initial-value: 0; }
+
+  .db-gauges {
+    display: grid; gap: 14px; margin: 0 0 24px;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+  .db-gauge {
+    position: relative; text-align: center;
+    background: linear-gradient(180deg, rgba(255,255,255,.02), transparent 30%), var(--card);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 16px 12px 14px;
+    box-shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 12px 32px rgba(0,0,0,.4);
+    animation: fadeUp .4s ease both;
+  }
+  /* Engineering corner crop-marks (matches the reskin panels). */
+  .db-gauge::before, .db-gauge::after {
+    content: ''; position: absolute; width: 9px; height: 9px;
+    pointer-events: none; opacity: .5; border-color: var(--ink-faint);
+  }
+  .db-gauge::before { top: 7px; left: 7px; border-top: 1px solid; border-left: 1px solid; }
+  .db-gauge::after  { bottom: 7px; right: 7px; border-bottom: 1px solid; border-right: 1px solid; }
+
+  .db-gauge .dg-lbl {
+    font-family: var(--font-head); font-size: 10px; font-weight: 600;
+    letter-spacing: .16em; text-transform: uppercase; color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+  .dg-ring {
+    --size: 110px; --thick: 9px;
+    width: var(--size); height: var(--size); margin: 0 auto; position: relative; border-radius: 50%;
+  }
+  .dg-arc {
+    position: absolute; inset: 0; border-radius: 50%;
+    background: conic-gradient(from 220deg,
+      var(--col) calc(var(--sweep) * 1% * .75),
+      var(--border) calc(var(--sweep) * 1% * .75) 75%,
+      transparent 75%);
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(50% - var(--thick)), #000 calc(50% - var(--thick) + 1px));
+            mask: radial-gradient(farthest-side, transparent calc(50% - var(--thick)), #000 calc(50% - var(--thick) + 1px));
+    animation: dg-sweep 1.3s cubic-bezier(.16,.84,.27,1) both;
+    filter: drop-shadow(0 0 8px var(--glow));
+  }
+  .dg-ring.dg-unavail .dg-arc { filter: none; opacity: .5; }
+  .dg-core { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+  .dg-num {
+    font-family: var(--font-mono); font-weight: 600; font-size: 26px; line-height: 1;
+    color: var(--text-bright); text-shadow: 0 0 16px var(--glow);
+  }
+  .dg-ring.dg-unavail .dg-num { color: var(--muted); text-shadow: none; }
+  .dg-num em { font-style: normal; font-size: 12px; color: var(--text-dim); margin-left: 1px; }
+  .dg-sub {
+    font-size: 9px; letter-spacing: .12em; color: var(--ink-faint);
+    text-transform: uppercase; margin-top: 8px; min-height: 11px;
+  }
+
+  @keyframes dg-sweep { from { --sweep: 0; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dg-arc { animation: none; }
+  }
