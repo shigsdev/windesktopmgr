@@ -3313,6 +3313,72 @@ async function loadDashboard() {
   }
 }
 
+// Instrument-cluster radial gauges (redesign PR2). Renders the dashboard
+// summary `gauges` list into #db-gauges via DOM methods + textContent (no
+// innerHTML -> XSS-proof). A null value renders an unavailable "—" dial
+// (missing sensor / no GPU) rather than a bogus 0.
+function renderGauges(gauges) {
+  const el = document.getElementById("db-gauges");
+  if (!el) return;
+  el.textContent = "";
+  if (!Array.isArray(gauges) || !gauges.length) { el.style.display = "none"; return; }
+  el.style.display = "";
+
+  // Thresholds per kind: [warn, crit]. Below warn is the "good" colour
+  // (cyan for temps/mem, green for load/util); at/above each step escalates.
+  const THRESH = { temp:[60,80], load:[60,85], util:[60,85], mem:[75,90] };
+  const colVar = (kind, v) => {
+    if (v === null || v === undefined) return "var(--muted)";
+    const [warn, crit] = THRESH[kind] || [60, 85];
+    if (v >= crit) return "var(--red)";
+    if (v >= warn) return "var(--orange)";
+    return (kind === "temp") ? "var(--cyan)" : "var(--green)";
+  };
+  const glowOf = {
+    "var(--red)":"rgba(255,71,87,.30)", "var(--orange)":"rgba(255,112,67,.30)",
+    "var(--cyan)":"rgba(0,212,255,.28)", "var(--green)":"rgba(0,229,160,.26)",
+    "var(--muted)":"rgba(74,85,104,0)"
+  };
+  const mk = (cls, text) => {
+    const d = document.createElement("div");
+    d.className = cls;
+    if (text != null) d.textContent = text;
+    return d;
+  };
+
+  gauges.forEach(g => {
+    const has = g.value !== null && g.value !== undefined;
+    const max = g.max || 100;
+    const sweep = has ? Math.max(0, Math.min(100, (g.value / max) * 100)) : 0;
+    const col = colVar(g.kind, has ? g.value : null);
+    const glow = glowOf[col] || "rgba(0,212,255,.28)";
+
+    const tile = mk("db-gauge");
+    tile.setAttribute("data-gauge-key", g.key || "");
+    tile.setAttribute("data-gauge-value", has ? String(g.value) : "");
+    tile.setAttribute("data-gauge-available", String(has));
+    tile.appendChild(mk("dg-lbl", g.label || ""));
+
+    const ring = mk("dg-ring" + (has ? "" : " dg-unavail"));
+    ring.style.setProperty("--sweep", sweep.toFixed(1));
+    ring.style.setProperty("--col", col);
+    ring.style.setProperty("--glow", glow);
+    ring.appendChild(mk("dg-arc"));
+    const core = mk("dg-core");
+    const num = mk("dg-num", has ? String(Math.round(g.value * 10) / 10) : "—");
+    if (has && g.unit) {
+      const em = document.createElement("em");
+      em.textContent = g.unit;
+      num.appendChild(em);
+    }
+    core.appendChild(num);
+    ring.appendChild(core);
+    tile.appendChild(ring);
+    tile.appendChild(mk("dg-sub", g.sub || ""));
+    el.appendChild(tile);
+  });
+}
+
 function renderDashboard(d) {
   const esc = s => String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
   const concerns  = d.concerns  || [];
@@ -3354,6 +3420,9 @@ function renderDashboard(d) {
     document.getElementById("db-checked-at").textContent =
       "Last checked: " + dt.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"});
   }
+
+  // ── Instrument-cluster hero gauges (redesign PR2) ───────────────────────────
+  renderGauges(d.gauges || []);
 
   // ── Concern cards ─────────────────────────────────────────────────────────
   const levelColor  = l => l==="critical"?"var(--red)":l==="warning"?"var(--orange)":"var(--cyan)";

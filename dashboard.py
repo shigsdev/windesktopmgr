@@ -43,6 +43,85 @@ _dashboard_refresh_lock = threading.Lock()
 _DASHBOARD_CACHE_TTL = timedelta(seconds=30)
 
 
+def _build_gauges(results: dict) -> list:
+    """Compact radial-gauge readouts for the dashboard hero row.
+
+    Built from the fan-out ``results`` (no extra collection). Each gauge is
+    ``{key, label, value, unit, max, kind, sub}`` where ``value`` is a number
+    or ``None`` -- ``None`` renders as an unavailable ("—") gauge so a missing
+    sensor (no CPU thermal provider) or absent GPU degrades gracefully rather
+    than showing a bogus 0. ``kind`` drives the frontend colour thresholds
+    (temp/load/util/mem). Defensive against collector error dicts.
+    """
+
+    def _num(v):
+        return v if isinstance(v, int | float) and not isinstance(v, bool) else None
+
+    therm = results.get("thermals") if isinstance(results.get("thermals"), dict) else {}
+    perf = therm.get("perf") if isinstance(therm.get("perf"), dict) else {}
+    temps = therm.get("temps") if isinstance(therm.get("temps"), list) else []
+    gpu = results.get("gpu") if isinstance(results.get("gpu"), dict) else {}
+
+    # CPU temp: hottest available sensor, or None when this box exposes none.
+    sensor_vals = [_num(t.get("TempC")) for t in temps if isinstance(t, dict)]
+    sensor_vals = [v for v in sensor_vals if v is not None]
+    cpu_temp = round(max(sensor_vals), 1) if sensor_vals else None
+
+    cpu_pct = _num(perf.get("CPUPct"))
+    # Memory here comes from the thermals perf snapshot (psutil), NOT the
+    # dedicated `memory` collector that powers the memory concerns -- the
+    # gauge just mirrors the one-shot reading the fan-out already gathered.
+    mem_used = _num(perf.get("MemUsedMB")) or 0
+    mem_total = _num(perf.get("MemTotalMB")) or 0
+    mem_pct = round(mem_used / mem_total * 100, 1) if mem_total else None
+
+    gpu_ok = bool(gpu.get("available"))
+    gpu_temp = _num(gpu.get("temp_c")) if gpu_ok else None
+    gpu_util = _num(gpu.get("utilization_pct")) if gpu_ok else None
+    vram_used = _num(gpu.get("vram_used_mb")) if gpu_ok else None
+    gpu_name = (gpu.get("name") or "").strip() if gpu_ok else ""
+
+    return [
+        {"key": "cpu_load", "label": "CPU Load", "value": cpu_pct, "unit": "%", "max": 100, "kind": "load", "sub": ""},
+        {
+            "key": "cpu_temp",
+            "label": "CPU Temp",
+            "value": cpu_temp,
+            "unit": "°C",
+            "max": 100,
+            "kind": "temp",
+            "sub": "" if cpu_temp is not None else "no sensor",
+        },
+        {
+            "key": "gpu_temp",
+            "label": "GPU Core",
+            "value": gpu_temp,
+            "unit": "°C",
+            "max": 100,
+            "kind": "temp",
+            "sub": (gpu_name[:18] if gpu_name else "") if gpu_ok else "no GPU",
+        },
+        {
+            "key": "gpu_util",
+            "label": "GPU Util",
+            "value": gpu_util,
+            "unit": "%",
+            "max": 100,
+            "kind": "util",
+            "sub": (f"{round(vram_used / 1024, 1)} GB VRAM" if (gpu_ok and vram_used) else "") if gpu_ok else "no GPU",
+        },
+        {
+            "key": "memory",
+            "label": "Memory",
+            "value": mem_pct,
+            "unit": "%",
+            "max": 100,
+            "kind": "mem",
+            "sub": (f"{round(mem_used / 1024, 1)} / {round(mem_total / 1024, 1)} GB" if mem_total else ""),
+        },
+    ]
+
+
 def _compute_dashboard_summary() -> dict:
     """Synchronous fan-out over every dashboard collector.
 
@@ -644,6 +723,7 @@ def _compute_dashboard_summary() -> dict:
         "critical": sum(1 for c in concerns if c["level"] == "critical"),
         "warnings": sum(1 for c in concerns if c["level"] == "warning"),
         "overall": overall,
+        "gauges": _build_gauges(results),
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }
 

@@ -126,6 +126,11 @@
 
     <!-- Concerns list -->
     <div id="db-content" style="display:none">
+      <!-- Instrument-cluster hero gauges (redesign PR2). Rendered from
+           dashboard summary `gauges` by renderGauges(); a null value shows
+           an unavailable "—" dial so missing sensors degrade gracefully. -->
+      <div id="db-gauges" class="db-gauges"></div>
+
       <div id="db-concerns" style="display:flex;flex-direction:column;gap:10px"></div>
 
       <!-- All clear state -->

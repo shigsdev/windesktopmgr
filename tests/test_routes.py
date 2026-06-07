@@ -1614,6 +1614,65 @@ class TestBiosCacheClearRoute:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+class TestBuildGauges:
+    """dashboard._build_gauges — radial-gauge readouts from the fan-out
+    results, with graceful degradation for a missing CPU sensor / absent GPU
+    / collector error dicts (a null value renders an unavailable dial, never
+    a bogus 0)."""
+
+    KEYS = ["cpu_load", "cpu_temp", "gpu_temp", "gpu_util", "memory"]
+
+    def _by_key(self, results):
+        import dashboard
+
+        gauges = dashboard._build_gauges(results)
+        assert [g["key"] for g in gauges] == self.KEYS
+        return {g["key"]: g for g in gauges}
+
+    def test_full_data_produces_values(self):
+        g = self._by_key(
+            {
+                "thermals": {
+                    "perf": {"CPUPct": 22.5, "MemUsedMB": 16000, "MemTotalMB": 32000},
+                    "temps": [{"Name": "CPU", "TempC": 55.0}, {"Name": "zone", "TempC": 61.0}],
+                },
+                "gpu": {
+                    "available": True,
+                    "temp_c": 48,
+                    "utilization_pct": 36,
+                    "vram_used_mb": 2048,
+                    "name": "RTX 4060 Ti",
+                },
+            }
+        )
+        assert g["cpu_load"]["value"] == 22.5
+        assert g["cpu_temp"]["value"] == 61.0  # hottest sensor
+        assert g["gpu_temp"]["value"] == 48
+        assert g["gpu_util"]["value"] == 36
+        assert g["gpu_util"]["sub"] == "2.0 GB VRAM"
+        assert g["memory"]["value"] == 50.0  # 16000 / 32000
+
+    def test_missing_cpu_sensor_degrades_to_none(self):
+        g = self._by_key({"thermals": {"perf": {"CPUPct": 10}, "temps": []}, "gpu": {"available": False}})
+        assert g["cpu_temp"]["value"] is None
+        assert g["cpu_temp"]["sub"] == "no sensor"
+        assert g["cpu_load"]["value"] == 10  # CPU% still present
+
+    def test_no_gpu_degrades_to_none(self):
+        g = self._by_key({"thermals": {"perf": {}, "temps": []}, "gpu": {"available": False}})
+        assert g["gpu_temp"]["value"] is None and g["gpu_temp"]["sub"] == "no GPU"
+        assert g["gpu_util"]["value"] is None and g["gpu_util"]["sub"] == "no GPU"
+
+    def test_collector_error_dicts_dont_crash(self):
+        g = self._by_key({"thermals": {"error": "boom"}, "gpu": {"error": "boom"}})
+        assert all(g[k]["value"] is None for k in self.KEYS)
+
+    def test_bool_cpupct_is_not_treated_as_number(self):
+        # A stray bool (psutil/COM edge) must not become a 1.0 reading.
+        g = self._by_key({"thermals": {"perf": {"CPUPct": True}, "temps": []}, "gpu": {}})
+        assert g["cpu_load"]["value"] is None
+
+
 class TestDashboardSummaryRoute:
     HEALTHY_DISK = {"drives": [{"Letter": "C", "PctUsed": 50, "FreeGB": 400}], "physical": [], "io": []}
 
@@ -1743,6 +1802,38 @@ class TestDashboardSummaryRoute:
         mocker.patch.object(_bl, "recent_drift", return_value=[])
         mocker.patch.object(_bl, "load_history", return_value=[])
         mocker.patch.object(_bl, "correlation_alert", return_value=None)
+
+    def test_summary_includes_gauges(self, client, mocker):
+        """The summary payload carries the radial-gauge readouts (redesign PR2)."""
+        self._mock_dashboard_deps(
+            mocker,
+            thermals={
+                "perf": {"CPUPct": 30, "MemUsedMB": 8000, "MemTotalMB": 16000},
+                "temps": [],
+                "fans": [],
+                "has_rich": False,
+            },
+        )
+        mocker.patch(
+            "windesktopmgr.get_gpu_metrics",
+            return_value={
+                "available": True,
+                "temp_c": 50,
+                "utilization_pct": 20,
+                "vram_used_mb": 1024,
+                "name": "Test GPU",
+            },
+        )
+        resp = client.get("/api/dashboard/summary")
+        d = resp.get_json()
+        assert "gauges" in d
+        g = {x["key"]: x for x in d["gauges"]}
+        assert [x["key"] for x in d["gauges"]] == ["cpu_load", "cpu_temp", "gpu_temp", "gpu_util", "memory"]
+        assert g["cpu_load"]["value"] == 30
+        assert g["memory"]["value"] == 50.0
+        assert g["cpu_temp"]["value"] is None  # no sensors in the mock -> graceful
+        assert g["gpu_temp"]["value"] == 50
+        assert g["gpu_util"]["value"] == 20
 
     def test_returns_200_with_structure(self, client, mocker):
         self._mock_dashboard_deps(mocker)
