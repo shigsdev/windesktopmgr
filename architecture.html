@@ -193,7 +193,7 @@
       <button type="button" onclick="exportPDF()" title="Open the browser print dialog — choose 'Save as PDF'" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--yellow);border:none;cursor:pointer;border-right:1px solid var(--border)">Export PDF</button>
       <button type="button" onclick="exportHTML()" title="Download a self-contained copy of this diagram" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--blue);border:none;cursor:pointer">Export HTML</button>
     </div>
-    <div class="badge" style="color:var(--green);border-color:#00e67633">2,769 tests · 87% coverage</div>
+    <div class="badge" style="color:var(--green);border-color:#00e67633">2,781 tests · 87% coverage</div>
     <div class="badge">
       <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
     </div>
@@ -718,7 +718,7 @@
           </div>
           <div class="fs-chip" style="border-color:#ff6ec733">
             <div class="fs-title" style="color:var(--pink)">ai_identify.py</div>
-            <div class="fs-sub">Global AI identifier · ~277 lines · the "look it up FOR me" rule · identify_via_ai() = one bounded Claude (haiku) call → {plain, what, safe_kill}, graceful None on no-key/SDK-missing/timeout/cap · identify() = non-blocking cache-or-enqueue subsystem (daemon worker + single-flight + atomic JSON cache, unresolved NOT persisted) · per-process MAX_AI_LOOKUPS cap (failed calls refund) · wired into the process / service / startup lookup fallbacks (fixes the vmmem "no description found" class) + driver / MAC-vendor / BIOS gap-fills · reuses ANTHROPIC_API_KEY from NLQ, sends only the entity name</div>
+            <div class="fs-sub">Global AI identifier · ~277 lines · the "look it up FOR me" rule · identify_via_ai() = one bounded Claude (haiku) call → {plain, what, safe_kill}, graceful None on no-key/SDK-missing/timeout/cap · identify() = non-blocking cache-or-enqueue subsystem (daemon worker + single-flight + atomic JSON cache, unresolved NOT persisted) · per-process MAX_AI_LOOKUPS cap (failed calls refund) · wired into the process / service / startup / BSOD-stop-code / Event-ID lookup fallbacks (fixes the vmmem "no description found" class) + driver / MAC-vendor / BIOS gap-fills · reuses ANTHROPIC_API_KEY from NLQ, sends only the entity name</div>
           </div>
           <div class="fs-chip" style="border-color:#ff6ec733">
             <div class="fs-title" style="color:var(--pink)">network.py</div>
