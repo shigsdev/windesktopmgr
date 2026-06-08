@@ -83,6 +83,22 @@ def get_thermals() -> dict:
 
     temps, fans = bounded_wmi_query(_wmi_work, timeout_s=8.0, fallback=([], []), label="thermals WMI")
 
+    # LibreHardwareMonitor rich sensors. LHM has NO WMI provider (only the
+    # OpenHardwareMonitor namespace above ever answers WMI) -- it exposes its
+    # per-core CPU + GPU + board temps only through its HTTP server, which the
+    # in-app installer enables. Read it over loopback and merge. Best-effort:
+    # an empty list (LHM not running) just leaves the WMI/psutil data as-is.
+    try:
+        import lhm  # noqa: PLC0415 -- lazy: optional sibling
+
+        lhm_temps = lhm.get_lhm_temps()
+        if lhm_temps:
+            # LHM is authoritative when present; drop the coarse WMI thermal
+            # zone(s) so the per-core grid + sensor list aren't duplicated.
+            temps = [t for t in temps if t.get("Source") not in ("WMI_ThermalZone",)] + lhm_temps
+    except Exception:  # noqa: BLE001 -- never let LHM read break the core reading
+        pass
+
     # CPU utilisation / memory / battery via psutil — no WMI, no subprocess.
     try:
         vm = psutil.virtual_memory()
@@ -114,8 +130,8 @@ def get_thermals() -> dict:
         "note": ""
         if has_rich
         else (
-            "Install LibreHardwareMonitor for detailed CPU/GPU per-core temperatures. "
-            "Run it once as Administrator to register its WMI provider."
+            "Install LibreHardwareMonitor for detailed CPU/GPU per-core temperatures, "
+            "then launch it as Administrator so it can read the sensors and serve them to this app."
         ),
     }
 

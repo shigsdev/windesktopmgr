@@ -1845,7 +1845,7 @@ function renderThermals() {
     const body = mk("th-cta-body");
     body.appendChild(mk("th-cta-title", "Per-core CPU temperatures need LibreHardwareMonitor"));
     body.appendChild(mk("th-cta-sub", d.note ||
-      "LibreHardwareMonitor publishes per-core CPU temperatures over WMI while it runs (as Administrator). Install it below and the per-core grid + CPU-temp gauge populate automatically — no leaving the app."));
+      "LibreHardwareMonitor reads per-core CPU temperatures while it runs (as Administrator) and serves them to this app over a local-only connection. Install it below and the per-core grid + CPU-temp gauge populate automatically — no leaving the app."));
     thRenderLhmActions(body);
     cta.appendChild(body);
   }
@@ -2044,7 +2044,7 @@ async function thLaunchLhm(btn) {
     const d = await (await fetch("/api/thermals/lhm/launch", {method: "POST"})).json();
     if (d.ok) {
       btn.textContent = "Launched — reading sensors…";
-      // Give LHM a few seconds to publish its WMI namespace, then reload.
+      // Give LHM a few seconds to start its HTTP server, then reload.
       setTimeout(loadThermals, 6000);
     } else {
       btn.disabled = false;

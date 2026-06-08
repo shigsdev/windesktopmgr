@@ -62,10 +62,23 @@ def _build_gauges(results: dict) -> list:
     temps = therm.get("temps") if isinstance(therm.get("temps"), list) else []
     gpu = results.get("gpu") if isinstance(results.get("gpu"), dict) else {}
 
-    # CPU temp: hottest available sensor, or None when this box exposes none.
-    sensor_vals = [_num(t.get("TempC")) for t in temps if isinstance(t, dict)]
-    sensor_vals = [v for v in sensor_vals if v is not None]
-    cpu_temp = round(max(sensor_vals), 1) if sensor_vals else None
+    # CPU temp: hottest CPU sensor. With LHM merged in, `temps` also carries
+    # GPU/storage/board sensors, so restrict to CPU ones (by LHM SensorId
+    # /intelcpu//amdcpu/, else by name) before taking the max -- otherwise a hot
+    # GPU/NVMe reading would masquerade as the CPU temp. Fall back to any sensor
+    # when none is identifiable (e.g. a bare WMI thermal zone).
+    def _is_cpu_temp(t: dict) -> bool:
+        sid = (t.get("SensorId") or "").lower()
+        if sid:
+            return "cpu" in sid
+        return any(k in (t.get("Name") or "").lower() for k in ("cpu", "core", "package"))
+
+    cpu_vals = [_num(t.get("TempC")) for t in temps if isinstance(t, dict) and _is_cpu_temp(t)]
+    cpu_vals = [v for v in cpu_vals if v is not None]
+    all_vals = [_num(t.get("TempC")) for t in temps if isinstance(t, dict)]
+    all_vals = [v for v in all_vals if v is not None]
+    pick = cpu_vals or all_vals
+    cpu_temp = round(max(pick), 1) if pick else None
 
     cpu_pct = _num(perf.get("CPUPct"))
     # Memory here comes from the thermals perf snapshot (psutil), NOT the
