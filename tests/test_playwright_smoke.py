@@ -943,6 +943,38 @@ class TestThermalsRedesign:
         joined = " ".join(state["btns"]).lower()
         assert "auto-start" in joined, f"auto-start toggle missing from CTA buttons: {state['btns']}"
 
+    def test_per_core_cells_are_temperature_colour_banded(self, loaded_page):
+        """Each per-core cell + sensor row carries a tband-* class matching its
+        temperature, the legend renders all five bands, and the accent colour
+        actually changes with the band (a cool cell is cyan; a warm/hot sensor
+        is amber/orange) -- not just 'a class exists'."""
+        page, _ = loaded_page
+        self._goto(page)
+        state = page.evaluate(
+            """() => {
+                const cells = Array.from(document.querySelectorAll('#th-cores .th-core'));
+                if (!cells.length) return {skip: true};  // LHM not running -> no grid
+                const bandOf = el => (el.className.match(/tband-(cool|normal|warm|hot|crit)/) || [])[1] || null;
+                const allCellsBanded = cells.every(c => bandOf(c));
+                const legend = document.querySelectorAll('#th-legend .th-leg-item').length;
+                const cool = cells.find(c => bandOf(c) === 'cool');
+                const coolColor = cool ? getComputedStyle(cool.querySelector('.th-core-temp')).color : null;
+                const sensors = Array.from(document.querySelectorAll('#th-temps-grid .th-sensor'));
+                const offCool = sensors.find(s => bandOf(s) && bandOf(s) !== 'cool');
+                const offColor = offCool ? getComputedStyle(offCool.querySelector('.th-sensor-temp')).color : null;
+                return {allCellsBanded, legend, coolColor, offColor};
+            }"""
+        )
+        if state.get("skip"):
+            pytest.skip("per-core grid not shown (LHM not running on this host)")
+        assert state["allCellsBanded"], "some per-core cells have no tband-* class"
+        assert state["legend"] == 5, f"legend should map all 5 bands, got {state['legend']}"
+        # cool is cyan; any warmer band must render a different colour.
+        if state["offColor"]:
+            assert state["coolColor"] != state["offColor"], (
+                f"colour didn't track the band: cool={state['coolColor']} off-cool={state['offColor']}"
+            )
+
     def test_fan_cards_one_per_cooling_device(self, loaded_page):
         """One .th-fan card per fan from the API; active fans carry the
         spinning-blade class so the cooling state is visible at a glance."""

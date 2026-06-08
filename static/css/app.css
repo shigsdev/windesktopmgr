@@ -952,7 +952,42 @@
     text-transform: uppercase; margin-top: 6px;
   }
 
+  /* ── Temperature colour-coding ──
+     Each tband-* class sets --tband (accent) + --tband-bg (faint fill); the
+     cell/row left-accent, readout colour, bar fill, and legend swatch all read
+     it, so a glance at the grid shows which cores run hot. cool < 50 < normal
+     < 70 < warm < 85 < hot < 95 <= crit. */
+  .tband-cool   { --tband: var(--cyan);      --tband-bg: rgba(0,212,255,.06); }
+  .tband-normal { --tband: var(--green);     --tband-bg: rgba(0,229,160,.07); }
+  .tband-warm   { --tband: var(--orange-hi); --tband-bg: rgba(255,178,77,.09); }
+  .tband-hot    { --tband: var(--orange);    --tband-bg: rgba(255,112,67,.11); }
+  .tband-crit   { --tband: var(--red);       --tband-bg: rgba(255,71,87,.14); }
+
+  .th-core[class*="tband-"], .th-sensor[class*="tband-"] {
+    border-left: 3px solid var(--tband);
+    background: linear-gradient(180deg, var(--tband-bg), transparent 70%), var(--card);
+  }
+  .th-core[class*="tband-"] .th-core-temp,
+  .th-sensor[class*="tband-"] .th-sensor-temp { color: var(--tband); }
+  .th-core[class*="tband-"] .th-core-bar,
+  .th-sensor[class*="tband-"] .th-sensor-fill { background: var(--tband); }
+  .th-core.tband-crit, .th-sensor.tband-crit {
+    box-shadow: 0 0 0 1px rgba(255,71,87,.3), 0 0 16px -4px var(--red);
+    animation: tband-pulse 1.8s ease-in-out infinite;
+  }
+  @keyframes tband-pulse { 50% { box-shadow: 0 0 0 1px rgba(255,71,87,.55), 0 0 22px -2px var(--red); } }
+
+  /* Per-core legend (maps colour -> temperature band). */
+  .th-legend { display: flex; gap: 13px; flex-wrap: wrap; align-items: center; }
+  .th-leg-item { display: flex; align-items: center; gap: 5px; }
+  .th-leg-sw {
+    width: 11px; height: 11px; border-radius: 3px;
+    background: var(--tband, var(--border)); box-shadow: 0 0 6px -1px var(--tband);
+  }
+  .th-leg-label { font-family: var(--font-mono); font-size: 10px; color: var(--text-dim); letter-spacing: .04em; }
+
   @media (prefers-reduced-motion: reduce) {
     .th-fan-blade.spin { animation: none; }
     .th-core-bar, .th-sensor-fill { transition: none; }
+    .th-core.tband-crit, .th-sensor.tband-crit { animation: none; }
   }

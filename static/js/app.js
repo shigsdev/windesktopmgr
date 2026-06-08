@@ -1816,7 +1816,25 @@ function renderThermals() {
     return x;
   };
   const isCore = t => /core\s*#?\d+/i.test(String(t.Name || ""));
-  const tempColor = c => c >= 95 ? "var(--red)" : c >= 80 ? "var(--orange)" : c >= 65 ? "var(--cyan-hi)" : "var(--cyan)";
+  // Temperature bands -> a CSS class (tband-*) used to colour-code every
+  // thermal panel consistently (cells, sensor rows, legend). The class drives
+  // both the accent colour and the readout colour via CSS, so JS stays simple.
+  const tempBand = c =>
+    c >= 95 ? "crit" : c >= 85 ? "hot" : c >= 70 ? "warm" : c >= 50 ? "normal" : "cool";
+
+  // Legend so the colours are self-explanatory.
+  const legendEl = document.getElementById("th-legend");
+  if (legendEl) {
+    legendEl.textContent = "";
+    [["cool", "< 50°"], ["normal", "50–69°"], ["warm", "70–84°"], ["hot", "85–94°"], ["crit", "≥ 95°"]]
+      .forEach(([band, label]) => {
+        const item = mk("th-leg-item");
+        const sw = mk("th-leg-sw tband-" + band);
+        item.appendChild(sw);
+        item.appendChild(mk("th-leg-label", label));
+        legendEl.appendChild(item);
+      });
+  }
 
   // ── Per-core grid (LHM "CPU Core #N") OR install CTA ──
   const cores = temps.filter(isCore);
@@ -1827,12 +1845,11 @@ function renderThermals() {
     document.getElementById("th-cores-cta").style.display = "none";
     cores.forEach(t => {
       const c = t.TempC || 0;
-      const cell = mk("th-core");
+      const cell = mk("th-core tband-" + tempBand(c));
       cell.appendChild(mk("th-core-name", String(t.Name || "").replace(/cpu\s*/i, "")));
       cell.appendChild(mk("th-core-temp", c + "°"));
       const bar = mk("th-core-bar");
       bar.style.width = Math.max(0, Math.min(100, Math.round(c))) + "%";
-      bar.style.background = tempColor(c);
       cell.appendChild(bar);
       coresEl.appendChild(cell);
     });
@@ -1878,18 +1895,14 @@ function renderThermals() {
     document.getElementById("th-sensors-section").style.display = "";
     others.forEach(t => {
       const c = t.TempC || 0;
-      const col = tempColor(c);
-      const row = mk("th-sensor");
+      const row = mk("th-sensor tband-" + tempBand(c));
       const top = mk("th-sensor-top");
       top.appendChild(mk("th-sensor-name", t.Name || ""));
-      const val = mk("th-sensor-temp", c + "°C");
-      val.style.color = col;
-      top.appendChild(val);
+      top.appendChild(mk("th-sensor-temp", c + "°C"));
       row.appendChild(top);
       const track = mk("th-sensor-track");
       const fill = mk("th-sensor-fill");
       fill.style.width = Math.min(100, Math.round((c - 20) / 80 * 100)) + "%";
-      fill.style.background = col;
       track.appendChild(fill);
       row.appendChild(track);
       row.appendChild(mk("th-sensor-meta", (t.Source || "") + " — " + (t.status || "")));

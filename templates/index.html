@@ -891,8 +891,11 @@
            OpenHardwareMonitor registers its WMI provider (per-core "CPU Core
            #N" sensors); otherwise #th-cores-cta shows the install prompt. -->
       <div id="th-cores-section" style="margin-top:26px;display:none">
-        <h3 class="th-h3">Per-Core Temperatures</h3>
-        <div id="th-cores" class="th-cores"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <h3 class="th-h3" style="margin:0;border:0;padding:0">Per-Core Temperatures</h3>
+          <div id="th-legend" class="th-legend"></div>
+        </div>
+        <div id="th-cores" class="th-cores" style="margin-top:14px"></div>
       </div>
       <div id="th-cores-cta" class="th-cta" style="display:none"></div>
 
