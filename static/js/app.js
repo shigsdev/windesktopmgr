@@ -3596,13 +3596,18 @@ function renderGauges(el, gauges) {
     tile.setAttribute("data-gauge-key", g.key || "");
     tile.setAttribute("data-gauge-value", has ? String(g.value) : "");
     tile.setAttribute("data-gauge-available", String(has));
+    tile.style.setProperty("--gcol", col);  // tile accent colour = the gauge's state colour
     tile.appendChild(mk("dg-lbl", g.label || ""));
 
     const ring = mk("dg-ring" + (has ? "" : " dg-unavail"));
-    ring.style.setProperty("--sweep", sweep.toFixed(1));
     ring.style.setProperty("--col", col);
     ring.style.setProperty("--glow", glow);
-    ring.appendChild(mk("dg-arc"));
+    // --sweep is registered @property{inherits:false} (so it animates smoothly),
+    // so it must live on the .dg-arc that READS it -- setting it on the ring left
+    // the arc at the initial 0 and every gauge rendered an empty/identical ring.
+    const arc = mk("dg-arc");
+    arc.style.setProperty("--sweep", sweep.toFixed(1));
+    ring.appendChild(arc);
     const core = mk("dg-core");
     const num = mk("dg-num", has ? String(Math.round(g.value * 10) / 10) : "—");
     if (has && g.unit) {

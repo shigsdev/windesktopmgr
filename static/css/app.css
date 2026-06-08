@@ -683,6 +683,9 @@
     position: relative; text-align: center;
     background: linear-gradient(180deg, rgba(255,255,255,.02), transparent 30%), var(--card);
     border: 1px solid var(--border); border-radius: var(--radius);
+    /* Top accent bar coloured by the gauge's state (--gcol, set in renderGauges)
+       so the whole tile reads its health at a glance, matching the panels. */
+    border-top: 3px solid var(--gcol, var(--border));
     padding: 16px 12px 14px;
     box-shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 12px 32px rgba(0,0,0,.4);
     animation: fadeUp .4s ease both;
