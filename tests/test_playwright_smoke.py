@@ -796,45 +796,49 @@ class TestDashboardGauges:
                     f"available gauge {g['key']} should show a numeric reading, got {g['num']!r}"
                 )
 
-    def test_gauge_arc_fill_tracks_value(self, loaded_page):
-        """Regression: --sweep must reach the .dg-arc that READS it. It's a
-        registered @property{inherits:false}, and it was set on the parent ring,
-        so the arc stayed at the initial 0 and every gauge rendered an identical
-        empty ring ('usage differs but the chart space is the same'). The arc
-        fill must now reflect each gauge's value, and tiles carry a state accent."""
+    def test_gauge_bar_fill_tracks_value(self, loaded_page):
+        """Regression: each gauge is a horizontal bar whose fill width = the
+        value %. --sweep must reach the .dg-fill that READS it (registered
+        @property{inherits:false}); setting it on the tile would leave every
+        fill at the initial 0 ('usage differs but the chart space is the same').
+        The ring geometry was abandoned because its unfilled circular remainder
+        read as a dark 'pre-filled' section -- a bar has only a small light
+        track, so no remainder can look dark. Tiles still carry a state accent."""
         page, _ = loaded_page
         self._wait_gauges(page)
         info = page.evaluate(
             """() => Array.from(document.querySelectorAll('#db-gauges .db-gauge')).map(g => {
-                const arc = g.querySelector('.dg-arc');
+                const fill = g.querySelector('.dg-fill');
                 return {
                     key: g.dataset.gaugeKey,
                     available: g.dataset.gaugeAvailable,
                     value: g.dataset.gaugeValue,
-                    sweep: arc ? parseFloat(arc.style.getPropertyValue('--sweep')) : null,
+                    sweep: fill ? parseFloat(fill.style.getPropertyValue('--sweep')) : null,
                     accent: getComputedStyle(g).borderTopColor,
-                    arcBg: arc ? getComputedStyle(arc).backgroundImage : "",
+                    hasRing: !!g.querySelector('.dg-arc, .dg-ring'),
                 };
             })"""
         )
         avail = [g for g in info if g["available"] == "true" and g["value"]]
         assert avail, "no available gauges to check"
-        # Each available gauge's arc fill must reflect a non-zero value...
+        # Each available gauge's bar fill must be PROPORTIONAL to its value
+        # (sweep% == value, since every gauge has max=100). This directly
+        # catches the original bug (all fills stuck at the initial 0) without
+        # false-failing when two sensors coincidentally read the same percent,
+        # which a "fills must all differ" check would.
         for g in avail:
-            assert g["sweep"] and g["sweep"] > 0, f"gauge {g['key']} arc not filled (sweep={g['sweep']})"
-        # ...and the fills must actually DIFFER (the bug made them all identical).
-        assert len({round(g["sweep"], 1) for g in avail}) > 1, (
-            f"every gauge arc renders the same fill: {[g['sweep'] for g in avail]}"
-        )
+            expected = max(0.0, min(100.0, float(g["value"])))  # value clamped to the 0..max range
+            assert g["sweep"] and g["sweep"] > 0, f"gauge {g['key']} bar not filled (sweep={g['sweep']})"
+            assert abs(g["sweep"] - expected) < 1.0, (
+                f"gauge {g['key']}: value={g['value']} but bar sweep={g['sweep']} (expected ~{expected})"
+            )
         # Tile accent is a real state colour, not a transparent default.
         assert all(g["accent"] and "0, 0, 0, 0" not in g["accent"] for g in avail), (
             f"gauge tiles missing the state-colour accent: {[g['accent'] for g in avail]}"
         )
-        # The unfilled remainder is a FAINT groove, not the dark --border
-        # (#1c2535 = rgb(28, 37, 53)) which read as a "black pre-filled" section.
-        assert all("28, 37, 53" not in g["arcBg"] for g in avail), (
-            "gauge track still uses the dark --border colour (the 'black filled' look)"
-        )
+        # The circular ring geometry (the source of the dark-remainder look) is
+        # gone -- no gauge should render a .dg-ring / .dg-arc any more.
+        assert not any(g["hasRing"] for g in info), "a gauge still renders the old ring geometry (.dg-ring/.dg-arc)"
 
 
 # ── Thermals tab redesign (PR4) ────────────────────────────────────
