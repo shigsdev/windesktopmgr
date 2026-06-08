@@ -34,6 +34,8 @@ import urllib.request
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
+import ai_identify as identify
+
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 BSOD_CACHE_FILE = os.path.join(APP_DIR, "bsod_code_cache.json")
 REPORT_DIR = os.path.join(APP_DIR, "System Health Reports")
@@ -775,6 +777,39 @@ def _lookup_stop_code_web(code_norm: str) -> dict | None:
         return None
 
 
+def _resolve_stop_code(code_norm: str) -> dict:
+    """Resolve one unknown stop code: Windows bugcheck table -> Microsoft Learn
+    web -> AI identifier -> placeholder. Extracted from the worker loop so the
+    chain (incl. the AI fallback) is unit-testable."""
+    result = _lookup_stop_code_windows(code_norm)
+    if not result:
+        result = _lookup_stop_code_web(code_norm)
+    if not result:
+        # Global rule (identify rollout PR2): AI identifier before the "no
+        # description found" punt -- resolves rare/vendor stop codes Microsoft
+        # Learn doesn't document.
+        ai = identify.identify_via_ai("bsod", code_norm, context="Windows blue-screen STOP code")
+        if ai:
+            result = {
+                "source": ai["source"],
+                "title": ai.get("plain") or f"Stop Code {code_norm.upper()}",
+                "detail": ai["what"],
+                "priority": "high",
+                "action": "Identified by AI from the stop code — search it for vendor-specific guidance.",
+                "fetched": ai["fetched"],
+            }
+    if not result:
+        result = {
+            "source": "unknown",
+            "title": f"Stop Code {code_norm.upper()}",
+            "detail": "No description found. This may be a rare or hardware-specific stop code.",
+            "priority": "high",
+            "action": f"Search: https://learn.microsoft.com/search/?terms={urllib.parse.quote(code_norm)}+stop+code",
+            "fetched": datetime.now(timezone.utc).isoformat(),
+        }
+    return result
+
+
 def _bsod_lookup_worker():
     """Background thread — drains BSOD lookup queue, enriches unknown stop codes."""
     while True:
@@ -784,24 +819,12 @@ def _bsod_lookup_worker():
 
             with _bsod_cache_lock:
                 if code_norm in _bsod_cache:
-                    _bsod_in_flight.discard(code_norm)
-                    _bsod_queue.task_done()
+                    # Already cached -- the `finally` does the in_flight discard
+                    # + task_done (doing them here too double-counted task_done).
                     continue
 
             print(f"[BSODCache] Looking up stop code {code_norm}")
-
-            result = _lookup_stop_code_windows(code_norm)
-            if not result:
-                result = _lookup_stop_code_web(code_norm)
-            if not result:
-                result = {
-                    "source": "unknown",
-                    "title": f"Stop Code {code_norm.upper()}",
-                    "detail": "No description found. This may be a rare or hardware-specific stop code.",
-                    "priority": "high",
-                    "action": f"Search: https://learn.microsoft.com/search/?terms={urllib.parse.quote(code_norm)}+stop+code",
-                    "fetched": datetime.now(timezone.utc).isoformat(),
-                }
+            result = _resolve_stop_code(code_norm)
 
             with _bsod_cache_lock:
                 _bsod_cache[code_norm] = result

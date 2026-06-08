@@ -4,7 +4,11 @@ process / driver / BIOS / MAC-vendor lookup paths. AI is mocked everywhere.
 
 from __future__ import annotations
 
+import pytest
+
 import bios
+import bsod
+import events
 import homenet
 import processes
 import windowsdrivermgr
@@ -156,3 +160,117 @@ class TestMacVendorIdentification:
         )
         vendor = homenet._mac_vendor("3C:5A:B4:11:22:33")
         assert vendor == "Unknown"
+
+
+# ── BSOD stop code (identify rollout PR2) ───────────────────────────────────
+
+
+class TestBsodAiFallback:
+    def test_ai_resolves_when_windows_and_web_miss(self, mocker):
+        mocker.patch.object(bsod, "_lookup_stop_code_windows", return_value=None)
+        mocker.patch.object(bsod, "_lookup_stop_code_web", return_value=None)
+        mocker.patch.object(
+            bsod.identify,
+            "identify_via_ai",
+            return_value={
+                "source": "claude_ai",
+                "plain": "VIDEO_TDR_FAILURE",
+                "what": "GPU driver timed out.",
+                "safe_kill": None,
+                "fetched": "t",
+            },
+        )
+        result = bsod._resolve_stop_code("0x00000116")
+        assert result["source"] == "claude_ai"
+        assert result["title"] == "VIDEO_TDR_FAILURE"
+        assert "GPU driver" in result["detail"]
+        assert result["priority"] == "high"
+
+    def test_placeholder_when_ai_also_misses(self, mocker):
+        mocker.patch.object(bsod, "_lookup_stop_code_windows", return_value=None)
+        mocker.patch.object(bsod, "_lookup_stop_code_web", return_value=None)
+        mocker.patch.object(bsod.identify, "identify_via_ai", return_value=None)
+        result = bsod._resolve_stop_code("0xdeadbeef")
+        assert result["source"] == "unknown"
+        assert "No description found" in result["detail"]
+
+    def test_ai_not_called_when_windows_table_hits(self, mocker):
+        mocker.patch.object(
+            bsod, "_lookup_stop_code_windows", return_value={"source": "windows", "title": "X", "detail": "y"}
+        )
+        spy = mocker.patch.object(bsod.identify, "identify_via_ai")
+        result = bsod._resolve_stop_code("0x0000000a")
+        assert result["source"] == "windows"
+        spy.assert_not_called()
+
+
+# ── Event ID (identify rollout PR2) ─────────────────────────────────────────
+
+
+class TestEventAiFallback:
+    def test_ai_resolves_when_provider_and_web_miss(self, mocker):
+        mocker.patch.object(events, "_lookup_via_windows_provider", return_value=None)
+        mocker.patch.object(events, "_lookup_via_web", return_value=None)
+        mocker.patch.object(
+            events.identify,
+            "identify_via_ai",
+            return_value={
+                "source": "claude_ai",
+                "plain": "Acme Service Started",
+                "what": "The Acme service started.",
+                "safe_kill": None,
+                "fetched": "t",
+            },
+        )
+        result = events._resolve_event(54321, "Acme-Provider")
+        assert result["source"] == "claude_ai"
+        assert result["title"] == "Acme Service Started"
+        assert result["noise"] is False
+
+    def test_placeholder_when_ai_also_misses(self, mocker):
+        mocker.patch.object(events, "_lookup_via_windows_provider", return_value=None)
+        mocker.patch.object(events, "_lookup_via_web", return_value=None)
+        mocker.patch.object(events.identify, "identify_via_ai", return_value=None)
+        result = events._resolve_event(99999, "")
+        assert result["source"] == "unknown"
+        assert "No description found" in result["detail"]
+
+    def test_ai_not_called_when_provider_hits(self, mocker):
+        mocker.patch.object(
+            events, "_lookup_via_windows_provider", return_value={"source": "provider", "title": "X", "detail": "y"}
+        )
+        spy = mocker.patch.object(events.identify, "identify_via_ai")
+        result = events._resolve_event(1000, "Application")
+        assert result["source"] == "provider"
+        spy.assert_not_called()
+
+
+# ── Worker cache-hit invariant (regression: double task_done) ───────────────
+
+
+class TestWorkerCacheHitTaskDone:
+    """An already-cached item must call task_done() exactly ONCE -- the worker's
+    `finally` owns the discard + task_done; the cache-hit early-exit used to do
+    them inline too, double-counting task_done (a queue.join() would hang/raise).
+    Driven via SystemExit (not caught by the worker's `except Exception`) to
+    stop the otherwise-infinite loop after one cache-hit iteration."""
+
+    def test_bsod_cache_hit_single_task_done(self, mocker):
+        q = mocker.MagicMock()
+        q.get.side_effect = ["0xabc", SystemExit()]
+        mocker.patch.object(bsod, "_bsod_queue", q)
+        mocker.patch.object(bsod, "_bsod_cache", {"0xabc": {"source": "static_kb"}})
+        mocker.patch.object(bsod, "_bsod_in_flight", set())
+        with pytest.raises(SystemExit):
+            bsod._bsod_lookup_worker()
+        assert q.task_done.call_count == 1
+
+    def test_event_cache_hit_single_task_done(self, mocker):
+        q = mocker.MagicMock()
+        q.get.side_effect = [(4625, "Security"), SystemExit()]
+        mocker.patch.object(events, "_lookup_queue", q)
+        mocker.patch.object(events, "_event_cache", {"4625": {"source": "static_kb"}})
+        mocker.patch.object(events, "_lookup_in_flight", set())
+        with pytest.raises(SystemExit):
+            events._lookup_worker()
+        assert q.task_done.call_count == 1

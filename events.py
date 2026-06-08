@@ -39,6 +39,8 @@ import urllib.request
 from collections import Counter
 from datetime import datetime, timezone
 
+import ai_identify as identify
+
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 EVENT_CACHE_FILE = os.path.join(APP_DIR, "event_id_cache.json")
 
@@ -432,6 +434,46 @@ def _lookup_via_web(event_id: int, source: str) -> dict | None:
         return None
 
 
+def _resolve_event(event_id: int, source: str) -> dict:
+    """Resolve one unknown event ID: Windows provider metadata -> Microsoft
+    Learn web -> AI identifier -> placeholder. Extracted from the worker loop so
+    the chain (incl. the AI fallback) is unit-testable."""
+    # 1. Try Windows provider metadata first (offline, always current)
+    result = _lookup_via_windows_provider(event_id, source)
+
+    # 2. Web fallback
+    if not result:
+        result = _lookup_via_web(event_id, source)
+
+    # 3. Global rule (identify rollout PR2): AI identifier before the "no
+    # description found" punt -- names third-party / obscure event IDs the
+    # provider registry and Microsoft Learn both miss.
+    if not result:
+        ctx = f"from event log provider '{source}'" if source else "Windows Event Log"
+        ai = identify.identify_via_ai("event", str(event_id), context=ctx)
+        if ai:
+            result = {
+                "source": ai["source"],
+                "title": ai.get("plain") or f"Event ID {event_id}",
+                "detail": ai["what"],
+                "noise": False,
+                "action": "Identified by AI from the event ID + provider.",
+                "fetched": ai["fetched"],
+            }
+
+    # 4. Generic placeholder so we don't keep re-trying unknown IDs
+    if not result:
+        result = {
+            "source": "unknown",
+            "title": f"Event ID {event_id}",
+            "detail": "No description found in Windows provider registry or Microsoft Learn.",
+            "noise": False,
+            "action": f"Search: https://learn.microsoft.com/search/?terms=event+id+{event_id}",
+            "fetched": datetime.now(timezone.utc).isoformat(),
+        }
+    return result
+
+
 def _lookup_worker():
     """
     Background thread: drains the lookup queue, enriches unknown event IDs,
@@ -446,29 +488,12 @@ def _lookup_worker():
 
             with _event_cache_lock:
                 if cache_key in _event_cache:
-                    _lookup_in_flight.discard(event_id)
-                    _lookup_queue.task_done()
+                    # Already cached -- the `finally` does the in_flight discard
+                    # + task_done (doing them here too double-counted task_done).
                     continue
 
             print(f"[EventCache] Looking up Event ID {event_id} (source: {source})")
-
-            # 1. Try Windows provider metadata first (offline, always current)
-            result = _lookup_via_windows_provider(event_id, source)
-
-            # 2. Web fallback
-            if not result:
-                result = _lookup_via_web(event_id, source)
-
-            # 3. Generic placeholder so we don't keep re-trying unknown IDs
-            if not result:
-                result = {
-                    "source": "unknown",
-                    "title": f"Event ID {event_id}",
-                    "detail": "No description found in Windows provider registry or Microsoft Learn.",
-                    "noise": False,
-                    "action": f"Search: https://learn.microsoft.com/search/?terms=event+id+{event_id}",
-                    "fetched": datetime.now(timezone.utc).isoformat(),
-                }
+            result = _resolve_event(event_id, source)
 
             with _event_cache_lock:
                 _event_cache[cache_key] = result
