@@ -2002,3 +2002,49 @@ class TestCodeHealthCardDetails:
             f"tech_debt details don't list the oversized files: {info['text'][:200]}"
         )
         assert "lines" in info["text"], "tech_debt details missing line-count labels"
+
+
+# ── Logs tab exact-level filter (added 2026-06-08) ──────────────────────────
+
+
+class TestLogsExactLevelFilter:
+    """The log-level dropdown offers both 'minimum severity' (INFO+ = and above)
+    AND 'this level only' (INFO only) options; logParseLevel() decodes the
+    leading '=' into {level, exact}. Regression for the user report that INFO+
+    'also shows warnings' (by design) -- exact gives an info-only view."""
+
+    def test_dropdown_has_both_modes_and_parser_decodes_exact(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("switchTab('logs')")
+        page.wait_for_timeout(400)
+        state = page.evaluate(
+            """() => {
+                const sel = document.getElementById('log-level');
+                if (!sel || typeof logParseLevel !== 'function') return {skip: true};
+                const opts = Array.from(sel.options).map(o => o.value);
+                sel.value = '=WARNING';
+                const exact = logParseLevel();
+                sel.value = 'INFO';
+                const min = logParseLevel();
+                return {opts, exact, min};
+            }"""
+        )
+        if state.get("skip"):
+            pytest.skip("logs tab / logParseLevel not present")
+        # Both the and-above and exact options exist.
+        assert "INFO" in state["opts"], "minimum-severity INFO+ option missing"
+        assert "=INFO" in state["opts"] and "=WARNING" in state["opts"], "exact-level options missing"
+        # The parser decodes each correctly.
+        assert state["exact"]["level"] == "WARNING" and state["exact"]["exact"] is True
+        assert state["min"]["level"] == "INFO" and state["min"]["exact"] is False
+
+    def test_exact_info_filter_returns_info_only(self, loaded_page):
+        """End-to-end: the exact endpoint the dropdown hits returns only INFO."""
+        page, _ = loaded_page
+        levels = page.evaluate(
+            """() => fetch('/api/logs?lines=500&level=INFO&exact=1')
+                       .then(r => r.json())
+                       .then(d => Array.from(new Set((d.entries||[]).map(e => e.level))))"""
+        )
+        # Live log is INFO-dominated; exact INFO must never include WARNING/ERROR.
+        assert all(lv == "INFO" for lv in levels), f"exact INFO filter leaked other levels: {levels}"

@@ -2260,11 +2260,21 @@
       <div style="display:flex;gap:8px;align-items:center">
         <label style="font-size:12px;color:var(--muted)">Level:</label>
         <select id="log-level" onchange="logLoad()" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px">
-          <option value="">All</option>
-          <option value="DEBUG">DEBUG+</option>
-          <option value="INFO" selected>INFO+</option>
-          <option value="WARNING">WARNING+</option>
-          <option value="ERROR">ERROR+</option>
+          <option value="">All levels</option>
+          <optgroup label="Minimum severity (and above)">
+            <option value="DEBUG">DEBUG+</option>
+            <option value="INFO" selected>INFO+</option>
+            <option value="WARNING">WARNING+</option>
+            <option value="ERROR">ERROR+</option>
+            <option value="CRITICAL">CRITICAL+</option>
+          </optgroup>
+          <optgroup label="This level only">
+            <option value="=DEBUG">DEBUG only</option>
+            <option value="=INFO">INFO only</option>
+            <option value="=WARNING">WARNING only</option>
+            <option value="=ERROR">ERROR only</option>
+            <option value="=CRITICAL">CRITICAL only</option>
+          </optgroup>
         </select>
         <label style="font-size:12px;color:var(--muted)">Lines:</label>
         <select id="log-lines" onchange="logLoad()" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:12px">
