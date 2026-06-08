@@ -1300,6 +1300,30 @@ class TestHealthEndpoint:
         resp = client.get("/api/health")
         assert resp.content_type.startswith("application/json")
 
+    def test_includes_assets_version(self, client):
+        """The heartbeat carries an `assets` token so the client can auto-reload
+        when a deploy changes the front-end bundle."""
+        resp = client.get("/api/health")
+        data = resp.get_json()
+        assert "assets" in data and isinstance(data["assets"], str) and data["assets"]
+
+    def test_assets_version_stable_then_changes_on_mtime(self, mocker):
+        import windesktopmgr as wdm
+
+        mocker.patch("windesktopmgr.os.path.getmtime", return_value=111.0)
+        v1 = wdm._assets_version()
+        v2 = wdm._assets_version()
+        assert v1 == v2  # same files -> stable token
+        mocker.patch("windesktopmgr.os.path.getmtime", return_value=222.0)
+        assert wdm._assets_version() != v1  # an asset changed -> new token
+
+    def test_assets_version_graceful_when_files_missing(self, mocker):
+        import windesktopmgr as wdm
+
+        mocker.patch("windesktopmgr.os.path.getmtime", side_effect=OSError("gone"))
+        # Must not raise; returns a (constant) token.
+        assert isinstance(wdm._assets_version(), str)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GET  /api/selftest

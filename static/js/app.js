@@ -104,6 +104,7 @@ function fmtTs(ts) {
 let _serverAlive = true;
 let _heartbeatId = null;
 let _heartbeatFailures = 0;
+let _assetsVersion = null;  // front-end bundle version; reload the page when it changes (a deploy)
 const _HEARTBEAT_FAIL_THRESHOLD = 3;
 
 function _startHeartbeat() {
@@ -118,8 +119,23 @@ function _checkServer() {
     cache: "no-store",
   })
     .then(r => r.json())
-    .then(() => {
+    .then((data) => {
       _heartbeatFailures = 0;
+      // Auto-reload when a deploy changes the front-end bundle, so the open
+      // page stops running a stale stylesheet/script (it otherwise only
+      // refreshes DATA, never the assets). First reading just records the
+      // baseline; a later change triggers one reload.
+      if (data && data.assets) {
+        if (_assetsVersion === null) {
+          _assetsVersion = data.assets;
+        } else if (data.assets !== _assetsVersion) {
+          // A deploy changed the bundle -> reload to drop the stale CSS/JS.
+          // (No loop: the reloaded page re-baselines against the now-stable
+          // post-deploy version on its first heartbeat.)
+          window.location.reload();
+          return;
+        }
+      }
       if (!_serverAlive) {
         _serverAlive = true;
         _hideReconnectBanner();

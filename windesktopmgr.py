@@ -2905,10 +2905,42 @@ def index():
     return resp
 
 
+_assets_version_cache: tuple | None = None
+
+
+def _assets_version() -> str:
+    """Short token identifying the current front-end assets (css/js/html).
+
+    Derived from their mtimes, so it changes on every deploy. The client
+    heartbeat compares it and reloads when it changes -- otherwise an open page
+    keeps running the previously-loaded stylesheet/script after a deploy (the
+    page auto-refreshes DATA but never re-fetches the assets), which is how a
+    shipped CSS fix can appear "not applied". Best effort; never raises.
+
+    Hit on every /api/health poll, so the digest is cached and only recomputed
+    when an mtime actually changes (0.0 sentinel for a missing file is stable).
+    """
+    global _assets_version_cache
+    mtimes = []
+    for rel in ("static/css/app.css", "static/js/app.js", "templates/index.html"):
+        try:
+            mtimes.append(os.path.getmtime(os.path.join(APP_DIR, rel)))
+        except OSError:
+            mtimes.append(0.0)
+    key = tuple(mtimes)
+    if _assets_version_cache is None or _assets_version_cache[0] != key:
+        h = hashlib.sha256()
+        for m in mtimes:
+            h.update(str(m).encode())
+        _assets_version_cache = (key, h.hexdigest()[:12])
+    return _assets_version_cache[1]
+
+
 @app.route("/api/health")
 def api_health():
-    """Lightweight heartbeat endpoint for server-alive checks."""
-    return jsonify({"ok": True, "status": "running"})
+    """Lightweight heartbeat endpoint for server-alive checks. `assets` lets the
+    client auto-reload when a deploy changes the front-end bundle."""
+    return jsonify({"ok": True, "status": "running", "assets": _assets_version()})
 
 
 def _parse_log_query():
