@@ -709,14 +709,13 @@
   }
   .dg-arc {
     position: absolute; inset: 0; border-radius: 50%;
-    /* Colour fill 0..sweep, then a DIM-of-the-gauge-colour track for the
-       unfilled remainder of the 270° arc (--track, set per gauge; was the dark
-       --border, which read as a "black filled" section), then a transparent
-       90° gap at the bottom. */
+    /* ONLY the value fill is painted (0..sweep of the 270° arc); the rest is
+       fully transparent. Every coloured/grey "track" we tried for the unfilled
+       remainder read as a dark "filled" section on the near-black card, so the
+       gauge now shows just the colour arc on the tile -- nothing to look dark. */
     background: conic-gradient(from 220deg,
       var(--col) calc(var(--sweep) * 1% * .75),
-      var(--track, rgba(255,255,255,.06)) calc(var(--sweep) * 1% * .75) 75%,
-      transparent 75%);
+      transparent calc(var(--sweep) * 1% * .75));
     -webkit-mask: radial-gradient(farthest-side, transparent calc(50% - var(--thick)), #000 calc(50% - var(--thick) + 1px));
             mask: radial-gradient(farthest-side, transparent calc(50% - var(--thick)), #000 calc(50% - var(--thick) + 1px));
     animation: dg-sweep 1.3s cubic-bezier(.16,.84,.27,1) both;
