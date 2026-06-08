@@ -121,6 +121,37 @@ class TestReadRecent:
         assert len(entries) == 2
         assert all(e["level"] in ("WARNING", "ERROR") for e in entries)
 
+    def _three_level_log(self, tmp_path, monkeypatch):
+        log_path = tmp_path / "test.log"
+        log_path.write_text(
+            "2026-04-10 12:00:00 INFO    windesktopmgr.flask      msg1\n"
+            "2026-04-10 12:00:01 INFO    windesktopmgr.flask      msg2\n"
+            "2026-04-10 12:00:02 WARNING windesktopmgr.ps         msg3\n"
+            "2026-04-10 12:00:03 ERROR   windesktopmgr.ps         msg4\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(applogging, "LOG_FILE", str(log_path))
+
+    def test_exact_level_info_excludes_warnings(self, tmp_path, monkeypatch):
+        """exact=True keeps ONLY the chosen level -- INFO only, no warnings/errors
+        (the user's expectation; the default INFO+ includes them)."""
+        self._three_level_log(tmp_path, monkeypatch)
+        entries = applogging.read_recent(lines=100, min_level="INFO", exact=True)
+        assert len(entries) == 2
+        assert all(e["level"] == "INFO" for e in entries)
+
+    def test_exact_level_warning_only(self, tmp_path, monkeypatch):
+        self._three_level_log(tmp_path, monkeypatch)
+        entries = applogging.read_recent(lines=100, min_level="WARNING", exact=True)
+        assert len(entries) == 1
+        assert entries[0]["level"] == "WARNING"
+
+    def test_min_vs_exact_differ(self, tmp_path, monkeypatch):
+        """INFO+ (min) returns all four; INFO only (exact) returns just the two info."""
+        self._three_level_log(tmp_path, monkeypatch)
+        assert len(applogging.read_recent(lines=100, min_level="INFO")) == 4
+        assert len(applogging.read_recent(lines=100, min_level="INFO", exact=True)) == 2
+
     def test_level_filter_finds_warning_buried_under_info_flood(self, tmp_path, monkeypatch):
         """Regression: with min_level set, read_recent must scan the full file,
         not a narrow tail. A polling loop that writes thousands of INFO lines
@@ -204,6 +235,31 @@ class TestLogsEndpoint:
     def test_api_logs_passes_level(self, client, mocker):
         mock = mocker.patch("applogging.read_recent", return_value=[])
         client.get("/api/logs?level=WARNING")
+        assert mock.call_args.kwargs["min_level"] == "WARNING"
+        assert mock.call_args.kwargs["exact"] is False  # default is "and above"
+
+    def test_api_logs_passes_exact(self, client, mocker):
+        mock = mocker.patch("applogging.read_recent", return_value=[])
+        client.get("/api/logs?level=INFO&exact=1")
+        assert mock.call_args.kwargs["min_level"] == "INFO"
+        assert mock.call_args.kwargs["exact"] is True
+
+    def test_api_logs_download_passes_exact(self, client, mocker):
+        mock = mocker.patch("applogging.read_recent", return_value=[])
+        client.get("/api/logs/download?level=WARNING&exact=1&format=csv")
+        assert mock.call_args.kwargs["min_level"] == "WARNING"
+        assert mock.call_args.kwargs["exact"] is True
+
+    def test_api_logs_unknown_level_falls_back_to_all(self, client, mocker):
+        """A bogus ?level= must NOT dump the whole file (an unknown level ranks
+        as DEBUG in the min-severity path) -- it's dropped to 'all levels'."""
+        mock = mocker.patch("applogging.read_recent", return_value=[])
+        client.get("/api/logs?level=BOGUS")
+        assert mock.call_args.kwargs["min_level"] is None
+
+    def test_api_logs_level_is_uppercased(self, client, mocker):
+        mock = mocker.patch("applogging.read_recent", return_value=[])
+        client.get("/api/logs?level=warning")
         assert mock.call_args.kwargs["min_level"] == "WARNING"
 
 

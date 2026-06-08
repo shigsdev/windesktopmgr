@@ -98,13 +98,18 @@ def get_logger(suffix: str = "") -> logging.Logger:
     return logging.getLogger(name)
 
 
-def read_recent(lines: int = 500, min_level: str | None = None) -> list[dict]:
+def read_recent(lines: int = 500, min_level: str | None = None, exact: bool = False) -> list[dict]:
     """Read the tail of the log file, optionally filtered by severity.
 
     Returns a list of parsed log entries (newest first):
         [{"timestamp": "...", "level": "INFO", "logger": "...", "message": "..."}]
 
-    When ``min_level`` is set, scans the full current log file instead of
+    ``min_level`` filters by severity. By default it is a MINIMUM: ``"INFO"``
+    keeps INFO and everything more severe (WARNING/ERROR/CRITICAL). With
+    ``exact=True`` it keeps ONLY that exact level (``"INFO"`` -> info lines
+    only, no warnings) -- the Logs tab's "X only" options.
+
+    When a level filter is set, scans the full current log file instead of
     a narrow tail. The old ``lines * 4`` budget silently hid legitimate
     warnings when the log file was dominated by high-volume INFO traffic
     (e.g. a polling loop writing thousands of lines per minute): a
@@ -117,7 +122,8 @@ def read_recent(lines: int = 500, min_level: str | None = None) -> list[dict]:
         return []
 
     level_order = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3, "CRITICAL": 4}
-    min_rank = level_order.get((min_level or "").upper(), 0)
+    want = (min_level or "").upper()
+    min_rank = level_order.get(want, 0)
 
     try:
         with open(LOG_FILE, encoding="utf-8", errors="replace") as f:
@@ -127,8 +133,8 @@ def read_recent(lines: int = 500, min_level: str | None = None) -> list[dict]:
 
     # Unfiltered: keep the narrow tail read fast — the Logs tab's default
     # view doesn't need more than the last ~4x its page size.
-    # Filtered: scan the whole file so low-frequency warnings / errors
-    # aren't buried by a flood of INFO entries from a polling loop.
+    # Filtered (min or exact): scan the whole file so low-frequency
+    # warnings / errors aren't buried by a flood of INFO entries.
     if not min_level:
         raw = raw[-max(lines * 4, 200) :]
     parsed: list[dict] = []
@@ -137,8 +143,12 @@ def read_recent(lines: int = 500, min_level: str | None = None) -> list[dict]:
         entry = _parse_line(line)
         if entry is None:
             continue
-        if level_order.get(entry["level"], 0) < min_rank:
-            continue
+        if min_level:
+            if exact:
+                if entry["level"] != want:
+                    continue
+            elif level_order.get(entry["level"], 0) < min_rank:
+                continue
         parsed.append(entry)
 
     parsed.reverse()  # newest first

@@ -2912,14 +2912,23 @@ def api_health():
 
 
 def _parse_log_query():
-    """Shared query-string parsing for /api/logs and download routes."""
+    """Shared query-string parsing for /api/logs and download routes.
+
+    ``exact=1`` switches the ``level`` filter from "minimum severity" (the
+    default, e.g. INFO+ = info and above) to "this exact level only".
+    """
     try:
         n = int(request.args.get("lines", 200))
     except (TypeError, ValueError):
         n = 200
     n = max(1, min(n, 20000))
-    level = request.args.get("level") or None
-    return n, level
+    # Validate the level at the boundary (CLAUDE.md): an unknown value would
+    # otherwise rank as DEBUG and silently dump the whole file. Drop it -> all.
+    level = (request.args.get("level") or "").upper() or None
+    if level and level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+        level = None
+    exact = request.args.get("exact") in ("1", "true", "yes")
+    return n, level, exact
 
 
 @app.route("/api/logs")
@@ -2928,14 +2937,15 @@ def api_logs():
 
     Query params:
         lines (int)   -- how many entries to return, default 200, max 20000
-        level (str)   -- minimum severity (DEBUG/INFO/WARNING/ERROR/CRITICAL)
+        level (str)   -- severity filter (DEBUG/INFO/WARNING/ERROR/CRITICAL)
+        exact (1)     -- match the level exactly instead of "and above"
     """
     from applogging import read_recent
 
-    n, level = _parse_log_query()
+    n, level, exact = _parse_log_query()
     # API browser view is capped tighter than downloads
     n = min(n, 2000)
-    entries = read_recent(lines=n, min_level=level)
+    entries = read_recent(lines=n, min_level=level, exact=exact)
     return jsonify({"ok": True, "count": len(entries), "entries": entries})
 
 
@@ -2953,9 +2963,9 @@ def api_logs_download():
 
     from applogging import read_recent
 
-    n, level = _parse_log_query()
+    n, level, exact = _parse_log_query()
     fmt = (request.args.get("format") or "json").lower()
-    entries = read_recent(lines=n, min_level=level)
+    entries = read_recent(lines=n, min_level=level, exact=exact)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     if fmt == "csv":
