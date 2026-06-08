@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 import requests
 from flask import Blueprint, jsonify, request
 
+import ai_identify as identify
+
 # IEEE OUI vendor lookup (backlog #10). Optional dep -- collector degrades
 # to the curated _MAC_VENDORS dict only if mac-vendor-lookup isn't
 # installed or its cached IEEE registry is missing.
@@ -215,7 +217,20 @@ def _mac_vendor(mac: str) -> str:
     # fully loaded. By not caching Unknown, the next call retries and
     # picks up the real vendor once the registry is warm.
     if not vendor:
-        return "Unknown"
+        # Global rule: the IEEE registry didn't know this OUI -> ask the AI
+        # identifier (non-blocking; cached). AI doesn't know every prefix, so
+        # we keep showing "Unknown" until/unless it resolves to a real vendor.
+        info = identify.identify("mac_vendor", prefix, context=f"network device MAC address {mac}", display="Unknown")
+        plain = (info.get("plain") or "").strip()
+        if (
+            not info.get("pending")
+            and info.get("source") == "claude_ai"
+            and plain
+            and plain.lower() not in ("unknown", prefix.lower())
+        ):
+            vendor = plain
+        else:
+            return "Unknown"
 
     with _vendor_cache_lock:
         _vendor_cache[prefix] = vendor

@@ -23,6 +23,7 @@ startup_item_cache.json
 services_item_cache.json
 process_cache.json
 bios_cache.json
+identify_cache.json
 
 # Log files
 *.log

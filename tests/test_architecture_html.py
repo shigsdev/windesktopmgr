@@ -70,6 +70,8 @@ TEST_FILES = [
     "test_report.py",
     "test_playwright_smoke.py",
     "test_lhm.py",
+    "test_identify.py",
+    "test_identify_integration.py",
 ]
 
 
