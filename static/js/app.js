@@ -3594,14 +3594,6 @@ function renderGauges(el, gauges) {
     "var(--cyan)":"rgba(0,212,255,.28)", "var(--green)":"rgba(0,229,160,.26)",
     "var(--muted)":"rgba(74,85,104,0)"
   };
-  // Unfilled-track colour = a DIM version of the gauge's own colour, so the
-  // remainder of the ring looks intentional (faint green/cyan/…) instead of a
-  // dark grey "filled" section.
-  const trackOf = {
-    "var(--red)":"rgba(255,71,87,.14)", "var(--orange)":"rgba(255,112,67,.14)",
-    "var(--cyan)":"rgba(0,212,255,.13)", "var(--green)":"rgba(0,229,160,.13)",
-    "var(--muted)":"rgba(255,255,255,.05)"
-  };
   const mk = (cls, text) => {
     const d = document.createElement("div");
     d.className = cls;
@@ -3626,7 +3618,6 @@ function renderGauges(el, gauges) {
     const ring = mk("dg-ring" + (has ? "" : " dg-unavail"));
     ring.style.setProperty("--col", col);
     ring.style.setProperty("--glow", glow);
-    ring.style.setProperty("--track", trackOf[col] || "rgba(255,255,255,.06)");
     // --sweep is registered @property{inherits:false} (so it animates smoothly),
     // so it must live on the .dg-arc that READS it -- setting it on the ring left
     // the arc at the initial 0 and every gauge rendered an empty/identical ring.
