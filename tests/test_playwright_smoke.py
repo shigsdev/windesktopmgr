@@ -813,6 +813,7 @@ class TestDashboardGauges:
                     value: g.dataset.gaugeValue,
                     sweep: arc ? parseFloat(arc.style.getPropertyValue('--sweep')) : null,
                     accent: getComputedStyle(g).borderTopColor,
+                    arcBg: arc ? getComputedStyle(arc).backgroundImage : "",
                 };
             })"""
         )
@@ -828,6 +829,11 @@ class TestDashboardGauges:
         # Tile accent is a real state colour, not a transparent default.
         assert all(g["accent"] and "0, 0, 0, 0" not in g["accent"] for g in avail), (
             f"gauge tiles missing the state-colour accent: {[g['accent'] for g in avail]}"
+        )
+        # The unfilled remainder is a FAINT groove, not the dark --border
+        # (#1c2535 = rgb(28, 37, 53)) which read as a "black pre-filled" section.
+        assert all("28, 37, 53" not in g["arcBg"] for g in avail), (
+            "gauge track still uses the dark --border colour (the 'black filled' look)"
         )
 
 

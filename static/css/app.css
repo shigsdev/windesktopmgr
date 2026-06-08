@@ -709,9 +709,12 @@
   }
   .dg-arc {
     position: absolute; inset: 0; border-radius: 50%;
+    /* Colour fill 0..sweep, then a FAINT groove for the unfilled remainder of
+       the 270° arc (was the dark --border, which read as a "black filled"
+       section), then a transparent 90° gap at the bottom. */
     background: conic-gradient(from 220deg,
       var(--col) calc(var(--sweep) * 1% * .75),
-      var(--border) calc(var(--sweep) * 1% * .75) 75%,
+      rgba(255,255,255,.07) calc(var(--sweep) * 1% * .75) 75%,
       transparent 75%);
     -webkit-mask: radial-gradient(farthest-side, transparent calc(50% - var(--thick)), #000 calc(50% - var(--thick) + 1px));
             mask: radial-gradient(farthest-side, transparent calc(50% - var(--thick)), #000 calc(50% - var(--thick) + 1px));
