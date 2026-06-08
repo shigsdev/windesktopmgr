@@ -1094,6 +1094,45 @@ class TestLhmInstallerRoutes:
         assert resp.status_code == 400
         assert resp.get_json()["ok"] is False
 
+    def test_autostart_status_returns_state(self, client, mocker):
+        mocker.patch(
+            "windesktopmgr.lhm.autostart_status",
+            return_value={"enabled": True, "task": "WinDesktopMgr-LibreHardwareMonitor"},
+        )
+        resp = client.get("/api/thermals/lhm/autostart")
+        assert resp.status_code == 200
+        assert resp.get_json()["enabled"] is True
+
+    def test_autostart_setup_ok_returns_200(self, client, mocker):
+        mocker.patch("windesktopmgr.lhm.setup_autostart", return_value={"ok": True})
+        resp = client.post("/api/thermals/lhm/autostart")
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+
+    def test_autostart_setup_failure_returns_400(self, client, mocker):
+        mocker.patch(
+            "windesktopmgr.lhm.setup_autostart",
+            return_value={"ok": False, "error": "not installed"},
+        )
+        resp = client.post("/api/thermals/lhm/autostart")
+        assert resp.status_code == 400
+        assert resp.get_json()["ok"] is False
+
+    def test_autostart_remove_ok_returns_200(self, client, mocker):
+        mocker.patch("windesktopmgr.lhm.remove_autostart", return_value={"ok": True})
+        resp = client.post("/api/thermals/lhm/autostart/remove")
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+
+    def test_autostart_remove_failure_returns_400(self, client, mocker):
+        mocker.patch(
+            "windesktopmgr.lhm.remove_autostart",
+            return_value={"ok": False, "error": "ACCESS_DENIED (UAC prompt declined?)"},
+        )
+        resp = client.post("/api/thermals/lhm/autostart/remove")
+        assert resp.status_code == 400
+        assert resp.get_json()["ok"] is False
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GET  /api/services/list

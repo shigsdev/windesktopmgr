@@ -3459,6 +3459,23 @@ def thermals_lhm_launch():
     return jsonify(result), (200 if result.get("ok") else 400)
 
 
+@app.route("/api/thermals/lhm/autostart")
+def thermals_lhm_autostart_status():
+    return jsonify(lhm.autostart_status())
+
+
+@app.route("/api/thermals/lhm/autostart", methods=["POST"])
+def thermals_lhm_autostart_setup():
+    result = lhm.setup_autostart()
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/thermals/lhm/autostart/remove", methods=["POST"])
+def thermals_lhm_autostart_remove():
+    result = lhm.remove_autostart()
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
 @app.route("/api/services/list")
 def services_list():
     return jsonify(get_services_list())

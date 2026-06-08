@@ -244,3 +244,78 @@ class TestLaunch:
         result = lhm.launch_lhm_elevated()
         assert result["ok"] is False
         assert "ACCESS_DENIED" in result["error"]
+
+
+class TestAutostart:
+    def test_status_enabled_when_task_present(self, mocker):
+        fake = mocker.MagicMock(returncode=0)
+        mocker.patch.object(lhm.subprocess, "run", return_value=fake)
+        st = lhm.autostart_status()
+        assert st["enabled"] is True
+        assert st["task"] == lhm.AUTOSTART_TASK_NAME
+
+    def test_status_disabled_when_task_absent(self, mocker):
+        fake = mocker.MagicMock(returncode=1)
+        mocker.patch.object(lhm.subprocess, "run", return_value=fake)
+        assert lhm.autostart_status()["enabled"] is False
+
+    def test_status_graceful_on_exception(self, mocker):
+        mocker.patch.object(lhm.subprocess, "run", side_effect=OSError("schtasks missing"))
+        assert lhm.autostart_status()["enabled"] is False
+
+    def test_setup_requires_install(self, mocker, tmp_path):
+        mocker.patch.object(lhm, "INSTALL_DIR", str(tmp_path / "nope"))
+        result = lhm.setup_autostart()
+        assert result["ok"] is False
+        assert "not installed" in result["error"]
+
+    def test_setup_registers_via_elevated_schtasks(self, mocker, tmp_path):
+        import ctypes
+
+        install_dir = tmp_path / "lhm"
+        install_dir.mkdir()
+        (install_dir / "LibreHardwareMonitor.exe").write_bytes(b"MZ")
+        mocker.patch.object(lhm, "INSTALL_DIR", str(install_dir))
+        shell = mocker.patch.object(ctypes.windll.shell32, "ShellExecuteW", return_value=42)
+        result = lhm.setup_autostart()
+        assert result["ok"] is True
+        # schtasks invoked elevated with the fixed task name + verified exe path.
+        args = shell.call_args[0]
+        assert args[1] == "runas"
+        assert args[2] == "schtasks.exe"
+        assert lhm.AUTOSTART_TASK_NAME in args[3]
+        assert "ONLOGON" in args[3] and "HIGHEST" in args[3]
+
+    def test_setup_refuses_path_with_quote(self, mocker):
+        """Defence in depth: a double-quote in the exe path would break /TR
+        parsing, so setup refuses rather than building a mangled schtasks arg.
+        (NTFS forbids quotes in real names, so exe_path is mocked to simulate.)"""
+        import ctypes
+
+        mocker.patch.object(lhm, "exe_path", return_value='C:\\evil"\\LibreHardwareMonitor.exe')
+        shell = mocker.patch.object(ctypes.windll.shell32, "ShellExecuteW", return_value=42)
+        result = lhm.setup_autostart()
+        assert result["ok"] is False
+        assert "invalid character" in result["error"]
+        shell.assert_not_called()  # never reached schtasks
+
+    def test_setup_uac_declined_maps_error(self, mocker, tmp_path):
+        import ctypes
+
+        install_dir = tmp_path / "lhm"
+        install_dir.mkdir()
+        (install_dir / "LibreHardwareMonitor.exe").write_bytes(b"MZ")
+        mocker.patch.object(lhm, "INSTALL_DIR", str(install_dir))
+        mocker.patch.object(ctypes.windll.shell32, "ShellExecuteW", return_value=5)
+        result = lhm.setup_autostart()
+        assert result["ok"] is False
+        assert "ACCESS_DENIED" in result["error"]
+
+    def test_remove_deletes_via_elevated_schtasks(self, mocker):
+        import ctypes
+
+        shell = mocker.patch.object(ctypes.windll.shell32, "ShellExecuteW", return_value=42)
+        result = lhm.remove_autostart()
+        assert result["ok"] is True
+        args = shell.call_args[0]
+        assert "/Delete" in args[3] and lhm.AUTOSTART_TASK_NAME in args[3]
