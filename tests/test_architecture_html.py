@@ -69,6 +69,7 @@ TEST_FILES = [
     "test_codehealth.py",
     "test_report.py",
     "test_playwright_smoke.py",
+    "test_lhm.py",
 ]
 
 

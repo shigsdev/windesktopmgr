@@ -871,6 +871,24 @@
   .th-cta-sub {
     font-size: 12px; line-height: 1.55; color: var(--text-dim); max-width: 760px;
   }
+  /* In-app installer actions (Install → Launch-as-admin). */
+  .th-cta-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+  .th-cta-btn {
+    font-family: var(--font-head); font-size: 12px; font-weight: 700;
+    letter-spacing: .04em; color: var(--text-bright);
+    background: linear-gradient(180deg, rgba(0,212,255,.14), rgba(0,212,255,.05));
+    border: 1px solid rgba(0,212,255,.4); border-radius: var(--radius);
+    padding: 8px 16px; cursor: pointer;
+    box-shadow: 0 0 0 1px rgba(0,212,255,.12), 0 6px 18px -8px var(--glow-cyan);
+    transition: background .15s, border-color .15s, box-shadow .15s;
+  }
+  .th-cta-btn:hover:not(:disabled) {
+    background: linear-gradient(180deg, rgba(0,212,255,.22), rgba(0,212,255,.08));
+    border-color: var(--cyan); box-shadow: 0 0 0 1px rgba(0,212,255,.3), 0 8px 22px -8px var(--glow-cyan);
+  }
+  .th-cta-btn:disabled { opacity: .6; cursor: default; }
+  .th-cta-status { font-size: 11px; color: var(--ink-faint); margin-top: 2px; }
+  .th-cta-err { font-size: 11px; color: var(--red); margin-top: 6px; }
 
   /* ── Cooling-device cards ── */
   .th-fans {

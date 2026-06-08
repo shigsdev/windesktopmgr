@@ -1037,6 +1037,57 @@ class TestThermalsDataRoute:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# LibreHardwareMonitor in-app installer routes (Thermals CTA)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestLhmInstallerRoutes:
+    def test_status_returns_state(self, client, mocker):
+        mocker.patch(
+            "windesktopmgr.lhm.lhm_status",
+            return_value={
+                "installed": True,
+                "running": False,
+                "version": "v0.9.6",
+                "exe": "X",
+                "install_dir": "Y",
+            },
+        )
+        resp = client.get("/api/thermals/lhm/status")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["installed"] is True
+        assert data["running"] is False
+
+    def test_install_ok_returns_200(self, client, mocker):
+        mocker.patch("windesktopmgr.lhm.install_lhm", return_value={"ok": True, "exe": "X", "version": "v0.9.6"})
+        resp = client.post("/api/thermals/lhm/install")
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+
+    def test_install_failure_returns_502(self, client, mocker):
+        mocker.patch("windesktopmgr.lhm.install_lhm", return_value={"ok": False, "error": "download failed"})
+        resp = client.post("/api/thermals/lhm/install")
+        assert resp.status_code == 502
+        assert resp.get_json()["ok"] is False
+
+    def test_launch_ok_returns_200(self, client, mocker):
+        mocker.patch("windesktopmgr.lhm.launch_lhm_elevated", return_value={"ok": True, "exe": "X"})
+        resp = client.post("/api/thermals/lhm/launch")
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+
+    def test_launch_failure_returns_400(self, client, mocker):
+        mocker.patch(
+            "windesktopmgr.lhm.launch_lhm_elevated",
+            return_value={"ok": False, "error": "ACCESS_DENIED (UAC prompt declined?)"},
+        )
+        resp = client.post("/api/thermals/lhm/launch")
+        assert resp.status_code == 400
+        assert resp.get_json()["ok"] is False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # GET  /api/services/list
 # ══════════════════════════════════════════════════════════════════════════════
 
