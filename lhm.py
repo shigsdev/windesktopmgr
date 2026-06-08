@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import subprocess
 import zipfile
 from urllib.parse import urlparse
@@ -64,9 +65,18 @@ DOWNLOAD_TIMEOUT_S = 60
 # The asset is ~6.3 MB; cap well above it so a hijacked/oversized response
 # can't exhaust memory before the hash check would have rejected it anyway.
 MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
-# Bound on the LHM-running WMI probe (see is_running). Hit on every Thermals
-# tab load, so it must never hang a Flask worker when Winmgmt is wedged.
+# Bound on the LHM-running probe (see is_running). Hit on every Thermals tab
+# load, so it must be short and never hang a Flask worker.
 IS_RUNNING_TIMEOUT_S = 5.0
+
+# How the app reads LHM sensors. LibreHardwareMonitor (unlike the older
+# OpenHardwareMonitor) ships NO WMI provider -- it exposes sensors ONLY through
+# its built-in HTTP server's JSON tree. We read it over loopback. The server
+# binds all interfaces, but Windows Firewall's default-deny inbound (no allow
+# rule is created for it) keeps it reachable only from this machine.
+LHM_WEB_PORT = 8085
+LHM_DATA_URL = f"http://localhost:{LHM_WEB_PORT}/data.json"
+LHM_HTTP_TIMEOUT_S = 3.0
 
 INSTALL_DIR = os.path.join(
     os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
@@ -74,8 +84,10 @@ INSTALL_DIR = os.path.join(
     "LibreHardwareMonitor",
 )
 
-# Seeds LHM to launch straight into the tray (no window in the user's face)
-# and stay there on close. Written before first launch; LHM honours it.
+# Seeds LHM to (a) launch straight into the tray (no window in the user's face)
+# and (b) run its HTTP server so the app can read sensors -- LHM has no WMI
+# provider, so without the web server there is no way to get the data. Written
+# at install and re-applied before every launch so existing installs migrate.
 _TRAY_CONFIG = (
     '<?xml version="1.0" encoding="utf-8"?>\n'
     "<configuration>\n"
@@ -84,9 +96,40 @@ _TRAY_CONFIG = (
     '    <add key="minTrayMenuItem" value="true" />\n'
     '    <add key="minCloseMenuItem" value="true" />\n'
     '    <add key="runMenuItem" value="false" />\n'
+    '    <add key="runWebServerMenuItem" value="true" />\n'
+    f'    <add key="ListenerPort" value="{LHM_WEB_PORT}" />\n'
     "  </appSettings>\n"
     "</configuration>\n"
 )
+
+
+def _config_path() -> str:
+    return os.path.join(INSTALL_DIR, "LibreHardwareMonitor.config")
+
+
+def _ensure_config() -> None:
+    """Ensure the LHM config enables the web server (+ tray settings) so the app
+    can read sensors. Only writes when the required keys are missing/wrong, so it
+    migrates an old install WITHOUT clobbering preferences the user may have set
+    in LHM's own UI (which persist to the same file). Best-effort; never raises.
+    """
+    try:
+        os.makedirs(INSTALL_DIR, exist_ok=True)
+        cfg = _config_path()
+        try:
+            with open(cfg, encoding="utf-8") as fh:
+                existing = fh.read()
+        except OSError:
+            existing = ""
+        if (
+            'key="runWebServerMenuItem" value="true"' in existing
+            and f'key="ListenerPort" value="{LHM_WEB_PORT}"' in existing
+        ):
+            return  # already correctly configured -- leave the user's file alone
+        with open(cfg, "w", encoding="utf-8") as fh:
+            fh.write(_TRAY_CONFIG)
+    except OSError:
+        pass
 
 
 def exe_path() -> str:
@@ -99,35 +142,84 @@ def is_installed() -> bool:
     return os.path.isfile(exe_path())
 
 
-def is_running() -> bool:
-    """True when LHM is publishing its WMI namespace (i.e. actively running).
+def _fetch_data_json() -> dict | None:
+    """GET LHM's sensor tree over loopback. None if the server isn't up.
+    Bounded + never raises."""
+    try:
+        import requests  # noqa: PLC0415 -- already a project dependency
 
-    We probe the ``root\\LibreHardwareMonitor`` namespace rather than scanning
-    the process list because the namespace is the thing the Thermals tab
-    actually needs -- if it answers, the gauges will populate. Any failure
-    (namespace absent because LHM isn't running, non-Windows host, WMI hiccup)
-    is treated as "not running"; this never raises.
+        resp = requests.get(LHM_DATA_URL, timeout=LHM_HTTP_TIMEOUT_S)
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, dict) else None
+    except Exception:  # noqa: BLE001 -- server down / not running -> None
+        return None
 
-    The WMI probe is bounded via ``bounded_wmi_query`` (the same hang-guard
-    every other WMI site uses) because this runs on every Thermals tab load --
-    an unbounded enum would wedge a Flask worker if Winmgmt is degraded.
+
+def _parse_temp_value(value: str) -> float | None:
+    """Pull the Celsius number out of an LHM Value string like ``"38.0 °C"``."""
+    if not value:
+        return None
+    match = re.search(r"-?\d+(?:[.,]\d+)?", str(value))
+    if not match:
+        return None
+    try:
+        return round(float(match.group(0).replace(",", ".")), 1)
+    except ValueError:
+        return None
+
+
+def get_lhm_temps() -> list[dict]:
+    """Temperature sensors from LHM's HTTP server, as
+    ``[{"Name", "TempC", "Source": "LibreHardwareMonitor", "SensorId"}]``.
+
+    Walks the recursive ``data.json`` tree for leaf nodes with
+    ``Type == "Temperature"``. Returns ``[]`` if LHM isn't running / the server
+    is off. Never raises -- this is the canonical way to read LHM (it has no
+    WMI provider).
     """
+    data = _fetch_data_json()
+    if not data:
+        return []
+    out: list[dict] = []
 
-    def _probe():
-        import pythoncom  # noqa: PLC0415 -- Windows COM, lazy
-        import wmi  # noqa: PLC0415 -- lazy: optional, Windows-only
-
-        pythoncom.CoInitialize()
-        conn = wmi.WMI(namespace="root\\LibreHardwareMonitor")
-        # .Sensor() enumerates published sensors; a live LHM returns >= 1.
-        return bool(conn.Sensor())
+    # Depth cap: the tree comes over HTTP from a process we don't control, so a
+    # corrupt/adversarial deeply-nested payload must not RecursionError out (the
+    # real LHM tree is ~4-5 levels; 64 is comfortable headroom).
+    def _walk(node: dict, depth: int = 0) -> None:
+        if depth > 64 or not isinstance(node, dict):
+            return
+        if node.get("Type") == "Temperature":
+            name = node.get("Text", "Sensor")
+            # Skip "Distance to TjMax" sensors: LHM types them as Temperature
+            # but the value is thermal HEADROOM (°C below throttle), not the
+            # core temperature -- including them doubles the per-core grid and
+            # poisons the hottest-CPU-sensor gauge with a ~66°C idle reading.
+            if "distance to tjmax" not in name.lower():
+                tc = _parse_temp_value(node.get("Value", ""))
+                if tc is not None:
+                    out.append(
+                        {
+                            "Name": name,
+                            "TempC": tc,
+                            "Source": "LibreHardwareMonitor",
+                            "SensorId": node.get("SensorId", ""),
+                        }
+                    )
+        for child in node.get("Children", []) or []:
+            _walk(child, depth + 1)
 
     try:
-        from windesktopmgr import bounded_wmi_query  # noqa: PLC0415 -- lazy: breaks import cycle
+        _walk(data)
+    except Exception:  # noqa: BLE001 -- malformed tree must never break callers
+        return []
+    return out
 
-        return bool(bounded_wmi_query(_probe, timeout_s=IS_RUNNING_TIMEOUT_S, fallback=False, label="lhm is_running"))
-    except Exception:  # noqa: BLE001 -- namespace absent / not Windows / wdm import -> not running
-        return False
+
+def is_running() -> bool:
+    """True when LHM's HTTP server answers with at least one sensor reading
+    (i.e. LHM is actively running with the web server on). Never raises."""
+    return bool(get_lhm_temps())
 
 
 def lhm_status() -> dict:
@@ -229,12 +321,8 @@ def install_lhm() -> dict:
     if not is_installed():
         return {"ok": False, "error": "extract completed but executable not found"}
 
-    # ── Seed start-minimised-to-tray config (best effort) ──
-    try:
-        with open(os.path.join(INSTALL_DIR, "LibreHardwareMonitor.config"), "w", encoding="utf-8") as fh:
-            fh.write(_TRAY_CONFIG)
-    except OSError:
-        pass  # non-fatal: LHM just opens a window the first time
+    # ── Seed config (start-minimised-to-tray + web server on) ──
+    _ensure_config()
 
     return {"ok": True, "exe": exe_path(), "version": LHM_VERSION, "install_dir": INSTALL_DIR}
 
@@ -251,6 +339,10 @@ def launch_lhm_elevated() -> dict:
     exe = exe_path()
     if not os.path.isfile(exe):
         return {"ok": False, "error": "LibreHardwareMonitor is not installed yet"}
+
+    # Re-apply the config so an install predating the web-server requirement is
+    # migrated -- without runWebServerMenuItem the app gets no data from LHM.
+    _ensure_config()
 
     try:
         import ctypes  # noqa: PLC0415 -- Windows-only

@@ -1196,9 +1196,15 @@ class TestGetThermals:
         _wmi_obj(SensorType="Load", Name="CPU Total", Value=12.5),  # filtered out
     ]
 
-    def _make_mock(self, mocker, zones=None, lhm=None, fans=None, cpu_pct=12.5):
-        """Mock the WMI namespaces + psutil + pythoncom for get_thermals()."""
+    def _make_mock(self, mocker, zones=None, lhm=None, fans=None, cpu_pct=12.5, web_temps=None):
+        """Mock the WMI namespaces + psutil + pythoncom for get_thermals().
+
+        Also mocks the LHM HTTP web-server read (lhm.get_lhm_temps) -- by
+        default to []. Without this the tests would hit a real LHM running on
+        the dev box. Pass web_temps to exercise the merge.
+        """
         mocker.patch("windesktopmgr.pythoncom.CoInitialize")
+        mocker.patch("lhm.get_lhm_temps", return_value=web_temps if web_temps is not None else [])
         wmi_mock = _mock_wmi_by_namespace(
             mocker,
             {
@@ -1213,6 +1219,31 @@ class TestGetThermals:
         mocker.patch("windesktopmgr.psutil.virtual_memory", return_value=vm)
         mocker.patch("windesktopmgr.psutil.sensors_battery", return_value=None)
         return wmi_mock
+
+    def test_web_server_temps_merged_and_supersede_wmi_zone(self, mocker):
+        """LHM's HTTP per-core temps merge in; the coarse WMI thermal zone is
+        dropped so it isn't duplicated alongside the rich data."""
+        web = [
+            {
+                "Name": "P-Core #1",
+                "TempC": 34.0,
+                "Source": "LibreHardwareMonitor",
+                "SensorId": "/intelcpu/0/temperature/2",
+            },
+            {
+                "Name": "Core Max",
+                "TempC": 38.0,
+                "Source": "LibreHardwareMonitor",
+                "SensorId": "/intelcpu/0/temperature/0",
+            },
+        ]
+        self._make_mock(mocker, zones=list(self.ZONE_OBJS), lhm=[], web_temps=web)
+        result = wdm.get_thermals()
+        names = {t["Name"] for t in result["temps"]}
+        assert "P-Core #1" in names and "Core Max" in names
+        assert result["has_rich"] is True
+        # The bare WMI thermal zone is superseded by the rich LHM data.
+        assert not any(t.get("Source") == "WMI_ThermalZone" for t in result["temps"])
 
     def test_happy_path_keys(self, mocker):
         self._make_mock(mocker)
@@ -1263,6 +1294,7 @@ class TestGetThermals:
         isolated behind bounded_wmi_query, so a WMI fault no longer discards
         the CPU/RAM telemetry the way the old early-return did."""
         mocker.patch("windesktopmgr.pythoncom.CoInitialize", side_effect=RuntimeError("COM init failed"))
+        mocker.patch("lhm.get_lhm_temps", return_value=[])  # don't hit a real LHM on the dev box
         result = wdm.get_thermals()
         assert result["temps"] == []
         assert result["fans"] == []

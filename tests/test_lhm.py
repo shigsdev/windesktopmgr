@@ -1,8 +1,9 @@
 """tests/test_lhm.py — LibreHardwareMonitor in-app installer (lhm.py).
 
-Covers the download/verify/extract pipeline, the WMI-namespace "is running"
-probe, the zip-slip guard, the URL allow-list, and the elevated UAC launch.
-Everything is mocked — no real network, no real subprocess, no real WMI.
+Covers the download/verify/extract pipeline, the HTTP web-server sensor read
+(LHM has NO WMI provider), the "is running" probe, the zip-slip guard, the URL
+allow-list, the elevated UAC launch, and the auto-start task. Everything is
+mocked — no real network, no real subprocess.
 """
 
 from __future__ import annotations
@@ -102,35 +103,13 @@ class TestStatus:
         mocker.patch("lhm.os.path.isfile", return_value=False)
         assert lhm.is_installed() is False
 
-    def test_is_running_true_when_namespace_has_sensors(self, mocker):
-        fake_conn = mocker.Mock()
-        fake_conn.Sensor.return_value = [object(), object()]
-        mocker.patch("wmi.WMI", return_value=fake_conn)
+    def test_is_running_true_when_web_server_has_temps(self, mocker):
+        mocker.patch.object(lhm, "get_lhm_temps", return_value=[{"Name": "Core Max", "TempC": 38.0}])
         assert lhm.is_running() is True
 
-    def test_is_running_false_when_namespace_absent(self, mocker):
-        mocker.patch("wmi.WMI", side_effect=Exception("namespace not found"))
+    def test_is_running_false_when_no_temps(self, mocker):
+        mocker.patch.object(lhm, "get_lhm_temps", return_value=[])
         assert lhm.is_running() is False
-
-    def test_is_running_false_when_no_sensors(self, mocker):
-        fake_conn = mocker.Mock()
-        fake_conn.Sensor.return_value = []
-        mocker.patch("wmi.WMI", return_value=fake_conn)
-        assert lhm.is_running() is False
-
-    def test_is_running_bounded_returns_false_on_timeout(self, mocker):
-        """A wedged Winmgmt must NOT hang the Thermals status route -- the probe
-        is bounded via bounded_wmi_query and degrades to False on timeout."""
-        import time
-
-        # Tiny bound + a WMI call that sleeps past it -> the bounded helper
-        # abandons the probe and returns the False fallback, fast.
-        mocker.patch.object(lhm, "IS_RUNNING_TIMEOUT_S", 0.2)
-        mocker.patch("pythoncom.CoInitialize", return_value=None)
-        mocker.patch("wmi.WMI", side_effect=lambda *a, **k: time.sleep(3))
-        start = time.monotonic()
-        assert lhm.is_running() is False
-        assert time.monotonic() - start < 2.0, "is_running did not honour its timeout bound"
 
     def test_lhm_status_shape(self, mocker):
         mocker.patch("lhm.is_installed", return_value=True)
@@ -141,6 +120,144 @@ class TestStatus:
         assert st["version"] == lhm.LHM_VERSION
         assert st["exe"].endswith("LibreHardwareMonitor.exe")
         assert "install_dir" in st
+
+
+# ── LHM web server read (the real data path; LHM has no WMI provider) ──────
+
+
+_LHM_TREE = {
+    "Text": "Sensor",
+    "Children": [
+        {
+            "Text": "Intel Core i9-14900K",
+            "Children": [
+                {
+                    "Text": "Temperatures",
+                    "Children": [
+                        {
+                            "Text": "Core Max",
+                            "Value": "38.0 °C",
+                            "Type": "Temperature",
+                            "SensorId": "/intelcpu/0/temperature/0",
+                        },
+                        {
+                            "Text": "P-Core #1",
+                            "Value": "34.0 °C",
+                            "Type": "Temperature",
+                            "SensorId": "/intelcpu/0/temperature/2",
+                        },
+                        # Distance-to-TjMax is typed Temperature but is HEADROOM, not a temp -> excluded.
+                        {
+                            "Text": "Core #1 Distance to TjMax",
+                            "Value": "66.0 °C",
+                            "Type": "Temperature",
+                            "SensorId": "/intelcpu/0/temperature/9",
+                        },
+                        # Non-temperature sensor -> ignored.
+                        {"Text": "Bus Speed", "Value": "100.0 MHz", "Type": "Clock", "SensorId": "/intelcpu/0/clock/0"},
+                    ],
+                }
+            ],
+        },
+        {
+            "Text": "NVIDIA RTX 4060 Ti",
+            "Children": [
+                {
+                    "Text": "GPU Core",
+                    "Value": "47.0 °C",
+                    "Type": "Temperature",
+                    "SensorId": "/gpu-nvidia/0/temperature/0",
+                },
+            ],
+        },
+    ],
+}
+
+
+def _resp(payload, ok=True):
+    r = type("R", (), {})()
+    r.json = lambda: payload
+    r.raise_for_status = (lambda: None) if ok else (lambda: (_ for _ in ()).throw(RuntimeError("404")))
+    return r
+
+
+class TestParseTempValue:
+    def test_celsius_string(self):
+        assert lhm._parse_temp_value("38.0 °C") == 38.0
+
+    def test_comma_decimal(self):
+        assert lhm._parse_temp_value("38,5 °C") == 38.5
+
+    def test_negative(self):
+        assert lhm._parse_temp_value("-5.0 °C") == -5.0
+
+    def test_garbage_returns_none(self):
+        assert lhm._parse_temp_value("n/a") is None
+
+    def test_empty_returns_none(self):
+        assert lhm._parse_temp_value("") is None
+
+
+class TestGetLhmTemps:
+    def test_parses_tree_excludes_distance_and_nontemp(self, mocker):
+        mocker.patch("requests.get", return_value=_resp(_LHM_TREE))
+        temps = lhm.get_lhm_temps()
+        names = {t["Name"] for t in temps}
+        assert names == {"Core Max", "P-Core #1", "GPU Core"}  # distance + Clock excluded
+        assert all(t["Source"] == "LibreHardwareMonitor" for t in temps)
+        core = next(t for t in temps if t["Name"] == "P-Core #1")
+        assert core["TempC"] == 34.0
+        assert core["SensorId"] == "/intelcpu/0/temperature/2"
+
+    def test_empty_when_server_down(self, mocker):
+        mocker.patch("requests.get", side_effect=OSError("connection refused"))
+        assert lhm.get_lhm_temps() == []
+
+    def test_empty_on_timeout(self, mocker):
+        import requests
+
+        mocker.patch("requests.get", side_effect=requests.exceptions.Timeout())
+        assert lhm.get_lhm_temps() == []
+
+    def test_deeply_nested_payload_does_not_crash(self, mocker):
+        # A pathological deep Children chain must not RecursionError into the
+        # /api/thermals/lhm/status route -- the depth cap returns what it has.
+        node = {"Text": "leaf", "Value": "40.0 °C", "Type": "Temperature"}
+        for _ in range(5000):
+            node = {"Text": "n", "Children": [node]}
+        mocker.patch("requests.get", return_value=_resp(node))
+        assert lhm.get_lhm_temps() == []  # leaf is past the depth cap -> ignored, no crash
+
+    def test_ensure_config_preserves_already_configured_file(self, mocker, tmp_path):
+        """_ensure_config must NOT clobber a config that already enables the web
+        server (it would destroy settings the user changed in LHM's own UI)."""
+        mocker.patch.object(lhm, "INSTALL_DIR", str(tmp_path))
+        cfg = tmp_path / "LibreHardwareMonitor.config"
+        custom = (
+            '<?xml version="1.0"?><configuration><appSettings>'
+            '<add key="runWebServerMenuItem" value="true" />'
+            f'<add key="ListenerPort" value="{lhm.LHM_WEB_PORT}" />'
+            '<add key="userColorTheme" value="dark" /></appSettings></configuration>'
+        )
+        cfg.write_text(custom, encoding="utf-8")
+        lhm._ensure_config()
+        assert cfg.read_text(encoding="utf-8") == custom  # untouched
+
+    def test_ensure_config_migrates_old_install(self, mocker, tmp_path):
+        mocker.patch.object(lhm, "INSTALL_DIR", str(tmp_path))
+        cfg = tmp_path / "LibreHardwareMonitor.config"
+        cfg.write_text("<configuration><appSettings></appSettings></configuration>", encoding="utf-8")
+        lhm._ensure_config()
+        written = cfg.read_text(encoding="utf-8")
+        assert 'key="runWebServerMenuItem" value="true"' in written
+
+    def test_empty_on_http_error(self, mocker):
+        mocker.patch("requests.get", return_value=_resp({}, ok=False))
+        assert lhm.get_lhm_temps() == []
+
+    def test_empty_on_nonlist_json(self, mocker):
+        mocker.patch("requests.get", return_value=_resp([1, 2, 3]))  # not a dict tree
+        assert lhm.get_lhm_temps() == []
 
 
 # ── install_lhm ────────────────────────────────────────────────────────────

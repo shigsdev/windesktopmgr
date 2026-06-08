@@ -1780,7 +1780,7 @@ class TestBuildGauges:
             {
                 "thermals": {
                     "perf": {"CPUPct": 22.5, "MemUsedMB": 16000, "MemTotalMB": 32000},
-                    "temps": [{"Name": "CPU", "TempC": 55.0}, {"Name": "zone", "TempC": 61.0}],
+                    "temps": [{"Name": "CPU Package", "TempC": 55.0}, {"Name": "zone", "TempC": 61.0}],
                 },
                 "gpu": {
                     "available": True,
@@ -1792,7 +1792,8 @@ class TestBuildGauges:
             }
         )
         assert g["cpu_load"]["value"] == 22.5
-        assert g["cpu_temp"]["value"] == 61.0  # hottest sensor
+        # CPU-named sensor is preferred over the hotter ambiguous "zone".
+        assert g["cpu_temp"]["value"] == 55.0
         assert g["gpu_temp"]["value"] == 48
         assert g["gpu_util"]["value"] == 36
         assert g["gpu_util"]["sub"] == "2.0 GB VRAM"
@@ -1808,6 +1809,34 @@ class TestBuildGauges:
         g = self._by_key({"thermals": {"perf": {}, "temps": []}, "gpu": {"available": False}})
         assert g["gpu_temp"]["value"] is None and g["gpu_temp"]["sub"] == "no GPU"
         assert g["gpu_util"]["value"] is None and g["gpu_util"]["sub"] == "no GPU"
+
+    def test_cpu_temp_prefers_cpu_sensor_over_hotter_gpu(self):
+        """With LHM merged in, `temps` carries GPU/storage sensors too. The CPU
+        temp gauge must pick the hottest CPU sensor (by SensorId), not a hotter
+        GPU/NVMe reading."""
+        g = self._by_key(
+            {
+                "thermals": {
+                    "perf": {},
+                    "temps": [
+                        {"Name": "Core Max", "TempC": 42.0, "SensorId": "/intelcpu/0/temperature/0"},
+                        {"Name": "P-Core #1", "TempC": 40.0, "SensorId": "/intelcpu/0/temperature/2"},
+                        {"Name": "GPU Hot Spot", "TempC": 71.0, "SensorId": "/gpu-nvidia/0/temperature/1"},
+                        {"Name": "Drive Temp", "TempC": 55.0, "SensorId": "/nvme/0/temperature/0"},
+                    ],
+                },
+                "gpu": {"available": False},
+            }
+        )
+        assert g["cpu_temp"]["value"] == 42.0  # hottest CPU sensor, not the 71° GPU
+
+    def test_cpu_temp_falls_back_to_any_sensor_without_ids(self):
+        """A bare WMI thermal zone (no SensorId, no CPU-ish name) still yields a
+        reading via the all-sensor fallback."""
+        g = self._by_key(
+            {"thermals": {"perf": {}, "temps": [{"Name": "Thermal Zone", "TempC": 48.0}]}, "gpu": {"available": False}}
+        )
+        assert g["cpu_temp"]["value"] == 48.0
 
     def test_collector_error_dicts_dont_crash(self):
         g = self._by_key({"thermals": {"error": "boom"}, "gpu": {"error": "boom"}})
