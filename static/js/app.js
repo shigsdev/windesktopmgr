@@ -1757,6 +1757,7 @@ function togglePrAutoRefresh() {
 // ══════════════════════════════════════════════════════════════════════════
 let _thermalsData = null;
 let _thAutoTimer  = null;
+let _lhmStatus    = null;
 
 async function loadThermals() {
   try {
@@ -1765,6 +1766,10 @@ async function loadThermals() {
     document.getElementById("th-content").style.display = "none";
     const r = await fetch("/api/thermals/data");
     _thermalsData = await r.json();
+    // LHM installer status drives the per-core CTA button (best effort —
+    // the CTA still renders its copy if this fetch fails).
+    try { _lhmStatus = await (await fetch("/api/thermals/lhm/status")).json(); }
+    catch(_e) { _lhmStatus = null; }
     renderThermals();
     fetchSummary("thermals", _thermalsData, "summary-thermals");
   } catch(e) {
@@ -1840,7 +1845,8 @@ function renderThermals() {
     const body = mk("th-cta-body");
     body.appendChild(mk("th-cta-title", "Per-core CPU temperatures need LibreHardwareMonitor"));
     body.appendChild(mk("th-cta-sub", d.note ||
-      "Install LibreHardwareMonitor and run it once as Administrator to register its WMI provider — the per-core grid and the CPU-temp gauge populate automatically."));
+      "LibreHardwareMonitor publishes per-core CPU temperatures over WMI while it runs (as Administrator). Install it below and the per-core grid + CPU-temp gauge populate automatically — no leaving the app."));
+    thRenderLhmActions(body);
     cta.appendChild(body);
   }
 
@@ -1895,6 +1901,95 @@ function renderThermals() {
 
   document.getElementById("th-loading").style.display = "none";
   document.getElementById("th-content").style.display = "";
+}
+
+// ── LibreHardwareMonitor in-app installer (per-core CTA) ──────────────────
+// Built with DOM methods + textContent (no innerHTML). The button shown
+// depends on _lhmStatus: Install -> Launch-as-admin -> (running, gauges fill).
+function thRenderLhmActions(body) {
+  const st = _lhmStatus || {};
+  const row = document.createElement("div");
+  row.className = "th-cta-actions";
+  const status = document.createElement("div");
+  status.className = "th-cta-status";
+  if (st.running) {
+    status.textContent = "LibreHardwareMonitor is running — refresh to pull per-core temps.";
+    const btn = thMkCtaBtn("↺ Refresh now", () => loadThermals());
+    row.appendChild(btn);
+  } else if (st.installed) {
+    const btn = thMkCtaBtn("⚡ Launch as admin", (b) => thLaunchLhm(b));
+    row.appendChild(btn);
+    status.textContent = "Installed. Launch it (you'll approve a Windows admin prompt) to publish per-core sensors.";
+  } else {
+    const btn = thMkCtaBtn("⬇ Install LibreHardwareMonitor", (b) => thInstallLhm(b));
+    row.appendChild(btn);
+    status.textContent = "One click downloads the verified " + (st.version || "v0.9.6") +
+      " build (~6 MB, SHA256-checked) into your user folder. No admin needed to install.";
+  }
+  body.appendChild(row);
+  body.appendChild(status);
+}
+
+function thMkCtaBtn(label, onClick) {
+  const b = document.createElement("button");
+  b.className = "th-cta-btn";
+  b.type = "button";
+  b.textContent = label;
+  b.addEventListener("click", () => onClick(b));
+  return b;
+}
+
+function thCtaError(msg) {
+  const cta = document.getElementById("th-cores-cta");
+  let err = document.getElementById("th-cta-err");
+  if (!err) {
+    err = document.createElement("div");
+    err.id = "th-cta-err";
+    err.className = "th-cta-err";
+    cta.appendChild(err);
+  }
+  err.textContent = msg;
+}
+
+async function thInstallLhm(btn) {
+  btn.disabled = true;
+  btn.textContent = "Installing…";
+  try {
+    const d = await (await fetch("/api/thermals/lhm/install", {method: "POST"})).json();
+    if (d.ok) {
+      _lhmStatus = {installed: true, running: false, version: d.version};
+      renderThermals();        // re-render → now shows the Launch button
+    } else {
+      btn.disabled = false;
+      btn.textContent = "⬇ Install LibreHardwareMonitor";
+      thCtaError(d.error || "Install failed.");
+    }
+  } catch(e) {
+    btn.disabled = false;
+    btn.textContent = "⬇ Install LibreHardwareMonitor";
+    thCtaError("Install failed: " + e);
+  }
+}
+
+async function thLaunchLhm(btn) {
+  btn.disabled = true;
+  btn.textContent = "Launching (approve the admin prompt)…";
+  try {
+    const d = await (await fetch("/api/thermals/lhm/launch", {method: "POST"})).json();
+    if (d.ok) {
+      btn.textContent = "Launched — reading sensors…";
+      // Give LHM a few seconds to publish its WMI namespace, then reload.
+      setTimeout(loadThermals, 6000);
+    } else {
+      btn.disabled = false;
+      btn.textContent = "⚡ Launch as admin";
+      thCtaError(d.error || "Launch failed.");
+    }
+  } catch(e) {
+    btn.disabled = false;
+    btn.textContent = "⚡ Launch as admin";
+    thCtaError("Launch failed: " + e);
+  }
 }
 
 function toggleThAutoRefresh() {

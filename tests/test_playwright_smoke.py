@@ -890,6 +890,33 @@ class TestThermalsRedesign:
         else:
             assert state["ctaShown"], "no per-core sensors but the install CTA is hidden"
 
+    def test_install_cta_has_wired_action_button(self, loaded_page):
+        """When the per-core CTA shows, it carries a real LHM installer action
+        button (.th-cta-btn) whose label reflects the lhm/status state. Proves
+        the in-app installer is wired, not just descriptive copy."""
+        page, _ = loaded_page
+        self._goto(page)
+        # If LHM is already running on this box the CTA won't show -- skip then.
+        state = page.evaluate(
+            """() => {
+                const cta = document.getElementById('th-cores-cta');
+                const shown = !!cta && getComputedStyle(cta).display !== 'none';
+                const btn = cta && cta.querySelector('.th-cta-btn');
+                return {
+                    shown,
+                    label: btn ? btn.textContent.trim() : null,
+                    hasStatus: !!(cta && cta.querySelector('.th-cta-status')),
+                };
+            }"""
+        )
+        if not state["shown"]:
+            pytest.skip("LHM already running on this host -- CTA not shown")
+        assert state["label"], "install CTA shown but no .th-cta-btn action button"
+        assert any(w in state["label"] for w in ("Install", "Launch", "Refresh")), (
+            f"CTA button label {state['label']!r} doesn't match an installer action"
+        )
+        assert state["hasStatus"], "CTA action row missing its .th-cta-status line"
+
     def test_fan_cards_one_per_cooling_device(self, loaded_page):
         """One .th-fan card per fan from the API; active fans carry the
         spinning-blade class so the cooling state is visible at a glance."""

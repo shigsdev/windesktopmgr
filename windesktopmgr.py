@@ -35,6 +35,7 @@ from flask import Flask, jsonify, make_response, render_template, request, send_
 import bsod  # noqa: E402 -- import order intentional
 import codehealth  # noqa: E402 -- import order intentional
 import events  # noqa: E402 -- import order intentional
+import lhm
 import processes  # noqa: E402 -- import order intentional
 import sysinfo  # noqa: E402 -- import order intentional
 from applogging import get_logger
@@ -3397,6 +3398,29 @@ def thermals_data():
         data.setdefault("gauges", [])
         data.setdefault("gpu_available", False)
     return jsonify(data)
+
+
+# ── LibreHardwareMonitor in-app installer (Thermals CTA) ──────────────────
+# install -> verify -> extract (no admin); launch elevated via UAC so LHM can
+# read CPU-core temps and publish its WMI namespace -> the per-core grid and
+# CPU-temp gauge then populate. See lhm.py for the security model.
+
+
+@app.route("/api/thermals/lhm/status")
+def thermals_lhm_status():
+    return jsonify(lhm.lhm_status())
+
+
+@app.route("/api/thermals/lhm/install", methods=["POST"])
+def thermals_lhm_install():
+    result = lhm.install_lhm()
+    return jsonify(result), (200 if result.get("ok") else 502)
+
+
+@app.route("/api/thermals/lhm/launch", methods=["POST"])
+def thermals_lhm_launch():
+    result = lhm.launch_lhm_elevated()
+    return jsonify(result), (200 if result.get("ok") else 400)
 
 
 @app.route("/api/services/list")
