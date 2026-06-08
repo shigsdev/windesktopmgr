@@ -3608,32 +3608,35 @@ function renderGauges(el, gauges) {
     const col = colVar(g.kind, has ? g.value : null);
     const glow = glowOf[col] || "rgba(0,212,255,.28)";
 
-    const tile = mk("db-gauge");
+    const tile = mk("db-gauge" + (has ? "" : " dg-unavail"));
     tile.setAttribute("data-gauge-key", g.key || "");
     tile.setAttribute("data-gauge-value", has ? String(g.value) : "");
     tile.setAttribute("data-gauge-available", String(has));
-    tile.style.setProperty("--gcol", col);  // tile accent colour = the gauge's state colour
+    // The state colour drives the top accent (--gcol), the number, and the bar
+    // fill (--col) / its glow -- the whole tile reads its health at a glance.
+    tile.style.setProperty("--gcol", col);
+    tile.style.setProperty("--col", col);
+    tile.style.setProperty("--glow", glow);
     tile.appendChild(mk("dg-lbl", g.label || ""));
 
-    const ring = mk("dg-ring" + (has ? "" : " dg-unavail"));
-    ring.style.setProperty("--col", col);
-    ring.style.setProperty("--glow", glow);
-    // --sweep is registered @property{inherits:false} (so it animates smoothly),
-    // so it must live on the .dg-arc that READS it -- setting it on the ring left
-    // the arc at the initial 0 and every gauge rendered an empty/identical ring.
-    const arc = mk("dg-arc");
-    arc.style.setProperty("--sweep", sweep.toFixed(1));
-    ring.appendChild(arc);
-    const core = mk("dg-core");
     const num = mk("dg-num", has ? String(Math.round(g.value * 10) / 10) : "—");
     if (has && g.unit) {
       const em = document.createElement("em");
       em.textContent = g.unit;
       num.appendChild(em);
     }
-    core.appendChild(num);
-    ring.appendChild(core);
-    tile.appendChild(ring);
+    tile.appendChild(num);
+
+    // Horizontal bar: light track + colour fill (width = value %). Replaces the
+    // radial ring, whose unfilled circular remainder always read as a dark
+    // "pre-filled" section on the near-black card. --sweep is set on the FILL
+    // (it reads it; @property --sweep is inherits:false), not the tile.
+    const bar = mk("dg-bar");
+    const fill = mk("dg-fill");
+    fill.style.setProperty("--sweep", sweep.toFixed(1));
+    bar.appendChild(fill);
+    tile.appendChild(bar);
+
     tile.appendChild(mk("dg-sub", g.sub || ""));
     el.appendChild(tile);
   });
