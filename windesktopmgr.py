@@ -32,6 +32,7 @@ import win32serviceutil
 import wmi
 from flask import Flask, jsonify, make_response, render_template, request, send_from_directory
 
+import ai_identify as identify  # noqa: E402 -- import order intentional
 import bsod  # noqa: E402 -- import order intentional
 import codehealth  # noqa: E402 -- import order intentional
 import events  # noqa: E402 -- import order intentional
@@ -1429,6 +1430,22 @@ def _startup_lookup_worker():
                 exe_key_w = _extract_exe_from_command(command)
                 result = _lookup_startup_via_web(exe_key_w, name)
 
+            # Global rule: AI identifier before the "no description" punt.
+            if not result:
+                ai = identify.identify_via_ai("startup", name, context=command)
+                if ai:
+                    result = {
+                        "source": ai["source"],
+                        "plain_name": ai.get("plain", name),
+                        "publisher": "Identified by AI",
+                        "what": ai["what"],
+                        "impact": "unknown",
+                        "safe_to_disable": ai.get("safe_kill") if ai.get("safe_kill") is not None else True,
+                        "recommendation": "optional",
+                        "reason": "Identified by AI from the startup entry name.",
+                        "fetched": ai["fetched"],
+                    }
+
             # Final placeholder — should rarely reach here
             if not result:
                 result = {
@@ -2275,6 +2292,18 @@ def _services_lookup_worker():
                     continue
             print(f"[ServicesCache] Looking up: {svc_key}")
             result = _lookup_service_via_web(svc_key, display_name)
+            if not result:
+                # Global rule: AI identifier before the "no description" punt.
+                ai = identify.identify_via_ai("service", svc_key, context=display_name)
+                if ai:
+                    result = {
+                        "source": ai["source"],
+                        "plain": ai.get("plain", display_name),
+                        "what": ai["what"],
+                        "safe_stop": ai.get("safe_kill") if ai.get("safe_kill") is not None else True,
+                        "reason": "Identified by AI from the service name.",
+                        "fetched": ai["fetched"],
+                    }
             if not result:
                 result = {
                     "source": "unknown",
@@ -5023,6 +5052,10 @@ def start_server(open_browser: bool = True):  # pragma: no cover
         target=processes._process_lookup_worker, daemon=True, name="ProcessLookupWorker"
     )
     _process_worker_thread.start()
+    # Global AI identifier worker — resolves drivers / MAC vendors / BIOS / any
+    # entity routed through identify.identify() that local KBs can't name.
+    _identify_worker_thread = threading.Thread(target=identify._identify_worker, daemon=True, name="IdentifyWorker")
+    _identify_worker_thread.start()
 
     # Re-queue unknown or aged entries — workers will pick them up immediately
     ev_requeued = _requeue_stale_cache(events._event_cache, events._lookup_queue, events._lookup_in_flight, "Event")

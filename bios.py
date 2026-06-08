@@ -29,6 +29,8 @@ import shutil
 import subprocess
 from datetime import datetime, timezone
 
+import ai_identify as identify
+
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 BIOS_CACHE_FILE = os.path.join(APP_DIR, "bios_cache.json")
 
@@ -370,6 +372,14 @@ def get_bios_status() -> dict:
     current = get_current_bios()
     version = current.get("BIOSVersion", "")
     update = check_dell_bios_update(current.get("BoardProduct", ""), version)
+    # Global rule: if WMI couldn't report a BIOS version, auto-identify the
+    # firmware from the board model instead of leaving a bare "Unknown"
+    # (non-blocking; rarely fires — WMI almost always supplies the version).
+    if not version:
+        board = current.get("BoardProduct", "") or current.get("Manufacturer", "")
+        if board:
+            info = identify.identify("bios", board, context="motherboard BIOS/UEFI firmware")
+            current["firmware_note"] = info.get("what", "")
     return {"current": current, "update": update}
 
 

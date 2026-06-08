@@ -15,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 
 from flask import Flask, jsonify, render_template
 
+import ai_identify as identify
+
 app = Flask(__name__)
 
 # ─── Driver checker state ─────────────────────────────────────────────────────
@@ -265,6 +267,17 @@ def run_scan():
         mfr = drv.get("Manufacturer", "")
         category = categorize(name, dev_class)
 
+        # Global rule: an unnamed device gets auto-identified (non-blocking;
+        # AI fills the cache and the next scan shows the description). WMI
+        # almost always supplies DeviceName, so this rarely fires.
+        description = ""
+        if not name or name == "Unknown Device":
+            ctx = ", ".join(p for p in (mfr, dev_class) if p)
+            info = identify.identify("driver", name or (ctx or "unknown device"), context=ctx)
+            description = info.get("what", "")
+            if info.get("plain") and info["plain"] not in ("", name):
+                name = info["plain"]
+
         match = find_wu_match(name, wu_updates)
         status = "up_to_date"  # default: assume current if WU has no update
         latest_ver = None
@@ -281,6 +294,7 @@ def run_scan():
         results.append(
             {
                 "name": name,
+                "description": description,
                 "version": version,
                 "date": drv_date,
                 "category": category,

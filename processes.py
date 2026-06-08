@@ -37,6 +37,8 @@ from datetime import datetime, timedelta, timezone
 import psutil
 import win32api
 
+import ai_identify as identify
+
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -676,6 +678,39 @@ def _lookup_process_via_web(proc_name: str) -> dict | None:
     return None
 
 
+def _resolve_process(proc_name: str, path: str = "") -> dict:
+    """Resolve one unknown process: file version info -> Microsoft Learn web ->
+    AI identifier -> "no description" placeholder. Extracted from the worker
+    loop so the lookup chain (incl. the AI fallback) is unit-testable."""
+    result = _lookup_process_via_fileinfo(proc_name, path)
+    if not result:
+        result = _lookup_process_via_web(proc_name)
+    if not result:
+        # Global rule: before giving up, ask the AI identifier (cheap, cached).
+        # This is what resolves names Microsoft Learn misses (e.g. vmmem, the
+        # WSL2/Hyper-V VM memory process).
+        ai = identify.identify_via_ai("process", proc_name, context=path)
+        if ai:
+            result = {
+                "source": ai["source"],
+                "plain": ai.get("plain", proc_name),
+                "publisher": "Identified by AI",
+                "what": ai["what"],
+                "safe_kill": ai.get("safe_kill") if ai.get("safe_kill") is not None else True,
+                "fetched": ai["fetched"],
+            }
+    if not result:
+        result = {
+            "source": "unknown",
+            "plain": proc_name,
+            "publisher": "Unknown",
+            "what": "No description found. Search the process name online to identify it.",
+            "safe_kill": True,
+            "fetched": datetime.now(timezone.utc).isoformat(),
+        }
+    return result
+
+
 def _process_lookup_worker():
     """Background thread — enriches unknown processes."""
     while True:
@@ -693,18 +728,7 @@ def _process_lookup_worker():
                     _process_queue.task_done()
                     continue
             print(f"[ProcessCache] Looking up: {proc_name}")
-            result = _lookup_process_via_fileinfo(proc_name, path)
-            if not result:
-                result = _lookup_process_via_web(proc_name)
-            if not result:
-                result = {
-                    "source": "unknown",
-                    "plain": proc_name,
-                    "publisher": "Unknown",
-                    "what": "No description found. Search the process name online to identify it.",
-                    "safe_kill": True,
-                    "fetched": datetime.now(timezone.utc).isoformat(),
-                }
+            result = _resolve_process(proc_name, path)
             with _process_cache_lock:
                 _process_cache[key] = result
             _save_process_cache()
