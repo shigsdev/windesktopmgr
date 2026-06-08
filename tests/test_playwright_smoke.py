@@ -796,6 +796,40 @@ class TestDashboardGauges:
                     f"available gauge {g['key']} should show a numeric reading, got {g['num']!r}"
                 )
 
+    def test_gauge_arc_fill_tracks_value(self, loaded_page):
+        """Regression: --sweep must reach the .dg-arc that READS it. It's a
+        registered @property{inherits:false}, and it was set on the parent ring,
+        so the arc stayed at the initial 0 and every gauge rendered an identical
+        empty ring ('usage differs but the chart space is the same'). The arc
+        fill must now reflect each gauge's value, and tiles carry a state accent."""
+        page, _ = loaded_page
+        self._wait_gauges(page)
+        info = page.evaluate(
+            """() => Array.from(document.querySelectorAll('#db-gauges .db-gauge')).map(g => {
+                const arc = g.querySelector('.dg-arc');
+                return {
+                    key: g.dataset.gaugeKey,
+                    available: g.dataset.gaugeAvailable,
+                    value: g.dataset.gaugeValue,
+                    sweep: arc ? parseFloat(arc.style.getPropertyValue('--sweep')) : null,
+                    accent: getComputedStyle(g).borderTopColor,
+                };
+            })"""
+        )
+        avail = [g for g in info if g["available"] == "true" and g["value"]]
+        assert avail, "no available gauges to check"
+        # Each available gauge's arc fill must reflect a non-zero value...
+        for g in avail:
+            assert g["sweep"] and g["sweep"] > 0, f"gauge {g['key']} arc not filled (sweep={g['sweep']})"
+        # ...and the fills must actually DIFFER (the bug made them all identical).
+        assert len({round(g["sweep"], 1) for g in avail}) > 1, (
+            f"every gauge arc renders the same fill: {[g['sweep'] for g in avail]}"
+        )
+        # Tile accent is a real state colour, not a transparent default.
+        assert all(g["accent"] and "0, 0, 0, 0" not in g["accent"] for g in avail), (
+            f"gauge tiles missing the state-colour accent: {[g['accent'] for g in avail]}"
+        )
+
 
 # ── Thermals tab redesign (PR4) ────────────────────────────────────
 
