@@ -1041,6 +1041,14 @@ class TestThermalsDataRoute:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+class TestIdentifyStatusRoute:
+    def test_returns_queue_depth(self, client, mocker):
+        mocker.patch("windesktopmgr.identify.identify_status", return_value={"queue_pending": 2, "in_flight": 1})
+        resp = client.get("/api/identify/status")
+        assert resp.status_code == 200
+        assert resp.get_json() == {"queue_pending": 2, "in_flight": 1}
+
+
 class TestLhmInstallerRoutes:
     def test_status_returns_state(self, client, mocker):
         mocker.patch(

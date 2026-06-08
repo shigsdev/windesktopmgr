@@ -3429,6 +3429,13 @@ def thermals_data():
     return jsonify(data)
 
 
+@app.route("/api/identify/status")
+def identify_status_route():
+    # Background-lookup queue depth for the AI identifier -- consumed by the
+    # post_restart_check drain-wait so its CPU sample reflects an idle tray.
+    return jsonify(identify.identify_status())
+
+
 # ── LibreHardwareMonitor in-app installer (Thermals CTA) ──────────────────
 # install -> verify -> extract (no admin); launch elevated via UAC so LHM can
 # read CPU-core temps and publish its WMI namespace -> the per-core grid and
