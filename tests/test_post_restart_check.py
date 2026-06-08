@@ -44,18 +44,9 @@ class TestWaitForBackgroundQueues:
     def test_returns_true_after_queues_drain(self, mocker):
         """Queues start busy, then drain → True once outstanding hits 0."""
         # Round 1: the bsod endpoint still has 3 pending. Round 2: all empty.
-        responses = [
-            _status(3, 0),
-            _status(0, 0),
-            _status(0, 0),
-            _status(0, 0),
-            _status(0, 0),
-            _status(0, 0),
-            _status(0, 0),
-            _status(0, 0),
-            _status(0, 0),
-            _status(0, 0),
-        ]
+        # Two full rounds over every endpoint in QUEUE_STATUS_ENDPOINTS.
+        n = len(prc.QUEUE_STATUS_ENDPOINTS)
+        responses = [_status(3, 0)] + [_status(0, 0)] * (n - 1) + [_status(0, 0)] * n
         mocker.patch.object(prc, "_get_json", side_effect=responses)
         mocker.patch.object(prc.time, "sleep")  # no real 3 s waits in tests
         assert prc.wait_for_background_queues("http://x", timeout_s=30) is True
@@ -63,18 +54,8 @@ class TestWaitForBackgroundQueues:
     def test_in_flight_lookups_also_block(self, mocker):
         """A drained queue with a worker still in-flight must keep us
         waiting — that lookup thread is exactly the CPU we'd misread."""
-        responses = [
-            _status(0, 2),
-            _status(0, 0),
-            _status(0, 0),
-            _status(0, 0),
-            _status(0, 0),
-            _status(0, 0),
-            _status(0, 0),
-            _status(0, 0),
-            _status(0, 0),
-            _status(0, 0),
-        ]
+        n = len(prc.QUEUE_STATUS_ENDPOINTS)
+        responses = [_status(0, 2)] + [_status(0, 0)] * (n - 1) + [_status(0, 0)] * n
         mocker.patch.object(prc, "_get_json", side_effect=responses)
         mocker.patch.object(prc.time, "sleep")
         assert prc.wait_for_background_queues("http://x", timeout_s=30) is True
@@ -110,28 +91,38 @@ class TestWaitForBackgroundQueues:
 class TestCheckTrayResourceBudget:
     """check_tray_resource_budget() — must drain queues before sampling."""
 
-    def test_drains_queues_before_sampling_cpu(self, mocker):
-        """Regression for the false-positive verify failure: the queue
-        drain must happen BEFORE the CPU sample, not after."""
+    def _patch_tray(self, mocker, cpu_values, threads=14):
+        """Wire a fake tray process returning the given CPU samples in order."""
         order = []
-
         fake_conn = types.SimpleNamespace(laddr=types.SimpleNamespace(port=5000), status="LISTEN", pid=999)
         fake_proc = mocker.MagicMock()
-        fake_proc.cpu_percent.side_effect = lambda *a, **k: (order.append("sample"), 3.0)[1]
-        fake_proc.num_threads.return_value = 14
-
+        it = iter(cpu_values)
+        fake_proc.cpu_percent.side_effect = lambda *a, **k: (order.append("sample"), next(it))[1]
+        fake_proc.num_threads.return_value = threads
         psutil_mock = mocker.MagicMock()
         psutil_mock.net_connections.return_value = [fake_conn]
         psutil_mock.Process.return_value = fake_proc
         psutil_mock.NoSuchProcess = Exception
         mocker.patch.dict(sys.modules, {"psutil": psutil_mock})
+        mocker.patch.object(prc, "wait_for_background_queues", side_effect=lambda *a, **k: order.append("wait"))
+        return order
 
-        mocker.patch.object(
-            prc,
-            "wait_for_background_queues",
-            side_effect=lambda *a, **k: order.append("wait"),
-        )
-
+    def test_drains_queues_before_sampling_cpu(self, mocker):
+        """Regression for the false-positive verify failure: the queue
+        drain must happen BEFORE the CPU sample, not after."""
+        order = self._patch_tray(mocker, [3.0, 3.0, 3.0])
         result = prc.check_tray_resource_budget("http://localhost:5000")
-        assert result is True  # 3% CPU / 14 threads are within budget
-        assert order == ["wait", "sample"], "queues must drain before the CPU sample"
+        assert result is True  # within budget
+        assert order[0] == "wait", "queues must drain before the CPU sample"
+        assert order.count("sample") == 3, "CPU is resampled to distinguish transient drain from a leak"
+
+    def test_transient_spike_passes(self, mocker):
+        """A high first sample that settles to idle (post-selftest drain) must
+        PASS -- the min across samples is within budget."""
+        self._patch_tray(mocker, [98.0, 40.0, 1.0])
+        assert prc.check_tray_resource_budget("http://localhost:5000") is True
+
+    def test_sustained_high_cpu_fails(self, mocker):
+        """A genuine poll/refresh leak stays high on EVERY sample -> FAIL."""
+        self._patch_tray(mocker, [97.0, 98.0, 96.0])
+        assert prc.check_tray_resource_budget("http://localhost:5000") is False

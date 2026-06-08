@@ -21,6 +21,7 @@ def _reset_identify_state(tmp_path, monkeypatch):
     monkeypatch.setattr(identify, "_cache", {})
     monkeypatch.setattr(identify, "_in_flight", set())
     monkeypatch.setattr(identify, "_ai_calls", 0)
+    monkeypatch.setattr(identify, "_client", None)  # don't leak a cached fake client
     # Fresh queue so enqueue assertions are clean.
     import queue
 
@@ -142,8 +143,10 @@ class TestIdentifyViaAi:
         for _ in range(5):
             assert identify.identify_via_ai("process", "boom") is None
         assert identify._ai_calls == 0, "failed calls must not consume cap quota"
-        # ...the budget is intact, so a recovered API still resolves.
+        # ...the budget is intact, so a recovered API still resolves. Reset the
+        # cached client so _get_client rebuilds against the recovered fake.
         monkeypatch.setattr(identify, "anthropic", _fake_anthropic(json.dumps({"plain": "X", "what": "y"})))
+        monkeypatch.setattr(identify, "_client", None)
         assert identify.identify_via_ai("process", "ok") is not None
 
     def test_unparseable_reply_returns_cap_slot(self, monkeypatch):
@@ -185,6 +188,14 @@ class TestIdentifyNonBlocking:
         assert identify.get_cached("bios", "x") is None
         identify._cache[identify._cache_key("bios", "x")] = {"what": "y"}
         assert identify.get_cached("bios", "x") == {"what": "y"}
+
+    def test_identify_status_reports_queue_depth(self):
+        st = identify.identify_status()
+        assert st == {"queue_pending": 0, "in_flight": 0}
+        identify.identify("driver", "pending-one")
+        st2 = identify.identify_status()
+        assert st2["queue_pending"] == 1
+        assert st2["in_flight"] == 1
 
 
 # ── _resolve_one (worker core) ──────────────────────────────────────────────

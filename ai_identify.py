@@ -71,6 +71,20 @@ _queue: queue.Queue = queue.Queue()
 _in_flight: set = set()
 _ai_calls = 0
 _ai_calls_lock = threading.Lock()
+# One shared Anthropic client, lazily built and reused across the (concurrent)
+# enrichment workers so the post-restart lookup burst pools its TLS connections
+# instead of paying a fresh handshake per call -- which spiked tray CPU during
+# the queue drain. anthropic.Anthropic is safe for concurrent use.
+_client = None
+_client_lock = threading.Lock()
+
+
+def _get_client(api_key: str):
+    global _client
+    with _client_lock:
+        if _client is None:
+            _client = anthropic.Anthropic(api_key=api_key, timeout=IDENTIFY_TIMEOUT_S)
+        return _client
 
 
 def _cache_key(entity_type: str, key: str) -> str:
@@ -163,7 +177,7 @@ def identify_via_ai(entity_type: str, key: str, context: str = "") -> dict | Non
         "If you do not recognise it, set plain to the name and say so in 'what'."
     )
     try:
-        client = anthropic.Anthropic(api_key=api_key, timeout=IDENTIFY_TIMEOUT_S)
+        client = _get_client(api_key)
         resp = client.messages.create(
             model=IDENTIFY_MODEL,
             max_tokens=300,
@@ -195,6 +209,15 @@ def get_cached(entity_type: str, key: str) -> dict | None:
     """Return the resolved cache entry for an entity, or ``None`` if not cached."""
     with _cache_lock:
         return _cache.get(_cache_key(entity_type, key))
+
+
+def identify_status() -> dict:
+    """Background-queue depth for the verify gate's drain-wait. The AI identify
+    queue is background work just like the process/event lookups, so the
+    post-restart CPU-budget sampler must wait for it to drain too."""
+    with _cache_lock:
+        in_flight = len(_in_flight)
+    return {"queue_pending": _queue.qsize(), "in_flight": in_flight}
 
 
 def identify(entity_type: str, key: str, context: str = "", display: str = "") -> dict:
