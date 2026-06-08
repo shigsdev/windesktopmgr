@@ -148,6 +148,10 @@ IDLE_RATE_THRESHOLD = 2.0  # req/s to /api/scan/status while scan is idle
 IDLE_SAMPLE_WINDOW_S = 3.0  # how long to sample
 CPU_THRESHOLD_PCT = 25.0  # sustained CPU% on the tray pythonw
 THREAD_THRESHOLD = 60  # thread count on the tray pythonw
+# How long to keep sampling for the tray to reach idle before declaring a
+# sustained CPU leak. Must outlast the longest legitimate transient burst --
+# the cold post-restart dashboard fan-out + AI-identifier drain (~10-20 s).
+IDLE_CONFIRM_TIMEOUT_S = 40
 
 # Background-lookup status endpoints. The selftest that runs just before the
 # CPU-budget check exercises every tab, flooding these queues with stop-code,
@@ -291,15 +295,21 @@ def check_tray_resource_budget(host: str) -> bool:
     # the CPU sample below reflects an idle tray rather than queue-drain work.
     wait_for_background_queues(host)
 
-    # Sample CPU a few times. A genuine poll/refresh leak is SUSTAINED, whereas
-    # residual post-selftest background work (enrichment + AI identify lookups +
-    # a dashboard fan-out the selftest kicked off) is transient and settles to
-    # idle within seconds. Take the MINIMUM across samples: if the tray reached
-    # idle at any point in the window it isn't leaking, so only a sustained
-    # over-budget reading (every sample high) fails the gate.
+    # Sample CPU until the tray reaches idle, or give up after a timeout. A
+    # genuine poll/refresh leak is SUSTAINED -- CPU never drops below budget, so
+    # we time out and fail. Transient post-restart work (the AI-identifier drain
+    # + the dashboard-summary fan-out this check itself kicks off, which runs
+    # several seconds on a cold restart) settles, so the first idle sample
+    # proves the tray CAN idle and we pass. A fixed N-sample window was too
+    # short to outlast the cold dashboard fan-out; "wait for idle" is robust to
+    # however long the transient burst legitimately takes.
+    cpu = None
+    idle_deadline = time.time() + IDLE_CONFIRM_TIMEOUT_S
     try:
-        cpu_samples = [tray.cpu_percent(interval=2.0) for _ in range(3)]
-        cpu = min(cpu_samples)
+        while True:
+            cpu = tray.cpu_percent(interval=2.0)
+            if cpu <= CPU_THRESHOLD_PCT or time.time() >= idle_deadline:
+                break
         threads = tray.num_threads()
     except psutil.NoSuchProcess:
         print(f"  {YELLOW}skipped — tray process exited during sample{RESET}")
@@ -312,7 +322,7 @@ def check_tray_resource_budget(host: str) -> bool:
         f"  CPU: {cpu_color}{cpu:.1f}%{RESET} (budget {CPU_THRESHOLD_PCT}%)  threads: {thr_color}{threads}{RESET} (budget {THREAD_THRESHOLD})"
     )
     if cpu > CPU_THRESHOLD_PCT:
-        print(f"    {DIM}sustained CPU on idle tray — likely a poll/refresh leak{RESET}")
+        print(f"    {DIM}tray never reached idle within {IDLE_CONFIRM_TIMEOUT_S}s — likely a poll/refresh leak{RESET}")
         ok = False
     if threads > THREAD_THRESHOLD:
         print(f"    {DIM}excessive Flask worker threads — check for request floods{RESET}")

@@ -97,7 +97,17 @@ class TestCheckTrayResourceBudget:
         fake_conn = types.SimpleNamespace(laddr=types.SimpleNamespace(port=5000), status="LISTEN", pid=999)
         fake_proc = mocker.MagicMock()
         it = iter(cpu_values)
-        fake_proc.cpu_percent.side_effect = lambda *a, **k: (order.append("sample"), next(it))[1]
+        last = [cpu_values[-1]]
+
+        def _cpu(*_a, **_k):
+            order.append("sample")
+            try:
+                last[0] = next(it)
+            except StopIteration:
+                pass  # exhausted -> keep returning the last value (sustained case)
+            return last[0]
+
+        fake_proc.cpu_percent.side_effect = _cpu
         fake_proc.num_threads.return_value = threads
         psutil_mock = mocker.MagicMock()
         psutil_mock.net_connections.return_value = [fake_conn]
@@ -110,19 +120,22 @@ class TestCheckTrayResourceBudget:
     def test_drains_queues_before_sampling_cpu(self, mocker):
         """Regression for the false-positive verify failure: the queue
         drain must happen BEFORE the CPU sample, not after."""
-        order = self._patch_tray(mocker, [3.0, 3.0, 3.0])
+        order = self._patch_tray(mocker, [3.0])
         result = prc.check_tray_resource_budget("http://localhost:5000")
-        assert result is True  # within budget
+        assert result is True  # within budget on the first idle sample
         assert order[0] == "wait", "queues must drain before the CPU sample"
-        assert order.count("sample") == 3, "CPU is resampled to distinguish transient drain from a leak"
+        assert "sample" in order
 
-    def test_transient_spike_passes(self, mocker):
-        """A high first sample that settles to idle (post-selftest drain) must
-        PASS -- the min across samples is within budget."""
-        self._patch_tray(mocker, [98.0, 40.0, 1.0])
+    def test_transient_spike_then_idle_passes(self, mocker):
+        """A high burst that settles to idle (cold dashboard fan-out / AI drain)
+        must PASS -- we keep sampling until the tray reaches idle."""
+        self._patch_tray(mocker, [98.0, 90.0, 40.0, 2.0])
         assert prc.check_tray_resource_budget("http://localhost:5000") is True
 
-    def test_sustained_high_cpu_fails(self, mocker):
-        """A genuine poll/refresh leak stays high on EVERY sample -> FAIL."""
-        self._patch_tray(mocker, [97.0, 98.0, 96.0])
+    def test_sustained_high_cpu_times_out_and_fails(self, mocker):
+        """A genuine poll/refresh leak never idles -> the wait-for-idle loop
+        hits its deadline with CPU still over budget -> FAIL."""
+        # Tiny idle-confirm window so the loop times out quickly in the test.
+        mocker.patch.object(prc, "IDLE_CONFIRM_TIMEOUT_S", 0.01)
+        self._patch_tray(mocker, [97.0, 98.0, 96.0, 99.0, 97.0])
         assert prc.check_tray_resource_budget("http://localhost:5000") is False
