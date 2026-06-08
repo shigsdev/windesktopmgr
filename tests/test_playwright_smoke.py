@@ -917,6 +917,32 @@ class TestThermalsRedesign:
         )
         assert state["hasStatus"], "CTA action row missing its .th-cta-status line"
 
+    def test_lhm_autostart_toggle_renders_when_installed(self, loaded_page):
+        """The optional 'auto-start at login' toggle appears once LHM is
+        installed. The app-managed install dir is empty on this host, so we
+        force the installed state and re-render to prove the toggle is wired
+        (it lazily fetches /api/thermals/lhm/autostart to label itself)."""
+        page, _ = loaded_page
+        self._goto(page)
+        state = page.evaluate(
+            """async () => {
+                if (typeof renderThermals !== 'function') return {skip: true};
+                // _lhmStatus is a top-level `let` (lexical, not on window) -- assign
+                // the binding directly so the renderer sees the forced state.
+                _lhmStatus = {installed: true, running: false, version: 'v0.9.6'};
+                renderThermals();
+                await new Promise(r => setTimeout(r, 1500));  // let the autostart fetch resolve
+                const cta = document.getElementById('th-cores-cta');
+                if (!cta || getComputedStyle(cta).display === 'none') return {skip: true};
+                const btns = Array.from(cta.querySelectorAll('.th-cta-btn')).map(b => b.textContent.trim());
+                return {btns};
+            }"""
+        )
+        if state.get("skip"):
+            pytest.skip("thermals CTA not shown on this host (LHM running / no renderThermals)")
+        joined = " ".join(state["btns"]).lower()
+        assert "auto-start" in joined, f"auto-start toggle missing from CTA buttons: {state['btns']}"
+
     def test_fan_cards_one_per_cooling_device(self, loaded_page):
         """One .th-fan card per fan from the API; active fans carry the
         spinning-blade class so the cooling state is visible at a glance."""

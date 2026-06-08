@@ -1928,6 +1928,72 @@ function thRenderLhmActions(body) {
   }
   body.appendChild(row);
   body.appendChild(status);
+  // Once LHM is installed, offer the optional always-on auto-start (elevated
+  // at-logon task). Lazily fetches its current state to label the toggle.
+  if (st.installed) thRenderLhmAutostart(body);
+}
+
+// Optional "launch LHM elevated at every login" toggle. Built with DOM methods.
+function thRenderLhmAutostart(body) {
+  const wrap = document.createElement("div");
+  wrap.className = "th-cta-actions";
+  wrap.style.marginTop = "8px";
+  const note = document.createElement("div");
+  note.className = "th-cta-status";
+  note.textContent = "Checking auto-start…";
+  const btn = thMkCtaBtn("…", () => {});
+  btn.disabled = true;
+  wrap.appendChild(btn);
+  body.appendChild(wrap);
+  body.appendChild(note);
+
+  const paint = (enabled) => {
+    btn.disabled = false;
+    if (enabled) {
+      btn.textContent = "✓ Auto-start on — turn off";
+      btn.onclick = null;
+      btn.addEventListener("click", () => thToggleLhmAutostart(btn, note, true), {once: true});
+      note.textContent = "LibreHardwareMonitor launches elevated at every login, so the gauges always work.";
+    } else {
+      btn.textContent = "⤴ Set up auto-start at login";
+      btn.onclick = null;
+      btn.addEventListener("click", () => thToggleLhmAutostart(btn, note, false), {once: true});
+      note.textContent = "Optional: make Windows launch LHM elevated automatically at login (one admin prompt) so you never re-launch it.";
+    }
+  };
+
+  fetch("/api/thermals/lhm/autostart")
+    .then((r) => r.json())
+    .then((d) => paint(!!d.enabled))
+    .catch(() => { note.textContent = "Could not check auto-start state."; btn.style.display = "none"; });
+}
+
+async function thToggleLhmAutostart(btn, note, currentlyOn) {
+  btn.disabled = true;
+  btn.textContent = currentlyOn ? "Removing (approve the admin prompt)…" : "Setting up (approve the admin prompt)…";
+  const url = currentlyOn ? "/api/thermals/lhm/autostart/remove" : "/api/thermals/lhm/autostart";
+  try {
+    const d = await (await fetch(url, {method: "POST"})).json();
+    if (d.ok) {
+      // schtasks ran elevated; re-query the real state to confirm.
+      setTimeout(async () => {
+        try {
+          const s = await (await fetch("/api/thermals/lhm/autostart")).json();
+          btn.disabled = false;
+          // Re-render the whole CTA so the toggle reflects the new state.
+          renderThermals();
+          void s;
+        } catch (_e) { btn.disabled = false; }
+      }, 1500);
+    } else {
+      btn.disabled = false;
+      btn.textContent = currentlyOn ? "✓ Auto-start on — turn off" : "⤴ Set up auto-start at login";
+      thCtaError(d.error || "Auto-start change failed.");
+    }
+  } catch (e) {
+    btn.disabled = false;
+    thCtaError("Auto-start change failed: " + e);
+  }
 }
 
 function thMkCtaBtn(label, onClick) {
