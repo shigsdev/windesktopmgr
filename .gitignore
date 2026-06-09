@@ -65,6 +65,7 @@ backup_actions_history.json
 
 # CloudCopy / OneDrive→iCloud replicator rules (backlog #46 runtime state)
 cloudcopy_rules.json
+cloudcopy_history.json
 
 # Codehealth scanner state (backlog #51 runtime state, regenerates on scan)
 codehealth_state.json
@@ -84,6 +85,9 @@ System Health Reports/
 # ── LinkedIn drafts ───────────────────────────────────────────────────────
 linkedin_post*.md
 linkedin_preview*.html
+
+# ── Design mockups (scratch design concepts, not served by the app) ───────
+mockups/
 
 # ── OS files ──────────────────────────────────────────────────────────────
 .DS_Store
