@@ -44,6 +44,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import subprocess
 import sys
 import threading
 import xml.etree.ElementTree as ET
@@ -82,6 +84,20 @@ _FH_CATALOG_FILE = os.path.join(_FH_CONFIG_DIR, "Catalog1.edb")
 # warn = bytes-used / capacity above this.
 _FH_CATALOG_STALE_DAYS = 7
 _FH_STAGING_WARN_RATIO = 0.95
+
+# Scheduled File History auto-cleanup (in-app retention via a recurring
+# `fhmanagew -cleanup <N>` task). Fixed task name -- never user input.
+_FH_CLEANUP_TASK_NAME = "WinDesktopMgr-FileHistoryCleanup"
+# CREATE_NO_WINDOW: keep schtasks' console off-screen under the pythonw tray.
+_NO_WINDOW = 0x08000000
+
+
+def _fhmanagew_path() -> str:
+    """Absolute path to the system fhmanagew.exe (a non-user-writable OS
+    binary -- so a /RL HIGHEST task pointed at it carries no escalation risk,
+    unlike a task pointed at a user-writable exe)."""
+    return os.path.join(os.environ.get("SYSTEMROOT", r"C:\Windows"), "System32", "fhmanagew.exe")
+
 
 _file_lock = threading.Lock()
 
@@ -274,9 +290,9 @@ def validate_fh_cleanup_request(days: int) -> tuple[bool, str]:
     """File History cleanup arg: ``-cleanup <N>`` where N is days.
 
     ``fhmanagew`` accepts 0 (keep only latest) through arbitrary large
-    values. We cap at 365 to refuse "year-old or older" deletions which
-    are almost certainly a typo (the user typed 3650 meaning ~10 years
-    when they meant 365). Negative values are nonsense.
+    values. We cap at 3650 (~10 years) to refuse absurd windows; negative
+    values are nonsense; bool is rejected (``True``/``False`` are int
+    subclasses that would otherwise coerce to 1/0).
     """
     if not isinstance(days, int) or isinstance(days, bool):
         return (False, "days must be an integer")
@@ -285,6 +301,101 @@ def validate_fh_cleanup_request(days: int) -> tuple[bool, str]:
     if days > 3650:
         return (False, "days > 3650 (>~10 years) refused -- specify a smaller window")
     return (True, "")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Scheduled File History auto-cleanup  (in-app retention)
+#
+# File History's NATIVE age-based retention only prunes when the drive is
+# full or on a manual cleanup (per the FH_RETENTION_TYPES docs), so it
+# doesn't enforce a rolling window or free space on its own. Instead we
+# register a recurring scheduled task that runs `fhmanagew -cleanup <N>`,
+# which actually deletes versions older than N days each run. The task runs
+# with highest privileges (the FH store is ACL-restricted to admins), so
+# setup/remove go through a UAC prompt; querying does not need elevation.
+# Everything passed to schtasks is a fixed constant or a range-validated
+# integer -- no user-controlled strings reach the command line.
+# ══════════════════════════════════════════════════════════════════════
+
+
+def fh_cleanup_schedule_status() -> dict:
+    """Whether the recurring auto-cleanup task exists + its configured age.
+    Never raises. Shape: {enabled, task, days, schedule}."""
+    absent = {"enabled": False, "task": _FH_CLEANUP_TASK_NAME, "days": None, "schedule": None}
+    try:
+        result = subprocess.run(
+            ["schtasks", "/Query", "/TN", _FH_CLEANUP_TASK_NAME, "/V", "/FO", "LIST"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=_NO_WINDOW,
+        )
+    except Exception:  # noqa: BLE001 -- schtasks missing / non-Windows / timeout
+        return absent
+    if result.returncode != 0:
+        return absent
+    out = result.stdout or ""
+    days_match = re.search(r"-cleanup\s+(\d+)", out)
+    sched_match = re.search(r"Schedule Type:\s*(.+)", out)
+    return {
+        "enabled": True,
+        "task": _FH_CLEANUP_TASK_NAME,
+        "days": int(days_match.group(1)) if days_match else None,
+        "schedule": sched_match.group(1).strip() if sched_match else None,
+    }
+
+
+def _schtasks_elevated(args: str, action: str) -> dict:
+    """Run ``schtasks.exe <args>`` elevated via a UAC prompt. ShellExecuteW
+    returns > 32 once the elevated process starts (user accepted UAC); it does
+    NOT surface schtasks' own exit code, so callers re-query the status to
+    confirm the result. Mirrors lhm._schtasks_elevated."""
+    try:
+        import ctypes  # noqa: PLC0415 -- Windows-only
+    except ImportError:
+        return {"ok": False, "error": "ctypes unavailable (non-Windows host?)"}
+    try:
+        rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", "schtasks.exe", args, None, 0)
+    except Exception as e:  # noqa: BLE001 -- ShellExecuteW unavailable -> graceful
+        return {"ok": False, "error": f"ShellExecuteW failed: {type(e).__name__}: {e}"}
+    if rc <= 32:
+        rc_map = {
+            0: "out of memory",
+            2: "FILE_NOT_FOUND",
+            3: "PATH_NOT_FOUND",
+            5: "ACCESS_DENIED (UAC prompt declined?)",
+            8: "OUT_OF_MEMORY",
+            31: "NO_ASSOCIATION",
+        }
+        return {"ok": False, "error": f"could not {action}: rc={rc} ({rc_map.get(rc, 'unknown')})"}
+    return {"ok": True}
+
+
+def setup_fh_cleanup_schedule(days: int) -> dict:
+    """Register a WEEKLY task running ``fhmanagew -cleanup <days> -quiet`` with
+    highest privileges (UAC prompt). Deletes versions older than ``days`` each
+    run. Returns ``{"ok": True}`` once the elevated schtasks process starts."""
+    ok, err = validate_fh_cleanup_request(days)
+    if not ok:
+        return {"ok": False, "error": err}
+    fhm = _fhmanagew_path()
+    # Defence in depth at the Python->schtasks boundary. fhm is a fixed system
+    # path (never user input) and days is a range-validated int, but refuse a
+    # stray quote rather than mangle /TR parsing.
+    if '"' in fhm:
+        return {"ok": False, "error": "fhmanagew path contains an invalid character"}
+    args = (
+        f'/Create /TN "{_FH_CLEANUP_TASK_NAME}" '
+        f'/TR "\\"{fhm}\\" -cleanup {days} -quiet" '
+        f"/SC WEEKLY /ST 03:00 /RL HIGHEST /F"
+    )
+    return _schtasks_elevated(args, "schedule File History auto-cleanup")
+
+
+def remove_fh_cleanup_schedule() -> dict:
+    """Delete the recurring auto-cleanup task (UAC prompt)."""
+    args = f'/Delete /TN "{_FH_CLEANUP_TASK_NAME}" /F'
+    return _schtasks_elevated(args, "remove the File History auto-cleanup schedule")
 
 
 # ══════════════════════════════════════════════════════════════════════

@@ -4036,6 +4036,10 @@ def backup_fh_cleanup_route():
 
     data = request.get_json() or {}
     days = data.get("days")
+    # Reject bool before int() (int(True) == 1 would defeat the validator's
+    # bool guard).
+    if isinstance(days, bool):
+        return jsonify({"ok": False, "error": "days must be an integer"}), 400
     try:
         days = int(days)
     except (TypeError, ValueError):
@@ -4052,6 +4056,51 @@ def backup_fh_cleanup_route():
     result = backup.request_elevated_action("fh_cleanup", {"days": days})
     status = 200 if result.get("ok") else 502
     return jsonify(result), status
+
+
+@app.route("/api/backup/fh-cleanup-schedule")
+def backup_fh_cleanup_schedule_status_route():
+    """Status of the recurring File History auto-cleanup task (no elevation)."""
+    import backup
+
+    return jsonify({"ok": True, **backup.fh_cleanup_schedule_status()})
+
+
+@app.route("/api/backup/fh-cleanup-schedule", methods=["POST"])
+def backup_fh_cleanup_schedule_setup_route():
+    """Register the WEEKLY auto-cleanup task (UAC prompt via schtasks).
+
+    Body: ``{"days": 180}`` -- delete versions older than this each run.
+    """
+    import backup
+
+    data = request.get_json() or {}
+    days = data.get("days")
+    # Reject bool BEFORE int() -- int(True) is 1, which would slip past the
+    # validator's bool guard and silently schedule "-cleanup 1" (prune
+    # everything older than 1 day).
+    if isinstance(days, bool):
+        return jsonify({"ok": False, "error": "days must be an integer"}), 400
+    try:
+        days = int(days)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "days must be an integer"}), 400
+
+    ok, err = backup.validate_fh_cleanup_request(days)
+    if not ok:
+        return jsonify({"ok": False, "error": err}), 400
+
+    result = backup.setup_fh_cleanup_schedule(days)
+    return jsonify(result), (200 if result.get("ok") else 502)
+
+
+@app.route("/api/backup/fh-cleanup-schedule/remove", methods=["POST"])
+def backup_fh_cleanup_schedule_remove_route():
+    """Remove the recurring File History auto-cleanup task (UAC prompt)."""
+    import backup
+
+    result = backup.remove_fh_cleanup_schedule()
+    return jsonify(result), (200 if result.get("ok") else 502)
 
 
 @app.route("/api/backup/actions-history")

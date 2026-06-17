@@ -563,6 +563,58 @@ class TestFileHistoryStoreAlarm:
             )
 
 
+# ── Backup tab — scheduled auto-cleanup control (in-app retention) ────
+#
+# Added 2026-06-16: a weekly `fhmanagew -cleanup <N>` task that actually
+# prunes old versions. Gate: the control renders and reflects the API
+# (ON state vs the schedule-it form), not just "an element exists".
+
+
+class TestCleanupScheduleControl:
+    def test_schedule_control_reflects_api(self, loaded_page):
+        page, _ = loaded_page
+        api = page.evaluate(
+            """async () => {
+                const r = await fetch('/api/backup/fh-cleanup-schedule');
+                return await r.json();
+            }"""
+        )
+        fh = page.evaluate(
+            """async () => {
+                const r = await fetch('/api/backup/file-history');
+                return await r.json();
+            }"""
+        )
+        if not fh.get("configured"):
+            pytest.skip("File History not configured on this machine")
+
+        page.evaluate("switchTab('backup')")
+        # Wait for the schedule control to populate.
+        for _ in range(20):
+            page.wait_for_timeout(300)
+            ready = page.evaluate("(document.getElementById('bk-fh-schedule')||{}).textContent ? true : false")
+            if ready:
+                break
+
+        body = page.evaluate("(document.getElementById('bk-fh-schedule')||{}).textContent || ''")
+        assert body.strip(), "schedule control did not render"
+        if api.get("enabled"):
+            # ON state names the configured age + offers a Turn-off button.
+            assert "auto-cleanup on" in body.lower()
+            has_off = page.evaluate(
+                "Array.from(document.querySelectorAll('#bk-fh-schedule button')).some(b => /turn off/i.test(b.textContent))"
+            )
+            assert has_off, "enabled schedule should offer a Turn-off button"
+        else:
+            # OFF state shows the days input + a Schedule button.
+            has_input = page.evaluate("!!document.getElementById('bk-sched-days')")
+            has_btn = page.evaluate(
+                "Array.from(document.querySelectorAll('#bk-fh-schedule button')).some(b => /schedule/i.test(b.textContent))"
+            )
+            assert has_input, "off-state schedule control should have a days input"
+            assert has_btn, "off-state schedule control should have a Schedule button"
+
+
 # ── Concern action-button handler resolution (backlog #26 primary win) ─
 
 
