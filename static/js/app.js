@@ -6430,6 +6430,108 @@ async function bk_fhCleanup() {
   if (result.ok) loadBackup(true);
 }
 
+// ── Scheduled auto-cleanup (in-app retention) ───────────────────────
+// Registers a WEEKLY `fhmanagew -cleanup <N>` task so versions older than
+// N days are pruned automatically. Built with DOM methods + textContent
+// (no innerHTML) -- the security hook blocks innerHTML, and these strings
+// would otherwise need escaping.
+async function bk_renderCleanupSchedule() {
+  const el = document.getElementById("bk-fh-schedule");
+  if (!el) return;
+  el.textContent = "";
+  let st;
+  try {
+    const r = await fetch("/api/backup/fh-cleanup-schedule");
+    st = await r.json();
+  } catch {
+    return;
+  }
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "padding-top:8px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap";
+  const label = document.createElement("div");
+  label.style.cssText = "font-size:11px;color:var(--muted)";
+  if (st && st.enabled) {
+    label.style.color = "var(--green)";
+    label.textContent = `⏱ Auto-cleanup ON — deletes versions older than ${st.days != null ? st.days : "?"} days, ${(st.schedule || "weekly").toLowerCase()}.`;
+    const off = document.createElement("button");
+    off.textContent = "Turn off";
+    off.style.cssText = "background:transparent;border:1px solid var(--red);color:var(--red);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:11px";
+    off.onclick = bk_removeCleanupSchedule;
+    wrap.appendChild(label);
+    wrap.appendChild(off);
+  } else {
+    label.textContent = "Auto-cleanup off. Schedule a weekly cleanup to keep ~the last N days of versions (this is what actually enforces a rolling window).";
+    const grp = document.createElement("div");
+    grp.style.cssText = "display:flex;align-items:center;gap:6px";
+    const inp = document.createElement("input");
+    inp.type = "number";
+    inp.id = "bk-sched-days";
+    inp.value = "180";
+    inp.min = "0";
+    inp.max = "3650";
+    inp.style.cssText = "width:64px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:3px 6px;border-radius:4px;font-size:11px";
+    const unit = document.createElement("span");
+    unit.textContent = "days";
+    unit.style.cssText = "font-size:11px;color:var(--muted)";
+    const on = document.createElement("button");
+    on.textContent = "⏱ Schedule weekly";
+    on.style.cssText = "background:transparent;border:1px solid var(--cyan);color:var(--cyan);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:11px";
+    on.onclick = bk_setupCleanupSchedule;
+    grp.appendChild(inp);
+    grp.appendChild(unit);
+    grp.appendChild(on);
+    wrap.appendChild(label);
+    wrap.appendChild(grp);
+  }
+  el.appendChild(wrap);
+}
+
+async function bk_setupCleanupSchedule() {
+  const inp = document.getElementById("bk-sched-days");
+  const days = parseInt(((inp && inp.value) || "").trim(), 10);
+  if (isNaN(days) || days < 0 || days > 3650) {
+    alert("Enter a number of days between 0 and 3650.");
+    return;
+  }
+  if (!window.confirm(`Schedule a WEEKLY task that deletes File History versions older than ${days} days?\n\nA UAC prompt will appear (the task runs with admin rights so it can reach the protected backup store).`)) return;
+  let res;
+  try {
+    const r = await fetch("/api/backup/fh-cleanup-schedule", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({days: days}),
+    });
+    res = await r.json();
+  } catch (e) {
+    bk_showActionResult("Schedule auto-cleanup", {error: e.message}, false);
+    return;
+  }
+  bk_showActionResult(`Schedule weekly auto-cleanup (>${days}d)`, res, !!res.ok);
+  // schtasks ran elevated in a separate process; re-query after the user has
+  // had time to accept UAC so the control reflects the new task.
+  setTimeout(bk_renderCleanupSchedule, 2500);
+  setTimeout(bk_renderCleanupSchedule, 6000);
+}
+
+async function bk_removeCleanupSchedule() {
+  if (!window.confirm("Turn off the scheduled File History auto-cleanup?\n\nA UAC prompt will appear.")) return;
+  let res;
+  try {
+    const r = await fetch("/api/backup/fh-cleanup-schedule/remove", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: "{}",
+    });
+    res = await r.json();
+  } catch (e) {
+    bk_showActionResult("Remove auto-cleanup", {error: e.message}, false);
+    return;
+  }
+  bk_showActionResult("Remove auto-cleanup", res, !!res.ok);
+  setTimeout(bk_renderCleanupSchedule, 2500);
+  setTimeout(bk_renderCleanupSchedule, 6000);
+}
+
 async function loadBackup(preserveBanner = false) {
   // preserveBanner=true keeps whatever bk_showActionResult just wrote in
   // #bk-overall (the outcome of a scan/cleanup/delete) instead of clobbering
@@ -6588,7 +6690,9 @@ async function loadBackup(preserveBanner = false) {
             <div style="font-size:11px;color:var(--muted)">One-time delete of versions older than N days (<code>fhmanagew.exe -cleanup</code>, UAC). <strong>0</strong> = keep only newest. Does <strong>not</strong> change the retention policy above.</div>
             <button onclick="bk_fhCleanup()" style="background:transparent;border:1px solid var(--orange);color:var(--orange);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:11px">🧹 Cleanup old versions</button>
           </div>
+          <div id="bk-fh-schedule" style="margin-top:4px"></div>
         </div>`;
+      bk_renderCleanupSchedule();
     }
   }
 

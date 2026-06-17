@@ -16,6 +16,7 @@ constants to tmp_path so no real backup state on disk is touched.
 from __future__ import annotations
 
 import json
+import subprocess
 
 import pytest
 
@@ -674,6 +675,49 @@ class TestBackupRoutes:
         assert "file_history" in data
         assert "overall_health" in data
 
+    def test_cleanup_schedule_status_route(self, client, backup_tmp, mocker):
+        mocker.patch.object(
+            backup,
+            "fh_cleanup_schedule_status",
+            return_value={"enabled": True, "task": "t", "days": 180, "schedule": "Weekly"},
+        )
+        resp = client.get("/api/backup/fh-cleanup-schedule")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["enabled"] is True
+        assert data["days"] == 180
+
+    def test_cleanup_schedule_setup_route_valid(self, client, backup_tmp, mocker):
+        setup = mocker.patch.object(backup, "setup_fh_cleanup_schedule", return_value={"ok": True})
+        resp = client.post("/api/backup/fh-cleanup-schedule", json={"days": 180})
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+        setup.assert_called_once_with(180)
+
+    def test_cleanup_schedule_setup_route_rejects_bad_days(self, client, backup_tmp, mocker):
+        setup = mocker.patch.object(backup, "setup_fh_cleanup_schedule")
+        resp = client.post("/api/backup/fh-cleanup-schedule", json={"days": -5})
+        assert resp.status_code == 400
+        setup.assert_not_called()
+
+    def test_cleanup_schedule_setup_route_non_int_days(self, client, backup_tmp):
+        resp = client.post("/api/backup/fh-cleanup-schedule", json={"days": "soon"})
+        assert resp.status_code == 400
+
+    def test_cleanup_schedule_setup_route_rejects_bool_days(self, client, backup_tmp, mocker):
+        # int(True) == 1 must NOT slip past as "-cleanup 1" (code-review 2026-06-16).
+        setup = mocker.patch.object(backup, "setup_fh_cleanup_schedule")
+        resp = client.post("/api/backup/fh-cleanup-schedule", json={"days": True})
+        assert resp.status_code == 400
+        setup.assert_not_called()
+
+    def test_cleanup_schedule_remove_route(self, client, backup_tmp, mocker):
+        rm = mocker.patch.object(backup, "remove_fh_cleanup_schedule", return_value={"ok": True})
+        resp = client.post("/api/backup/fh-cleanup-schedule/remove", json={})
+        assert resp.status_code == 200
+        assert resp.get_json()["ok"] is True
+        rm.assert_called_once()
+
 
 # ══════════════════════════════════════════════════════════════════════
 # Dashboard concern wiring
@@ -959,6 +1003,115 @@ class TestFhCleanupHelperResult:
         res = helper._action_fh_cleanup({"days": -5})
         assert res["ok"] is False
         run.assert_not_called()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Scheduled File History auto-cleanup (in-app retention)
+# ══════════════════════════════════════════════════════════════════════
+
+
+class _RecordingShell32:
+    """Captures the args passed to ShellExecuteW so tests can assert the
+    schtasks command line. Returns a configurable rc (>32 = success)."""
+
+    def __init__(self, rc=42):
+        self.rc = rc
+        self.calls = []
+
+    def ShellExecuteW(self, *args):  # noqa: N802 -- match Win32 name
+        self.calls.append(args)
+        return self.rc
+
+
+def _patch_shell32(monkeypatch, rc=42):
+    import ctypes
+
+    shell = _RecordingShell32(rc=rc)
+
+    class _FakeWindll:
+        shell32 = shell
+
+    monkeypatch.setattr(ctypes, "windll", _FakeWindll(), raising=False)
+    return shell
+
+
+_SCHED_LIST_OUTPUT = (
+    "Folder: \\\r\n"
+    "HostName:                             SHIGS78-PC24\r\n"
+    "TaskName:                             \\WinDesktopMgr-FileHistoryCleanup\r\n"
+    "Task To Run:                          C:\\Windows\\System32\\fhmanagew.exe -cleanup 180 -quiet\r\n"
+    "Schedule Type:                        Weekly\r\n"
+    "Start Time:                           3:00:00 AM\r\n"
+)
+
+
+class TestFhCleanupScheduleStatus:
+    def test_enabled_parses_days_and_schedule(self, mocker):
+        m = mocker.patch("backup.subprocess.run")
+        m.return_value.returncode = 0
+        m.return_value.stdout = _SCHED_LIST_OUTPUT
+        st = backup.fh_cleanup_schedule_status()
+        assert st["enabled"] is True
+        assert st["days"] == 180
+        assert st["schedule"] == "Weekly"
+
+    def test_absent_task_returns_disabled(self, mocker):
+        m = mocker.patch("backup.subprocess.run")
+        m.return_value.returncode = 1
+        m.return_value.stdout = "ERROR: The system cannot find the file specified."
+        st = backup.fh_cleanup_schedule_status()
+        assert st["enabled"] is False
+        assert st["days"] is None
+
+    def test_timeout_returns_disabled(self, mocker):
+        mocker.patch(
+            "backup.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="schtasks", timeout=10),
+        )
+        st = backup.fh_cleanup_schedule_status()
+        assert st["enabled"] is False
+
+    def test_query_command_uses_verbose_list(self, mocker):
+        m = mocker.patch("backup.subprocess.run")
+        m.return_value.returncode = 1
+        m.return_value.stdout = ""
+        backup.fh_cleanup_schedule_status()
+        cmd = m.call_args[0][0]
+        assert cmd[:2] == ["schtasks", "/Query"]
+        assert "/V" in cmd and "/FO" in cmd and "LIST" in cmd
+        assert backup._FH_CLEANUP_TASK_NAME in cmd
+
+
+class TestFhCleanupScheduleSetup:
+    def test_valid_days_builds_weekly_highest_task(self, monkeypatch):
+        shell = _patch_shell32(monkeypatch, rc=42)
+        res = backup.setup_fh_cleanup_schedule(180)
+        assert res["ok"] is True
+        args = shell.calls[0][3]  # 4th positional = the schtasks arg string
+        assert "/Create" in args and "/SC WEEKLY" in args and "/RL HIGHEST" in args
+        assert "-cleanup 180 -quiet" in args
+        assert "fhmanagew.exe" in args
+        assert backup._FH_CLEANUP_TASK_NAME in args
+
+    def test_invalid_days_never_prompts_uac(self, monkeypatch):
+        shell = _patch_shell32(monkeypatch, rc=42)
+        for bad in (-1, 4000, True, "180"):
+            res = backup.setup_fh_cleanup_schedule(bad)
+            assert res["ok"] is False
+        assert shell.calls == []  # ShellExecuteW never reached
+
+    def test_uac_declined_returns_error(self, monkeypatch):
+        _patch_shell32(monkeypatch, rc=5)  # ACCESS_DENIED
+        res = backup.setup_fh_cleanup_schedule(180)
+        assert res["ok"] is False
+        assert "rc=5" in res["error"]
+
+    def test_remove_builds_delete_command(self, monkeypatch):
+        shell = _patch_shell32(monkeypatch, rc=42)
+        res = backup.remove_fh_cleanup_schedule()
+        assert res["ok"] is True
+        args = shell.calls[0][3]
+        assert "/Delete" in args and backup._FH_CLEANUP_TASK_NAME in args
 
 
 # ══════════════════════════════════════════════════════════════════════
