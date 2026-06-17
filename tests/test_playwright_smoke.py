@@ -598,6 +598,9 @@ class TestCleanupScheduleControl:
 
         body = page.evaluate("(document.getElementById('bk-fh-schedule')||{}).textContent || ''")
         assert body.strip(), "schedule control did not render"
+        # The effective window must also surface in the Retention row so a
+        # user who scheduled e.g. 180 days sees it there, not just below.
+        ret_eff = page.evaluate("(document.getElementById('bk-ret-effective')||{}).textContent || ''")
         if api.get("enabled"):
             # ON state names the configured age + offers a Turn-off button.
             assert "auto-cleanup on" in body.lower()
@@ -605,7 +608,13 @@ class TestCleanupScheduleControl:
                 "Array.from(document.querySelectorAll('#bk-fh-schedule button')).some(b => /turn off/i.test(b.textContent))"
             )
             assert has_off, "enabled schedule should offer a Turn-off button"
+            assert "auto-cleanup" in ret_eff.lower() and "day" in ret_eff.lower(), (
+                f"enabled schedule should surface the effective window in the Retention row; got {ret_eff!r}"
+            )
         else:
+            assert ret_eff.strip() == "", (
+                f"disabled schedule should leave the Retention row's effective span empty; got {ret_eff!r}"
+            )
             # OFF state shows the days input + a Schedule button.
             has_input = page.evaluate("!!document.getElementById('bk-sched-days')")
             has_btn = page.evaluate(

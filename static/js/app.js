@@ -6446,6 +6446,18 @@ async function bk_renderCleanupSchedule() {
   } catch {
     return;
   }
+  // Surface the EFFECTIVE app-managed window up in the Retention row, so a
+  // user who scheduled e.g. 180 days sees it there (not just buried in this
+  // control). The native "NO LIMIT" policy is shown alongside as secondary.
+  const eff = document.getElementById("bk-ret-effective");
+  if (eff) {
+    if (st && st.enabled) {
+      eff.textContent = `App auto-cleanup: keep ~${st.days != null ? st.days : "?"} days (${(st.schedule || "weekly").toLowerCase()}) · `;
+      eff.style.cssText = "color:var(--green);font-weight:600";
+    } else {
+      eff.textContent = "";
+    }
+  }
   const wrap = document.createElement("div");
   wrap.style.cssText = "padding-top:8px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap";
   const label = document.createElement("div");
@@ -6681,7 +6693,7 @@ async function loadBackup(preserveBanner = false) {
             <div style="color:var(--muted)">Target reachable</div><div>${targetExistsLabel}</div>
             <div style="color:var(--muted)">Backup store on target</div><div>${storeExistsLabel} (<code>${escHtml(target.backup_store_path || "")}</code>)</div>
             <div style="color:var(--muted)">Frequency</div><div>${cfg.frequency_seconds ? Math.round(cfg.frequency_seconds / 60) + " min" : "—"}</div>
-            <div style="color:var(--muted)">Retention</div><div>${escHtml(cfg.retention_policy || "—")}${cfg.retention_min_age_months ? ` · keep at least ${cfg.retention_min_age_months} mo` : ""} <span style="color:var(--ink-faint);font-size:10px">(File History's saved policy — change in Control Panel → Advanced settings)</span></div>
+            <div style="color:var(--muted)">Retention</div><div><span id="bk-ret-effective"></span>${escHtml(cfg.retention_policy || "—")}${cfg.retention_min_age_months ? ` · keep at least ${cfg.retention_min_age_months} mo` : ""} <span style="color:var(--ink-faint);font-size:10px">(File History's native policy — set in Control Panel → Advanced settings)</span></div>
             <div style="color:var(--muted)">Catalog</div><div>${catalogLabel}</div>
             <div style="color:var(--muted)">Staging</div><div>${bk_humanBytes(fh.staging_usage_bytes)} across ${fh.staging_file_count} file(s)${stagingRatio}</div>
             <div style="color:var(--muted)">Folders watched</div><div>${folderCount} folder(s) across ${(cfg.libraries || []).length} libraries + ${(cfg.user_folders || []).length} user folders</div>
