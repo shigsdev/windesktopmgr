@@ -6541,9 +6541,17 @@ async function loadBackup() {
       const targetExistsLabel = fh.target_path_exists === null
         ? "—"
         : (fh.target_path_exists ? '<span style="color:var(--green)">reachable</span>' : '<span style="color:var(--red)">unreachable</span>');
-      const storeExistsLabel = fh.target_backup_store_exists === null
-        ? "—"
-        : (fh.target_backup_store_exists ? '<span style="color:var(--green)">present</span>' : '<span style="color:var(--red)">missing</span>');
+      // When backups are confirmed healthy (a fresh catalog), a store probe
+      // that can't read the folder is NORMAL (ACL-protected store / non-
+      // standard path) -- don't alarm the user with a red "missing". Only
+      // show red "missing" when the verdict itself is critical.
+      const storeConfirmed = fh.target_backup_store_exists === true;
+      const storeHealthy = (health.level || "info") !== "critical";
+      const storeExistsLabel = storeConfirmed
+        ? '<span style="color:var(--green)">present</span>'
+        : (storeHealthy
+            ? '<span style="color:var(--muted)">not readable from tray (ACL-protected — normal)</span>'
+            : '<span style="color:var(--red)">missing</span>');
       const catalogLabel = fh.catalog_exists
         ? `${bk_humanBytes(fh.catalog_size_bytes)} · last write ${fh.catalog_mtime || "—"} (${fh.catalog_age_days?.toFixed?.(1) || "?"} days ago)`
         : "(not present)";

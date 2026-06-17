@@ -629,6 +629,57 @@ def parse_file_history_config(xml_text: str) -> dict:
     return result
 
 
+def _join_store_path(target_url: str, store_path: str) -> str:
+    """Join a File History ``TargetUrl`` with a relative ``TargetBackupStorePath``.
+
+    Bug fix 2026-06-16: the previous code did
+    ``os.path.join(target_url.rstrip("\\/"), store_path)``. For a drive-root
+    target like ``E:\\`` the ``rstrip`` produced the bare drive ``E:``, and
+    ``os.path.join("E:", "higs7\\...")`` yields the DRIVE-RELATIVE path
+    ``E:higs7\\...`` (no separator) instead of the absolute
+    ``E:\\higs7\\...``. A drive-relative path resolves against the current
+    directory on that drive, so the probe checked the wrong location.
+    """
+    base = target_url or ""
+    # A bare drive letter ("E:") joins drive-relative -- force it absolute.
+    if len(base) == 2 and base[1] == ":":
+        base += "\\"
+    return os.path.join(base, (store_path or "").lstrip("\\/"))
+
+
+def _deepest_existing_ancestor(path: str) -> str | None:
+    """Return the deepest ancestor of ``path`` that exists on disk, or
+    ``None`` if not even the drive root is present.
+
+    Used to make the "store not found" probe message honest: instead of
+    guessing "doesn't exist (or ACL traversal denied)", we report how far
+    the configured path actually resolves -- e.g. ``E:\\`` when the
+    configured ``E:\\higs7\\SHIGS78-PC24\\Data`` has no ``higs7`` level on
+    disk (the 2026-06-16 config-vs-disk mismatch).
+    """
+    drive, rest = os.path.splitdrive(path)
+    if not drive:
+        return None
+    cur = drive + "\\"
+    try:
+        deepest = cur if os.path.exists(cur) else None
+    except OSError:
+        return None
+    for comp in rest.replace("/", "\\").strip("\\").split("\\"):
+        if not comp:
+            continue
+        cur = os.path.join(cur, comp)
+        try:
+            if os.path.exists(cur):
+                deepest = cur
+            else:
+                break
+        except OSError:
+            # Hit an ACL boundary -- can't see deeper, stop here.
+            break
+    return deepest
+
+
 def _probe_backup_store(full_store: str) -> tuple[bool | None, str]:
     """Determine whether the File History backup-store folder exists.
 
@@ -699,10 +750,15 @@ def _probe_backup_store(full_store: str) -> tuple[bool | None, str]:
         # genuinely missing OR an ACL traversal denial pretending to
         # be FileNotFoundError -- on Windows the two are indistinguish-
         # able from the syscall. Return False conservatively; the
-        # catalog-age cross-check in get_file_history_state() will
-        # demote this to "info" when the catalog mtime proves backups
-        # ARE actually happening (the actual user scenario 2026-05-27).
-        return False, "parent dir doesn't exist (or ACL traversal denied)"
+        # catalog-age cross-check in get_file_history_state() demotes this
+        # to a healthy verdict when backups ARE actually happening (the
+        # 2026-05-27 / 2026-06-16 user scenarios). Report how far the path
+        # actually resolves so the reason is honest instead of guessing "ACL".
+        deepest = _deepest_existing_ancestor(full_store)
+        return False, (
+            "configured store path not present on disk; deepest existing "
+            f"ancestor: {deepest or '(drive root not found)'}"
+        )
     except OSError as exc:
         return None, f"parent scan failed: {exc}"
 
@@ -825,8 +881,9 @@ def get_file_history_state() -> dict:
         if store_path and result["target_path_exists"]:
             # Backup store lives under the target drive, e.g.
             # E:\higs7\SHIGS78-PC24\Data. The backup_store_path in the
-            # XML is relative to the drive.
-            full_store = os.path.join(target_url.rstrip("\\/"), store_path)
+            # XML is relative to the drive. _join_store_path avoids the
+            # drive-relative os.path.join bug (E:\ + path -> E:path).
+            full_store = _join_store_path(target_url, store_path)
             exists, probe_reason = _probe_backup_store(full_store)
             result["target_backup_store_exists"] = exists
             result["target_backup_store_probe"] = probe_reason
@@ -846,45 +903,68 @@ def get_file_history_state() -> dict:
     if isinstance(max_cap, int | float) and max_cap > 0:
         result["staging_usage_ratio"] = round(used / max_cap, 4)
 
-    # Health verdict. Worst signal wins.
+    # Health verdict. Worst signal wins, EXCEPT a fresh catalog is
+    # authoritative proof File History is actively writing and overrides the
+    # fragile store-folder probe (which can false-negative on an ACL-
+    # restricted store or a path that doesn't match Config1.xml -- the
+    # 2026-06-16 user report: a healthy store at E:\SHIGS78-PC24 vs. a
+    # configured path of E:\higs7\SHIGS78-PC24\Data). NOTE: the registry's
+    # ProtectedUpToTime value is NOT used -- File History zeroes it between
+    # hourly cycles (verified live 2026-06-16), so it's too volatile to
+    # trust. The local Catalog1.edb mtime, updated each protection cycle, is
+    # the reliable freshness signal.
     enabled = bool(cfg.get("enabled"))
+    store_path_cfg = (target.get("backup_store_path") or "").rstrip("/\\")
+    catalog_age = result["catalog_age_days"]
+    catalog_fresh = catalog_age is not None and catalog_age <= _FH_CATALOG_STALE_DAYS
+    store_unconfirmed = result["target_backup_store_exists"] is not True
+    staging_full = result["staging_usage_ratio"] is not None and result["staging_usage_ratio"] >= _FH_STAGING_WARN_RATIO
     if not enabled:
         result["health"] = {"level": "info", "reason": "File History is disabled"}
     elif result["target_path_exists"] is False:
+        # Target drive unreachable RIGHT NOW -- a real, active problem.
+        # Checked before the catalog-fresh demote so an unplugged drive
+        # still surfaces.
         result["health"] = {
             "level": "critical",
             "reason": f"Target drive '{target_url}' is not accessible -- File History believes it's running but backups are NOT being saved",
         }
-    elif result["target_backup_store_exists"] is False and (
-        result["catalog_age_days"] is None or result["catalog_age_days"] > _FH_CATALOG_STALE_DAYS
-    ):
-        # Probe says missing AND the catalog is stale (or absent) --
-        # both signals agree, backups are NOT happening. The catalog
-        # cross-check (added 2026-05-27 after a false-critical against
-        # an ACL-restricted-but-working store) is what keeps this
-        # verdict honest: if the catalog was written in the last 7
-        # days, File History IS writing to the target regardless of
-        # what our store-folder probe says about ACL visibility.
+    elif catalog_fresh and staging_full:
+        # The last cycle wrote (fresh catalog) BUT the staging area is near-
+        # full -- the target may be becoming unreachable and files are piling
+        # up locally, so the NEXT cycle could fail. This must outrank the
+        # healthy verdict below (checked here so the catalog-fresh short-
+        # circuit doesn't silently swallow a filling staging area).
+        result["health"] = {
+            "level": "warning",
+            "reason": (
+                f"Staging area is {result['staging_usage_ratio'] * 100:.0f}% full -- "
+                f"target drive may be unreachable and files are piling up locally"
+            ),
+        }
+    elif catalog_fresh:
+        # The catalog was written within the freshness window, so File
+        # History IS actively protecting files -- backups are current
+        # regardless of what the on-disk store probe says. This is the
+        # primary healthy verdict (2026-06-16); it retires the false "store
+        # missing -- verify manually" alarm against a healthy ACL-restricted
+        # store.
+        reason = f"File History is healthy -- last backup activity {catalog_age:.1f} days ago"
+        if store_unconfirmed:
+            reason += (
+                " (the on-disk store folder isn't directly readable from the tray, which is "
+                f"normal for an ACL-protected store; probe: {result.get('target_backup_store_probe') or 'unknown'})"
+            )
+        result["health"] = {"level": "ok", "reason": reason}
+    elif result["target_backup_store_exists"] is False:
+        # Probe says missing AND the catalog is stale (or absent) -- both
+        # signals agree backups are NOT happening.
         result["health"] = {
             "level": "critical",
             "reason": (
                 f"Target drive '{target_url}' is reachable but the backup store folder "
-                f"'{(target.get('backup_store_path') or '').rstrip('/')}' is missing -- "
+                f"'{store_path_cfg}' is missing -- "
                 f"backups are NOT being saved to disk (catalog also stale)"
-            ),
-        }
-    elif result["target_backup_store_exists"] is False:
-        # Probe says missing but catalog is fresh -- backups ARE
-        # happening, probe must be a false negative (ACL). Demote to
-        # info; surface the conflicting signals so the user can verify
-        # manually if they want to.
-        result["health"] = {
-            "level": "info",
-            "reason": (
-                f"Backup store probe reported missing but catalog updated "
-                f"{result['catalog_age_days']:.1f} days ago -- backups are "
-                f"running (probe may be ACL-restricted; manual verification "
-                f"recommended). Probe: {result.get('target_backup_store_probe') or 'unknown'}"
             ),
         }
     elif result["target_backup_store_exists"] is None and (target.get("backup_store_path") or ""):
@@ -908,7 +988,7 @@ def get_file_history_state() -> dict:
             "level": "warning",
             "reason": f"Catalog hasn't been updated in {result['catalog_age_days']:.1f} days -- File History may have stalled",
         }
-    elif result["staging_usage_ratio"] is not None and result["staging_usage_ratio"] >= _FH_STAGING_WARN_RATIO:
+    elif staging_full:
         result["health"] = {
             "level": "warning",
             "reason": (
