@@ -6402,11 +6402,25 @@ async function bk_fhCleanup() {
     alert(`Cancelled: confirmation didn't match "${expected}".`);
     return;
   }
+  // Build the progress banner via DOM (not innerHTML) so we can hand the
+  // live status line to bk_pollUntilDone -- without it the banner froze at
+  // a static "Running..." and the user couldn't tell anything was happening.
   const overall = document.getElementById("bk-overall");
+  let statusEl = null;
   if (overall) {
+    overall.textContent = "";
     overall.style.display = "block";
     overall.style.borderLeftColor = "var(--cyan)";
-    overall.innerHTML = `<div style="font-size:12px">⏳ Running fhmanagew -cleanup ${days} (UAC prompt should appear)...</div>`;
+    const wrap = document.createElement("div");
+    wrap.style.fontSize = "12px";
+    const head = document.createElement("div");
+    head.textContent = `⏳ Cleaning up File History versions older than ${days} days — approve the UAC prompt…`;
+    statusEl = document.createElement("div");
+    statusEl.style.cssText = "color:var(--muted);font-size:11px;margin-top:3px";
+    statusEl.textContent = "Waiting for the elevated helper to start…";
+    wrap.appendChild(head);
+    wrap.appendChild(statusEl);
+    overall.appendChild(wrap);
   }
   let launch;
   try {
@@ -6424,7 +6438,8 @@ async function bk_fhCleanup() {
     bk_showActionResult("File History cleanup", launch, false);
     return;
   }
-  const status = await bk_pollUntilDone(launch.session_id);
+  if (statusEl) statusEl.textContent = "Elevated helper started — running fhmanagew…";
+  const status = await bk_pollUntilDone(launch.session_id, statusEl);
   const result = (status && status.result) || {ok: false, error: "no result"};
   bk_showActionResult(`File History cleanup (${days}d)`, result, !!result.ok);
   if (result.ok) loadBackup(true);
