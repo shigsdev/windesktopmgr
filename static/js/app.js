@@ -6288,6 +6288,10 @@ function bk_showActionResult(label, result, ok) {
   const icon = ok ? "✅" : "❌";
   overall.style.display = "block";
   overall.style.borderLeftColor = colorBorder;
+  // Human-meaningful outcome (e.g. "nothing to remove" vs "versions
+  // removed") -- without this the banner just said "completed" and the
+  // user couldn't tell whether anything actually happened.
+  const summaryLine = result.summary ? `<div style="font-size:12px;color:var(--text);margin-top:3px">${escHtml(result.summary)}</div>` : "";
   const errLine = result.error ? `<div style="color:var(--red);font-size:11px;margin-top:4px">Error: ${escHtml(result.error)}</div>` : "";
   const runLine = result.run && result.run.elapsed_seconds ? `<div style="color:var(--muted);font-size:10px;margin-top:2px">subprocess elapsed: ${result.run.elapsed_seconds}s, rc=${result.run.returncode}</div>` : "";
   overall.innerHTML = `
@@ -6295,6 +6299,7 @@ function bk_showActionResult(label, result, ok) {
       <span style="font-size:18px">${icon}</span>
       <div style="flex:1">
         <div style="font-weight:700;font-size:12px;color:var(--text-bright)">${escHtml(label)}: ${ok ? "completed" : "failed"}</div>
+        ${summaryLine}
         ${errLine}
         ${runLine}
       </div>
@@ -6325,7 +6330,7 @@ async function bk_scanCatalog() {
   const status = await bk_pollUntilDone(launch.session_id);
   const result = (status && status.result) || {ok: false, error: "no result"};
   bk_showActionResult("Scan", result, !!result.ok);
-  if (result.ok) loadBackup();
+  if (result.ok) loadBackup(true);
 }
 
 async function bk_deleteVersion(versionId) {
@@ -6369,7 +6374,7 @@ async function bk_deleteVersion(versionId) {
   const status = await bk_pollUntilDone(launch.session_id);
   const result = (status && status.result) || {ok: false, error: "no result"};
   bk_showActionResult(`Delete version ${versionId}`, result, !!result.ok);
-  if (result.ok) loadBackup();
+  if (result.ok) loadBackup(true);
 }
 
 async function bk_fhCleanup() {
@@ -6422,10 +6427,14 @@ async function bk_fhCleanup() {
   const status = await bk_pollUntilDone(launch.session_id);
   const result = (status && status.result) || {ok: false, error: "no result"};
   bk_showActionResult(`File History cleanup (${days}d)`, result, !!result.ok);
-  if (result.ok) loadBackup();
+  if (result.ok) loadBackup(true);
 }
 
-async function loadBackup() {
+async function loadBackup(preserveBanner = false) {
+  // preserveBanner=true keeps whatever bk_showActionResult just wrote in
+  // #bk-overall (the outcome of a scan/cleanup/delete) instead of clobbering
+  // it with the overall-health summary -- otherwise the action result is
+  // wiped within a second and the user can't tell what happened.
   const overall = document.getElementById("bk-overall");
   const s1body = document.getElementById("bk-sec1-body");
   const s2body = document.getElementById("bk-sec2-body");
@@ -6451,7 +6460,7 @@ async function loadBackup() {
   }
 
   // ── Overall banner ────────────────────────────────────────────────
-  if (overall && summary && summary.overall_health) {
+  if (!preserveBanner && overall && summary && summary.overall_health) {
     const lvl = summary.overall_health.level || "info";
     const s = bk_pillStyle(lvl);
     overall.style.display = "block";
@@ -6570,13 +6579,13 @@ async function loadBackup() {
             <div style="color:var(--muted)">Target reachable</div><div>${targetExistsLabel}</div>
             <div style="color:var(--muted)">Backup store on target</div><div>${storeExistsLabel} (<code>${escHtml(target.backup_store_path || "")}</code>)</div>
             <div style="color:var(--muted)">Frequency</div><div>${cfg.frequency_seconds ? Math.round(cfg.frequency_seconds / 60) + " min" : "—"}</div>
-            <div style="color:var(--muted)">Retention</div><div>${escHtml(cfg.retention_policy || "—")}${cfg.retention_min_age_months ? ` · keep at least ${cfg.retention_min_age_months} mo` : ""}</div>
+            <div style="color:var(--muted)">Retention</div><div>${escHtml(cfg.retention_policy || "—")}${cfg.retention_min_age_months ? ` · keep at least ${cfg.retention_min_age_months} mo` : ""} <span style="color:var(--ink-faint);font-size:10px">(File History's saved policy — change in Control Panel → Advanced settings)</span></div>
             <div style="color:var(--muted)">Catalog</div><div>${catalogLabel}</div>
             <div style="color:var(--muted)">Staging</div><div>${bk_humanBytes(fh.staging_usage_bytes)} across ${fh.staging_file_count} file(s)${stagingRatio}</div>
             <div style="color:var(--muted)">Folders watched</div><div>${folderCount} folder(s) across ${(cfg.libraries || []).length} libraries + ${(cfg.user_folders || []).length} user folders</div>
           </div>
           <div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:8px">
-            <div style="font-size:11px;color:var(--muted)">Cleanup runs <code>fhmanagew.exe -cleanup &lt;days&gt;</code> under UAC. <strong>0</strong> = keep only newest.</div>
+            <div style="font-size:11px;color:var(--muted)">One-time delete of versions older than N days (<code>fhmanagew.exe -cleanup</code>, UAC). <strong>0</strong> = keep only newest. Does <strong>not</strong> change the retention policy above.</div>
             <button onclick="bk_fhCleanup()" style="background:transparent;border:1px solid var(--orange);color:var(--orange);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:11px">🧹 Cleanup old versions</button>
           </div>
         </div>`;
