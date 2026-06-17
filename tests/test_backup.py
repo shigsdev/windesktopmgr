@@ -232,6 +232,50 @@ class TestProbeBackupStore:
         assert exists is True
 
 
+class TestJoinStorePath:
+    """Regression for the drive-relative os.path.join bug (2026-06-16)."""
+
+    def test_drive_root_join_is_absolute(self):
+        # E:\ + higs7\... must be E:\higs7\... (NOT the drive-relative
+        # E:higs7\... the old rstrip produced).
+        joined = backup._join_store_path("E:\\", "higs7\\SHIGS78-PC24\\Data")
+        assert joined == "E:\\higs7\\SHIGS78-PC24\\Data"
+
+    def test_bare_drive_forced_absolute(self):
+        joined = backup._join_store_path("E:", "higs7\\Data")
+        assert joined == "E:\\higs7\\Data"
+
+    def test_leading_separator_in_store_path_stripped(self):
+        joined = backup._join_store_path("E:\\", "\\higs7\\Data")
+        assert joined == "E:\\higs7\\Data"
+
+    def test_folder_target_preserved(self):
+        joined = backup._join_store_path("D:\\Backups\\", "user\\pc\\Data")
+        assert joined == "D:\\Backups\\user\\pc\\Data"
+
+
+class TestDeepestExistingAncestor:
+    """Honest 'how far does the configured path resolve' reporting."""
+
+    def test_returns_deepest_present_dir(self, tmp_path):
+        present = tmp_path / "a" / "b"
+        present.mkdir(parents=True)
+        probe = str(present / "missing" / "Data")
+        assert backup._deepest_existing_ancestor(probe) == str(present)
+
+    def test_drive_root_only(self, tmp_path):
+        probe = str(tmp_path / "nope" / "Data")
+        assert backup._deepest_existing_ancestor(probe) == str(tmp_path)
+
+    def test_handles_forward_slashes(self, tmp_path):
+        # A store path written with forward slashes must still resolve
+        # component-by-component (code-review finding 2026-06-16).
+        present = tmp_path / "a" / "b"
+        present.mkdir(parents=True)
+        probe = str(present / "missing" / "Data").replace("\\", "/")
+        assert backup._deepest_existing_ancestor(probe) == str(present)
+
+
 # ══════════════════════════════════════════════════════════════════════
 # get_file_history_state (live read + health probes)
 # ══════════════════════════════════════════════════════════════════════
@@ -342,12 +386,13 @@ class TestGetFileHistoryState:
         assert state["health"]["level"] == "info"
         assert "need elevation" in state["health"]["reason"].lower()
 
-    def test_fresh_catalog_demotes_missing_store_to_info(self, backup_tmp, tmp_path):
-        """Cross-check guard 2026-05-27: even when the store probe says
-        missing, a fresh catalog mtime proves File History IS writing.
-        Demote critical -> info so the user doesn't see a panic message
-        against a working backup. The user's exact failure: catalog age
-        was 0.04 days but the store probe falsely fired critical."""
+    def test_fresh_catalog_overrides_missing_store_to_ok(self, backup_tmp, tmp_path):
+        """Cross-check guard (2026-05-27, strengthened 2026-06-16): when the
+        store probe says missing but the catalog mtime is fresh, File History
+        IS actively writing -- so the verdict is a confident OK, not a scary
+        'missing -- verify manually'. THE 2026-06-16 user report: the
+        configured store path (E:\\higs7\\...) didn't exist on disk + was
+        ACL-restricted, but the catalog was 0.0 days old."""
         drive = tmp_path / "drive"
         drive.mkdir()
         # NOTE: do NOT create the store folder -- probe will return False.
@@ -359,11 +404,15 @@ class TestGetFileHistoryState:
         state = backup.get_file_history_state()
         # Probe still says False -- we didn't make the folder.
         assert state["target_backup_store_exists"] is False
-        # But health is info, NOT critical, because catalog is fresh.
-        assert state["health"]["level"] == "info", (
-            f"fresh catalog should demote store-missing to info; got {state['health']}"
+        # But health is a confident OK, because the fresh catalog proves
+        # backups are current.
+        assert state["health"]["level"] == "ok", (
+            f"fresh catalog should make store-missing a confident OK; got {state['health']}"
         )
-        assert "backups are running" in state["health"]["reason"].lower()
+        reason = state["health"]["reason"].lower()
+        assert "healthy" in reason and "last backup activity" in reason
+        # And it explains the unreadable store instead of crying "missing".
+        assert "directly readable" in reason
 
     def test_missing_store_with_stale_catalog_still_critical(self, backup_tmp, tmp_path):
         """Inverse of the above: when BOTH signals agree (store probe
@@ -411,6 +460,67 @@ class TestGetFileHistoryState:
         assert 9.5 < state["catalog_age_days"] < 10.5
         assert state["health"]["level"] == "warning"
         assert "stalled" in state["health"]["reason"].lower() or "stale" in state["health"]["reason"].lower()
+
+    def test_fresh_catalog_with_present_store_clean_reason(self, backup_tmp, tmp_path):
+        # Store present AND catalog fresh -> clean OK, no store caveat.
+        drive = tmp_path / "drive"
+        (drive / "higs7" / "SHIGS78-PC24" / "Data").mkdir(parents=True)
+        xml = _REAL_FH_XML.replace("<TargetUrl>E:\\</TargetUrl>", f"<TargetUrl>{drive}\\</TargetUrl>")
+        backup_tmp["fh_config"].write_text(xml, encoding="utf-8")
+        backup_tmp["fh_catalog"].write_bytes(b"x" * 1024)  # fresh catalog
+        state = backup.get_file_history_state()
+        assert state["target_backup_store_exists"] is True
+        assert state["health"]["level"] == "ok"
+        assert "last backup activity" in state["health"]["reason"].lower()
+        # Store is confirmed present, so no "not readable" caveat.
+        assert "directly readable" not in state["health"]["reason"].lower()
+
+    def test_unreachable_target_critical_even_with_fresh_catalog(self, backup_tmp, tmp_path):
+        # Drive unreachable RIGHT NOW outranks a fresh catalog -- future
+        # backups will fail, so surface it.
+        xml = _REAL_FH_XML.replace(
+            "<TargetUrl>E:\\</TargetUrl>",
+            f"<TargetUrl>{tmp_path / 'gone'}\\</TargetUrl>",
+        )
+        backup_tmp["fh_config"].write_text(xml, encoding="utf-8")
+        backup_tmp["fh_catalog"].write_bytes(b"x" * 1024)  # fresh catalog
+        state = backup.get_file_history_state()
+        assert state["target_path_exists"] is False
+        assert state["health"]["level"] == "critical"
+        assert "not accessible" in state["health"]["reason"].lower()
+
+    def test_staging_full_with_fresh_catalog_warns_not_ok(self, backup_tmp, tmp_path, mocker):
+        """Code-review finding 2026-06-16: a fresh catalog must NOT mask a
+        near-full staging area. A filling staging area signals the target
+        may be going unreachable and the next cycle could fail -- it has to
+        outrank the catalog-fresh 'ok' short-circuit."""
+        drive = tmp_path / "drive"
+        (drive / "higs7" / "SHIGS78-PC24" / "Data").mkdir(parents=True)
+        xml = _REAL_FH_XML.replace("<TargetUrl>E:\\</TargetUrl>", f"<TargetUrl>{drive}\\</TargetUrl>")
+        # Tiny capacity so a small usage trips the 95% warn threshold.
+        xml = xml.replace(
+            "<StagingAreaMaximumCapacity>4894568980</StagingAreaMaximumCapacity>",
+            "<StagingAreaMaximumCapacity>1000</StagingAreaMaximumCapacity>",
+        )
+        backup_tmp["fh_config"].write_text(xml, encoding="utf-8")
+        backup_tmp["fh_catalog"].write_bytes(b"x" * 1024)  # fresh catalog
+        mocker.patch.object(backup, "_staging_area_usage", return_value=(980, 3))
+        state = backup.get_file_history_state()
+        assert state["health"]["level"] == "warning"
+        assert "staging" in state["health"]["reason"].lower()
+
+    def test_store_probe_uses_absolute_join_not_drive_relative(self, backup_tmp, tmp_path, mocker):
+        """Regression for the os.path.join drive-relative bug: the probed
+        store path must be the ABSOLUTE target_url + store_path, not a
+        drive-relative mangling. We spy on _probe_backup_store's argument."""
+        drive = tmp_path / "drive"
+        (drive / "higs7" / "SHIGS78-PC24" / "Data").mkdir(parents=True)
+        xml = _REAL_FH_XML.replace("<TargetUrl>E:\\</TargetUrl>", f"<TargetUrl>{drive}\\</TargetUrl>")
+        backup_tmp["fh_config"].write_text(xml, encoding="utf-8")
+        spy = mocker.spy(backup, "_probe_backup_store")
+        backup.get_file_history_state()
+        probed = spy.call_args[0][0]
+        assert probed == str(drive / "higs7" / "SHIGS78-PC24" / "Data")
 
 
 # ══════════════════════════════════════════════════════════════════════

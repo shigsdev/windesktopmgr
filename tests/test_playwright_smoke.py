@@ -512,6 +512,57 @@ class TestCloudCopyListEditorPersists:
         page.wait_for_timeout(800)
 
 
+# ── Backup tab Section 2 — File History store-missing false alarm ─────
+#
+# Added 2026-06-16. A healthy ACL-protected store at a non-standard path
+# made the card cry red "missing -- verify manually". The verdict now
+# trusts a fresh catalog: when backups are current it reads a confident
+# "healthy" and the store row shows a calm "ACL-protected" note instead of
+# a red alarm. Gate: the DOM must reflect the API's health verdict, and a
+# non-critical verdict must NOT render the scary red "missing".
+
+
+class TestFileHistoryStoreAlarm:
+    """When the API reports a non-critical File History verdict, the card
+    must not render a red 'missing' store alarm, and the rendered health
+    banner must match the API's reason string."""
+
+    def test_card_reflects_api_health_without_false_missing_alarm(self, loaded_page):
+        page, _ = loaded_page
+        api = page.evaluate(
+            """async () => {
+                const r = await fetch('/api/backup/file-history');
+                return await r.json();
+            }"""
+        )
+        if not api.get("configured"):
+            pytest.skip("File History not configured on this machine")
+
+        page.evaluate("switchTab('backup')")
+        # Wait for Section 2 to render the real health banner (the reason
+        # text from the API), not the loading pill.
+        reason = (api.get("health") or {}).get("reason", "")
+        body = ""
+        for _ in range(20):
+            page.wait_for_timeout(300)
+            body = page.evaluate("(document.getElementById('bk-sec2-body') || {}).textContent || ''")
+            if reason and reason in body:
+                break
+
+        # The card's banner must show the SAME verdict the API computed.
+        assert reason and reason in body, f"card banner doesn't match API health reason {reason!r}; body={body[:240]!r}"
+
+        level = (api.get("health") or {}).get("level")
+        store_confirmed = api.get("target_backup_store_exists") is True
+        if level != "critical" and not store_confirmed:
+            # The false-alarm scenario the fix targets: backups are fine but
+            # the store folder isn't readable. The store row must show the
+            # calm ACL note, NOT a bare red "missing".
+            assert "acl-protected" in body.lower(), (
+                f"non-critical + unconfirmed store should show the calm ACL note; body={body[:240]!r}"
+            )
+
+
 # ── Concern action-button handler resolution (backlog #26 primary win) ─
 
 
