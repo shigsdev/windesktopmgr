@@ -6304,6 +6304,9 @@ function bk_showActionResult(label, result, ok) {
         ${runLine}
       </div>
     </div>`;
+  // Action buttons sit lower in the tab than this top banner -- bring the
+  // result into view so it's never an off-screen no-op.
+  overall.scrollIntoView({behavior: "smooth", block: "center"});
 }
 
 async function bk_scanCatalog() {
@@ -6421,6 +6424,10 @@ async function bk_fhCleanup() {
     wrap.appendChild(head);
     wrap.appendChild(statusEl);
     overall.appendChild(wrap);
+    // The Cleanup button lives near the bottom of the section but this
+    // banner is at the top -- scroll it into view so the user actually sees
+    // the progress + result instead of clicking into apparent silence.
+    overall.scrollIntoView({behavior: "smooth", block: "center"});
   }
   let launch;
   try {
