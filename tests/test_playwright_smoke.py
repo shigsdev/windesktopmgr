@@ -589,8 +589,10 @@ class TestCleanupScheduleControl:
             pytest.skip("File History not configured on this machine")
 
         page.evaluate("switchTab('backup')")
-        # Wait for the schedule control to populate.
-        for _ in range(20):
+        # Wait for the schedule control to populate. The status route shells
+        # out to `schtasks /Query` (~2-3s warm, more on a cold tray), so give
+        # it a generous budget to avoid a cold-restart flake.
+        for _ in range(50):  # 50 * 300ms = 15s
             page.wait_for_timeout(300)
             ready = page.evaluate("(document.getElementById('bk-fh-schedule')||{}).textContent ? true : false")
             if ready:
