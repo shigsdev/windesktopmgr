@@ -905,6 +905,62 @@ class TestValidateFhCleanupRequest:
         assert not ok
 
 
+def _load_helper():
+    """Import the elevated helper module from scripts/ for unit testing its
+    pure result-shaping logic (no elevation needed -- _run is mocked)."""
+    import importlib.util
+    import os
+
+    path = os.path.join(os.path.dirname(backup.__file__), "scripts", "backup_helper_elevated.py")
+    spec = importlib.util.spec_from_file_location("backup_helper_elevated", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestFhCleanupHelperResult:
+    """_action_fh_cleanup must give a human-meaningful outcome so the user
+    can tell what happened (the 2026-06-16 'I cannot tell if anything
+    happened' report). fhmanagew -quiet emits no stdout, so we shape the
+    message from the return code."""
+
+    def _run_result(self, rc, stderr=""):
+        return {"returncode": rc, "stderr": stderr, "stderr_tail": stderr, "elapsed_seconds": 2}
+
+    def test_nothing_to_clean_is_ok_with_clear_summary(self, mocker):
+        # rc != 0 + empty stderr = nothing old enough to delete (benign).
+        helper = _load_helper()
+        mocker.patch.object(helper, "_run", return_value=self._run_result(1, ""))
+        res = helper._action_fh_cleanup({"days": 180})
+        assert res["ok"] is True
+        assert res["removed"] is False
+        assert "nothing to remove" in res["summary"].lower()
+        # Educates the user that cleanup != retention policy.
+        assert "retention" in res["summary"].lower()
+
+    def test_removed_reports_success(self, mocker):
+        helper = _load_helper()
+        mocker.patch.object(helper, "_run", return_value=self._run_result(0, ""))
+        res = helper._action_fh_cleanup({"days": 365})
+        assert res["ok"] is True
+        assert res["removed"] is True
+        assert "removed" in res["summary"].lower()
+
+    def test_real_error_with_stderr_surfaces_failure(self, mocker):
+        helper = _load_helper()
+        mocker.patch.object(helper, "_run", return_value=self._run_result(2, "access denied"))
+        res = helper._action_fh_cleanup({"days": 30})
+        assert res["ok"] is False
+        assert "fhmanagew failed" in res["error"]
+
+    def test_invalid_days_never_runs_subprocess(self, mocker):
+        helper = _load_helper()
+        run = mocker.patch.object(helper, "_run")
+        res = helper._action_fh_cleanup({"days": -5})
+        assert res["ok"] is False
+        run.assert_not_called()
+
+
 # ══════════════════════════════════════════════════════════════════════
 # PR-2: Actions history persistence
 # ══════════════════════════════════════════════════════════════════════

@@ -259,12 +259,31 @@ def _action_fh_cleanup(params: dict) -> dict:
     if not ok:
         return {"ok": False, "error": err, "validator": "fh_cleanup"}
     run = _run(["fhmanagew.exe", "-cleanup", str(days), "-quiet"], timeout=600)
-    # fhmanagew returns non-zero in some "nothing to clean" cases; treat
-    # any non-zero with empty stderr as a soft warning rather than a
-    # hard failure, but surface stderr if it's non-empty.
-    if run["returncode"] != 0 and (run["stderr"] or "").strip():
+    # fhmanagew runs with -quiet, so it emits no stdout we can parse for a
+    # removed-count. It exits 0 when it removed old versions, and non-zero
+    # (with EMPTY stderr) when there was nothing old enough to remove -- a
+    # benign "already clean" outcome, NOT a failure. A non-zero exit WITH
+    # stderr is a real error.
+    rc = run["returncode"]
+    if rc != 0 and (run["stderr"] or "").strip():
         return {"ok": False, "error": f"fhmanagew failed: {run['stderr_tail']}", "run": run}
-    return {"ok": True, "days": days, "run": run}
+    if rc == 0:
+        # fhmanagew's exit codes aren't documented; rc==0 means it ran
+        # without error. Don't over-claim a removal count -- phrase it so
+        # it's accurate whether or not anything was actually old enough.
+        removed = True
+        summary = f"Cleanup ran for versions older than {days} day(s) -- any that old have been removed."
+    else:
+        # Non-zero + no stderr = nothing was old enough to delete. Say so
+        # explicitly, and clarify that cleanup is a one-time delete, not a
+        # retention-policy change (a common point of confusion).
+        removed = False
+        summary = (
+            f"Cleanup ran -- nothing to remove (no File History versions are older than "
+            f"{days} day(s)). Note: this is a one-time cleanup and does NOT change your "
+            f"retention policy."
+        )
+    return {"ok": True, "days": days, "removed": removed, "summary": summary, "run": run}
 
 
 _ACTION_HANDLERS = {
