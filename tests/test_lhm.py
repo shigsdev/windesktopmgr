@@ -198,6 +198,42 @@ class TestParseTempValue:
         assert lhm._parse_temp_value("") is None
 
 
+class TestIsReadingTemp:
+    """Threshold / headroom / metadata pseudo-sensors LHM mistypes as
+    Temperature must be rejected (2026-06-17 false elevated-temp alert)."""
+
+    def test_real_readings_accepted(self):
+        for name in ("Core Max", "P-Core #1", "GPU Core", "Composite Temperature", "Temperature #1", "DIMM #0"):
+            assert lhm._is_reading_temp(name), name
+
+    def test_bare_limit_word_is_kept(self):
+        # Only the "high limit"/"low limit" threshold suffixes are excluded --
+        # a real reading that merely contains the word "limit" must survive
+        # (code-review 2026-06-17: bare "limit" substring was too broad).
+        assert lhm._is_reading_temp("Power Limit Temperature")
+        assert lhm._is_reading_temp("CPU Temp Limit Zone")
+
+    def test_threshold_and_metadata_rejected(self):
+        for name in (
+            "Core #1 Distance to TjMax",
+            "Thermal Sensor Low Limit",
+            "Thermal Sensor High Limit",
+            "Thermal Sensor Critical Low Limit",
+            "Thermal Sensor Critical High Limit",
+            "Temperature Sensor Resolution",
+            "Warning Temperature",
+            "Critical Temperature",
+        ):
+            assert not lhm._is_reading_temp(name), name
+
+    def test_case_insensitive(self):
+        assert not lhm._is_reading_temp("CRITICAL TEMPERATURE")
+        assert not lhm._is_reading_temp("thermal sensor critical high LIMIT")
+
+    def test_none_safe(self):
+        assert lhm._is_reading_temp(None) is True  # missing name -> treat as a reading (parse_value still guards)
+
+
 class TestGetLhmTemps:
     def test_parses_tree_excludes_distance_and_nontemp(self, mocker):
         mocker.patch("requests.get", return_value=_resp(_LHM_TREE))
@@ -208,6 +244,67 @@ class TestGetLhmTemps:
         core = next(t for t in temps if t["Name"] == "P-Core #1")
         assert core["TempC"] == 34.0
         assert core["SensorId"] == "/intelcpu/0/temperature/2"
+
+    def test_excludes_ssd_dimm_threshold_pseudo_sensors(self, mocker):
+        # The 2026-06-17 false-alarm tree: an NVMe drive + a DIMM exposing
+        # their static threshold registers as Temperature sensors. Only the
+        # real Composite Temperature reading should survive.
+        tree = {
+            "Text": "Sensor",
+            "Children": [
+                {
+                    "Text": "Samsung SSD 990",
+                    "Children": [
+                        {
+                            "Text": "Composite Temperature",
+                            "Value": "41.0 °C",
+                            "Type": "Temperature",
+                            "SensorId": "/nvme/0/temperature/0",
+                        },
+                        {
+                            "Text": "Warning Temperature",
+                            "Value": "81.0 °C",
+                            "Type": "Temperature",
+                            "SensorId": "/nvme/0/temperature/1",
+                        },
+                        {
+                            "Text": "Critical Temperature",
+                            "Value": "84.0 °C",
+                            "Type": "Temperature",
+                            "SensorId": "/nvme/0/temperature/2",
+                        },
+                    ],
+                },
+                {
+                    "Text": "DIMM #0",
+                    "Children": [
+                        {
+                            "Text": "Temperature Sensor Resolution",
+                            "Value": "0.3 °C",
+                            "Type": "Temperature",
+                            "SensorId": "/ram/0/temperature/0",
+                        },
+                        {
+                            "Text": "Thermal Sensor High Limit",
+                            "Value": "55.0 °C",
+                            "Type": "Temperature",
+                            "SensorId": "/ram/0/temperature/1",
+                        },
+                        {
+                            "Text": "Thermal Sensor Critical High Limit",
+                            "Value": "85.0 °C",
+                            "Type": "Temperature",
+                            "SensorId": "/ram/0/temperature/2",
+                        },
+                    ],
+                },
+            ],
+        }
+        mocker.patch("requests.get", return_value=_resp(tree))
+        temps = lhm.get_lhm_temps()
+        names = {t["Name"] for t in temps}
+        assert names == {"Composite Temperature"}, f"only the real reading should survive; got {names}"
+        assert next(t for t in temps if t["Name"] == "Composite Temperature")["TempC"] == 41.0
 
     def test_empty_when_server_down(self, mocker):
         mocker.patch("requests.get", side_effect=OSError("connection refused"))
