@@ -259,31 +259,34 @@ def _action_fh_cleanup(params: dict) -> dict:
     if not ok:
         return {"ok": False, "error": err, "validator": "fh_cleanup"}
     run = _run(["fhmanagew.exe", "-cleanup", str(days), "-quiet"], timeout=600)
-    # fhmanagew runs with -quiet, so it emits no stdout we can parse for a
-    # removed-count. It exits 0 when it removed old versions, and non-zero
-    # (with EMPTY stderr) when there was nothing old enough to remove -- a
-    # benign "already clean" outcome, NOT a failure. A non-zero exit WITH
-    # stderr is a real error.
     rc = run["returncode"]
-    if rc != 0 and (run["stderr"] or "").strip():
-        return {"ok": False, "error": f"fhmanagew failed: {run['stderr_tail']}", "run": run}
     if rc == 0:
-        # fhmanagew's exit codes aren't documented; rc==0 means it ran
-        # without error. Don't over-claim a removal count -- phrase it so
-        # it's accurate whether or not anything was actually old enough.
-        removed = True
-        summary = f"Cleanup ran for versions older than {days} day(s) -- any that old have been removed."
-    else:
-        # Non-zero + no stderr = nothing was old enough to delete. Say so
-        # explicitly, and clarify that cleanup is a one-time delete, not a
-        # retention-policy change (a common point of confusion).
-        removed = False
-        summary = (
-            f"Cleanup ran -- nothing to remove (no File History versions are older than "
-            f"{days} day(s)). Note: this is a one-time cleanup and does NOT change your "
-            f"retention policy."
-        )
-    return {"ok": True, "days": days, "removed": removed, "summary": summary, "run": run}
+        # rc 0 = fhmanagew ran without error. Its exit codes aren't documented
+        # and -quiet hides any count, so don't over-claim how much was removed.
+        return {
+            "ok": True,
+            "days": days,
+            "summary": f"Cleanup ran for versions older than {days} day(s).",
+            "run": run,
+        }
+    # Non-zero exit = the cleanup FAILED. Do NOT report it as "nothing to
+    # remove" (the 2026-06-30 bug: on a damaged File History config
+    # `fhmanagew -cleanup` fails with "Could not clean up File History data"
+    # and returns non-zero while -quiet swallows the dialog -- we were calling
+    # that a benign "already clean" success). Surface it honestly so the user
+    # learns the cleanup isn't working instead of believing it succeeded.
+    err = (run["stderr_tail"] or "").strip()
+    return {
+        "ok": False,
+        "days": days,
+        "error": (
+            f"File History cleanup did not complete (fhmanagew exit code {rc}). "
+            "Windows could not clean up File History -- this usually means the File "
+            "History configuration is damaged. Open Control Panel -> File History to "
+            "check it; a reset (turn off, then on) often fixes cleanup." + (f" Details: {err}" if err else "")
+        ),
+        "run": run,
+    }
 
 
 def _action_fh_storage_scan(params: dict) -> dict:
@@ -302,16 +305,11 @@ def _action_fh_storage_scan(params: dict) -> dict:
         return {"ok": False, "error": f"No File History stores found on {target_url}"}
     bk._atomic_write_json(bk.FH_STORAGE_CACHE_FILE, result)  # noqa: SLF001
     total_gb = result["total_bytes"] / 1024**3
-    recl_gb = result["reclaimable_bytes"] / 1024**3
-    summary = f"Scanned {result['store_count']} File History store(s): {total_gb:.0f} GB total"
-    if recl_gb >= 1:
-        summary += f" -- {recl_gb:.0f} GB is in stale orphaned stores you can reclaim"
     return {
         "ok": True,
         "store_count": result["store_count"],
         "total_bytes": result["total_bytes"],
-        "reclaimable_bytes": result["reclaimable_bytes"],
-        "summary": summary + ".",
+        "summary": f"Scanned {result['store_count']} File History store(s): {total_gb:.0f} GB total.",
     }
 
 

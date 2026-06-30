@@ -487,22 +487,23 @@ def find_fh_stores(drive_root: str, max_depth: int = 4, deadline: float | None =
 
 def scan_fh_storage(target_url: str, store_rel_path: str, budget_s: float = _FH_STORAGE_BUDGET_S) -> dict:
     """Walk the File History target drive and break down its space usage:
-    every store, its size + top source folders, and which is the ACTIVE store
-    vs. stale reclaimable orphans. Designed to run elevated (the active store
-    is ACL-restricted). Never raises -- returns a best-effort, time-capped
-    result."""
+    every store with its total size + top source folders. Designed to run
+    elevated (the active store is ACL-restricted). Never raises -- best-effort,
+    time-capped.
+
+    Deliberately does NOT classify stores as "active" vs. "reclaimable"
+    (removed 2026-06-30). The earlier version judged that by the top ``Data``
+    folder's mtime, which is meaningless for File History: versions are written
+    DEEP in subfolders, so the top folder can read years old while the store is
+    written hourly. That mislabeled a live 1.38 TB store as a deletable orphan.
+    The tool now only REPORTS where space is; it never recommends deletion.
+    (``store_rel_path`` is accepted for call-site compatibility; unused.)"""
     drive_root = (target_url or "").rstrip("\\/") + os.sep
-    active_norm_target = os.path.normcase(os.path.normpath(_join_store_path(target_url, store_rel_path)))
     deadline = time.monotonic() + budget_s
     stores: list[dict] = []
 
     for data_dir in find_fh_stores(drive_root, deadline=deadline):
         size, count, capped = _dir_size(data_dir, deadline)
-        try:
-            mtime = datetime.fromtimestamp(os.stat(data_dir).st_mtime)
-        except OSError:
-            mtime = None
-        age_days = round((datetime.now() - mtime).total_seconds() / 86400.0, 1) if mtime else None
         by_source: list[dict] = []
         try:
             with os.scandir(data_dir) as it:
@@ -519,30 +520,9 @@ def scan_fh_storage(target_url: str, store_rel_path: str, budget_s: float = _FH_
                 "size_bytes": size,
                 "file_count": count,
                 "capped": capped,
-                "mtime": mtime.isoformat(timespec="seconds") if mtime else None,
-                "age_days": age_days,
                 "by_source": by_source[:12],
-                "_norm": os.path.normcase(os.path.normpath(data_dir)),
             }
         )
-
-    # The active store is the one matching the configured target; if the
-    # config path doesn't match any on disk (the known higs7 path mismatch),
-    # fall back to the freshest store (the active one is written hourly).
-    active_norm = next((s["_norm"] for s in stores if s["_norm"] == active_norm_target), None)
-    if active_norm is None and stores:
-        # Freshest store wins (active is written hourly -> smallest age). A
-        # store we CAN'T date (mtime read failed) is treated as age 0 so it
-        # WINS the active race rather than losing it -- that keeps an
-        # undatable store protected (never flagged reclaimable) instead of
-        # letting an orphan steal the "active" label (code-review 2026-06-30).
-        active_norm = min(stores, key=lambda s: s["age_days"] if s["age_days"] is not None else 0)["_norm"]
-    for s in stores:
-        s["active"] = s["_norm"] == active_norm
-        # Reclaimable = not the active store AND demonstrably stale (>30 days
-        # untouched) -- a confident "this is old, dead weight" signal.
-        s["reclaimable"] = (not s["active"]) and (s["age_days"] is not None and s["age_days"] > 30)
-        del s["_norm"]
     stores.sort(key=lambda s: s["size_bytes"], reverse=True)
 
     return {
@@ -551,7 +531,6 @@ def scan_fh_storage(target_url: str, store_rel_path: str, budget_s: float = _FH_
         "target_drive": drive_root,
         "store_count": len(stores),
         "total_bytes": sum(s["size_bytes"] for s in stores),
-        "reclaimable_bytes": sum(s["size_bytes"] for s in stores if s["reclaimable"]),
         "stores": stores,
     }
 

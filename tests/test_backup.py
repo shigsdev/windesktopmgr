@@ -1006,31 +1006,33 @@ class TestFhCleanupHelperResult:
     def _run_result(self, rc, stderr=""):
         return {"returncode": rc, "stderr": stderr, "stderr_tail": stderr, "elapsed_seconds": 2}
 
-    def test_nothing_to_clean_is_ok_with_clear_summary(self, mocker):
-        # rc != 0 + empty stderr = nothing old enough to delete (benign).
+    def test_nonzero_exit_is_a_failure_not_nothing_to_remove(self, mocker):
+        # 2026-06-30 fix: rc != 0 means the cleanup FAILED (on a damaged File
+        # History config `fhmanagew -cleanup` fails non-zero while -quiet hides
+        # the "Could not clean up" dialog). It must NOT be reported as a benign
+        # "nothing to remove" success.
         helper = _load_helper()
         mocker.patch.object(helper, "_run", return_value=self._run_result(1, ""))
         res = helper._action_fh_cleanup({"days": 180})
-        assert res["ok"] is True
-        assert res["removed"] is False
-        assert "nothing to remove" in res["summary"].lower()
-        # Educates the user that cleanup != retention policy.
-        assert "retention" in res["summary"].lower()
+        assert res["ok"] is False
+        assert "nothing to remove" not in res.get("error", "").lower()
+        assert "did not complete" in res["error"].lower()
+        assert "exit code 1" in res["error"].lower()
 
-    def test_removed_reports_success(self, mocker):
+    def test_zero_exit_reports_success_without_overclaiming(self, mocker):
         helper = _load_helper()
         mocker.patch.object(helper, "_run", return_value=self._run_result(0, ""))
         res = helper._action_fh_cleanup({"days": 365})
         assert res["ok"] is True
-        assert res["removed"] is True
-        assert "removed" in res["summary"].lower()
+        assert "cleanup ran" in res["summary"].lower()
+        assert "removed" not in res  # no over-claimed removed flag/count
 
-    def test_real_error_with_stderr_surfaces_failure(self, mocker):
+    def test_nonzero_exit_with_stderr_includes_details(self, mocker):
         helper = _load_helper()
         mocker.patch.object(helper, "_run", return_value=self._run_result(2, "access denied"))
         res = helper._action_fh_cleanup({"days": 30})
         assert res["ok"] is False
-        assert "fhmanagew failed" in res["error"]
+        assert "access denied" in res["error"].lower()
 
     def test_invalid_days_never_runs_subprocess(self, mocker):
         helper = _load_helper()
@@ -1044,18 +1046,13 @@ class TestFhCleanupHelperResult:
         scan = mocker.patch.object(
             helper.bk,
             "scan_fh_storage",
-            return_value={
-                "store_count": 2,
-                "total_bytes": 1500 * 1024**3,
-                "reclaimable_bytes": 1380 * 1024**3,
-                "stores": [],
-            },
+            return_value={"store_count": 2, "total_bytes": 1500 * 1024**3, "stores": []},
         )
         write = mocker.patch.object(helper.bk, "_atomic_write_json", return_value=True)
         res = helper._action_fh_storage_scan({"target_url": "E:\\", "store_rel_path": "u\\m\\Data"})
         assert res["ok"] is True
         assert res["store_count"] == 2
-        assert "reclaim" in res["summary"].lower()  # surfaces the orphan win
+        assert "1500 gb" in res["summary"].lower()
         scan.assert_called_once()
         write.assert_called_once()  # cached for the unelevated tray
 
@@ -1245,67 +1242,38 @@ class TestDirSize:
 
 
 class TestScanFhStorage:
-    def test_marks_active_vs_reclaimable_orphan(self, tmp_path):
+    def test_sizes_stores_and_sources_without_classification(self, tmp_path):
+        # 2026-06-30: the scan REPORTS size + sources only. It no longer
+        # classifies stores as active/reclaimable -- the folder-mtime that drove
+        # that is meaningless for File History (deep writes don't touch it) and
+        # it mislabeled a live 1.38 TB store as a deletable orphan.
         drive = tmp_path / "E"
-        active = _make_fh_store(drive, ["SHIGS78-PC24"], {"C/a.txt": 1000})  # fresh
-        orphan = _make_fh_store(
+        a = _make_fh_store(drive, ["SHIGS78-PC24"], {"C/a.txt": 1000})
+        b = _make_fh_store(
             drive, ["FileHistory", "higs7", "SHIGS78-PC24"], {"C/b.txt": 5000, "$OF/c.txt": 2000}, age_days=400
         )
-        # store_rel resolves to the active store via _join_store_path.
         result = backup.scan_fh_storage(str(drive), "SHIGS78-PC24\\Data")
         assert result["store_count"] == 2
-        by_path = {os.path.normcase(s["path"]): s for s in result["stores"]}
-        act = by_path[os.path.normcase(active)]
-        orp = by_path[os.path.normcase(orphan)]
-        assert act["active"] is True and act["reclaimable"] is False
-        assert orp["active"] is False and orp["reclaimable"] is True
-        assert orp["age_days"] > 30
         assert result["total_bytes"] == 8000
-        assert result["reclaimable_bytes"] == 7000  # only the orphan
-        # by_source aggregation (largest first).
-        assert orp["by_source"][0]["name"] == "C" and orp["by_source"][0]["size_bytes"] == 5000
-
-    def test_falls_back_to_freshest_when_config_path_mismatches(self, tmp_path):
-        drive = tmp_path / "E"
-        fresh = _make_fh_store(drive, ["CurrentStore"], {"C/a.txt": 100})  # recent mtime
-        _make_fh_store(drive, ["FileHistory", "u", "m"], {"C/b.txt": 200}, age_days=300)
-        # store_rel doesn't match any on-disk store -> freshest wins.
-        result = backup.scan_fh_storage(str(drive), "does\\not\\match\\Data")
-        active = next(s for s in result["stores"] if s["active"])
-        assert os.path.normcase(active["path"]) == os.path.normcase(fresh)
-
-    def test_undatable_store_wins_active_not_orphan(self, tmp_path, mocker):
-        # code-review 2026-06-30: if the ACTIVE store's mtime read fails (None),
-        # it must still win the freshest-fallback race (treated as age 0) so an
-        # orphan can't steal the "active" label. Config path made to NOT match,
-        # forcing the fallback.
-        drive = tmp_path / "E"
-        active = _make_fh_store(drive, ["CurrentStore"], {"C/a.txt": 100})
-        orphan = _make_fh_store(drive, ["FileHistory", "u", "m"], {"C/b.txt": 200}, age_days=500)
-        real_stat = os.stat
-
-        def fake_stat(p, *a, **k):
-            if os.path.normcase(str(p)) == os.path.normcase(active):
-                raise OSError("ACL denied reading mtime")
-            return real_stat(p, *a, **k)
-
-        mocker.patch("backup.os.stat", side_effect=fake_stat)
-        result = backup.scan_fh_storage(str(drive), "no\\match\\Data")
+        # No deletion-recommendation fields anywhere.
+        assert "reclaimable_bytes" not in result
+        for s in result["stores"]:
+            assert "active" not in s and "reclaimable" not in s and "age_days" not in s
         by_path = {os.path.normcase(s["path"]): s for s in result["stores"]}
-        assert by_path[os.path.normcase(active)]["active"] is True  # undatable -> still active
-        assert by_path[os.path.normcase(active)]["reclaimable"] is False
-        assert by_path[os.path.normcase(orphan)]["reclaimable"] is True
+        assert by_path[os.path.normcase(a)]["size_bytes"] == 1000
+        big = by_path[os.path.normcase(b)]
+        assert big["size_bytes"] == 7000
+        assert big["by_source"][0]["name"] == "C" and big["by_source"][0]["size_bytes"] == 5000
+        # Largest store sorts first.
+        assert os.path.normcase(result["stores"][0]["path"]) == os.path.normcase(b)
 
-    def test_single_stale_store_not_marked_reclaimable(self, tmp_path):
-        # Only one store + can't confirm it's inactive -> conservative: don't
-        # flag the sole store as reclaimable even if it's old.
+    def test_no_stores_returns_zero(self, tmp_path):
         drive = tmp_path / "E"
-        _make_fh_store(drive, ["OldStore"], {"C/a.txt": 100}, age_days=900)
-        result = backup.scan_fh_storage(str(drive), "no\\match\\Data")
-        assert result["store_count"] == 1
-        assert result["stores"][0]["active"] is True
-        assert result["stores"][0]["reclaimable"] is False
-        assert result["reclaimable_bytes"] == 0
+        (drive / "RandomFolder").mkdir(parents=True)
+        result = backup.scan_fh_storage(str(drive), "x\\Data")
+        assert result["store_count"] == 0
+        assert result["total_bytes"] == 0
+        assert result["stores"] == []
 
 
 class TestLoadFhStorageCache:

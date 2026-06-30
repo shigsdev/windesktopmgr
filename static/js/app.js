@@ -6605,35 +6605,20 @@ async function bk_renderStorage() {
   el.appendChild(status);
 
   if (!data.has_cache) {
-    status.textContent = "File History keeps every version of every changed file, so the store can balloon — and a previous setup can leave a huge orphaned store behind. Scan to see exactly where the space is going (one-time UAC prompt).";
+    status.textContent = "File History keeps every version of every changed file, so the store can grow very large. Scan to see exactly where the space is going — total size and which source folders fill it (one-time UAC prompt).";
     return;
   }
 
-  status.textContent = `Total File History: ${bk_fmtGB(data.total_bytes)} across ${data.store_count} store(s). Scanned ${(data.scanned_at || "").replace("T", " ")}.`;
-
-  if (data.reclaimable_bytes > 0) {
-    const rec = mk("div", "margin-top:8px;padding:8px 10px;border-left:3px solid var(--green);background:var(--surface);border-radius:6px;font-size:12px;color:var(--text)");
-    rec.textContent = `💡 ${bk_fmtGB(data.reclaimable_bytes)} is in stale orphaned store(s) below — old File History data from a previous setup, NOT your active backups. Reclaim it via "Show in Explorer" → rename to *_OLD, confirm backups still run, then delete.`;
-    el.appendChild(rec);
-  }
+  status.textContent = `Total File History: ${bk_fmtGB(data.total_bytes)} across ${data.store_count} store(s). Scanned ${(data.scanned_at || "").replace("T", " ")}. This is a size report only — it doesn't recommend deleting anything.`;
 
   (data.stores || []).forEach((s) => {
     const card = mk("div", "margin-top:10px;padding:8px 10px;border:1px solid var(--border);border-radius:6px");
     const row = mk("div", "display:flex;align-items:center;gap:8px;flex-wrap:wrap");
-    const badge = s.active
-      ? mk("span", "font-size:9px;font-weight:700;letter-spacing:.06em;color:var(--green);border:1px solid var(--green);border-radius:4px;padding:1px 5px", "ACTIVE")
-      : (s.reclaimable
-          ? mk("span", "font-size:9px;font-weight:700;letter-spacing:.06em;color:var(--orange);border:1px solid var(--orange);border-radius:4px;padding:1px 5px", "ORPHANED · RECLAIMABLE")
-          : mk("span", "font-size:9px;font-weight:700;letter-spacing:.06em;color:var(--muted);border:1px solid var(--border);border-radius:4px;padding:1px 5px", "OTHER STORE"));
-    row.appendChild(badge);
+    row.appendChild(mk("span", "font-size:9px;font-weight:700;letter-spacing:.06em;color:var(--muted);border:1px solid var(--border);border-radius:4px;padding:1px 5px", "FILE HISTORY STORE"));
     row.appendChild(mk("span", "font-size:13px;font-weight:700;color:var(--text-bright)", bk_fmtGB(s.size_bytes) + (s.capped ? "+ (scan capped)" : "")));
-    const ageTxt = s.age_days != null ? ` · ${s.age_days < 1 ? "active today" : Math.round(s.age_days) + " days old"}` : "";
-    row.appendChild(mk("span", "font-size:11px;color:var(--muted)", `${(s.file_count || 0).toLocaleString()} files${ageTxt}`));
+    row.appendChild(mk("span", "font-size:11px;color:var(--muted)", `${(s.file_count || 0).toLocaleString()} files`));
     card.appendChild(row);
-
-    const pathRow = mk("div", "margin-top:3px;font-size:10px;color:var(--ink-faint);word-break:break-all", s.path);
-    card.appendChild(pathRow);
-
+    card.appendChild(mk("div", "margin-top:3px;font-size:10px;color:var(--ink-faint);word-break:break-all", s.path));
     // Per-source bars.
     (s.by_source || []).slice(0, 6).forEach((src) => {
       if (!src.size_bytes) return;
@@ -6646,12 +6631,6 @@ async function bk_renderStorage() {
       line.appendChild(mk("span", "font-size:10px;color:var(--text);width:64px;text-align:right;flex-shrink:0", bk_fmtGB(src.size_bytes)));
       card.appendChild(line);
     });
-
-    if (s.reclaimable) {
-      const reveal = mk("button", "margin-top:6px;background:transparent;border:1px solid var(--orange);color:var(--orange);padding:3px 10px;border-radius:6px;cursor:pointer;font-size:11px", "📂 Show in Explorer");
-      reveal.onclick = () => bk_revealPath(s.path);
-      card.appendChild(reveal);
-    }
     el.appendChild(card);
   });
 }
