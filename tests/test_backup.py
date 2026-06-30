@@ -16,7 +16,9 @@ constants to tmp_path so no real backup state on disk is touched.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import time
 
 import pytest
 
@@ -718,6 +720,39 @@ class TestBackupRoutes:
         assert resp.get_json()["ok"] is True
         rm.assert_called_once()
 
+    def test_fh_storage_route_returns_cache(self, client, backup_tmp, mocker):
+        mocker.patch.object(
+            backup,
+            "load_fh_storage_cache",
+            return_value={"has_cache": True, "total_bytes": 99, "stores": []},
+        )
+        resp = client.get("/api/backup/fh-storage")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["has_cache"] is True
+        assert data["total_bytes"] == 99
+
+    def test_fh_storage_scan_route_launches_elevated(self, client, backup_tmp, mocker):
+        mocker.patch.object(
+            backup,
+            "get_file_history_state",
+            return_value={"config": {"target": {"url": "E:\\", "backup_store_path": "u\\m\\Data"}}},
+        )
+        launch = mocker.patch.object(
+            backup, "request_elevated_action", return_value={"ok": True, "session_id": "sess1"}
+        )
+        resp = client.post("/api/backup/fh-storage-scan", json={})
+        assert resp.status_code == 200
+        assert resp.get_json()["session_id"] == "sess1"
+        action, params = launch.call_args[0]
+        assert action == "fh_storage_scan"
+        assert params["target_url"] == "E:\\"
+
+    def test_fh_storage_scan_route_no_target_rejected(self, client, backup_tmp, mocker):
+        mocker.patch.object(backup, "get_file_history_state", return_value={"config": {"target": {"url": ""}}})
+        resp = client.post("/api/backup/fh-storage-scan", json={})
+        assert resp.status_code == 400
+
 
 # ══════════════════════════════════════════════════════════════════════
 # Dashboard concern wiring
@@ -1004,6 +1039,47 @@ class TestFhCleanupHelperResult:
         assert res["ok"] is False
         run.assert_not_called()
 
+    def test_storage_scan_caches_and_summarizes(self, mocker):
+        helper = _load_helper()
+        scan = mocker.patch.object(
+            helper.bk,
+            "scan_fh_storage",
+            return_value={
+                "store_count": 2,
+                "total_bytes": 1500 * 1024**3,
+                "reclaimable_bytes": 1380 * 1024**3,
+                "stores": [],
+            },
+        )
+        write = mocker.patch.object(helper.bk, "_atomic_write_json", return_value=True)
+        res = helper._action_fh_storage_scan({"target_url": "E:\\", "store_rel_path": "u\\m\\Data"})
+        assert res["ok"] is True
+        assert res["store_count"] == 2
+        assert "reclaim" in res["summary"].lower()  # surfaces the orphan win
+        scan.assert_called_once()
+        write.assert_called_once()  # cached for the unelevated tray
+
+    def test_storage_scan_no_target_errors(self, mocker):
+        helper = _load_helper()
+        scan = mocker.patch.object(helper.bk, "scan_fh_storage")
+        res = helper._action_fh_storage_scan({"target_url": ""})
+        assert res["ok"] is False
+        scan.assert_not_called()
+
+    def test_storage_scan_zero_stores_preserves_cache(self, mocker):
+        # code-review 2026-06-30: a 0-store scan (drive offline/wrong root)
+        # must NOT clobber a good prior cache -- error out instead.
+        helper = _load_helper()
+        mocker.patch.object(
+            helper.bk,
+            "scan_fh_storage",
+            return_value={"store_count": 0, "total_bytes": 0, "reclaimable_bytes": 0, "stores": []},
+        )
+        write = mocker.patch.object(helper.bk, "_atomic_write_json")
+        res = helper._action_fh_storage_scan({"target_url": "E:\\", "store_rel_path": "x\\Data"})
+        assert res["ok"] is False
+        write.assert_not_called()  # cache left intact
+
 
 # ══════════════════════════════════════════════════════════════════════
 # Scheduled File History auto-cleanup (in-app retention)
@@ -1112,6 +1188,144 @@ class TestFhCleanupScheduleSetup:
         assert res["ok"] is True
         args = shell.calls[0][3]
         assert "/Delete" in args and backup._FH_CLEANUP_TASK_NAME in args
+
+
+# ══════════════════════════════════════════════════════════════════════
+# File History storage breakdown (where is the space going)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _make_fh_store(root, rel_parts, files, age_days=0):
+    """Create a File History store (Data + Configuration) under root and seed
+    Data with files {relpath: nbytes}. Returns the Data dir path."""
+    store = root
+    for p in rel_parts:
+        store = store / p
+    data = store / "Data"
+    (store / "Configuration").mkdir(parents=True, exist_ok=True)
+    for rel, nbytes in files.items():
+        f = data / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"x" * nbytes)
+    if age_days:
+        old = time.time() - age_days * 86400
+        os.utime(data, (old, old))
+    return str(data)
+
+
+class TestFindFhStores:
+    def test_finds_data_dirs_with_configuration_sibling(self, tmp_path):
+        drive = tmp_path / "E"
+        a = _make_fh_store(drive, ["SHIGS78-PC24"], {"C/f.txt": 10})
+        b = _make_fh_store(drive, ["FileHistory", "higs7", "SHIGS78-PC24"], {"C/g.txt": 20})
+        found = {os.path.normcase(p) for p in backup.find_fh_stores(str(drive))}
+        assert found == {os.path.normcase(a), os.path.normcase(b)}
+
+    def test_ignores_non_store_dirs(self, tmp_path):
+        drive = tmp_path / "E"
+        (drive / "RandomFolder" / "sub").mkdir(parents=True)
+        (drive / "OnlyData" / "Data").mkdir(parents=True)  # Data but no Configuration
+        assert backup.find_fh_stores(str(drive)) == []
+
+
+class TestDirSize:
+    def test_sums_bytes_and_counts(self, tmp_path):
+        (tmp_path / "a").mkdir()
+        (tmp_path / "a" / "x.bin").write_bytes(b"x" * 100)
+        (tmp_path / "y.bin").write_bytes(b"y" * 50)
+        total, count, capped = backup._dir_size(str(tmp_path), time.monotonic() + 30)
+        assert total == 150
+        assert count == 2
+        assert capped is False
+
+    def test_deadline_already_passed_caps(self, tmp_path):
+        (tmp_path / "x.bin").write_bytes(b"x" * 100)
+        total, count, capped = backup._dir_size(str(tmp_path), time.monotonic() - 1)
+        assert capped is True
+
+
+class TestScanFhStorage:
+    def test_marks_active_vs_reclaimable_orphan(self, tmp_path):
+        drive = tmp_path / "E"
+        active = _make_fh_store(drive, ["SHIGS78-PC24"], {"C/a.txt": 1000})  # fresh
+        orphan = _make_fh_store(
+            drive, ["FileHistory", "higs7", "SHIGS78-PC24"], {"C/b.txt": 5000, "$OF/c.txt": 2000}, age_days=400
+        )
+        # store_rel resolves to the active store via _join_store_path.
+        result = backup.scan_fh_storage(str(drive), "SHIGS78-PC24\\Data")
+        assert result["store_count"] == 2
+        by_path = {os.path.normcase(s["path"]): s for s in result["stores"]}
+        act = by_path[os.path.normcase(active)]
+        orp = by_path[os.path.normcase(orphan)]
+        assert act["active"] is True and act["reclaimable"] is False
+        assert orp["active"] is False and orp["reclaimable"] is True
+        assert orp["age_days"] > 30
+        assert result["total_bytes"] == 8000
+        assert result["reclaimable_bytes"] == 7000  # only the orphan
+        # by_source aggregation (largest first).
+        assert orp["by_source"][0]["name"] == "C" and orp["by_source"][0]["size_bytes"] == 5000
+
+    def test_falls_back_to_freshest_when_config_path_mismatches(self, tmp_path):
+        drive = tmp_path / "E"
+        fresh = _make_fh_store(drive, ["CurrentStore"], {"C/a.txt": 100})  # recent mtime
+        _make_fh_store(drive, ["FileHistory", "u", "m"], {"C/b.txt": 200}, age_days=300)
+        # store_rel doesn't match any on-disk store -> freshest wins.
+        result = backup.scan_fh_storage(str(drive), "does\\not\\match\\Data")
+        active = next(s for s in result["stores"] if s["active"])
+        assert os.path.normcase(active["path"]) == os.path.normcase(fresh)
+
+    def test_undatable_store_wins_active_not_orphan(self, tmp_path, mocker):
+        # code-review 2026-06-30: if the ACTIVE store's mtime read fails (None),
+        # it must still win the freshest-fallback race (treated as age 0) so an
+        # orphan can't steal the "active" label. Config path made to NOT match,
+        # forcing the fallback.
+        drive = tmp_path / "E"
+        active = _make_fh_store(drive, ["CurrentStore"], {"C/a.txt": 100})
+        orphan = _make_fh_store(drive, ["FileHistory", "u", "m"], {"C/b.txt": 200}, age_days=500)
+        real_stat = os.stat
+
+        def fake_stat(p, *a, **k):
+            if os.path.normcase(str(p)) == os.path.normcase(active):
+                raise OSError("ACL denied reading mtime")
+            return real_stat(p, *a, **k)
+
+        mocker.patch("backup.os.stat", side_effect=fake_stat)
+        result = backup.scan_fh_storage(str(drive), "no\\match\\Data")
+        by_path = {os.path.normcase(s["path"]): s for s in result["stores"]}
+        assert by_path[os.path.normcase(active)]["active"] is True  # undatable -> still active
+        assert by_path[os.path.normcase(active)]["reclaimable"] is False
+        assert by_path[os.path.normcase(orphan)]["reclaimable"] is True
+
+    def test_single_stale_store_not_marked_reclaimable(self, tmp_path):
+        # Only one store + can't confirm it's inactive -> conservative: don't
+        # flag the sole store as reclaimable even if it's old.
+        drive = tmp_path / "E"
+        _make_fh_store(drive, ["OldStore"], {"C/a.txt": 100}, age_days=900)
+        result = backup.scan_fh_storage(str(drive), "no\\match\\Data")
+        assert result["store_count"] == 1
+        assert result["stores"][0]["active"] is True
+        assert result["stores"][0]["reclaimable"] is False
+        assert result["reclaimable_bytes"] == 0
+
+
+class TestLoadFhStorageCache:
+    def test_no_file_returns_placeholder(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(backup, "FH_STORAGE_CACHE_FILE", str(tmp_path / "none.json"))
+        assert backup.load_fh_storage_cache() == {"has_cache": False, "stores": []}
+
+    def test_reads_valid_cache(self, tmp_path, monkeypatch):
+        p = tmp_path / "fh_storage.json"
+        p.write_text(json.dumps({"total_bytes": 5, "stores": [{"path": "X"}]}), encoding="utf-8")
+        monkeypatch.setattr(backup, "FH_STORAGE_CACHE_FILE", str(p))
+        out = backup.load_fh_storage_cache()
+        assert out["has_cache"] is True
+        assert out["total_bytes"] == 5
+
+    def test_malformed_cache_returns_placeholder(self, tmp_path, monkeypatch):
+        p = tmp_path / "bad.json"
+        p.write_text("not-json", encoding="utf-8")
+        monkeypatch.setattr(backup, "FH_STORAGE_CACHE_FILE", str(p))
+        assert backup.load_fh_storage_cache()["has_cache"] is False
 
 
 # ══════════════════════════════════════════════════════════════════════

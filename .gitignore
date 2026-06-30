@@ -62,6 +62,7 @@ baseline_accept_watermark.json
 # Backup tab runtime state (backlog #47 — wbadmin/File-History scan cache + action audit)
 backup_cache.json
 backup_actions_history.json
+fh_storage_cache.json
 
 # CloudCopy / OneDrive→iCloud replicator rules (backlog #46 runtime state)
 cloudcopy_rules.json

@@ -6566,6 +6566,122 @@ async function bk_removeCleanupSchedule() {
   setTimeout(bk_renderCleanupSchedule, 6000);
 }
 
+// ── File History storage breakdown (where is the space going) ───────
+// DOM-built (no innerHTML). Shows total size, per-store cards (active vs
+// stale orphaned/reclaimable), and per-source bars; the heavy scan runs
+// elevated (the active store is ACL-restricted).
+function bk_fmtGB(bytes) {
+  const gb = (bytes || 0) / 1073741824;
+  return gb >= 10 ? Math.round(gb) + " GB" : gb.toFixed(1) + " GB";
+}
+
+async function bk_renderStorage() {
+  const el = document.getElementById("bk-fh-storage");
+  if (!el) return;
+  el.textContent = "";
+  const mk = (tag, css, txt) => {
+    const e = document.createElement(tag);
+    if (css) e.style.cssText = css;
+    if (txt != null) e.textContent = txt;
+    return e;
+  };
+  let data;
+  try {
+    data = await (await fetch("/api/backup/fh-storage")).json();
+  } catch {
+    return;
+  }
+
+  const head = mk("div", "display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap");
+  head.appendChild(mk("div", "font-size:12px;font-weight:600;color:var(--text-bright)", "Storage usage — where the space is going"));
+  const scanBtn = mk("button", "background:transparent;border:1px solid var(--cyan);color:var(--cyan);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:11px",
+    data.has_cache ? "↻ Re-scan (UAC)" : "🔍 Scan storage usage (UAC)");
+  scanBtn.onclick = bk_scanStorage;
+  head.appendChild(scanBtn);
+  el.appendChild(head);
+
+  const status = mk("div", "font-size:11px;color:var(--muted);margin-top:4px");
+  status.id = "bk-storage-status";
+  el.appendChild(status);
+
+  if (!data.has_cache) {
+    status.textContent = "File History keeps every version of every changed file, so the store can balloon — and a previous setup can leave a huge orphaned store behind. Scan to see exactly where the space is going (one-time UAC prompt).";
+    return;
+  }
+
+  status.textContent = `Total File History: ${bk_fmtGB(data.total_bytes)} across ${data.store_count} store(s). Scanned ${(data.scanned_at || "").replace("T", " ")}.`;
+
+  if (data.reclaimable_bytes > 0) {
+    const rec = mk("div", "margin-top:8px;padding:8px 10px;border-left:3px solid var(--green);background:var(--surface);border-radius:6px;font-size:12px;color:var(--text)");
+    rec.textContent = `💡 ${bk_fmtGB(data.reclaimable_bytes)} is in stale orphaned store(s) below — old File History data from a previous setup, NOT your active backups. Reclaim it via "Show in Explorer" → rename to *_OLD, confirm backups still run, then delete.`;
+    el.appendChild(rec);
+  }
+
+  (data.stores || []).forEach((s) => {
+    const card = mk("div", "margin-top:10px;padding:8px 10px;border:1px solid var(--border);border-radius:6px");
+    const row = mk("div", "display:flex;align-items:center;gap:8px;flex-wrap:wrap");
+    const badge = s.active
+      ? mk("span", "font-size:9px;font-weight:700;letter-spacing:.06em;color:var(--green);border:1px solid var(--green);border-radius:4px;padding:1px 5px", "ACTIVE")
+      : (s.reclaimable
+          ? mk("span", "font-size:9px;font-weight:700;letter-spacing:.06em;color:var(--orange);border:1px solid var(--orange);border-radius:4px;padding:1px 5px", "ORPHANED · RECLAIMABLE")
+          : mk("span", "font-size:9px;font-weight:700;letter-spacing:.06em;color:var(--muted);border:1px solid var(--border);border-radius:4px;padding:1px 5px", "OTHER STORE"));
+    row.appendChild(badge);
+    row.appendChild(mk("span", "font-size:13px;font-weight:700;color:var(--text-bright)", bk_fmtGB(s.size_bytes) + (s.capped ? "+ (scan capped)" : "")));
+    const ageTxt = s.age_days != null ? ` · ${s.age_days < 1 ? "active today" : Math.round(s.age_days) + " days old"}` : "";
+    row.appendChild(mk("span", "font-size:11px;color:var(--muted)", `${(s.file_count || 0).toLocaleString()} files${ageTxt}`));
+    card.appendChild(row);
+
+    const pathRow = mk("div", "margin-top:3px;font-size:10px;color:var(--ink-faint);word-break:break-all", s.path);
+    card.appendChild(pathRow);
+
+    // Per-source bars.
+    (s.by_source || []).slice(0, 6).forEach((src) => {
+      if (!src.size_bytes) return;
+      const pct = s.size_bytes ? Math.max(2, Math.round((src.size_bytes / s.size_bytes) * 100)) : 0;
+      const line = mk("div", "display:flex;align-items:center;gap:6px;margin-top:4px");
+      line.appendChild(mk("span", "font-size:10px;color:var(--muted);width:60px;flex-shrink:0", src.name === "C" ? "C: drive" : src.name === "$OF" ? "OneDrive" : src.name));
+      const track = mk("div", "flex:1;height:6px;background:rgba(255,255,255,.07);border-radius:4px;overflow:hidden");
+      track.appendChild(mk("div", `width:${pct}%;height:100%;background:var(--cyan);border-radius:4px`));
+      line.appendChild(track);
+      line.appendChild(mk("span", "font-size:10px;color:var(--text);width:64px;text-align:right;flex-shrink:0", bk_fmtGB(src.size_bytes)));
+      card.appendChild(line);
+    });
+
+    if (s.reclaimable) {
+      const reveal = mk("button", "margin-top:6px;background:transparent;border:1px solid var(--orange);color:var(--orange);padding:3px 10px;border-radius:6px;cursor:pointer;font-size:11px", "📂 Show in Explorer");
+      reveal.onclick = () => bk_revealPath(s.path);
+      card.appendChild(reveal);
+    }
+    el.appendChild(card);
+  });
+}
+
+async function bk_scanStorage() {
+  const status = document.getElementById("bk-storage-status");
+  if (status) status.textContent = "⏳ Requesting elevation (UAC prompt should appear)… then walking the drive — this can take a minute on a large store.";
+  let launch;
+  try {
+    launch = await (await fetch("/api/backup/fh-storage-scan", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({})})).json();
+  } catch (e) {
+    if (status) status.textContent = "Scan failed to start: " + e.message;
+    return;
+  }
+  if (!launch.ok) {
+    if (status) status.textContent = "Scan failed to start: " + (launch.error || "unknown");
+    return;
+  }
+  await bk_pollUntilDone(launch.session_id, status);
+  bk_renderStorage();
+}
+
+async function bk_revealPath(path) {
+  try {
+    await fetch("/api/disk/open", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({path: path})});
+  } catch (e) {
+    alert("Could not open Explorer: " + e.message);
+  }
+}
+
 async function loadBackup(preserveBanner = false) {
   // preserveBanner=true keeps whatever bk_showActionResult just wrote in
   // #bk-overall (the outcome of a scan/cleanup/delete) instead of clobbering
@@ -6725,8 +6841,10 @@ async function loadBackup(preserveBanner = false) {
             <button onclick="bk_fhCleanup()" style="background:transparent;border:1px solid var(--orange);color:var(--orange);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:11px">🧹 Cleanup old versions</button>
           </div>
           <div id="bk-fh-schedule" style="margin-top:4px"></div>
+          <div id="bk-fh-storage" style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border)"></div>
         </div>`;
       bk_renderCleanupSchedule();
+      bk_renderStorage();
     }
   }
 
