@@ -775,6 +775,36 @@ class TestProcessKillRoute:
         data = resp.get_json()
         assert data["ok"] is False
 
+    def test_successful_kill_invalidates_dashboard_cache(self, client, mocker):
+        # 2026-06-29: a killed process lingered on the dashboard because the
+        # post-kill refresh got the stale cached summary. A successful kill
+        # must clear the cache so the next /api/dashboard/summary recomputes.
+        from datetime import datetime
+
+        import windesktopmgr as wdm
+
+        self._patch_psutil(mocker)
+        wdm._dashboard_state["data"] = {"concerns": [{"title": "stale"}]}
+        wdm._dashboard_state["ts"] = datetime.now()
+        resp = client.post("/api/processes/kill", json={"pid": 1234})
+        assert resp.get_json()["ok"] is True
+        assert wdm._dashboard_state["data"] is None  # cache invalidated
+
+    def test_failed_kill_leaves_dashboard_cache_intact(self, client, mocker):
+        from datetime import datetime
+
+        import psutil as _psutil
+
+        import windesktopmgr as wdm
+
+        self._patch_psutil(mocker, kill_side_effect=_psutil.AccessDenied(pid=999))
+        sentinel = {"concerns": []}
+        wdm._dashboard_state["data"] = sentinel
+        wdm._dashboard_state["ts"] = datetime.now()
+        resp = client.post("/api/processes/kill", json={"pid": 999})
+        assert resp.get_json()["ok"] is False
+        assert wdm._dashboard_state["data"] is sentinel  # untouched on failure
+
     def test_missing_pid_defaults_to_zero_rejected(self, client, mocker):
         self._patch_psutil(mocker)
         resp = client.post("/api/processes/kill", json={})
