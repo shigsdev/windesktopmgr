@@ -48,6 +48,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Any
@@ -113,7 +114,17 @@ _ALLOWED_ACTIONS: set[str] = {
     "scan_catalog",  # wbadmin get versions + walk WindowsImageBackup for sizes
     "delete_version",  # wbadmin delete backup -version:<id> -quiet
     "fh_cleanup",  # fhmanagew.exe -cleanup <days>
+    "fh_storage_scan",  # walk the FH target drive: size each store + sources
 }
+
+# File History storage breakdown (in-app "where is the space going") cache,
+# populated by the elevated helper (the active store is ACL-restricted to
+# admins) and read by the unelevated tray.
+FH_STORAGE_CACHE_FILE = os.path.join(APP_DIR, "fh_storage_cache.json")
+# Wall-clock cap for a storage scan -- File History stores hold huge numbers
+# of small version files, so an unbounded walk could run for many minutes.
+# On breach we mark the affected size "capped" rather than hang.
+_FH_STORAGE_BUDGET_S = 240
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -396,6 +407,166 @@ def remove_fh_cleanup_schedule() -> dict:
     """Delete the recurring auto-cleanup task (UAC prompt)."""
     args = f'/Delete /TN "{_FH_CLEANUP_TASK_NAME}" /F'
     return _schtasks_elevated(args, "remove the File History auto-cleanup schedule")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# File History storage breakdown  (where is the space going)
+#
+# File History keeps every version of every changed file, so the store can
+# balloon -- AND a reconfigure/upgrade can ORPHAN an old store on the same
+# drive that nothing prunes (2026-06-29 user report: a 1.38 TB store at
+# E:\FileHistory last written in 2024, separate from the active store). This
+# walks the target drive, finds every File History store, sizes each + its
+# top source folders, and flags the active one vs. stale/reclaimable orphans.
+# The active store is ACL-restricted to admins, so the heavy scan runs in the
+# elevated helper; the result is cached for the unelevated tray to read.
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _safe_is_dir(entry) -> bool:
+    try:
+        return entry.is_dir(follow_symlinks=False)
+    except OSError:
+        return False
+
+
+def _dir_size(path: str, deadline: float) -> tuple[int, int, bool]:
+    """Return ``(total_bytes, file_count, capped)`` for ``path`` via an
+    iterative ``os.scandir`` walk. Stops early (``capped=True``) once
+    ``deadline`` (a ``time.monotonic()`` value) passes, so a multi-TB store
+    full of tiny version files can't hang the scan. Never raises."""
+    total = 0
+    count = 0
+    stack = [path]
+    while stack:
+        if time.monotonic() > deadline:
+            return total, count, True
+        current = stack.pop()
+        try:
+            with os.scandir(current) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                        elif entry.is_file(follow_symlinks=False):
+                            total += entry.stat(follow_symlinks=False).st_size
+                            count += 1
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return total, count, False
+
+
+def find_fh_stores(drive_root: str, max_depth: int = 4, deadline: float | None = None) -> list[str]:
+    """Find File History store ``Data`` directories on ``drive_root``. A File
+    History store root holds BOTH a ``Data`` and a ``Configuration`` subdir
+    (``<drive>\\[FileHistory\\]<user>\\<machine>\\``); we return each store's
+    ``Data`` path. Depth-limited AND wall-clock-bounded (``deadline`` is a
+    ``time.monotonic()`` value) so discovery never walks the huge Data trees
+    or hangs on a pathologically wide/slow drive. Never raises."""
+    found: list[str] = []
+
+    def _walk(d: str, depth: int) -> None:
+        if depth > max_depth or (deadline is not None and time.monotonic() > deadline):
+            return
+        try:
+            entries = list(os.scandir(d))
+        except OSError:
+            return
+        subdirs = {e.name.lower(): e.path for e in entries if _safe_is_dir(e)}
+        if "data" in subdirs and "configuration" in subdirs:
+            found.append(subdirs["data"])
+            return  # a store root -- don't descend into its Data tree
+        for child in subdirs.values():
+            _walk(child, depth + 1)
+
+    _walk(drive_root, 0)
+    return found
+
+
+def scan_fh_storage(target_url: str, store_rel_path: str, budget_s: float = _FH_STORAGE_BUDGET_S) -> dict:
+    """Walk the File History target drive and break down its space usage:
+    every store, its size + top source folders, and which is the ACTIVE store
+    vs. stale reclaimable orphans. Designed to run elevated (the active store
+    is ACL-restricted). Never raises -- returns a best-effort, time-capped
+    result."""
+    drive_root = (target_url or "").rstrip("\\/") + os.sep
+    active_norm_target = os.path.normcase(os.path.normpath(_join_store_path(target_url, store_rel_path)))
+    deadline = time.monotonic() + budget_s
+    stores: list[dict] = []
+
+    for data_dir in find_fh_stores(drive_root, deadline=deadline):
+        size, count, capped = _dir_size(data_dir, deadline)
+        try:
+            mtime = datetime.fromtimestamp(os.stat(data_dir).st_mtime)
+        except OSError:
+            mtime = None
+        age_days = round((datetime.now() - mtime).total_seconds() / 86400.0, 1) if mtime else None
+        by_source: list[dict] = []
+        try:
+            with os.scandir(data_dir) as it:
+                for entry in it:
+                    if _safe_is_dir(entry):
+                        ssize, _, _ = _dir_size(entry.path, deadline)
+                        by_source.append({"name": entry.name, "size_bytes": ssize})
+        except OSError:
+            pass
+        by_source.sort(key=lambda s: s["size_bytes"], reverse=True)
+        stores.append(
+            {
+                "path": data_dir,
+                "size_bytes": size,
+                "file_count": count,
+                "capped": capped,
+                "mtime": mtime.isoformat(timespec="seconds") if mtime else None,
+                "age_days": age_days,
+                "by_source": by_source[:12],
+                "_norm": os.path.normcase(os.path.normpath(data_dir)),
+            }
+        )
+
+    # The active store is the one matching the configured target; if the
+    # config path doesn't match any on disk (the known higs7 path mismatch),
+    # fall back to the freshest store (the active one is written hourly).
+    active_norm = next((s["_norm"] for s in stores if s["_norm"] == active_norm_target), None)
+    if active_norm is None and stores:
+        # Freshest store wins (active is written hourly -> smallest age). A
+        # store we CAN'T date (mtime read failed) is treated as age 0 so it
+        # WINS the active race rather than losing it -- that keeps an
+        # undatable store protected (never flagged reclaimable) instead of
+        # letting an orphan steal the "active" label (code-review 2026-06-30).
+        active_norm = min(stores, key=lambda s: s["age_days"] if s["age_days"] is not None else 0)["_norm"]
+    for s in stores:
+        s["active"] = s["_norm"] == active_norm
+        # Reclaimable = not the active store AND demonstrably stale (>30 days
+        # untouched) -- a confident "this is old, dead weight" signal.
+        s["reclaimable"] = (not s["active"]) and (s["age_days"] is not None and s["age_days"] > 30)
+        del s["_norm"]
+    stores.sort(key=lambda s: s["size_bytes"], reverse=True)
+
+    return {
+        "ok": True,
+        "scanned_at": datetime.now().isoformat(timespec="seconds"),
+        "target_drive": drive_root,
+        "store_count": len(stores),
+        "total_bytes": sum(s["size_bytes"] for s in stores),
+        "reclaimable_bytes": sum(s["size_bytes"] for s in stores if s["reclaimable"]),
+        "stores": stores,
+    }
+
+
+def load_fh_storage_cache() -> dict:
+    """Read the last storage scan written by the elevated helper. Returns a
+    ``{"has_cache": False}`` placeholder when no scan has run yet."""
+    try:
+        with open(FH_STORAGE_CACHE_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and isinstance(data.get("stores"), list):
+            return {"has_cache": True, **data}
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {"has_cache": False, "stores": []}
 
 
 # ══════════════════════════════════════════════════════════════════════

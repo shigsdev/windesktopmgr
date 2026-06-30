@@ -4111,6 +4111,36 @@ def backup_fh_cleanup_schedule_remove_route():
     return jsonify(result), (200 if result.get("ok") else 502)
 
 
+@app.route("/api/backup/fh-storage")
+def backup_fh_storage_route():
+    """Last File History storage breakdown (cached; written by the elevated
+    scan). ``has_cache=False`` until the first scan runs."""
+    import backup
+
+    return jsonify({"ok": True, **backup.load_fh_storage_cache()})
+
+
+@app.route("/api/backup/fh-storage-scan", methods=["POST"])
+def backup_fh_storage_scan_route():
+    """Launch the elevated File History storage scan (UAC). The active store
+    is ACL-restricted, so this walks the target drive elevated and caches the
+    per-store / per-source size breakdown. Returns a session_id to poll like
+    the other elevated actions."""
+    import backup
+
+    fh = backup.get_file_history_state()
+    target = (fh.get("config") or {}).get("target") or {}
+    target_url = target.get("url") or ""
+    if not target_url:
+        return jsonify({"ok": False, "error": "File History is not configured (no target drive)"}), 400
+
+    result = backup.request_elevated_action(
+        "fh_storage_scan",
+        {"target_url": target_url, "store_rel_path": target.get("backup_store_path") or ""},
+    )
+    return jsonify(result), (200 if result.get("ok") else 502)
+
+
 @app.route("/api/backup/actions-history")
 def backup_actions_history_route():
     """Return the append-only audit log of elevated actions."""

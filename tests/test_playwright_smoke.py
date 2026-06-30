@@ -626,6 +626,36 @@ class TestCleanupScheduleControl:
             assert has_btn, "off-state schedule control should have a Schedule button"
 
 
+# ── Backup tab — File History storage breakdown panel ─────────────────
+#
+# Added 2026-06-29: an elevated scan that breaks down where File History
+# space goes + flags reclaimable orphaned stores. Gate: the panel renders
+# with a scan button, and when a cached scan exists it shows totals.
+
+
+class TestStoragePanel:
+    def test_storage_panel_renders_scan_control(self, loaded_page):
+        page, _ = loaded_page
+        fh = page.evaluate("async () => await (await fetch('/api/backup/file-history')).json()")
+        if not fh.get("configured"):
+            pytest.skip("File History not configured on this machine")
+
+        page.evaluate("switchTab('backup')")
+        body = ""
+        for _ in range(20):
+            page.wait_for_timeout(300)
+            body = page.evaluate("(document.getElementById('bk-fh-storage')||{}).textContent || ''")
+            if "storage usage" in body.lower():
+                break
+
+        assert "storage usage" in body.lower(), f"storage panel did not render; got {body[:160]!r}"
+        # A scan button must be present (scan or re-scan, depending on cache).
+        has_scan = page.evaluate(
+            "Array.from(document.querySelectorAll('#bk-fh-storage button')).some(b => /scan/i.test(b.textContent))"
+        )
+        assert has_scan, "storage panel must offer a scan button"
+
+
 # ── Concern action-button handler resolution (backlog #26 primary win) ─
 
 

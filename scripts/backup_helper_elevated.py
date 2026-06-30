@@ -286,10 +286,40 @@ def _action_fh_cleanup(params: dict) -> dict:
     return {"ok": True, "days": days, "removed": removed, "summary": summary, "run": run}
 
 
+def _action_fh_storage_scan(params: dict) -> dict:
+    """Walk the File History target drive (the active store is ACL-restricted
+    to admins, hence elevated), size every store + its sources, and cache the
+    breakdown for the unelevated tray to read."""
+    target_url = (params or {}).get("target_url") or ""
+    store_rel = (params or {}).get("store_rel_path") or ""
+    if not target_url:
+        return {"ok": False, "error": "no File History target configured"}
+    result = bk.scan_fh_storage(target_url, store_rel)
+    if result.get("store_count", 0) == 0:
+        # Found nothing (wrong drive root / target offline). Don't clobber a
+        # previously-good cache with an empty result -- surface it as a failure
+        # so the UI keeps the last breakdown.
+        return {"ok": False, "error": f"No File History stores found on {target_url}"}
+    bk._atomic_write_json(bk.FH_STORAGE_CACHE_FILE, result)  # noqa: SLF001
+    total_gb = result["total_bytes"] / 1024**3
+    recl_gb = result["reclaimable_bytes"] / 1024**3
+    summary = f"Scanned {result['store_count']} File History store(s): {total_gb:.0f} GB total"
+    if recl_gb >= 1:
+        summary += f" -- {recl_gb:.0f} GB is in stale orphaned stores you can reclaim"
+    return {
+        "ok": True,
+        "store_count": result["store_count"],
+        "total_bytes": result["total_bytes"],
+        "reclaimable_bytes": result["reclaimable_bytes"],
+        "summary": summary + ".",
+    }
+
+
 _ACTION_HANDLERS = {
     "scan_catalog": _action_scan_catalog,
     "delete_version": _action_delete_version,
     "fh_cleanup": _action_fh_cleanup,
+    "fh_storage_scan": _action_fh_storage_scan,
 }
 
 
