@@ -3432,7 +3432,15 @@ def process_kill():
             }
         ), 403
 
-    return jsonify(kill_process(pid))
+    result = kill_process(pid)
+    if result.get("ok"):
+        # Invalidate the dashboard-summary cache so the killed process drops
+        # off the concerns on the very next refresh, instead of lingering for
+        # up to the cache TTL (2026-06-29 user report: "I killed the process
+        # but it still shows up on the dashboard" -- killProcessFromConcern
+        # already re-fetches, but it was getting the stale cached snapshot).
+        _dashboard_cache_clear()
+    return jsonify(result)
 
 
 @app.route("/api/processes/glossary")
