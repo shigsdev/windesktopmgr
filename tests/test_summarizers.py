@@ -5,6 +5,8 @@ Tests for all summarize_* functions — pure Python, no subprocess required.
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 import bsod
 import processes
 import sysinfo
@@ -776,6 +778,63 @@ class TestSummarizeThermals:
     def test_result_has_required_keys(self):
         result = wdm.summarize_thermals(self._data())
         assert {"status", "headline", "insights", "actions"} <= set(result.keys())
+
+    def _hot_insight(self, result, level):
+        return next(i for i in result["insights"] if i["level"] == level)
+
+    def test_critical_message_names_component_and_overage(self):
+        temps = [
+            {"Name": "CPU Package", "TempC": 98, "status": "critical", "SensorId": "/intelcpu/0/temperature/0"},
+            {"Name": "P-Core #3", "TempC": 96, "status": "critical", "SensorId": "/intelcpu/0/temperature/4"},
+        ]
+        ins = self._hot_insight(wdm.summarize_thermals(self._data(temps=temps)), "critical")
+        # Names the hottest component, its temp, and how far over the line.
+        assert "CPU" in ins["text"]
+        assert "CPU Package at 98" in ins["text"]
+        assert "over the 95" in ins["text"]
+        assert "Also" in ins["text"] and "P-Core #3" in ins["text"]  # secondary listed
+        assert "shut down" in ins["action"].lower()
+
+    def test_warning_storage_advice_avoids_thermal_paste(self):
+        # The 2026-06-17 fix: an NVMe drive warning must NOT advise thermal
+        # paste (you can't paste an SSD) -- it gets drive-specific guidance.
+        temps = [
+            {"Name": "Composite Temperature", "TempC": 83, "status": "warning", "SensorId": "/nvme/0/temperature/0"}
+        ]
+        ins = self._hot_insight(wdm.summarize_thermals(self._data(temps=temps)), "warning")
+        assert "storage drive" in ins["text"]
+        assert "thermal paste" not in ins["action"].lower()
+        assert "ssd" in ins["action"].lower() or "heatsink" in ins["action"].lower()
+
+    def test_warning_leads_with_hottest_sensor(self):
+        temps = [
+            {"Name": "GPU Core", "TempC": 82, "status": "warning", "SensorId": "/gpu-nvidia/0/temperature/0"},
+            {"Name": "GPU Hot Spot", "TempC": 89, "status": "warning", "SensorId": "/gpu-nvidia/0/temperature/1"},
+        ]
+        ins = self._hot_insight(wdm.summarize_thermals(self._data(temps=temps)), "warning")
+        assert "GPU Hot Spot at 89" in ins["text"]  # hottest leads
+        assert "GPU" in ins["text"]
+
+
+class TestComponentCategory:
+    """Sensor -> hardware bucket, driving component-appropriate advice."""
+
+    @pytest.mark.parametrize(
+        "name,sid,expected",
+        [
+            ("GPU Hot Spot", "/gpu-nvidia/0/temperature/1", "GPU"),
+            ("Composite Temperature", "/nvme/0/temperature/0", "storage drive"),
+            ("DIMM #0", "/ram/0/temperature/0", "memory"),
+            ("CPU Package", "/intelcpu/0/temperature/0", "CPU"),
+            ("Core Max", "", "CPU"),  # name-only fallback (WMI reading)
+            ("System", "/lpc/nct6798d/temperature/2", "mainboard"),
+            ("Mystery Probe", "", "system"),  # unknown -> generic
+        ],
+    )
+    def test_categories(self, name, sid, expected):
+        import thermals
+
+        assert thermals._component_category(name, sid) == expected
 
 
 # ══════════════════════════════════════════════════════════════════════════════

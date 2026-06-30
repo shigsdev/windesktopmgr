@@ -136,6 +136,73 @@ def get_thermals() -> dict:
     }
 
 
+# Hot-temp advice keyed by hardware category, so an alert can give guidance
+# that fits the component (you can't "reapply thermal paste" to an NVMe drive
+# or a DIMM -- those are airflow problems, not paste problems).
+_THERMAL_ADVICE = {
+    "CPU": (
+        "Clean dust from the CPU heatsink and case fans, and check the Processes tab for what's "
+        "driving the load. If it stays hot at idle, reseat the cooler and reapply thermal paste."
+    ),
+    "GPU": (
+        "Clean the GPU heatsink and fans and improve case airflow; check the fan curve. Running hot "
+        "under sustained 3D or video-encode load is often normal."
+    ),
+    "storage drive": (
+        "NVMe/SSD drives heat up during sustained large writes (backups, big copies) and usually cool "
+        "right back down. If it persists, add an M.2/SSD heatsink or improve airflow over the drive."
+    ),
+    "memory": (
+        "High DIMM temps are airflow-related, not paste -- add or improve a case fan blowing across the memory slots."
+    ),
+    "mainboard": ("Improve overall case airflow and check the VRM/chipset heatsinks for dust or poor seating."),
+    "system": "Clean dust from the heatsinks and fans and improve overall case airflow.",
+}
+
+
+def _component_category(name: str, sensor_id: str) -> str:
+    """Best-effort hardware bucket for a temperature sensor, used to tailor the
+    hot-temp advice. Prefers the LHM SensorId path (e.g. ``/nvme/0/...``);
+    falls back to the sensor name for WMI-only readings."""
+    n = (name or "").lower()
+    s = (sensor_id or "").lower()
+    if "/gpu" in s or "gpu" in n:
+        return "GPU"
+    if "/nvme" in s or "/hdd" in s or "composite temperature" in n or n.startswith("drive"):
+        return "storage drive"
+    if "/ram" in s or "dimm" in n:
+        return "memory"
+    if "/intelcpu" in s or "/amdcpu" in s or "core" in n or "cpu" in n or "package" in n:
+        return "CPU"
+    if "/lpc" in s or "mainboard" in n or "vrm" in n or "chipset" in n or "system" in n:
+        return "mainboard"
+    return "system"
+
+
+def _hot_temp_insight(level: str, hot: list[dict], threshold: float) -> dict:
+    """Build a SPECIFIC elevated/critical-temp insight: name the hottest
+    component + how far over the line it is + component-appropriate advice,
+    instead of a generic 'reapply thermal paste' for every sensor."""
+    hottest = max(hot, key=lambda t: t.get("TempC", 0))
+    cat = _component_category(hottest.get("Name", ""), hottest.get("SensorId", ""))
+    over = round(hottest.get("TempC", 0) - threshold, 1)
+    lead = "CRITICAL" if level == "critical" else "Elevated"
+    text = (
+        f"{lead} {cat} temperature: {hottest.get('Name', 'sensor')} at "
+        f"{hottest.get('TempC', 0)}°C ({over:g}°C over the {threshold:g}°C {level} line)."
+    )
+    others = [t for t in hot if t is not hottest][:4]
+    if others:
+        text += " Also: " + ", ".join(f"{t.get('Name')} {t.get('TempC')}°C" for t in others) + "."
+    advice = _THERMAL_ADVICE.get(cat, _THERMAL_ADVICE["system"])
+    advice = (
+        f"Reduce load (or shut down) to let it cool, then: {advice}"
+        if level == "critical"
+        else f"{advice} Keep an eye on it under sustained load."
+    )
+    return _insight(level, text, advice)
+
+
 def summarize_thermals(data: dict) -> dict:
     temps = data.get("temps", [])
     perf = data.get("perf", {})
@@ -149,22 +216,10 @@ def summarize_thermals(data: dict) -> dict:
     warn_temps = [t for t in temps if t.get("status") == "warning"]
 
     if critical_temps:
-        insights.append(
-            _insight(
-                "critical",
-                "CRITICAL temperatures detected: " + ", ".join(f"{t['Name']} {t['TempC']}°C" for t in critical_temps),
-                "Shut down immediately and check cooling. Clean dust from heatsink and case fans.",
-            )
-        )
+        insights.append(_hot_temp_insight("critical", critical_temps, TEMP_CRIT_C))
         actions.append("Check cooling immediately")
     elif warn_temps:
-        insights.append(
-            _insight(
-                "warning",
-                "Elevated temperatures: " + ", ".join(f"{t['Name']} {t['TempC']}°C" for t in warn_temps),
-                "Monitor under load. Consider reapplying thermal paste if temps persist.",
-            )
-        )
+        insights.append(_hot_temp_insight("warning", warn_temps, TEMP_WARN_C))
     elif temps:
         insights.append(
             _insight("ok", "All temperatures normal: " + ", ".join(f"{t['Name']} {t['TempC']}°C" for t in temps[:4]))
