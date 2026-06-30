@@ -169,6 +169,37 @@ def _parse_temp_value(value: str) -> float | None:
         return None
 
 
+# LHM types several NON-reading values as "Temperature" sensors. They are not
+# live temperatures and must be excluded from the readings list -- they pollute
+# the per-core grid AND fire false "elevated temperature" alerts (2026-06-17
+# user report: an NVMe "Critical Temperature 84°C" threshold + a DIMM "Thermal
+# Sensor Critical High Limit 85°C" were flagged as hot readings while every
+# real sensor was 32-55°C). Matched case-insensitively as substrings:
+#   - "distance to tjmax": thermal HEADROOM (°C below throttle), not the temp
+#   - "high limit" / "low limit": "Thermal Sensor [Critical] [High|Low] Limit"
+#     -- DIMM threshold registers (static config values). Matched on the
+#     two-word suffix, NOT a bare "limit", so a real reading that merely
+#     contains the word "limit" is never dropped.
+#   - "resolution": "Temperature Sensor Resolution" -- precision metadata
+#   - "warning temperature" / "critical temperature": NVMe SMART threshold
+#     attributes (the drive's configured trip points -- static, not readings)
+_NON_READING_TEMP_MARKERS = (
+    "distance to tjmax",
+    "high limit",
+    "low limit",
+    "resolution",
+    "warning temperature",
+    "critical temperature",
+)
+
+
+def _is_reading_temp(name: str) -> bool:
+    """False for LHM 'Temperature'-typed sensors that are actually thresholds,
+    headroom, or metadata rather than a live temperature reading."""
+    low = (name or "").lower()
+    return not any(marker in low for marker in _NON_READING_TEMP_MARKERS)
+
+
 def get_lhm_temps() -> list[dict]:
     """Temperature sensors from LHM's HTTP server, as
     ``[{"Name", "TempC", "Source": "LibreHardwareMonitor", "SensorId"}]``.
@@ -191,11 +222,10 @@ def get_lhm_temps() -> list[dict]:
             return
         if node.get("Type") == "Temperature":
             name = node.get("Text", "Sensor")
-            # Skip "Distance to TjMax" sensors: LHM types them as Temperature
-            # but the value is thermal HEADROOM (°C below throttle), not the
-            # core temperature -- including them doubles the per-core grid and
-            # poisons the hottest-CPU-sensor gauge with a ~66°C idle reading.
-            if "distance to tjmax" not in name.lower():
+            # Skip threshold/headroom/metadata pseudo-sensors that LHM mistypes
+            # as Temperature (see _NON_READING_TEMP_MARKERS) -- including them
+            # pollutes the per-core grid and fires false elevated-temp alerts.
+            if _is_reading_temp(name):
                 tc = _parse_temp_value(node.get("Value", ""))
                 if tc is not None:
                     out.append(

@@ -193,7 +193,7 @@
       <button type="button" onclick="exportPDF()" title="Open the browser print dialog — choose 'Save as PDF'" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--yellow);border:none;cursor:pointer;border-right:1px solid var(--border)">Export PDF</button>
       <button type="button" onclick="exportHTML()" title="Download a self-contained copy of this diagram" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--blue);border:none;cursor:pointer">Export HTML</button>
     </div>
-    <div class="badge" style="color:var(--green);border-color:#00e67633">2,863 tests · 87% coverage</div>
+    <div class="badge" style="color:var(--green);border-color:#00e67633">2,868 tests · 87% coverage</div>
     <div class="badge">
       <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
     </div>
@@ -714,7 +714,7 @@
           </div>
           <div class="fs-chip" style="border-color:#ff6ec733">
             <div class="fs-title" style="color:var(--pink)">lhm.py</div>
-            <div class="fs-sub">LibreHardwareMonitor in-app installer · ~340 lines · pinned-URL download (requests) + SHA256 verify-before-extract + zip-slip-guarded extract to %LOCALAPPDATA% + start-minimised-to-tray + web-server-enabled config seed (idempotent migrate) + reads sensors via LHM's HTTP server data.json (LHM has NO WMI provider — was the per-core-temps bug; loopback-only via Windows default-deny firewall; excludes Distance-to-TjMax) + ShellExecuteW("runas") UAC elevated launch + optional auto-start (elevated at-logon schtasks task, UAC; setup/remove/status) · powers the Thermals per-core CTA (/api/thermals/lhm/status·install·launch·autostart)</div>
+            <div class="fs-sub">LibreHardwareMonitor in-app installer · ~340 lines · pinned-URL download (requests) + SHA256 verify-before-extract + zip-slip-guarded extract to %LOCALAPPDATA% + start-minimised-to-tray + web-server-enabled config seed (idempotent migrate) + reads sensors via LHM's HTTP server data.json (LHM has NO WMI provider — was the per-core-temps bug; loopback-only via Windows default-deny firewall; excludes Distance-to-TjMax + SSD/DIMM threshold/limit/resolution pseudo-sensors that LHM mistypes as Temperature, via _is_reading_temp — fixed a false elevated-temp alert) + ShellExecuteW("runas") UAC elevated launch + optional auto-start (elevated at-logon schtasks task, UAC; setup/remove/status) · powers the Thermals per-core CTA (/api/thermals/lhm/status·install·launch·autostart)</div>
           </div>
           <div class="fs-chip" style="border-color:#ff6ec733">
             <div class="fs-title" style="color:var(--pink)">ai_identify.py</div>
