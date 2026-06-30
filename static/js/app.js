@@ -6825,6 +6825,7 @@ async function loadBackup(preserveBanner = false) {
             <div style="font-weight:600;color:${healthStyle.fg};margin-bottom:2px">${escHtml((health.level || "info").toUpperCase())}</div>
             <div style="font-size:12px;color:var(--text)">${escHtml(health.reason || "")}</div>
           </div>
+          <div id="bk-fh-storage" style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--border)"></div>
           <div style="display:grid;grid-template-columns:140px 1fr;gap:6px 16px;font-size:12px">
             <div style="color:var(--muted)">Status</div><div>${enabled}</div>
             <div style="color:var(--muted)">Target</div><div>${escHtml(target.name || "—")} · <code>${escHtml(target.url || "")}</code> (${escHtml(target.drive_type || "—")})</div>
@@ -6841,7 +6842,6 @@ async function loadBackup(preserveBanner = false) {
             <button onclick="bk_fhCleanup()" style="background:transparent;border:1px solid var(--orange);color:var(--orange);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:11px">🧹 Cleanup old versions</button>
           </div>
           <div id="bk-fh-schedule" style="margin-top:4px"></div>
-          <div id="bk-fh-storage" style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border)"></div>
         </div>`;
       bk_renderCleanupSchedule();
       bk_renderStorage();
