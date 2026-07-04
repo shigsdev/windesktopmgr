@@ -18,6 +18,7 @@ dispatch, and the dashboard fan-out call the re-exported bindings.
 _insight is duplicated locally (disk.py / bsod.py precedent).
 """
 
+import concurrent.futures
 import socket
 import threading
 import time
@@ -213,6 +214,180 @@ def _is_loopback_adapter(name: str) -> bool:
     """
     n = name.lower()
     return "loopback" in n or n == "lo"
+
+
+# ── Network HEALTH (reachability / DNS / adapter) for the dashboard ──────────
+# Distinct from get_network_metrics (throughput/latency for the Trends card):
+# this answers "is the internet actually usable right now?" so the dashboard
+# concerns feed matches the daily health report (SystemHealthDiag.
+# check_network_health), which flags internet-down / DNS-fail / adapter-down as
+# critical. Before this the dashboard collected only throughput and could not
+# surface those conditions at all.
+
+# Raw-IP targets (no DNS needed) so reachability is measured INDEPENDENTLY of
+# DNS — that lets us tell "internet down" apart from "DNS broken". Multiple
+# host:port pairs so a firewall that blocks one port (e.g. outbound :53) can't
+# produce a false "internet unreachable" critical: reachable if ANY connects.
+_REACHABILITY_TARGETS: tuple[tuple[str, int], ...] = (("8.8.8.8", 53), ("1.1.1.1", 443))
+_NET_HEALTH_TIMEOUT_S: float = 1.5
+_DNS_RESOLVE_HOST: str = "dns.google"
+_PING_WARN_MS: float = 200.0  # matches SystemHealthDiag.check_network_health
+_DNS_WARN_MS: float = 500.0  # matches SystemHealthDiag.check_network_health
+
+
+def _measure_dns_latency(host: str = _DNS_RESOLVE_HOST, timeout: float = _NET_HEALTH_TIMEOUT_S) -> float | None:
+    """Return DNS resolution time in ms for ``host``, or None if it fails.
+
+    None means "DNS is broken" (SERVFAIL, no resolver) or "too slow to matter"
+    (resolution exceeded ``timeout``) — NOT zero. ``getaddrinfo`` has no timeout
+    parameter and ``socket.setdefaulttimeout`` is process-global (unsafe to
+    mutate from one of the dashboard's parallel collector threads), so we bound
+    it by resolving in a throwaway worker and giving up after ``timeout``. A
+    hung resolver leaks that one daemon-ish worker until the OS call returns —
+    acceptable and far better than stalling the whole fan-out.
+    """
+
+    def _resolve() -> float:
+        t0 = time.perf_counter()
+        socket.getaddrinfo(host, None)
+        return round((time.perf_counter() - t0) * 1000.0, 1)
+
+    # NOT a `with` block: the context manager's __exit__ calls
+    # shutdown(wait=True), which would block on a hung resolver and defeat the
+    # timeout. shutdown(wait=False) returns immediately and lets the worker
+    # finish (and be reaped) on its own once getaddrinfo returns.
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        return ex.submit(_resolve).result(timeout=timeout)
+    except (concurrent.futures.TimeoutError, OSError, socket.gaierror):
+        return None
+    finally:
+        ex.shutdown(wait=False)
+
+
+def _measure_reachability(
+    targets: tuple[tuple[str, int], ...] = _REACHABILITY_TARGETS,
+    timeout: float = _NET_HEALTH_TIMEOUT_S,
+) -> float | None:
+    """RTT in ms of the first reachable raw-IP target, or None if none respond.
+
+    Tries each target in turn; the first successful TCP connect wins. None
+    only when EVERY target failed — a strong "internet is down" signal that a
+    single-target probe (blocked port, one-off drop) would over-report.
+    """
+    for tgt in targets:
+        ms = _measure_tcp_latency(tgt, timeout=timeout)
+        if ms is not None:
+            return ms
+    return None
+
+
+def get_network_health() -> dict:
+    """Reachability + DNS + adapter status for the dashboard concerns feed.
+
+    All in-process (socket + psutil), no PowerShell. Bounded worst-case time:
+    reachability probes (2 × 1.5 s) + DNS (1.5 s) ≈ 4.5 s only when the network
+    is fully down; a healthy network returns in tens of ms.
+    """
+    ping_ms = _measure_reachability()
+    dns_ms = _measure_dns_latency()
+    adapters: list[dict] = []
+    try:
+        stats = psutil.net_if_stats()
+    except Exception:  # noqa: BLE001 -- psutil can surface OS-specific surprises
+        stats = {}
+    for name, st in (stats or {}).items():
+        if _is_loopback_adapter(name):
+            continue
+        adapters.append({"name": name, "up": bool(getattr(st, "isup", False))})
+    return {
+        "available": True,
+        "internet_reachable": ping_ms is not None,
+        "ping_latency_ms": ping_ms,
+        "dns_working": dns_ms is not None,
+        "dns_latency_ms": dns_ms,
+        "adapters": adapters,
+    }
+
+
+def _net_concern(level: str, title: str, detail: str) -> dict:
+    """Dashboard-concern dict for a network-health finding (network tab)."""
+    return {
+        "level": level,
+        "tab": "network",
+        "icon": "🌐",
+        "title": title,
+        "detail": detail,
+        "action": "View Network Monitor",
+        "action_fn": "switchTab('network')",
+    }
+
+
+def network_health_concerns(data: dict) -> list[dict]:
+    """Map a get_network_health() reading into dashboard concern dicts.
+
+    Mirrors SystemHealthDiag.check_network_health so the dashboard and the
+    daily health report agree: internet-unreachable / DNS-failing / no-active-
+    adapter are critical; high ping (>200 ms) and slow DNS (>500 ms) are
+    warnings. Returns [] on a clean network.
+
+    NOTE: the daily report also warns on a *specific* physical adapter being
+    disconnected, using Get-NetAdapter's InterfaceDescription to skip virtual
+    NICs. psutil only exposes interface NAMES (Windows lists many normally-down
+    pseudo-adapters like "Local Area Connection* 11"), so a name-only filter
+    false-alarms on a healthy box. We therefore surface only the unambiguous
+    "every adapter is down" critical here and leave per-adapter disconnection
+    to the Network tab, which has the richer data.
+    """
+    concerns: list[dict] = []
+    adapters = data.get("adapters", [])
+    up_adapters = [a for a in adapters if a.get("up")]
+
+    if adapters and not up_adapters:
+        concerns.append(
+            _net_concern(
+                "critical",
+                "No active network adapter",
+                "Every network adapter is down — this machine has no connectivity.",
+            )
+        )
+
+    if not data.get("internet_reachable"):
+        concerns.append(
+            _net_concern(
+                "critical",
+                "Internet is unreachable",
+                "Could not reach the internet (TCP probes to public hosts all failed). "
+                "Check your router/modem — most apps will appear offline.",
+            )
+        )
+    elif (data.get("ping_latency_ms") or 0) > _PING_WARN_MS:
+        concerns.append(
+            _net_concern(
+                "warning",
+                f"Internet latency is high ({data['ping_latency_ms']:.0f} ms)",
+                "Connectivity is up but slow — video calls and downloads may suffer.",
+            )
+        )
+
+    if not data.get("dns_working"):
+        concerns.append(
+            _net_concern(
+                "critical",
+                "DNS resolution is failing",
+                "The internet may be reachable but hostnames can't resolve — most apps will appear offline.",
+            )
+        )
+    elif (data.get("dns_latency_ms") or 0) > _DNS_WARN_MS:
+        concerns.append(
+            _net_concern(
+                "warning",
+                f"DNS resolution is slow ({data['dns_latency_ms']:.0f} ms)",
+                "Name lookups are sluggish — pages may take a moment to start loading.",
+            )
+        )
+
+    return concerns
 
 
 def get_network_metrics() -> dict:

@@ -66,6 +66,18 @@ class TestDashboardPhysicalDiskHealth:
         )
         mocker.patch("windesktopmgr.get_gpu_metrics", return_value={"ok": False})
         mocker.patch("windesktopmgr.get_network_metrics", return_value={"ok": False})
+        # Default: healthy network so no network concern leaks into disk tests.
+        mocker.patch(
+            "windesktopmgr.get_network_health",
+            return_value={
+                "available": True,
+                "internet_reachable": True,
+                "ping_latency_ms": 20.0,
+                "dns_working": True,
+                "dns_latency_ms": 20.0,
+                "adapters": [{"name": "Ethernet", "up": True}],
+            },
+        )
         import task_watcher as _tw
 
         mocker.patch.object(_tw, "get_all_task_health", return_value=[])
@@ -163,3 +175,51 @@ class TestDashboardPhysicalDiskHealth:
         disk_concerns = self._disk_concerns(resp)
         assert len(disk_concerns) == 1
         assert disk_concerns[0]["level"] == "critical"
+
+
+class TestDashboardNetworkHealth:
+    """Network reachability/DNS problems must surface as dashboard concerns,
+    matching the daily report (SystemHealthDiag.check_network_health)."""
+
+    def _healthy_baseline(self, mocker):
+        # Reuse the disk class's full collector mock (healthy everything),
+        # then individual tests override get_network_health to a bad state.
+        TestDashboardPhysicalDiskHealth._mock_deps(
+            TestDashboardPhysicalDiskHealth(),
+            mocker,
+            {"drives": [], "physical": [{"Name": "SSD", "Health": "Healthy", "Status": "OK"}], "io": []},
+        )
+
+    def _net_concerns(self, resp):
+        return [c for c in resp.get_json()["concerns"] if c.get("tab") == "network"]
+
+    def test_internet_down_surfaces_critical(self, client, mocker):
+        self._healthy_baseline(mocker)
+        mocker.patch(
+            "windesktopmgr.get_network_health",
+            return_value={
+                "available": True,
+                "internet_reachable": False,
+                "ping_latency_ms": None,
+                "dns_working": False,
+                "dns_latency_ms": None,
+                "adapters": [{"name": "Ethernet", "up": False}],
+            },
+        )
+        resp = client.get("/api/dashboard/summary")
+        net = self._net_concerns(resp)
+        assert len(net) == 3  # no-adapter + internet + dns
+        assert all(c["level"] == "critical" for c in net)
+        assert resp.get_json()["overall"] == "critical"
+
+    def test_healthy_network_no_concern(self, client, mocker):
+        self._healthy_baseline(mocker)  # baseline already patches healthy network
+        resp = client.get("/api/dashboard/summary")
+        assert self._net_concerns(resp) == []
+
+    def test_collector_error_does_not_break_dashboard(self, client, mocker):
+        self._healthy_baseline(mocker)
+        mocker.patch("windesktopmgr.get_network_health", return_value={"error": "probe blew up"})
+        resp = client.get("/api/dashboard/summary")
+        assert resp.status_code == 200
+        assert self._net_concerns(resp) == []
