@@ -2010,6 +2010,13 @@ class TestDashboardSummaryRoute:
                 },
             ),
         )
+        mocker.patch(
+            "windesktopmgr.get_storage_spaces",
+            return_value=overrides.get(
+                "storage_spaces",
+                {"pools": [], "virtual_disks": [], "members": [], "repair_jobs": [], "has_spaces": False},
+            ),
+        )
         # Task-watcher concerns — default to empty so the clean-state test
         # doesn't pick up real SystemHealthDiag logs on the dev machine.
         import task_watcher as _tw

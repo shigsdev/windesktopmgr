@@ -257,6 +257,93 @@ def hardware_advisory_concerns(warranty: dict) -> list[dict]:
     return concerns
 
 
+def _storage_degraded(health: str, operational: str) -> bool:
+    """True when a Storage Spaces pool/virtual-disk is not fully healthy."""
+    h = str(health or "").strip().lower()
+    o = str(operational or "").strip().lower()
+    if h in ("warning", "unhealthy"):
+        return True
+    return any(k in o for k in ("degraded", "incomplete", "unhealthy", "detached"))
+
+
+def storage_pool_concerns(data: dict) -> list[dict]:
+    """Storage Spaces pool / virtual-disk health -> dashboard concerns.
+
+    Windows Storage Spaces raises NO alert of its own when a pool degrades (a
+    member drive dropping just silently flips it to Degraded), so this is the
+    only place the app surfaces lost redundancy. A degraded space is CRITICAL:
+    it's running without the parity/mirror protection it was built for, and one
+    more drive failure loses the volume. Also flags a stalled (Suspended)
+    repair. Returns [] when everything is healthy or there are no Spaces.
+    """
+    if not data or not data.get("has_spaces"):
+        return []
+    concerns: list[dict] = []
+
+    degraded_vds = [
+        vd for vd in data.get("virtual_disks", []) if _storage_degraded(vd.get("Health"), vd.get("Operational"))
+    ]
+    for vd in degraded_vds:
+        name = vd.get("Name") or "Storage Space"
+        state = vd.get("Health") or vd.get("Operational") or "Degraded"
+        resil = vd.get("Resiliency") or "?"
+        concerns.append(
+            {
+                "level": "critical",
+                "tab": "disk",
+                "icon": "🗄",
+                "title": f"Storage Space '{name}' is {state} — redundancy lost",
+                "detail": (
+                    f"This {resil} space dropped a member drive and is running WITHOUT redundancy. "
+                    "Another drive failure would lose the whole volume. Open the Storage tab to find the "
+                    "failed drive (by slot + serial) and repair or replace it."
+                ),
+                "action": "View Storage",
+                "action_fn": "switchTab('disk')",
+            }
+        )
+
+    # Pool degraded with no matching virtual disk (rare) — still surface it.
+    if not degraded_vds:
+        for p in data.get("pools", []):
+            if _storage_degraded(p.get("Health"), p.get("Operational")):
+                concerns.append(
+                    {
+                        "level": "critical",
+                        "tab": "disk",
+                        "icon": "🗄",
+                        "title": f"Storage pool '{p.get('Name', 'pool')}' is {p.get('Health') or 'Degraded'}",
+                        "detail": "A Storage Spaces pool is degraded — a member drive has dropped. Investigate on the Storage tab.",
+                        "action": "View Storage",
+                        "action_fn": "switchTab('disk')",
+                    }
+                )
+
+    # A repair that exists but is Suspended means the array is NOT self-healing
+    # (often: not enough free pool space to rebuild). Worth a warning even while
+    # the degraded-critical above fires.
+    for j in data.get("repair_jobs", []):
+        if str(j.get("State") or "").strip().lower() == "suspended":
+            concerns.append(
+                {
+                    "level": "warning",
+                    "tab": "disk",
+                    "icon": "🛠",
+                    "title": "Storage Spaces repair is stalled (Suspended)",
+                    "detail": (
+                        "A repair job is suspended, so the pool is not rebuilding on its own — usually because "
+                        "there isn't enough free pool space to absorb the lost drive. Add/replace a drive or free "
+                        "space, then repair."
+                    ),
+                    "action": "View Storage",
+                    "action_fn": "switchTab('disk')",
+                }
+            )
+            break
+
+    return concerns
+
+
 def _mem_cfg_concern(level: str, title: str, detail: str) -> dict:
     return {
         "level": level,
@@ -348,6 +435,7 @@ def _compute_dashboard_summary() -> dict:
         "network_health": wdm.get_network_health,
         "warranty": wdm.get_warranty_data,
         "memory_config": wdm.get_memory_config,
+        "storage_spaces": wdm.get_storage_spaces,
     }
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
@@ -600,6 +688,13 @@ def _compute_dashboard_summary() -> dict:
     try:
         concerns.extend(memory_config_concerns(results.get("memory_config") or {}))
     except Exception:  # noqa: BLE001 -- memory config is best-effort
+        pass
+
+    # Storage Spaces pool health — a degraded pool/space means a drive dropped
+    # and redundancy is lost. Windows itself never alerts on this. Best-effort.
+    try:
+        concerns.extend(storage_pool_concerns(results.get("storage_spaces") or {}))
+    except Exception:  # noqa: BLE001 -- storage spaces is best-effort
         pass
 
     # Memory — per-process hogs (backlog #19). Each concern carries

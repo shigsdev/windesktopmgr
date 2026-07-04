@@ -1567,3 +1567,117 @@ class TestOpenFolderInExplorer:
         result = disk.open_folder_in_explorer("C:\\Users")
         assert result["ok"] is False
         assert "boom" in result["error"]
+
+
+class TestDescribeDiskLocation:
+    """Parse MSFT_PhysicalDisk.PhysicalLocation into slot/bus + a find-it hint."""
+
+    def test_add_in_card_slot(self):
+        info = disk.describe_disk_location("PCI Slot 1 : Bus 6 : Device 0 : Function 0 : Adapter 1", "NVMe")
+        assert info["slot"] == "PCI Slot 1"
+        assert info["bus"] == 6
+        assert info["integrated"] is False
+        assert "add-in" in info["hint"].lower()
+        assert "serial" in info["hint"].lower()
+
+    def test_integrated_slot(self):
+        info = disk.describe_disk_location("Integrated : Bus 0 : Device 14 : Function 0 : Adapter 0", "NVMe")
+        assert info["integrated"] is True
+        assert "motherboard" in info["hint"].lower()
+
+    def test_empty_location(self):
+        info = disk.describe_disk_location("", "NVMe")
+        assert info["slot"] == ""
+        assert info["bus"] is None
+        assert "not reported" in info["hint"].lower()
+
+    def test_unparseable_location_has_no_bus(self):
+        info = disk.describe_disk_location("some weird string", "")
+        assert info["slot"] == ""
+        assert info["bus"] is None
+        assert info["hint"]  # non-empty, doesn't guess a slot
+
+
+class TestGetStorageSpaces:
+    def _mock(self, mocker, payload, returncode=0):
+        m = mocker.patch("disk.subprocess.run")
+        m.return_value.stdout = payload if isinstance(payload, str) else json.dumps(payload)
+        m.return_value.returncode = returncode
+        m.return_value.stderr = ""
+        return m
+
+    def test_degraded_pool_parsed(self, mocker):
+        self._mock(
+            mocker,
+            {
+                "pools": [{"Name": "Storage pool", "Health": "Warning", "Operational": "Degraded", "FreeGB": 708}],
+                "virtual_disks": [
+                    {
+                        "Name": "Storage space",
+                        "Health": "Warning",
+                        "Operational": "Degraded",
+                        "Resiliency": "Parity",
+                        "Redundancy": 1,
+                    }
+                ],
+                "members": [
+                    {
+                        "Pool": "Storage pool",
+                        "Name": "Samsung SSD 990 PRO 2TB",
+                        "Serial": "...20C4",
+                        "Health": "Warning",
+                        "Operational": "IO Error, OK",
+                        "Usage": "Auto-Select",
+                        "Location": "PCI Slot 1 : Bus 6",
+                        "SizeGB": 1863,
+                    }
+                ],
+                "repair_jobs": [{"Name": "Storage space-Repair", "State": "Suspended", "Pct": 0}],
+            },
+        )
+        ss = disk.get_storage_spaces()
+        assert ss["has_spaces"] is True
+        assert ss["virtual_disks"][0]["Operational"] == "Degraded"
+        assert ss["repair_jobs"][0]["State"] == "Suspended"
+        # member location enriched
+        assert ss["members"][0]["LocationInfo"]["bus"] == 6
+
+    def test_no_spaces_returns_has_spaces_false(self, mocker):
+        self._mock(mocker, {})
+        ss = disk.get_storage_spaces()
+        assert ss["has_spaces"] is False
+        assert ss["pools"] == []
+
+    def test_single_object_normalized_to_list(self, mocker):
+        self._mock(
+            mocker,
+            {
+                "pools": {"Name": "P", "Health": "Healthy", "Operational": "OK"},
+                "virtual_disks": {"Name": "V", "Health": "Healthy", "Operational": "OK"},
+                "members": {"Pool": "P", "Name": "D", "Location": ""},
+                "repair_jobs": {"Name": "J", "State": "Running"},
+            },
+        )
+        ss = disk.get_storage_spaces()
+        assert isinstance(ss["pools"], list) and len(ss["pools"]) == 1
+        assert isinstance(ss["virtual_disks"], list) and len(ss["virtual_disks"]) == 1
+        assert ss["has_spaces"] is True
+
+    def test_malformed_json_falls_back(self, mocker):
+        self._mock(mocker, "not json at all")
+        ss = disk.get_storage_spaces()
+        assert ss["has_spaces"] is False
+        assert ss["pools"] == []
+
+    def test_timeout_falls_back(self, mocker):
+        mocker.patch("disk.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=60))
+        ss = disk.get_storage_spaces()
+        assert ss == {"pools": [], "virtual_disks": [], "members": [], "repair_jobs": [], "has_spaces": False}
+
+    def test_command_queries_the_right_cmdlets(self, mocker):
+        m = self._mock(mocker, {})
+        disk.get_storage_spaces()
+        joined = " ".join(m.call_args[0][0])
+        assert "Get-StoragePool" in joined
+        assert "Get-VirtualDisk" in joined
+        assert "Get-StorageJob" in joined
