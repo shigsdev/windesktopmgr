@@ -231,8 +231,6 @@ def _is_loopback_adapter(name: str) -> bool:
 _REACHABILITY_TARGETS: tuple[tuple[str, int], ...] = (("8.8.8.8", 53), ("1.1.1.1", 443))
 _NET_HEALTH_TIMEOUT_S: float = 1.5
 _DNS_RESOLVE_HOST: str = "dns.google"
-_PING_WARN_MS: float = 200.0  # matches SystemHealthDiag.check_network_health
-_DNS_WARN_MS: float = 500.0  # matches SystemHealthDiag.check_network_health
 
 
 def _measure_dns_latency(host: str = _DNS_RESOLVE_HOST, timeout: float = _NET_HEALTH_TIMEOUT_S) -> float | None:
@@ -326,18 +324,26 @@ def _net_concern(level: str, title: str, detail: str) -> dict:
 def network_health_concerns(data: dict) -> list[dict]:
     """Map a get_network_health() reading into dashboard concern dicts.
 
-    Mirrors SystemHealthDiag.check_network_health so the dashboard and the
-    daily health report agree: internet-unreachable / DNS-failing / no-active-
-    adapter are critical; high ping (>200 ms) and slow DNS (>500 ms) are
-    warnings. Returns [] on a clean network.
+    Surfaces only the ROBUST binary signals — internet-unreachable /
+    DNS-failing / no-active-adapter, all critical. Returns [] on a clean
+    network.
 
-    NOTE: the daily report also warns on a *specific* physical adapter being
-    disconnected, using Get-NetAdapter's InterfaceDescription to skip virtual
-    NICs. psutil only exposes interface NAMES (Windows lists many normally-down
-    pseudo-adapters like "Local Area Connection* 11"), so a name-only filter
-    false-alarms on a healthy box. We therefore surface only the unambiguous
-    "every adapter is down" critical here and leave per-adapter disconnection
-    to the Network tab, which has the richer data.
+    Two deliberate omissions vs SystemHealthDiag.check_network_health, both to
+    avoid false alarms on a healthy box (a spurious concern erodes trust in the
+    whole dashboard more than a missed one helps):
+
+    1. NO ping/DNS *latency* warning. The daily report measures latency in an
+       isolated PowerShell call; here the probe runs INSIDE the parallel
+       collector fan-out, so a single TCP-connect RTT is inflated by CPU/IO
+       contention — live testing saw 841 ms while the real latency was ~7 ms.
+       Latency belongs on the Trends card (get_network_metrics), not as a
+       binary alert. Only reachable-vs-not (which survives contention) is used.
+    2. NO per-adapter "disconnected" warning. The report uses Get-NetAdapter's
+       InterfaceDescription to skip virtual NICs; psutil only exposes NAMES and
+       Windows lists many normally-down pseudo-adapters
+       ("Local Area Connection* 11"), so a name-only filter false-alarms. We
+       surface only the unambiguous "every adapter is down" critical and leave
+       per-adapter detail to the Network tab.
     """
     concerns: list[dict] = []
     adapters = data.get("adapters", [])
@@ -361,14 +367,6 @@ def network_health_concerns(data: dict) -> list[dict]:
                 "Check your router/modem — most apps will appear offline.",
             )
         )
-    elif (data.get("ping_latency_ms") or 0) > _PING_WARN_MS:
-        concerns.append(
-            _net_concern(
-                "warning",
-                f"Internet latency is high ({data['ping_latency_ms']:.0f} ms)",
-                "Connectivity is up but slow — video calls and downloads may suffer.",
-            )
-        )
 
     if not data.get("dns_working"):
         concerns.append(
@@ -376,14 +374,6 @@ def network_health_concerns(data: dict) -> list[dict]:
                 "critical",
                 "DNS resolution is failing",
                 "The internet may be reachable but hostnames can't resolve — most apps will appear offline.",
-            )
-        )
-    elif (data.get("dns_latency_ms") or 0) > _DNS_WARN_MS:
-        concerns.append(
-            _net_concern(
-                "warning",
-                f"DNS resolution is slow ({data['dns_latency_ms']:.0f} ms)",
-                "Name lookups are sluggish — pages may take a moment to start loading.",
             )
         )
 

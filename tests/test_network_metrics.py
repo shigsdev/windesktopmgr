@@ -430,14 +430,15 @@ class TestNetworkHealthConcerns:
         assert any("No active network adapter" in c["title"] for c in cs)
         assert all(c["level"] == "critical" for c in cs)
 
-    def test_high_ping_is_warning_not_critical(self):
-        cs = net.network_health_concerns(self._base(ping_latency_ms=350.0))
-        assert [c["level"] for c in cs] == ["warning"]
-        assert "latency" in cs[0]["title"].lower()
+    def test_high_ping_produces_no_concern(self):
+        # Latency is measured inside the parallel fan-out where a single RTT is
+        # contention-inflated (live-observed 841 ms vs ~7 ms real), so it must
+        # NOT raise a warning — only reachable-vs-not is used. Latency trends
+        # live on the Trends card.
+        assert net.network_health_concerns(self._base(ping_latency_ms=1500.0)) == []
 
-    def test_slow_dns_is_warning(self):
-        cs = net.network_health_concerns(self._base(dns_latency_ms=900.0))
-        assert [c["level"] for c in cs] == ["warning"]
+    def test_slow_dns_produces_no_concern(self):
+        assert net.network_health_concerns(self._base(dns_latency_ms=2000.0)) == []
 
     def test_fully_down_three_criticals(self):
         cs = net.network_health_concerns(
