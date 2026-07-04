@@ -4744,12 +4744,20 @@ def memory_snoozes_route():
     return jsonify({"ok": True, "snoozes": processes._load_memory_snoozes()})
 
 
-@app.route("/api/warranty/data")
-def warranty_data():
-    """Collect Intel/Dell warranty readiness data."""
+def get_warranty_data() -> dict:
+    """Collect Intel/Dell warranty-readiness data — CPU model + Intel-affected
+    flag, BIOS date, microcode revision, and WHEA / BSOD / Kernel-Power-41
+    event counts (with WHEA recency for severity).
+
+    Reusable so the ``/api/warranty/data`` route AND the dashboard
+    hardware-advisory concerns read ONE source instead of re-deriving
+    Intel-affected / WHEA state independently (the whole point of the
+    daily-report <-> dashboard parity work). Returns the data dict, or
+    ``{"error": ...}`` on failure so callers (route + fan-out) degrade cleanly.
+    """
     try:
         # CPU / BIOS / System info via WMI (bounded so a wedged Winmgmt can't
-        # hang the warranty route; degrades to {} like the old try/except).
+        # hang the caller; degrades to {} like the old try/except).
         def _sys_work():
             c = _wmi_conn()
             cpu_obj = c.Win32_Processor()[0]
@@ -4801,14 +4809,18 @@ def warranty_data():
                 max_events=100,
             )
             cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+            cutoff_7 = datetime.now(timezone.utc) - timedelta(days=7)
             bsod30 = sum(1 for e in bsod_rows if _parse_ts(e.get("TimeCreated", "")) >= cutoff)
-            whea = len(
-                _query_event_log_xpath(
-                    "System",
-                    _build_evt_xpath(providers=["Microsoft-Windows-WHEA-Logger"]),
-                    max_events=100,
-                )
+            whea_rows = _query_event_log_xpath(
+                "System",
+                _build_evt_xpath(providers=["Microsoft-Windows-WHEA-Logger"]),
+                max_events=100,
             )
+            # WHEA recency drives severity: an error in the last 7 days is an
+            # ACTIVE hardware fault (critical); older-but-within-30-days is a
+            # warning (may be resolved). Mirrors SystemHealthDiag.check_events.
+            whea_30 = sum(1 for e in whea_rows if _parse_ts(e.get("TimeCreated", "")) >= cutoff)
+            whea_recent_7 = sum(1 for e in whea_rows if _parse_ts(e.get("TimeCreated", "")) >= cutoff_7)
             kp41 = len(
                 _query_event_log_xpath(
                     "System",
@@ -4816,7 +4828,13 @@ def warranty_data():
                     max_events=100,
                 )
             )
-            counts = {"BSODs30Days": bsod30, "WHEAErrors": whea, "UnexpectedShutdowns": kp41}
+            counts = {
+                "BSODs30Days": bsod30,
+                "WHEAErrors": len(whea_rows),
+                "WHEAErrors30Days": whea_30,
+                "WHEAErrorsRecent7Days": whea_recent_7,
+                "UnexpectedShutdowns": kp41,
+            }
         except Exception:  # noqa: BLE001
             counts = {}
 
@@ -4840,6 +4858,8 @@ def warranty_data():
             "Model": sys_data.get("Model", "Unknown"),
             "BSODs30Days": counts.get("BSODs30Days", 0),
             "WHEAErrors": counts.get("WHEAErrors", 0),
+            "WHEAErrors30Days": counts.get("WHEAErrors30Days", 0),
+            "WHEAErrorsRecent7Days": counts.get("WHEAErrorsRecent7Days", 0),
             "UnexpectedShutdowns": counts.get("UnexpectedShutdowns", 0),
             "IntelWarrantyURL": "https://warranty.intel.com",
             "DellSupportURL": f"https://www.dell.com/support/home/en-us/product-support/servicetag/{service_tag}"
@@ -4847,9 +4867,19 @@ def warranty_data():
             else "https://www.dell.com/support",
         }
 
-        return jsonify({"status": "ok", "warranty": warranty})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)})
+        return warranty
+    except Exception as e:  # noqa: BLE001 -- callers degrade on {"error": ...}
+        return {"error": str(e)}
+
+
+@app.route("/api/warranty/data")
+def warranty_data():
+    """Collect Intel/Dell warranty readiness data (thin wrapper over
+    get_warranty_data so the dashboard fan-out can share the same collector)."""
+    data = get_warranty_data()
+    if data.get("error"):
+        return jsonify({"status": "error", "message": data["error"]})
+    return jsonify({"status": "ok", "warranty": data})
 
 
 @app.route("/architecture.html")

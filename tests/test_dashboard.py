@@ -78,6 +78,18 @@ class TestDashboardPhysicalDiskHealth:
                 "adapters": [{"name": "Ethernet", "up": True}],
             },
         )
+        # Default: healthy hardware (not affected, no WHEA) so no advisory
+        # concern leaks into disk/network tests.
+        mocker.patch(
+            "windesktopmgr.get_warranty_data",
+            return_value={
+                "IsAffectedCPU": False,
+                "CPUModel": "AMD Ryzen 9",
+                "BIOSDate": "2026-01-01",
+                "WHEAErrors30Days": 0,
+                "WHEAErrorsRecent7Days": 0,
+            },
+        )
         import task_watcher as _tw
 
         mocker.patch.object(_tw, "get_all_task_health", return_value=[])
@@ -223,3 +235,107 @@ class TestDashboardNetworkHealth:
         resp = client.get("/api/dashboard/summary")
         assert resp.status_code == 200
         assert self._net_concerns(resp) == []
+
+
+class TestHardwareAdvisoryConcerns:
+    """Intel 13th/14th-gen microcode/BIOS + WHEA advisories, mirroring the
+    daily report (check_intel_cpu / check_events)."""
+
+    def _w(self, **over):
+        d = {
+            "IsAffectedCPU": True,
+            "CPUModel": "Intel(R) Core(TM) i9-14900K",
+            "BIOSDate": "2026-01-06",
+            "WHEAErrors30Days": 0,
+            "WHEAErrorsRecent7Days": 0,
+        }
+        d.update(over)
+        return d
+
+    def test_empty_or_error_returns_nothing(self):
+        assert dashboard.hardware_advisory_concerns({}) == []
+        assert dashboard.hardware_advisory_concerns({"error": "wmi down"}) == []
+
+    def test_affected_cpu_recent_bios_no_intel_concern(self):
+        # Post-fix BIOS -> no Intel concern (the live i9-14900K case).
+        cs = dashboard.hardware_advisory_concerns(self._w(BIOSDate="2026-01-06"))
+        assert not any(c["tab"] == "bios" for c in cs)
+
+    def test_affected_cpu_old_bios_is_critical(self):
+        cs = dashboard.hardware_advisory_concerns(self._w(BIOSDate="2024-03-01"))
+        bios = [c for c in cs if c["tab"] == "bios"]
+        assert len(bios) == 1
+        assert bios[0]["level"] == "critical"
+        assert "predates the fix" in bios[0]["title"]
+
+    def test_affected_cpu_midrange_bios_is_warning(self):
+        cs = dashboard.hardware_advisory_concerns(self._w(BIOSDate="2024-09-15"))
+        bios = [c for c in cs if c["tab"] == "bios"]
+        assert len(bios) == 1
+        assert bios[0]["level"] == "warning"
+
+    def test_unaffected_cpu_never_flags_intel(self):
+        cs = dashboard.hardware_advisory_concerns(self._w(IsAffectedCPU=False, BIOSDate="2020-01-01"))
+        assert not any(c["tab"] == "bios" for c in cs)
+
+    def test_unknown_bios_date_raises_no_intel_concern(self):
+        # Absence of a parseable date must NOT false-alarm.
+        assert not any(c["tab"] == "bios" for c in dashboard.hardware_advisory_concerns(self._w(BIOSDate="Unknown")))
+        assert not any(c["tab"] == "bios" for c in dashboard.hardware_advisory_concerns(self._w(BIOSDate="")))
+
+    def test_recent_whea_is_critical(self):
+        cs = dashboard.hardware_advisory_concerns(self._w(WHEAErrorsRecent7Days=2, WHEAErrors30Days=3))
+        whea = [c for c in cs if c["tab"] == "sysinfo"]
+        assert len(whea) == 1
+        assert whea[0]["level"] == "critical"
+        assert "7 days" in whea[0]["title"]
+
+    def test_older_whea_is_warning(self):
+        cs = dashboard.hardware_advisory_concerns(self._w(WHEAErrorsRecent7Days=0, WHEAErrors30Days=1))
+        whea = [c for c in cs if c["tab"] == "sysinfo"]
+        assert len(whea) == 1
+        assert whea[0]["level"] == "warning"
+        assert "30 days" in whea[0]["title"]
+
+    def test_no_whea_no_concern(self):
+        assert dashboard.hardware_advisory_concerns(self._w()) == []
+
+    def test_recent_whea_takes_precedence_over_older(self):
+        # Only one WHEA concern (the critical), not both.
+        cs = dashboard.hardware_advisory_concerns(self._w(WHEAErrorsRecent7Days=1, WHEAErrors30Days=5))
+        whea = [c for c in cs if c["tab"] == "sysinfo"]
+        assert len(whea) == 1
+        assert whea[0]["level"] == "critical"
+
+
+class TestDashboardHardwareAdvisoryIntegration:
+    def _baseline(self, mocker):
+        TestDashboardPhysicalDiskHealth._mock_deps(
+            TestDashboardPhysicalDiskHealth(),
+            mocker,
+            {"drives": [], "physical": [{"Name": "SSD", "Health": "Healthy", "Status": "OK"}], "io": []},
+        )
+
+    def test_old_bios_affected_cpu_surfaces_critical(self, client, mocker):
+        self._baseline(mocker)
+        mocker.patch(
+            "windesktopmgr.get_warranty_data",
+            return_value={
+                "IsAffectedCPU": True,
+                "CPUModel": "Intel(R) Core(TM) i9-14900K",
+                "BIOSDate": "2024-02-01",
+                "WHEAErrors30Days": 0,
+                "WHEAErrorsRecent7Days": 0,
+            },
+        )
+        resp = client.get("/api/dashboard/summary")
+        bios = [c for c in resp.get_json()["concerns"] if c.get("tab") == "bios" and "microcode" in c.get("title", "")]
+        assert len(bios) == 1
+        assert bios[0]["level"] == "critical"
+
+    def test_warranty_collector_error_does_not_break_dashboard(self, client, mocker):
+        self._baseline(mocker)
+        mocker.patch("windesktopmgr.get_warranty_data", return_value={"error": "winmgmt wedged"})
+        resp = client.get("/api/dashboard/summary")
+        assert resp.status_code == 200
+        assert not any("microcode" in c.get("title", "") for c in resp.get_json()["concerns"])

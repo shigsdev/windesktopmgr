@@ -154,6 +154,109 @@ def _format_operational_status(status) -> str:
     return str(status).strip()
 
 
+def _parse_bios_date(s: str) -> datetime | None:
+    """Parse a 'YYYY-MM-DD' BIOS date to a datetime, or None if unknown /
+    unparseable (so callers raise no concern rather than a false one)."""
+    if not s or s == "Unknown":
+        return None
+    try:
+        return datetime.strptime(str(s)[:10], "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return None
+
+
+def hardware_advisory_concerns(warranty: dict) -> list[dict]:
+    """Dashboard concerns from get_warranty_data() — Intel 13th/14th-gen
+    microcode/BIOS degradation risk + WHEA hardware errors.
+
+    Parity with the daily report (SystemHealthDiag.check_intel_cpu /
+    check_events) so the dashboard and the emailed report agree. Returns []
+    when nothing is wrong OR the data is unavailable/unparseable — never a
+    false alarm on missing data.
+    """
+    if not warranty or warranty.get("error"):
+        return []
+    concerns: list[dict] = []
+
+    # Intel 13th/14th-gen degradation: an AFFECTED CPU on a BIOS that predates
+    # Intel's microcode fix (0x129, Aug 2024) is at eTVB/SVID voltage-
+    # degradation risk. Only fires for an affected CPU with an OLD, PARSEABLE
+    # BIOS date — unknown/recent date raises nothing.
+    if warranty.get("IsAffectedCPU"):
+        bios_dt = _parse_bios_date(warranty.get("BIOSDate", ""))
+        cpu = warranty.get("CPUModel") or "your CPU"
+        shown = warranty.get("BIOSDate", "")
+        if bios_dt is not None and bios_dt < datetime(2024, 8, 1):
+            concerns.append(
+                {
+                    "level": "critical",
+                    "tab": "bios",
+                    "icon": "🔩",
+                    "title": f"Intel microcode risk — BIOS predates the fix ({shown})",
+                    "detail": (
+                        f"{cpu} is a 13th/14th-gen part affected by the eTVB/SVID voltage-degradation issue, "
+                        "and this BIOS is older than Intel's August-2024 microcode fix (0x129). "
+                        "Update the BIOS as soon as possible — the degradation can be permanent."
+                    ),
+                    "action": "View BIOS & Firmware",
+                    "action_fn": "switchTab('bios')",
+                }
+            )
+        elif bios_dt is not None and bios_dt < datetime(2024, 12, 1):
+            concerns.append(
+                {
+                    "level": "warning",
+                    "tab": "bios",
+                    "icon": "🔩",
+                    "title": f"Intel microcode — verify latest BIOS ({shown})",
+                    "detail": (
+                        f"{cpu} is affected by the 13th/14th-gen voltage issue. This BIOS is post-fix but may "
+                        "not carry the newest microcode — confirm you are on the latest Dell BIOS."
+                    ),
+                    "action": "View BIOS & Firmware",
+                    "action_fn": "switchTab('bios')",
+                }
+            )
+
+    # WHEA (hardware error) events: a fault in the last 7 days is ACTIVE
+    # (critical); older-but-within-30-days is a warning (may be resolved).
+    # Mirrors SystemHealthDiag.check_events.
+    recent = warranty.get("WHEAErrorsRecent7Days") or 0
+    older = warranty.get("WHEAErrors30Days") or 0
+    if recent > 0:
+        concerns.append(
+            {
+                "level": "critical",
+                "tab": "sysinfo",
+                "icon": "🩺",
+                "title": f"{recent} hardware error(s) (WHEA) in the last 7 days",
+                "detail": (
+                    "Windows logged Machine-Check / PCIe / memory hardware errors recently — an ACTIVE fault, "
+                    "most likely CPU, RAM, or motherboard. Back up important data and investigate."
+                ),
+                "action": "View System Info",
+                "action_fn": "switchTab('sysinfo')",
+            }
+        )
+    elif older > 0:
+        concerns.append(
+            {
+                "level": "warning",
+                "tab": "sysinfo",
+                "icon": "🩺",
+                "title": f"{older} hardware error(s) (WHEA) in the last 30 days",
+                "detail": (
+                    "Windows logged hardware (WHEA) errors in the past month but none in the last week — "
+                    "possibly resolved, but worth watching."
+                ),
+                "action": "View System Info",
+                "action_fn": "switchTab('sysinfo')",
+            }
+        )
+
+    return concerns
+
+
 def _compute_dashboard_summary() -> dict:
     """Synchronous fan-out over every dashboard collector.
 
@@ -185,6 +288,7 @@ def _compute_dashboard_summary() -> dict:
         "gpu": wdm.get_gpu_metrics,
         "network": wdm.get_network_metrics,
         "network_health": wdm.get_network_health,
+        "warranty": wdm.get_warranty_data,
     }
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
@@ -420,6 +524,16 @@ def _compute_dashboard_summary() -> dict:
         if nh and not nh.get("error"):
             concerns.extend(_network_mod.network_health_concerns(nh))
     except Exception:  # noqa: BLE001 -- network health is best-effort
+        pass
+
+    # Hardware advisories — Intel 13th/14th-gen microcode/BIOS degradation risk
+    # + WHEA hardware errors. Parity with the daily report
+    # (SystemHealthDiag.check_intel_cpu / check_events); reads the SAME
+    # get_warranty_data() collector the /api/warranty/data route uses, so the
+    # two surfaces can't disagree. Best-effort — never break the dashboard.
+    try:
+        concerns.extend(hardware_advisory_concerns(results.get("warranty") or {}))
+    except Exception:  # noqa: BLE001 -- hardware advisories are best-effort
         pass
 
     # Memory — per-process hogs (backlog #19). Each concern carries

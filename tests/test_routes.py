@@ -1968,6 +1968,36 @@ class TestDashboardSummaryRoute:
                 {"old_drivers": [], "problematic_drivers": [], "nvidia": None},
             ),
         )
+        # Network health + hardware advisories — stub clean so the clean-state
+        # test doesn't pick up the dev machine's real network/WHEA state
+        # (e.g. this box has a live WHEA warning that would flip overall!=ok).
+        mocker.patch(
+            "windesktopmgr.get_network_health",
+            return_value=overrides.get(
+                "network_health",
+                {
+                    "available": True,
+                    "internet_reachable": True,
+                    "ping_latency_ms": 15.0,
+                    "dns_working": True,
+                    "dns_latency_ms": 15.0,
+                    "adapters": [{"name": "Ethernet", "up": True}],
+                },
+            ),
+        )
+        mocker.patch(
+            "windesktopmgr.get_warranty_data",
+            return_value=overrides.get(
+                "warranty",
+                {
+                    "IsAffectedCPU": False,
+                    "CPUModel": "Test CPU",
+                    "BIOSDate": "2026-01-01",
+                    "WHEAErrors30Days": 0,
+                    "WHEAErrorsRecent7Days": 0,
+                },
+            ),
+        )
         # Task-watcher concerns — default to empty so the clean-state test
         # doesn't pick up real SystemHealthDiag logs on the dev machine.
         import task_watcher as _tw
@@ -2717,6 +2747,36 @@ class TestWarrantyRoute:
         w = d["warranty"]
         assert w["IsAffectedCPU"] is True
         assert "i9-14900K" in w["CPUModel"]
+
+    def test_whea_recency_split(self, client, mocker):
+        """get_warranty_data splits WHEA events into 7-day / 30-day buckets so
+        the dashboard advisory can pick critical (active) vs warning (older)."""
+        import datetime as _dt
+
+        import windesktopmgr as wdm
+
+        self._setup(mocker)  # WMI + winreg mocks
+        now = _dt.datetime.now(_dt.timezone.utc)
+        rows = [
+            {"TimeCreated": now.isoformat()},  # within 7d
+            {"TimeCreated": (now - _dt.timedelta(days=20)).isoformat()},  # within 30d only
+            {"TimeCreated": (now - _dt.timedelta(days=90)).isoformat()},  # older than 30d
+        ]
+        # Override event mock: [bsod, whea, kp41]
+        mocker.patch("windesktopmgr._query_event_log_xpath", side_effect=[[], rows, []])
+        w = wdm.get_warranty_data()
+        assert w["WHEAErrors"] == 3
+        assert w["WHEAErrors30Days"] == 2
+        assert w["WHEAErrorsRecent7Days"] == 1
+
+    def test_get_warranty_data_returns_error_dict_on_failure(self, mocker):
+        """A hard WMI failure surfaces as {"error": ...} so the dashboard
+        fan-out degrades instead of raising."""
+        import windesktopmgr as wdm
+
+        mocker.patch("windesktopmgr.bounded_wmi_query", side_effect=RuntimeError("winmgmt wedged"))
+        out = wdm.get_warranty_data()
+        assert "error" in out
 
     def test_returns_service_tag(self, client, mocker):
         self._setup(mocker, service_tag="XYZ7890")
