@@ -1276,6 +1276,13 @@ def disk_data_route():
     return jsonify(get_disk_health())
 
 
+@disk_bp.route("/api/storage/spaces")
+def storage_spaces_route():
+    """Windows Storage Spaces pools / virtual disks / members / repair jobs for
+    the Storage tab. Systems without Spaces return has_spaces False + empties."""
+    return jsonify(get_storage_spaces())
+
+
 @disk_bp.route("/api/disk/analyze", methods=["POST"])
 def disk_analyze_route():
     """Analyze a path on disk — returns top N largest immediate children."""

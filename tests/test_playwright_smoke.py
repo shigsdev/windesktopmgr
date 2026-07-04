@@ -2268,3 +2268,42 @@ class TestLogsExactLevelFilter:
         )
         # Live log is INFO-dominated; exact INFO must never include WARNING/ERROR.
         assert all(lv == "INFO" for lv in levels), f"exact INFO filter leaked other levels: {levels}"
+
+
+class TestStorageTabSlotsAndSpaces:
+    """Storage tab (renamed from Disk Health): every physical drive shows its
+    slot + serial, and the Storage Spaces section appears iff the machine has a
+    pool. Regression gate for PR #147."""
+
+    def _open(self, page):
+        page.evaluate("switchTab('disk')")
+        for _ in range(25):
+            page.wait_for_timeout(300)
+            ready = page.evaluate(
+                "!!document.getElementById('dk-content') && document.getElementById('dk-content').style.display !== 'none'"
+            )
+            if ready:
+                break
+
+    def test_physical_drive_rows_have_slot_and_serial_columns(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        # Wait for the physical-drives table to populate.
+        for _ in range(20):
+            page.wait_for_timeout(300)
+            if page.evaluate("document.querySelectorAll('#dk-tbody tr').length"):
+                break
+        cols = page.evaluate(
+            "document.querySelector('#dk-tbody tr') ? document.querySelector('#dk-tbody tr').children.length : 0"
+        )
+        assert cols == 8, f"expected 8 columns (incl. Serial + Physical slot), got {cols}"
+
+    def test_spaces_section_visibility_tracks_has_spaces(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        page.wait_for_timeout(1200)  # let dkLoadSpaces fetch + render
+        has_spaces = page.evaluate(
+            "async () => { const r = await fetch('/api/storage/spaces'); const d = await r.json(); return !!d.has_spaces; }"
+        )
+        visible = page.evaluate("document.getElementById('dk-spaces-section').style.display !== 'none'")
+        assert visible == has_spaces, f"spaces section visible={visible} but has_spaces={has_spaces}"

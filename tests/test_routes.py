@@ -2835,6 +2835,39 @@ class TestWarrantyRoute:
         assert d["warranty"]["WHEAErrors"] == 0
 
 
+class TestStorageSpacesRoute:
+    """/api/storage/spaces — Storage Spaces pools/virtual-disks/members for the
+    Storage tab."""
+
+    def test_returns_spaces_payload(self, client, mocker):
+        mocker.patch(
+            "disk.get_storage_spaces",
+            return_value={
+                "has_spaces": True,
+                "pools": [{"Name": "Storage pool", "Health": "Warning", "Operational": "Degraded"}],
+                "virtual_disks": [
+                    {"Name": "Storage space", "Health": "Warning", "Operational": "Degraded", "Resiliency": "Parity"}
+                ],
+                "members": [],
+                "repair_jobs": [{"Name": "R", "State": "Suspended"}],
+            },
+        )
+        r = client.get("/api/storage/spaces")
+        assert r.status_code == 200
+        d = r.get_json()
+        assert d["has_spaces"] is True
+        assert d["virtual_disks"][0]["Operational"] == "Degraded"
+
+    def test_no_spaces_shape(self, client, mocker):
+        mocker.patch(
+            "disk.get_storage_spaces",
+            return_value={"has_spaces": False, "pools": [], "virtual_disks": [], "members": [], "repair_jobs": []},
+        )
+        r = client.get("/api/storage/spaces")
+        assert r.status_code == 200
+        assert r.get_json()["has_spaces"] is False
+
+
 class TestGetMemoryConfig:
     """sysinfo.get_memory_config — light Win32_PhysicalMemory DIMM query for the
     dashboard RAM advisory."""

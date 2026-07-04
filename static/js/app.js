@@ -1020,16 +1020,71 @@ async function loadDisk() {
     document.getElementById('dk-network-drives').innerHTML = netHtml;
     document.getElementById('dk-network-section').style.display = networkDrives.length ? '' : 'none';
     const physRows = physical.map(p => {
-      const hc = (p.Health||'').toLowerCase()==='healthy'?'var(--cyan)':'var(--red)';
-      return `<tr style="border-bottom:1px solid var(--border)"><td style="padding:8px 12px;font-weight:600">${esc(p.Name)}</td><td style="padding:8px 12px;color:var(--muted)">${esc(p.MediaType)}</td><td style="padding:8px 12px">${p.SizeGB} GB</td><td style="padding:8px 12px;color:${hc}">${esc(p.Health)}</td><td style="padding:8px 12px;color:var(--muted)">${esc(p.Status)}</td><td style="padding:8px 12px;color:var(--muted)">${esc(p.BusType)}</td></tr>`;
+      const bad = (p.Health||'').toLowerCase() && (p.Health||'').toLowerCase()!=='healthy';
+      const hc = bad ? 'var(--red)' : 'var(--cyan)';
+      const li = p.LocationInfo || {};
+      const serial = esc(p.SerialNumber||'').replace(/\.$/,'') || '<span style="color:var(--muted)">—</span>';
+      const slotTxt = esc(li.slot || (li.integrated ? 'Integrated' : '') || '—');
+      const busTxt = (li.bus!==null && li.bus!==undefined) ? ` · bus ${li.bus}` : '';
+      const hint = esc(li.hint||'');
+      const slotCell = hint
+        ? `<span title="${hint}" style="border-bottom:1px dotted var(--muted);cursor:help">${slotTxt}${busTxt}</span>`
+        : `${slotTxt}${busTxt}`;
+      const rowBg = bad ? 'background:#ff555511;' : '';
+      return `<tr style="border-bottom:1px solid var(--border);${rowBg}"><td style="padding:8px 12px;font-weight:600">${esc(p.Name)}</td><td style="padding:8px 12px;color:var(--muted)">${esc(p.MediaType)}</td><td style="padding:8px 12px">${p.SizeGB} GB</td><td style="padding:8px 12px;color:${hc};font-weight:${bad?'700':'400'}">${esc(p.Health)}</td><td style="padding:8px 12px;color:var(--muted)">${esc(p.Status)}</td><td style="padding:8px 12px;color:var(--muted)">${esc(p.BusType)}</td><td style="padding:8px 12px;color:var(--muted);font-family:monospace;font-size:11px">${serial}</td><td style="padding:8px 12px;color:var(--muted)">${slotCell}</td></tr>`;
     }).join('');
-    document.getElementById('dk-tbody').innerHTML = physRows || '<tr><td colspan="6" style="padding:24px;text-align:center;color:var(--muted)">No disk info available</td></tr>';
+    document.getElementById('dk-tbody').innerHTML = physRows || '<tr><td colspan="8" style="padding:24px;text-align:center;color:var(--muted)">No disk info available</td></tr>';
+    dkLoadSpaces();
     fetchSummary('disk', d, 'summary-disk');
     document.getElementById('dk-loading').style.display = 'none';
     document.getElementById('dk-content').style.display = '';
   } catch(e) {
     console.error("Failed to load disk:", e);
   }
+}
+
+// Storage Spaces (software-RAID pools). Rendered only when the machine has a
+// non-primordial pool. Windows raises no alert when a pool degrades, so this
+// section is the user-facing surface for lost redundancy + a stalled repair.
+async function dkLoadSpaces() {
+  try {
+    const r = await fetch('/api/storage/spaces');
+    const ss = await r.json();
+    const sec = document.getElementById('dk-spaces-section');
+    if (!ss || !ss.has_spaces) { sec.style.display = 'none'; return; }
+    const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+    const degraded = (h,o) => {
+      h=(h||'').toLowerCase(); o=(o||'').toLowerCase();
+      return h==='warning'||h==='unhealthy'||/degraded|incomplete|unhealthy|detached/.test(o);
+    };
+    const badge = (h,o) => {
+      const col = degraded(h,o)?'var(--red)':'var(--cyan)';
+      return `<span style="color:${col};font-weight:700">${esc(h||o||'—')}</span>`;
+    };
+    let html = '';
+    (ss.virtual_disks||[]).forEach(vd => {
+      const bad = degraded(vd.Health, vd.Operational);
+      html += `<div style="background:var(--card);border:1px solid ${bad?'var(--red)':'var(--border)'};border-radius:10px;padding:16px;margin-bottom:12px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><div style="font-weight:700;font-size:15px">🗄 ${esc(vd.Name)} <span style="font-size:12px;color:var(--muted);font-weight:400">· ${esc(vd.Resiliency)} · ${vd.SizeGB} GB</span></div>${badge(vd.Health, vd.Operational)}</div>${bad?'<div style="color:var(--red);font-size:12px">⚠ Running WITHOUT redundancy — a member drive dropped. Another failure would lose the volume.</div>':''}</div>`;
+    });
+    (ss.repair_jobs||[]).forEach(j => {
+      const suspended = (j.State||'').toLowerCase()==='suspended';
+      html += `<div style="font-size:12px;color:${suspended?'var(--orange)':'var(--muted)'};margin-bottom:8px">🛠 Repair <b>${esc(j.Name)}</b>: ${esc(j.State)}${(j.Pct||j.Pct===0)&&j.State&&j.State.toLowerCase()==='running'?` (${j.Pct}%)`:''}${suspended?' — stalled; usually not enough free pool space to rebuild':''}</div>`;
+    });
+    if ((ss.members||[]).length) {
+      html += `<table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:8px"><thead><tr style="color:var(--muted);text-align:left;border-bottom:1px solid var(--border)"><th style="padding:6px 10px">Member drive</th><th style="padding:6px 10px">Health</th><th style="padding:6px 10px">Serial</th><th style="padding:6px 10px">Physical slot</th></tr></thead><tbody>`;
+      ss.members.forEach(m => {
+        const bad = degraded(m.Health, m.Operational);
+        const li = m.LocationInfo||{};
+        const slot = esc(li.slot || (li.integrated?'Integrated':'') || '—');
+        const bus = (li.bus!==null&&li.bus!==undefined)?` · bus ${li.bus}`:'';
+        const serial = esc(m.Serial||'').replace(/\.$/,'')||'—';
+        html += `<tr style="border-bottom:1px solid var(--border);${bad?'background:#ff555511':''}"><td style="padding:6px 10px">${esc(m.Name)}</td><td style="padding:6px 10px;color:${bad?'var(--red)':'var(--cyan)'}">${esc(m.Health||m.Operational)}</td><td style="padding:6px 10px;font-family:monospace;font-size:11px;color:var(--muted)">${serial}</td><td style="padding:6px 10px;color:var(--muted)"><span title="${esc(li.hint||'')}" style="border-bottom:1px dotted var(--muted);cursor:help">${slot}${bus}</span></td></tr>`;
+      });
+      html += `</tbody></table><div style="font-size:11px;color:var(--muted);margin-top:6px">A drive that has fully dropped out of the pool no longer appears here — check the Physical Drives table below for its Warning / IO-Error status and slot.</div>`;
+    }
+    document.getElementById('dk-spaces').innerHTML = html;
+    sec.style.display = '';
+  } catch(e) { console.error('Failed to load storage spaces:', e); }
 }
 
 // ── Disk Space Analyzer ───────────────────────────────────────────────────
