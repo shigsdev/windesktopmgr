@@ -2307,3 +2307,19 @@ class TestStorageTabSlotsAndSpaces:
         )
         visible = page.evaluate("document.getElementById('dk-spaces-section').style.display !== 'none'")
         assert visible == has_spaces, f"spaces section visible={visible} but has_spaces={has_spaces}"
+
+    def test_nas_section_visibility_tracks_configured(self, loaded_page):
+        # The NAS section appears iff nas_config.json has a configured NAS. The
+        # /api/storage/nas call does real SNMP, so poll for the render.
+        page, _ = loaded_page
+        self._open(page)
+        configured = page.evaluate(
+            "async () => { const r = await fetch('/api/storage/nas'); const d = await r.json(); return d.configured || 0; }"
+        )
+        visible = None
+        for _ in range(24):
+            page.wait_for_timeout(500)
+            visible = page.evaluate("document.getElementById('dk-nas-section').style.display !== 'none'")
+            if visible == (configured > 0):
+                break
+        assert visible == (configured > 0), f"nas section visible={visible} but configured={configured}"

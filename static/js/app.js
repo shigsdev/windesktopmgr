@@ -1035,6 +1035,7 @@ async function loadDisk() {
     }).join('');
     document.getElementById('dk-tbody').innerHTML = physRows || '<tr><td colspan="8" style="padding:24px;text-align:center;color:var(--muted)">No disk info available</td></tr>';
     dkLoadSpaces();
+    dkLoadNas();
     fetchSummary('disk', d, 'summary-disk');
     document.getElementById('dk-loading').style.display = 'none';
     document.getElementById('dk-content').style.display = '';
@@ -1085,6 +1086,50 @@ async function dkLoadSpaces() {
     document.getElementById('dk-spaces').innerHTML = html;
     sec.style.display = '';
   } catch(e) { console.error('Failed to load storage spaces:', e); }
+}
+
+// NAS storage (QNAP over SNMP). Rendered only when nas_config.json is filled in
+// (configured > 0). Each NAS: disks (bay/model/capacity/temp/health) + volumes
+// (name/pool/fs/size/used%/status) + fans. Unhealthy rows tinted red.
+async function dkLoadNas() {
+  try {
+    const r = await fetch('/api/storage/nas');
+    const nd = await r.json();
+    const sec = document.getElementById('dk-nas-section');
+    if (!nd || !nd.configured) { sec.style.display = 'none'; return; }
+    const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+    let html = '';
+    (nd.nas||[]).forEach(n => {
+      const online = !!n.reachable;
+      const sub = online ? `· ${esc(n.model)} · fw ${esc(n.firmware)} · CPU ${esc(n.cpu)}` : '';
+      const badge = online
+        ? '<span style="color:var(--cyan);font-weight:700">online</span>'
+        : '<span style="color:var(--orange);font-weight:700">unreachable</span>';
+      const hdr = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div style="font-weight:700;font-size:15px">🗄 ${esc(n.name)} <span style="font-size:12px;color:var(--muted);font-weight:400">${sub}</span></div>${badge}</div>`;
+      if (!online) {
+        html += `<div style="background:var(--card);border:1px solid var(--orange);border-radius:10px;padding:16px;margin-bottom:16px">${hdr}<div style="color:var(--orange);font-size:12px">${esc(n.error||'Could not reach this NAS over SNMP.')}</div></div>`;
+        return;
+      }
+      let disks = `<div style="font-size:11px;color:var(--muted);margin-bottom:4px">Disks (${(n.disks||[]).length})</div><table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:12px"><thead><tr style="color:var(--muted);text-align:left;border-bottom:1px solid var(--border)"><th style="padding:5px 10px">Bay</th><th style="padding:5px 10px">Model</th><th style="padding:5px 10px">Capacity</th><th style="padding:5px 10px">Temp</th><th style="padding:5px 10px">Health</th></tr></thead><tbody>`;
+      (n.disks||[]).forEach(d => {
+        const bad = !d.healthy;
+        disks += `<tr style="border-bottom:1px solid var(--border);${bad?'background:#ff555511':''}"><td style="padding:5px 10px;font-weight:600">${esc(d.bay)}</td><td style="padding:5px 10px">${esc(d.model)}</td><td style="padding:5px 10px">${esc(d.capacity)}</td><td style="padding:5px 10px;color:var(--muted)">${d.temp_c!=null?esc(d.temp_c)+'°C':'—'}</td><td style="padding:5px 10px;color:${bad?'var(--red)':'var(--cyan)'};font-weight:${bad?'700':'400'}">${esc(d.health)}</td></tr>`;
+      });
+      disks += `</tbody></table>`;
+      let vols = `<div style="font-size:11px;color:var(--muted);margin-bottom:4px">Volumes (${(n.volumes||[]).length})</div><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="color:var(--muted);text-align:left;border-bottom:1px solid var(--border)"><th style="padding:5px 10px">Volume</th><th style="padding:5px 10px">Pool</th><th style="padding:5px 10px">FS</th><th style="padding:5px 10px">Size</th><th style="padding:5px 10px">Used</th><th style="padding:5px 10px">Status</th></tr></thead><tbody>`;
+      (n.volumes||[]).forEach(v => {
+        const bad = !v.healthy;
+        const pct = v.pct_used;
+        const pc = (pct!=null && pct>=90) ? 'var(--red)' : (pct!=null && pct>=75) ? 'var(--orange)' : 'var(--muted)';
+        vols += `<tr style="border-bottom:1px solid var(--border);${bad?'background:#ff555511':''}"><td style="padding:5px 10px;font-weight:600">${esc(v.name)}</td><td style="padding:5px 10px;color:var(--muted)">${esc(v.pool)}</td><td style="padding:5px 10px;color:var(--muted)">${esc(v.fs)}</td><td style="padding:5px 10px">${esc(v.total)} <span style="color:var(--muted)">(${esc(v.free)} free)</span></td><td style="padding:5px 10px;color:${pc}">${pct!=null?pct+'%':'—'}</td><td style="padding:5px 10px;color:${bad?'var(--red)':'var(--cyan)'}">${esc(v.status)}</td></tr>`;
+      });
+      vols += `</tbody></table>`;
+      const fans = (n.fans||[]).length ? `<div style="font-size:11px;color:var(--muted);margin-top:10px">Fans: ${(n.fans||[]).map(f=>esc(f.name)+' '+esc(f.speed)).join(' · ')}</div>` : '';
+      html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px">${hdr}${disks}${vols}${fans}</div>`;
+    });
+    document.getElementById('dk-nas').innerHTML = html;
+    sec.style.display = '';
+  } catch(e) { console.error('Failed to load NAS storage:', e); }
 }
 
 // ── Disk Space Analyzer ───────────────────────────────────────────────────
