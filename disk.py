@@ -216,12 +216,16 @@ def get_disk_health() -> dict:
     ps_physical = r"""
 $physical = Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
     [PSCustomObject]@{
-        Name       = $_.FriendlyName
-        MediaType  = $_.MediaType
-        SizeGB     = [math]::Round($_.Size / 1GB, 1)
-        Health     = $_.HealthStatus
-        Status     = $_.OperationalStatus
-        BusType    = $_.BusType
+        Name         = $_.FriendlyName
+        MediaType    = $_.MediaType
+        SizeGB       = [math]::Round($_.Size / 1GB, 1)
+        Health       = $_.HealthStatus
+        Status       = $_.OperationalStatus
+        BusType      = $_.BusType
+        SerialNumber = "$($_.SerialNumber)".Trim()
+        Location     = "$($_.PhysicalLocation)"
+        Firmware     = "$($_.FirmwareVersion)"
+        DeviceId     = "$($_.DeviceId)"
     }
 }
 $physical | ConvertTo-Json -Depth 3
@@ -245,7 +249,127 @@ $physical | ConvertTo-Json -Depth 3
     except Exception as e:
         print(f"[Disk IO error] {e}")
         io_data = []
+    # Enrich each physical disk with a parsed, human-readable location so the
+    # Storage tab can tell identical drives apart and point at the right slot.
+    for p in physical:
+        p["LocationInfo"] = describe_disk_location(p.get("Location", ""), p.get("BusType", ""))
     return {"drives": drives, "physical": physical, "io": io_data}
+
+
+# Matches Windows' MSFT_PhysicalDisk.PhysicalLocation string, e.g.
+# "PCI Slot 1 : Bus 6 : Device 0 : Function 0 : Adapter 1" or
+# "Integrated : Bus 0 : Device 14 : Function 0 : Adapter 0".
+_LOC_SLOT_RE = re.compile(r"(PCI Slot\s*\d+|Integrated)", re.IGNORECASE)
+_LOC_BUS_RE = re.compile(r"Bus\s*(\d+)", re.IGNORECASE)
+
+
+def describe_disk_location(location: str, bus_type: str = "") -> dict:
+    """Parse a PhysicalLocation string into slot + bus + a plain-English hint
+    for physically finding the drive.
+
+    Returns ``{"slot", "bus", "integrated", "raw", "hint"}``. ``bus`` is an int
+    or None. On an unparseable/empty location, slot is "" and hint explains the
+    limitation rather than guessing.
+    """
+    raw = str(location or "").strip()
+    slot_m = _LOC_SLOT_RE.search(raw)
+    bus_m = _LOC_BUS_RE.search(raw)
+    slot = slot_m.group(1) if slot_m else ""
+    bus = int(bus_m.group(1)) if bus_m else None
+    integrated = slot.lower().startswith("integrated") or (not slot and "integrated" in raw.lower())
+
+    if not raw:
+        hint = "Location not reported by Windows for this device."
+    elif integrated:
+        hint = "On the motherboard (integrated M.2 / SATA), not an add-in card."
+    elif slot:
+        bus_txt = f" (PCIe bus {bus})" if bus is not None else ""
+        hint = (
+            f"On an add-in PCIe card{bus_txt}. Across the card's M.2 sockets the PCIe bus "
+            "number increases with socket order, so the lowest-bus drive is the first socket "
+            "(usually nearest the bracket). Match the drive by SERIAL to be certain."
+        )
+    else:
+        bus_txt = f"PCIe bus {bus}" if bus is not None else "unknown location"
+        hint = f"{bus_txt}. Match the drive by serial number to identify it physically."
+
+    return {"slot": slot, "bus": bus, "integrated": integrated, "raw": raw, "hint": hint}
+
+
+def get_storage_spaces() -> dict:
+    """Windows Storage Spaces health — pools, virtual disks, member drives, and
+    repair jobs. Powers the Storage tab's pool view and the dashboard
+    pool-health advisory.
+
+    Windows Storage Spaces raises NO alert of its own when a pool degrades, so
+    this is the only place the app can catch a dropped drive / lost redundancy.
+    Returns ``{"pools", "virtual_disks", "members", "repair_jobs",
+    "has_spaces"}``; degrades to empty lists (has_spaces False) on any error so
+    the fan-out never breaks. Systems with no Storage Spaces get has_spaces
+    False and empty lists (not an error).
+    """
+    ps = r"""
+$nonPrim = @(Get-StoragePool -ErrorAction SilentlyContinue | Where-Object { -not $_.IsPrimordial })
+$pools = @($nonPrim | ForEach-Object {
+    [PSCustomObject]@{
+        Name=$_.FriendlyName; Health="$($_.HealthStatus)"; Operational=($_.OperationalStatus -join ', ')
+        SizeGB=[math]::Round($_.Size/1GB,1); AllocGB=[math]::Round($_.AllocatedSize/1GB,1)
+        FreeGB=[math]::Round(($_.Size-$_.AllocatedSize)/1GB,1)
+    }
+})
+$vds = @(Get-VirtualDisk -ErrorAction SilentlyContinue | ForEach-Object {
+    [PSCustomObject]@{
+        Name=$_.FriendlyName; Health="$($_.HealthStatus)"; Operational=($_.OperationalStatus -join ', ')
+        Resiliency="$($_.ResiliencySettingName)"; Redundancy=$_.PhysicalDiskRedundancy
+        SizeGB=[math]::Round($_.Size/1GB,1)
+    }
+})
+$members = @()
+foreach ($p in $nonPrim) {
+    foreach ($d in ($p | Get-PhysicalDisk -ErrorAction SilentlyContinue)) {
+        $members += [PSCustomObject]@{
+            Pool=$p.FriendlyName; Name=$d.FriendlyName; Serial="$($d.SerialNumber)".Trim()
+            Health="$($d.HealthStatus)"; Operational=($d.OperationalStatus -join ', ')
+            Usage="$($d.Usage)"; Location="$($d.PhysicalLocation)"; SizeGB=[math]::Round($d.Size/1GB,1)
+        }
+    }
+}
+$jobs = @(Get-StorageJob -ErrorAction SilentlyContinue | ForEach-Object {
+    [PSCustomObject]@{ Name=$_.Name; State="$($_.JobState)"; Pct=$_.PercentComplete }
+})
+@{ pools=$pools; virtual_disks=$vds; members=$members; repair_jobs=$jobs } | ConvertTo-Json -Depth 4
+"""
+    try:
+        r = subprocess.run(
+            ["powershell", "-NonInteractive", "-Command", ps],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        raw = json.loads(r.stdout.strip() or "{}")
+    except Exception as e:  # noqa: BLE001 -- storage spaces is best-effort
+        print(f"[Storage Spaces error] {e}")
+        return {"pools": [], "virtual_disks": [], "members": [], "repair_jobs": [], "has_spaces": False}
+
+    def _as_list(v):
+        if v is None:
+            return []
+        return v if isinstance(v, list) else [v]
+
+    pools = _as_list(raw.get("pools"))
+    vds = _as_list(raw.get("virtual_disks"))
+    members = _as_list(raw.get("members"))
+    jobs = _as_list(raw.get("repair_jobs"))
+    # Enrich member drives with the same parsed location the physical table uses.
+    for m in members:
+        m["LocationInfo"] = describe_disk_location(m.get("Location", ""), "")
+    return {
+        "pools": pools,
+        "virtual_disks": vds,
+        "members": members,
+        "repair_jobs": jobs,
+        "has_spaces": bool(pools),
+    }
 
 
 # ── Disk space analyzer (WinDirStat-style breadth-first) ─────────────────────

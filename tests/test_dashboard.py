@@ -100,6 +100,11 @@ class TestDashboardPhysicalDiskHealth:
                 ]
             },
         )
+        # Default: no Storage Spaces so no pool concern leaks in.
+        mocker.patch(
+            "windesktopmgr.get_storage_spaces",
+            return_value={"pools": [], "virtual_disks": [], "members": [], "repair_jobs": [], "has_spaces": False},
+        )
         import task_watcher as _tw
 
         mocker.patch.object(_tw, "get_all_task_health", return_value=[])
@@ -441,3 +446,120 @@ class TestDashboardMemoryConfigIntegration:
         resp = client.get("/api/dashboard/summary")
         assert resp.status_code == 200
         assert not any("RAM sticks" in c.get("title", "") for c in resp.get_json()["concerns"])
+
+
+class TestStoragePoolConcerns:
+    """Storage Spaces pool/virtual-disk health -> dashboard concerns. Windows
+    never alerts on a degraded pool, so this is the only safety net."""
+
+    def _ss(self, **over):
+        d = {
+            "has_spaces": True,
+            "pools": [{"Name": "Storage pool", "Health": "Healthy", "Operational": "OK"}],
+            "virtual_disks": [
+                {"Name": "Storage space", "Health": "Healthy", "Operational": "OK", "Resiliency": "Parity"}
+            ],
+            "members": [],
+            "repair_jobs": [],
+        }
+        d.update(over)
+        return d
+
+    def test_no_spaces_no_concern(self):
+        assert dashboard.storage_pool_concerns({"has_spaces": False}) == []
+        assert dashboard.storage_pool_concerns({}) == []
+
+    def test_healthy_pool_no_concern(self):
+        assert dashboard.storage_pool_concerns(self._ss()) == []
+
+    def test_degraded_space_is_critical(self):
+        cs = dashboard.storage_pool_concerns(
+            self._ss(
+                virtual_disks=[
+                    {"Name": "Storage space", "Health": "Warning", "Operational": "Degraded", "Resiliency": "Parity"}
+                ]
+            )
+        )
+        crit = [c for c in cs if c["level"] == "critical"]
+        assert len(crit) == 1
+        assert "redundancy lost" in crit[0]["title"]
+        assert crit[0]["tab"] == "disk"
+
+    def test_empty_health_but_degraded_operational_still_fires(self):
+        # Live Windows returns empty HealthStatus during a repair but keeps
+        # OperationalStatus=Degraded — must still flag.
+        cs = dashboard.storage_pool_concerns(
+            self._ss(virtual_disks=[{"Name": "S", "Health": "", "Operational": "Degraded", "Resiliency": "Parity"}])
+        )
+        assert any(c["level"] == "critical" for c in cs)
+
+    def test_suspended_repair_adds_warning(self):
+        cs = dashboard.storage_pool_concerns(
+            self._ss(
+                virtual_disks=[{"Name": "S", "Health": "Warning", "Operational": "Degraded", "Resiliency": "Parity"}],
+                repair_jobs=[{"Name": "S-Repair", "State": "Suspended"}],
+            )
+        )
+        assert any(c["level"] == "critical" for c in cs)
+        assert any(c["level"] == "warning" and "stalled" in c["title"] for c in cs)
+
+    def test_running_repair_no_extra_warning(self):
+        cs = dashboard.storage_pool_concerns(
+            self._ss(
+                virtual_disks=[{"Name": "S", "Health": "Healthy", "Operational": "OK", "Resiliency": "Parity"}],
+                repair_jobs=[{"Name": "S-Repair", "State": "Running"}],
+            )
+        )
+        assert cs == []
+
+    def test_degraded_pool_without_vdisk_match(self):
+        cs = dashboard.storage_pool_concerns(
+            self._ss(pools=[{"Name": "Pool", "Health": "Unhealthy", "Operational": "Degraded"}], virtual_disks=[])
+        )
+        assert any(c["level"] == "critical" and "pool" in c["title"].lower() for c in cs)
+
+    def test_unhealthy_space_is_critical(self):
+        cs = dashboard.storage_pool_concerns(
+            self._ss(
+                virtual_disks=[{"Name": "S", "Health": "Unhealthy", "Operational": "Detached", "Resiliency": "Mirror"}]
+            )
+        )
+        assert any(c["level"] == "critical" for c in cs)
+
+
+class TestDashboardStorageSpacesIntegration:
+    def _baseline(self, mocker):
+        TestDashboardPhysicalDiskHealth._mock_deps(
+            TestDashboardPhysicalDiskHealth(),
+            mocker,
+            {"drives": [], "physical": [{"Name": "SSD", "Health": "Healthy", "Status": "OK"}], "io": []},
+        )
+
+    def test_degraded_pool_surfaces_critical(self, client, mocker):
+        self._baseline(mocker)
+        mocker.patch(
+            "windesktopmgr.get_storage_spaces",
+            return_value={
+                "has_spaces": True,
+                "pools": [{"Name": "Storage pool", "Health": "Warning", "Operational": "Degraded"}],
+                "virtual_disks": [
+                    {"Name": "Storage space", "Health": "Warning", "Operational": "Degraded", "Resiliency": "Parity"}
+                ],
+                "members": [],
+                "repair_jobs": [{"Name": "Storage space-Repair", "State": "Suspended"}],
+            },
+        )
+        resp = client.get("/api/dashboard/summary")
+        pool = [c for c in resp.get_json()["concerns"] if "redundancy lost" in c.get("title", "")]
+        assert len(pool) == 1
+        assert pool[0]["level"] == "critical"
+        assert resp.get_json()["overall"] == "critical"
+
+    def test_error_does_not_break_dashboard(self, client, mocker):
+        self._baseline(mocker)
+        mocker.patch(
+            "windesktopmgr.get_storage_spaces",
+            return_value={"pools": [], "virtual_disks": [], "members": [], "repair_jobs": [], "has_spaces": False},
+        )
+        resp = client.get("/api/dashboard/summary")
+        assert resp.status_code == 200

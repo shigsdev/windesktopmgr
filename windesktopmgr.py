@@ -65,7 +65,12 @@ from dashboard import (
     _dashboard_state,  # noqa: F401 -- re-exported; route reads/writes, tests mutate
     _trigger_dashboard_refresh_async,  # noqa: F401 -- re-exported; route calls it, tests patch it
 )
-from disk import disk_bp, get_disk_health, summarize_disk
+from disk import (
+    disk_bp,
+    get_disk_health,
+    get_storage_spaces,  # noqa: F401 -- re-exported; dashboard fan-out resolves it via windesktopmgr.get_storage_spaces
+    summarize_disk,
+)
 from events import (
     get_cache_status,
     query_event_log,  # noqa: F401 -- re-exported; resolved by-name via globals() in NLQ tool dispatch
