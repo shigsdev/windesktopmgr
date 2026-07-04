@@ -140,6 +140,35 @@ class TestBuildNasResult:
         r = nas._build_nas_result({"name": "n", "host": "h"}, **raw)
         assert r["disks"][0]["healthy"] is False
 
+    def test_expanded_system_fields(self):
+        raw = self._raw()
+        raw["sys_info"].update(
+            {
+                "model": "TVS-672N",
+                "sys_temp": "30 C/86 F",
+                "cpu_temp": "43 C/109 F",
+                "total_mem": "32000 MB",
+                "free_mem": "24000 MB",
+            }
+        )
+        r = nas._build_nas_result({"name": "n", "host": "h"}, **raw)
+        assert r["model"] == "TVS-672N"  # prefers the .12.0 name over sysDescr "TS-X72"
+        assert r["sys_temp_c"] == 30
+        assert r["cpu_temp_c"] == 43
+        assert r["mem_total_gb"] is not None
+        assert 24 < r["mem_used_pct"] < 26  # (32000-24000)/32000 = 25%
+
+    def test_model_falls_back_to_sysdescr(self):
+        # No .12.0 model OID -> use the kernel token from sysDescr.
+        r = nas._build_nas_result({"name": "n", "host": "h"}, **self._raw())
+        assert r["model"] == "TS-X72"
+
+    def test_missing_temp_and_mem_are_none(self):
+        r = nas._build_nas_result({"name": "n", "host": "h"}, **self._raw())
+        assert r["sys_temp_c"] is None
+        assert r["cpu_temp_c"] is None
+        assert r["mem_used_pct"] is None
+
 
 class TestGetNasStorage:
     def test_unreachable_when_snmp_none(self, mocker):

@@ -27,6 +27,13 @@ _QNAP = "1.3.6.1.4.1.24681.1.2"
 _OID_SYS_DESCR = "1.3.6.1.2.1.1.1.0"  # "Linux TS-X72 5.2.9.3499"
 _OID_SYS_NAME = "1.3.6.1.2.1.1.5.0"
 _OID_CPU = _QNAP + ".1.0"  # "4.8 %"
+# Scalar system OIDs (verified live on TVS-672N / TS-X51, QTS 5.2.9). The model
+# NAME here (.12.0 -> "TVS-672N") is friendlier than sysDescr's kernel string.
+_OID_MODEL = _QNAP + ".12.0"  # "TVS-672N"
+_OID_SYS_TEMP = _QNAP + ".6.0"  # "30 C/86 F"
+_OID_CPU_TEMP = _QNAP + ".5.0"  # "43 C/109 F"
+_OID_TOTAL_MEM = _QNAP + ".2.0"  # "32007.9 MB"
+_OID_FREE_MEM = _QNAP + ".3.0"  # "27874.1 MB"
 _OID_DISK = {
     "descr": _QNAP + ".11.1.2",  # HDD1..
     "temp": _QNAP + ".11.1.3",  # "37 C/98 F"
@@ -118,8 +125,18 @@ def _build_nas_result(nas: dict, sys_info: dict, disk_cols: dict, vol_cols: dict
     """
     descr = str(sys_info.get("sys_descr") or "")
     model_m = re.search(r"Linux\s+(\S+)\s+([\d.]+)", descr)
-    model = model_m.group(1) if model_m else ""
+    # Prefer the friendly model name (.12.0 -> "TVS-672N") over sysDescr's
+    # kernel token ("TS-X72"); fall back to the kernel token, then "".
+    model = str(sys_info.get("model") or "").strip() or (model_m.group(1) if model_m else "")
     firmware = model_m.group(2) if model_m else ""
+
+    sys_temp_c = _parse_temp_c(sys_info.get("sys_temp"))
+    cpu_temp_c = _parse_temp_c(sys_info.get("cpu_temp"))
+    mem_total_gb = _parse_size_gb(sys_info.get("total_mem"))
+    mem_free_gb = _parse_size_gb(sys_info.get("free_mem"))
+    mem_used_pct = None
+    if mem_total_gb and mem_free_gb is not None and mem_total_gb > 0:
+        mem_used_pct = round((mem_total_gb - mem_free_gb) / mem_total_gb * 100, 1)
 
     disks = []
     for idx in sorted((disk_cols.get("descr") or {}).keys()):
@@ -179,6 +196,10 @@ def _build_nas_result(nas: dict, sys_info: dict, disk_cols: dict, vol_cols: dict
         "model": model,
         "firmware": firmware,
         "cpu": str(sys_info.get("cpu") or "").strip(),
+        "sys_temp_c": sys_temp_c,
+        "cpu_temp_c": cpu_temp_c,
+        "mem_total_gb": mem_total_gb,
+        "mem_used_pct": mem_used_pct,
         "disks": disks,
         "volumes": volumes,
         "fans": fans,
@@ -251,6 +272,11 @@ def _snmp_collect(nas: dict, timeout: float) -> dict | None:  # pragma: no cover
             "sys_descr": await _get(_OID_SYS_DESCR),
             "sys_name": await _get(_OID_SYS_NAME),
             "cpu": await _get(_OID_CPU),
+            "model": await _get(_OID_MODEL),
+            "sys_temp": await _get(_OID_SYS_TEMP),
+            "cpu_temp": await _get(_OID_CPU_TEMP),
+            "total_mem": await _get(_OID_TOTAL_MEM),
+            "free_mem": await _get(_OID_FREE_MEM),
         }
         if sys_info["sys_descr"] is None and sys_info["sys_name"] is None:
             return None  # no SNMP response at all
