@@ -103,6 +103,7 @@ from remediation import (
     remediation_bp,
 )
 from sysinfo import (
+    get_memory_config,  # noqa: F401 -- re-exported; dashboard fan-out resolves it via windesktopmgr.get_memory_config
     summarize_sysinfo,
 )
 from thermals import get_thermals, summarize_thermals

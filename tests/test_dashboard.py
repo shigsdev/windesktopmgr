@@ -90,6 +90,16 @@ class TestDashboardPhysicalDiskHealth:
                 "WHEAErrorsRecent7Days": 0,
             },
         )
+        # Default: matched at-spec RAM so no config concern leaks in.
+        mocker.patch(
+            "windesktopmgr.get_memory_config",
+            return_value={
+                "sticks": [
+                    {"locator": "DIMM1", "capacity_gb": 16.0, "speed_mhz": 5600},
+                    {"locator": "DIMM2", "capacity_gb": 16.0, "speed_mhz": 5600},
+                ]
+            },
+        )
         import task_watcher as _tw
 
         mocker.patch.object(_tw, "get_all_task_health", return_value=[])
@@ -339,3 +349,95 @@ class TestDashboardHardwareAdvisoryIntegration:
         resp = client.get("/api/dashboard/summary")
         assert resp.status_code == 200
         assert not any("microcode" in c.get("title", "") for c in resp.get_json()["concerns"])
+
+
+class TestMemoryConfigConcerns:
+    """RAM speed/capacity mismatch + above-spec XMP -> warnings, mirroring the
+    daily report (check_memory)."""
+
+    def test_matched_at_spec_no_concern(self):
+        cfg = {
+            "sticks": [
+                {"locator": "DIMM1", "capacity_gb": 16.0, "speed_mhz": 5600},
+                {"locator": "DIMM2", "capacity_gb": 16.0, "speed_mhz": 5600},
+            ]
+        }
+        assert dashboard.memory_config_concerns(cfg) == []
+
+    def test_speed_mismatch_is_warning(self):
+        cfg = {
+            "sticks": [
+                {"locator": "DIMM1", "capacity_gb": 16.0, "speed_mhz": 5600},
+                {"locator": "DIMM2", "capacity_gb": 16.0, "speed_mhz": 4800},
+            ]
+        }
+        cs = dashboard.memory_config_concerns(cfg)
+        assert any("different speeds" in c["title"] for c in cs)
+        assert all(c["level"] == "warning" for c in cs)
+
+    def test_capacity_mismatch_is_warning(self):
+        cfg = {
+            "sticks": [
+                {"locator": "DIMM1", "capacity_gb": 16.0, "speed_mhz": 5600},
+                {"locator": "DIMM2", "capacity_gb": 8.0, "speed_mhz": 5600},
+            ]
+        }
+        assert any("different capacities" in c["title"] for c in dashboard.memory_config_concerns(cfg))
+
+    def test_above_spec_xmp_is_warning(self):
+        cfg = {
+            "sticks": [
+                {"locator": "DIMM1", "capacity_gb": 16.0, "speed_mhz": 6000},
+                {"locator": "DIMM2", "capacity_gb": 16.0, "speed_mhz": 6000},
+            ]
+        }
+        cs = dashboard.memory_config_concerns(cfg)
+        assert len(cs) == 1
+        assert "above Intel spec" in cs[0]["title"]
+        assert "6000" in cs[0]["title"]
+
+    def test_at_5600_boundary_no_xmp_concern(self):
+        # 5600 is the spec ceiling — must NOT flag (strict >).
+        cfg = {"sticks": [{"locator": "DIMM1", "capacity_gb": 16.0, "speed_mhz": 5600}]}
+        assert dashboard.memory_config_concerns(cfg) == []
+
+    def test_empty_or_error_returns_nothing(self):
+        assert dashboard.memory_config_concerns({}) == []
+        assert dashboard.memory_config_concerns({"error": "wmi failed"}) == []
+        assert dashboard.memory_config_concerns({"sticks": []}) == []
+
+    def test_single_stick_never_mismatches(self):
+        cfg = {"sticks": [{"locator": "DIMM1", "capacity_gb": 32.0, "speed_mhz": 5200}]}
+        assert dashboard.memory_config_concerns(cfg) == []
+
+
+class TestDashboardMemoryConfigIntegration:
+    def _baseline(self, mocker):
+        TestDashboardPhysicalDiskHealth._mock_deps(
+            TestDashboardPhysicalDiskHealth(),
+            mocker,
+            {"drives": [], "physical": [{"Name": "SSD", "Health": "Healthy", "Status": "OK"}], "io": []},
+        )
+
+    def test_mismatched_ram_surfaces_warning(self, client, mocker):
+        self._baseline(mocker)
+        mocker.patch(
+            "windesktopmgr.get_memory_config",
+            return_value={
+                "sticks": [
+                    {"locator": "DIMM1", "capacity_gb": 16.0, "speed_mhz": 5600},
+                    {"locator": "DIMM2", "capacity_gb": 8.0, "speed_mhz": 4800},
+                ]
+            },
+        )
+        resp = client.get("/api/dashboard/summary")
+        cfg_concerns = [c for c in resp.get_json()["concerns"] if "RAM sticks" in c.get("title", "")]
+        assert len(cfg_concerns) == 2
+        assert all(c["level"] == "warning" for c in cfg_concerns)
+
+    def test_memory_config_error_does_not_break_dashboard(self, client, mocker):
+        self._baseline(mocker)
+        mocker.patch("windesktopmgr.get_memory_config", return_value={"error": "winmgmt wedged"})
+        resp = client.get("/api/dashboard/summary")
+        assert resp.status_code == 200
+        assert not any("RAM sticks" in c.get("title", "") for c in resp.get_json()["concerns"])

@@ -68,6 +68,34 @@ _mem_loc_map = {
 }
 
 
+def get_memory_config() -> dict:
+    """Light per-DIMM memory config for the dashboard RAM advisory.
+
+    Just speed + capacity per stick (one WMI class), so it's cheap enough for
+    the 30 s dashboard fan-out — unlike the full ``collect_sysinfo``. Powers the
+    speed/capacity-mismatch and above-spec-XMP concerns (parity with
+    SystemHealthDiag.check_memory). Returns ``{"sticks": [...]}`` or
+    ``{"error": ...}`` on failure so the fan-out degrades cleanly.
+    """
+    from windesktopmgr import _wmi_conn, bounded_wmi_query
+
+    def _work():
+        c = _wmi_conn()
+        sticks = []
+        for m in c.Win32_PhysicalMemory():
+            sticks.append(
+                {
+                    "locator": m.DeviceLocator or "",
+                    "capacity_gb": round(int(m.Capacity or 0) / (1024**3), 1),
+                    "speed_mhz": int(m.ConfiguredClockSpeed or 0),
+                }
+            )
+        return {"sticks": sticks}
+
+    result = bounded_wmi_query(_work, timeout_s=8.0, fallback=None, label="memory config")
+    return result if result is not None else {"error": "memory config WMI query failed or timed out"}
+
+
 def collect_sysinfo() -> dict:
     """Collect comprehensive system information for the System Info tab.
 
