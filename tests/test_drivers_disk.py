@@ -19,6 +19,8 @@ tests/test_bios_audit.py and tests/test_e2e_smoke.py.
 import json
 import subprocess
 
+import pytest
+
 import disk
 import gpu
 import windesktopmgr as wdm
@@ -1681,3 +1683,56 @@ class TestGetStorageSpaces:
         assert "Get-StoragePool" in joined
         assert "Get-VirtualDisk" in joined
         assert "Get-StorageJob" in joined
+
+
+class TestDiskSnooze:
+    """Drive-health snooze store: pause alerts for one drive by serial."""
+
+    @pytest.fixture(autouse=True)
+    def _tmp_snooze(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(disk, "DISK_SNOOZE_FILE", str(tmp_path / "disk_snoozes.json"))
+
+    def test_normalize_serial(self):
+        assert disk._normalize_serial("0025_384C_3145_20C4.") == "0025384c314520c4"
+        assert disk._normalize_serial("") == ""
+        assert disk._normalize_serial(None) == ""
+
+    def test_add_then_snoozed_by_normalized_serial(self):
+        disk.add_disk_snooze("ABC-123.", 24)
+        assert disk.is_disk_snoozed("abc123")  # normalized match
+        assert disk.is_disk_snoozed("ABC-123.")
+        assert not disk.is_disk_snoozed("OTHER")
+
+    def test_add_rejects_bad_hours(self):
+        assert disk.add_disk_snooze("x", 0)["ok"] is False
+        assert disk.add_disk_snooze("x", 999)["ok"] is False
+        assert disk.add_disk_snooze("x", -5)["ok"] is False
+
+    def test_add_rejects_empty_serial(self):
+        assert disk.add_disk_snooze("", 24)["ok"] is False
+        assert disk.add_disk_snooze("...", 24)["ok"] is False  # normalizes to empty
+
+    def test_remove(self):
+        disk.add_disk_snooze("s1", 24)
+        assert disk.remove_disk_snooze("s1")["removed"] is True
+        assert not disk.is_disk_snoozed("s1")
+        assert disk.remove_disk_snooze("neverthere")["removed"] is False
+
+    def test_expired_dropped_on_load(self):
+        import datetime as _dt
+
+        past = (_dt.datetime.now() - _dt.timedelta(hours=1)).isoformat()
+        future = (_dt.datetime.now() + _dt.timedelta(hours=1)).isoformat()
+        with open(disk.DISK_SNOOZE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"old": past, "new": future}, f)
+        snz = disk._load_disk_snoozes()
+        assert "old" not in snz
+        assert "new" in snz
+
+    def test_malformed_file_safe(self):
+        with open(disk.DISK_SNOOZE_FILE, "w", encoding="utf-8") as f:
+            f.write("not json at all")
+        assert disk._load_disk_snoozes() == {}
+
+    def test_missing_file_empty(self):
+        assert disk._load_disk_snoozes() == {}
