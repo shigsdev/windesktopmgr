@@ -1998,6 +1998,18 @@ class TestDashboardSummaryRoute:
                 },
             ),
         )
+        mocker.patch(
+            "windesktopmgr.get_memory_config",
+            return_value=overrides.get(
+                "memory_config",
+                {
+                    "sticks": [
+                        {"locator": "DIMM1", "capacity_gb": 16.0, "speed_mhz": 5600},
+                        {"locator": "DIMM2", "capacity_gb": 16.0, "speed_mhz": 5600},
+                    ]
+                },
+            ),
+        )
         # Task-watcher concerns — default to empty so the clean-state test
         # doesn't pick up real SystemHealthDiag logs on the dev machine.
         import task_watcher as _tw
@@ -2814,6 +2826,36 @@ class TestWarrantyRoute:
         assert d["status"] == "ok"
         assert d["warranty"]["BSODs30Days"] == 0
         assert d["warranty"]["WHEAErrors"] == 0
+
+
+class TestGetMemoryConfig:
+    """sysinfo.get_memory_config — light Win32_PhysicalMemory DIMM query for the
+    dashboard RAM advisory."""
+
+    def test_happy_path_maps_sticks(self, mocker):
+        import windesktopmgr as wdm
+
+        gb16 = str(16 * 1024**3)
+        _mock_wmi(
+            mocker,
+            {
+                "Win32_PhysicalMemory": [
+                    _wmi_obj(DeviceLocator="DIMM1", Capacity=gb16, ConfiguredClockSpeed=5600),
+                    _wmi_obj(DeviceLocator="DIMM2", Capacity=gb16, ConfiguredClockSpeed=5600),
+                ]
+            },
+        )
+        cfg = wdm.get_memory_config()
+        assert "error" not in cfg
+        assert len(cfg["sticks"]) == 2
+        assert cfg["sticks"][0] == {"locator": "DIMM1", "capacity_gb": 16.0, "speed_mhz": 5600}
+
+    def test_wmi_failure_returns_error(self, mocker):
+        import windesktopmgr as wdm
+
+        mocker.patch("windesktopmgr.wmi.WMI", side_effect=Exception("winmgmt down"))
+        cfg = wdm.get_memory_config()
+        assert "error" in cfg
 
 
 # ══════════════════════════════════════════════════════════════════════════════

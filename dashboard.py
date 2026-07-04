@@ -257,6 +257,64 @@ def hardware_advisory_concerns(warranty: dict) -> list[dict]:
     return concerns
 
 
+def _mem_cfg_concern(level: str, title: str, detail: str) -> dict:
+    return {
+        "level": level,
+        "tab": "sysinfo",
+        "icon": "🧠",
+        "title": title,
+        "detail": detail,
+        "action": "View System Info",
+        "action_fn": "switchTab('sysinfo')",
+    }
+
+
+def memory_config_concerns(cfg: dict) -> list[dict]:
+    """RAM speed/capacity mismatch + above-spec XMP -> dashboard warnings.
+
+    Parity with SystemHealthDiag.check_memory. All warning-level (config
+    issues, not live failures). Returns [] when the config is clean OR the
+    data is unavailable — never a false alarm on missing data. Needs >=2
+    sticks with valid readings to compare.
+    """
+    if not cfg or cfg.get("error"):
+        return []
+    sticks = cfg.get("sticks", [])
+    speeds = [s.get("speed_mhz") for s in sticks if s.get("speed_mhz")]
+    caps = [s.get("capacity_gb") for s in sticks if s.get("capacity_gb")]
+    concerns: list[dict] = []
+
+    if len(set(speeds)) > 1:
+        shown = ", ".join(f"{s} MHz" for s in sorted(set(speeds)))
+        concerns.append(
+            _mem_cfg_concern(
+                "warning",
+                "RAM sticks run at different speeds",
+                f"Configured speeds differ ({shown}) — mismatched RAM runs at the slowest common speed and can "
+                "reduce stability.",
+            )
+        )
+    if len(set(caps)) > 1:
+        shown = ", ".join(f"{c} GB" for c in sorted(set(caps)))
+        concerns.append(
+            _mem_cfg_concern(
+                "warning",
+                "RAM sticks have different capacities",
+                f"Capacities differ ({shown}) — mixed-size RAM can drop you out of dual-channel and reduce stability.",
+            )
+        )
+    if speeds and max(speeds) > 5600:
+        concerns.append(
+            _mem_cfg_concern(
+                "warning",
+                f"RAM running above Intel spec ({max(speeds)} MHz)",
+                "Configured above Intel's official 5600 MHz DDR5 spec for 13th/14th-gen (an XMP/EXPO profile). "
+                "Usually fine, but a common instability source — if you see random crashes, try disabling XMP in BIOS.",
+            )
+        )
+    return concerns
+
+
 def _compute_dashboard_summary() -> dict:
     """Synchronous fan-out over every dashboard collector.
 
@@ -289,6 +347,7 @@ def _compute_dashboard_summary() -> dict:
         "network": wdm.get_network_metrics,
         "network_health": wdm.get_network_health,
         "warranty": wdm.get_warranty_data,
+        "memory_config": wdm.get_memory_config,
     }
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
@@ -534,6 +593,13 @@ def _compute_dashboard_summary() -> dict:
     try:
         concerns.extend(hardware_advisory_concerns(results.get("warranty") or {}))
     except Exception:  # noqa: BLE001 -- hardware advisories are best-effort
+        pass
+
+    # RAM config advisory — speed/capacity mismatch + above-spec XMP. Parity
+    # with SystemHealthDiag.check_memory. Best-effort.
+    try:
+        concerns.extend(memory_config_concerns(results.get("memory_config") or {}))
+    except Exception:  # noqa: BLE001 -- memory config is best-effort
         pass
 
     # Memory — per-process hogs (backlog #19). Each concern carries
