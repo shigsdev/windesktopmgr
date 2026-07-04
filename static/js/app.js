@@ -1019,8 +1019,12 @@ async function loadDisk() {
     }).join('');
     document.getElementById('dk-network-drives').innerHTML = netHtml;
     document.getElementById('dk-network-section').style.display = networkDrives.length ? '' : 'none';
+    let dkSnoozes = {};
+    try { const sr = await fetch('/api/disk/snoozes'); const sd = await sr.json(); dkSnoozes = (sd && sd.snoozes) || {}; } catch(e) {}
+    const _snKey = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'');
     const physRows = physical.map(p => {
       const bad = (p.Health||'').toLowerCase() && (p.Health||'').toLowerCase()!=='healthy';
+      const paused = !!dkSnoozes[_snKey(p.SerialNumber)];
       const hc = bad ? 'var(--red)' : 'var(--cyan)';
       const li = p.LocationInfo || {};
       const serial = esc(p.SerialNumber||'').replace(/\.$/,'') || '<span style="color:var(--muted)">—</span>';
@@ -1030,8 +1034,13 @@ async function loadDisk() {
       const slotCell = hint
         ? `<span title="${hint}" style="border-bottom:1px dotted var(--muted);cursor:help">${slotTxt}${busTxt}</span>`
         : `${slotTxt}${busTxt}`;
-      const rowBg = bad ? 'background:#ff555511;' : '';
-      return `<tr style="border-bottom:1px solid var(--border);${rowBg}"><td style="padding:8px 12px;font-weight:600">${esc(p.Name)}</td><td style="padding:8px 12px;color:var(--muted)">${esc(p.MediaType)}</td><td style="padding:8px 12px">${p.SizeGB} GB</td><td style="padding:8px 12px;color:${hc};font-weight:${bad?'700':'400'}">${esc(p.Health)}</td><td style="padding:8px 12px;color:var(--muted)">${esc(p.Status)}</td><td style="padding:8px 12px;color:var(--muted)">${esc(p.BusType)}</td><td style="padding:8px 12px;color:var(--muted);font-family:monospace;font-size:11px">${serial}</td><td style="padding:8px 12px;color:var(--muted)">${slotCell}</td></tr>`;
+      // Paused drive: don't scream red, show a resume link. Unhealthy + not
+      // paused: red row + a pause link. Healthy: nothing extra.
+      const pausedTag = paused
+        ? ` <span style="color:var(--muted);font-size:11px" title="health alerts paused">⏸ paused · <a href="#" onclick="resumeDiskDrive('${dkJsArg(p.SerialNumber)}');return false" style="color:var(--cyan)">resume</a></span>`
+        : (bad ? ` <a href="#" onclick="pauseDiskConcern('${dkJsArg(p.SerialNumber)}');return false" title="Pause health alerts for this drive for 24 h" style="color:var(--muted);font-size:11px">⏸ pause</a>` : '');
+      const rowBg = (bad && !paused) ? 'background:#ff555511;' : '';
+      return `<tr style="border-bottom:1px solid var(--border);${rowBg}"><td style="padding:8px 12px;font-weight:600">${esc(p.Name)}</td><td style="padding:8px 12px;color:var(--muted)">${esc(p.MediaType)}</td><td style="padding:8px 12px">${p.SizeGB} GB</td><td style="padding:8px 12px;color:${paused?'var(--muted)':hc};font-weight:${(bad&&!paused)?'700':'400'}">${esc(p.Health)}${pausedTag}</td><td style="padding:8px 12px;color:var(--muted)">${esc(p.Status)}</td><td style="padding:8px 12px;color:var(--muted)">${esc(p.BusType)}</td><td style="padding:8px 12px;color:var(--muted);font-family:monospace;font-size:11px">${serial}</td><td style="padding:8px 12px;color:var(--muted)">${slotCell}</td></tr>`;
     }).join('');
     document.getElementById('dk-tbody').innerHTML = physRows || '<tr><td colspan="8" style="padding:24px;text-align:center;color:var(--muted)">No disk info available</td></tr>';
     dkLoadSpaces();
@@ -3508,6 +3517,37 @@ async function snoozeMemoryConcern(name, hours) {
   }
 }
 
+// Pause / resume dashboard health alerts for one physical drive (by serial).
+// Used by the "⏸ Pause 24h" button on a disk-health concern and the "resume"
+// link the Storage tab shows on a paused drive.
+async function pauseDiskConcern(serial, hours) {
+  if (!serial) return;
+  const h = parseInt(hours, 10) || 24;
+  try {
+    const r = await fetch("/api/disk/snooze", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({serial: serial, hours: h}),
+    });
+    const d = await r.json();
+    if (d.ok) { setTimeout(loadDashboard, 200); }
+    else { alert(`Failed to pause drive: ${d.error || "unknown error"}`); }
+  } catch (e) { alert(`Failed to pause drive: ${e.message}`); }
+}
+
+async function resumeDiskDrive(serial) {
+  if (!serial) return;
+  try {
+    await fetch("/api/disk/snooze", {
+      method: "DELETE",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({serial: serial}),
+    });
+    loadDisk();
+    if (typeof loadDashboard === "function") setTimeout(loadDashboard, 200);
+  } catch (e) { alert(`Failed to resume drive: ${e.message}`); }
+}
+
 async function toggleFastStartup(enable) {
   const btn = document.getElementById("cr-fast-toggle-btn");
   const msg = document.getElementById("cr-fast-toggle-msg");
@@ -3813,6 +3853,12 @@ function renderDashboard(d) {
                 <button data-mem-act="kill" data-pid="${pid}" data-pname="${pname}" title="Kill this process (with confirmation)" style="${btnBase}">🔪 Kill</button>
                 <button data-mem-act="snooze" data-pname="${pname}" title="Suppress this warning for 24 h" style="${btnBase}">⏳ Snooze 24h</button>`;
       }
+      // Physical-disk health concerns carry a serial -> offer a Pause button
+      // that temporarily excludes exactly this drive from alerts.
+      if (c.disk_serial) {
+        return `<button data-fn="${i}" style="${btnBase}">${esc(c.action||"View")} →</button>
+                <button data-disk-snooze="${esc(c.disk_serial)}" title="Pause health alerts for this drive for 24 h (auto-resumes)" style="${btnBase}">⏸ Pause 24h</button>`;
+      }
       return `<button data-fn="${i}" style="${btnBase}">${esc(c.action||"View")} →</button>`;
     }
     concernsEl.innerHTML = concerns.map((c, i) => `
@@ -3871,6 +3917,10 @@ function renderDashboard(d) {
       else if (act === "kill")    killProcessFromConcern(pid, pname);
       else if (act === "snooze")  snoozeMemoryConcern(pname);
     });
+  });
+  // Disk-health "Pause 24h" buttons — snooze one drive by serial.
+  concernsEl.querySelectorAll("button[data-disk-snooze]").forEach(btn => {
+    btn.addEventListener("click", () => pauseDiskConcern(btn.dataset.diskSnooze));
   });
   }
 

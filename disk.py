@@ -19,13 +19,118 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 from ctypes import wintypes
+from datetime import datetime, timedelta
 
 import psutil
 from flask import Blueprint, jsonify, request
 
 disk_bp = Blueprint("disk", __name__)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DRIVE HEALTH SNOOZE — pause alerts for one drive while you deal with it
+# ══════════════════════════════════════════════════════════════════════════════
+# Mirrors the process memory-snooze pattern (processes.py). Keyed by a
+# NORMALISED drive serial so the dashboard health concern for a paused drive is
+# suppressed for a chosen window (1..168 h) and then auto-resumes. Lets a known
+# failing/degraded drive (e.g. one mid-replacement) stop nagging without
+# silencing every other disk.
+DISK_SNOOZE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "disk_snoozes.json")
+_disk_snooze_lock = threading.RLock()
+
+
+def _normalize_serial(serial: str) -> str:
+    """Serial -> snooze key. Get-PhysicalDisk serials carry a trailing '.' and
+    odd spacing/underscores, so reduce to lowercase alphanumerics only."""
+    return re.sub(r"[^a-z0-9]", "", str(serial or "").lower())
+
+
+def _load_disk_snoozes() -> dict:
+    """Return ``{serial_key: expiry_iso}`` with expired entries dropped."""
+    with _disk_snooze_lock:
+        try:
+            if not os.path.exists(DISK_SNOOZE_FILE):
+                return {}
+            with open(DISK_SNOOZE_FILE, encoding="utf-8") as f:
+                raw = json.load(f)
+            if not isinstance(raw, dict):
+                return {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+        now = datetime.now()
+        out: dict = {}
+        dirty = False
+        for key, iso in raw.items():
+            try:
+                if datetime.fromisoformat(iso) > now:
+                    out[key] = iso
+                else:
+                    dirty = True
+            except (ValueError, TypeError):
+                dirty = True
+        if dirty:
+            _save_disk_snoozes(out, _already_locked=True)
+        return out
+
+
+def _save_disk_snoozes(snoozes: dict, *, _already_locked: bool = False) -> None:
+    body = json.dumps(snoozes, indent=2)
+    tmp = DISK_SNOOZE_FILE + ".tmp"
+
+    def _write():
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(body)
+            os.replace(tmp, DISK_SNOOZE_FILE)
+        except OSError:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+
+    if _already_locked:
+        _write()
+    else:
+        with _disk_snooze_lock:
+            _write()
+
+
+def add_disk_snooze(serial: str, hours: int = 24) -> dict:
+    """Pause dashboard health alerts for the drive with ``serial`` for
+    ``hours`` (1..168, default 24)."""
+    key = _normalize_serial(serial)
+    if not key:
+        return {"ok": False, "error": "serial required"}
+    if not isinstance(hours, int) or hours <= 0 or hours > 168:
+        return {"ok": False, "error": "hours must be 1..168"}
+    with _disk_snooze_lock:
+        snoozes = _load_disk_snoozes()
+        snoozes[key] = (datetime.now() + timedelta(hours=hours)).isoformat(timespec="seconds")
+        _save_disk_snoozes(snoozes, _already_locked=True)
+        return {"ok": True, "key": key, "expires": snoozes[key]}
+
+
+def remove_disk_snooze(serial: str) -> dict:
+    """Resume alerts for a drive (undo a snooze)."""
+    key = _normalize_serial(serial)
+    with _disk_snooze_lock:
+        snoozes = _load_disk_snoozes()
+        existed = snoozes.pop(key, None) is not None
+        _save_disk_snoozes(snoozes, _already_locked=True)
+        return {"ok": True, "removed": existed}
+
+
+def is_disk_snoozed(serial: str, snoozes: dict | None = None) -> bool:
+    """True if the drive's serial is currently snoozed. Pass a preloaded
+    ``snoozes`` map to avoid re-reading the file per disk."""
+    key = _normalize_serial(serial)
+    if not key:
+        return False
+    return key in (_load_disk_snoozes() if snoozes is None else snoozes)
 
 
 def _insight(level: str, text: str, action: str = "") -> dict:
@@ -1290,6 +1395,37 @@ def storage_nas_route():
     import nas
 
     return jsonify(nas.get_nas_storage())
+
+
+@disk_bp.route("/api/disk/snooze", methods=["POST"])
+def disk_snooze_route():
+    """Pause dashboard health alerts for one drive (by serial) for N hours."""
+    data = request.get_json() or {}
+    serial = data.get("serial")
+    if not serial:
+        return jsonify({"ok": False, "error": "Missing required field: serial"}), 400
+    try:
+        hours = int(data.get("hours") or 24)
+    except (TypeError, ValueError):
+        hours = 24
+    result = add_disk_snooze(serial, hours)
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@disk_bp.route("/api/disk/snooze", methods=["DELETE"])
+def disk_snooze_delete_route():
+    """Resume alerts for a drive (undo a pause)."""
+    data = request.get_json() or {}
+    serial = data.get("serial")
+    if not serial:
+        return jsonify({"ok": False, "error": "Missing required field: serial"}), 400
+    return jsonify(remove_disk_snooze(serial))
+
+
+@disk_bp.route("/api/disk/snoozes")
+def disk_snoozes_route():
+    """Current drive snoozes ({serial_key: expiry_iso})."""
+    return jsonify({"ok": True, "snoozes": _load_disk_snoozes()})
 
 
 @disk_bp.route("/api/disk/analyze", methods=["POST"])

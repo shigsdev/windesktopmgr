@@ -565,3 +565,54 @@ class TestDashboardStorageSpacesIntegration:
         )
         resp = client.get("/api/dashboard/summary")
         assert resp.status_code == 200
+
+
+class TestDashboardDiskSnooze:
+    """A paused (snoozed) drive is suppressed from the dashboard by serial;
+    others still fire and carry disk_serial for the Pause button."""
+
+    def _mock(self, mocker, physical):
+        TestDashboardPhysicalDiskHealth._mock_deps(
+            TestDashboardPhysicalDiskHealth(),
+            mocker,
+            {"drives": [], "physical": physical, "io": []},
+        )
+
+    def _disk(self, resp):
+        return [c for c in resp.get_json()["concerns"] if c.get("tab") == "disk"]
+
+    def test_snoozed_drive_is_suppressed(self, client, mocker, tmp_path, monkeypatch):
+        import disk
+
+        monkeypatch.setattr(disk, "DISK_SNOOZE_FILE", str(tmp_path / "ds.json"))
+        disk.add_disk_snooze("SN-BAD-1.", 24)
+        self._mock(mocker, [{"Name": "Bad SSD", "Health": "Warning", "Status": "OK", "SerialNumber": "SN-BAD-1."}])
+        resp = client.get("/api/dashboard/summary")
+        assert self._disk(resp) == []
+
+    def test_only_the_snoozed_drive_is_suppressed(self, client, mocker, tmp_path, monkeypatch):
+        import disk
+
+        monkeypatch.setattr(disk, "DISK_SNOOZE_FILE", str(tmp_path / "ds.json"))
+        disk.add_disk_snooze("SN-PAUSED.", 24)
+        self._mock(
+            mocker,
+            [
+                {"Name": "Paused SSD", "Health": "Warning", "Status": "OK", "SerialNumber": "SN-PAUSED."},
+                {"Name": "Other SSD", "Health": "Warning", "Status": "OK", "SerialNumber": "SN-OTHER."},
+            ],
+        )
+        resp = client.get("/api/dashboard/summary")
+        dc = self._disk(resp)
+        assert len(dc) == 1
+        assert dc[0]["disk_serial"] == "SN-OTHER."
+
+    def test_unsnoozed_concern_carries_serial(self, client, mocker, tmp_path, monkeypatch):
+        import disk
+
+        monkeypatch.setattr(disk, "DISK_SNOOZE_FILE", str(tmp_path / "ds.json"))
+        self._mock(mocker, [{"Name": "Bad SSD", "Health": "Warning", "Status": "OK", "SerialNumber": "SN-XYZ."}])
+        resp = client.get("/api/dashboard/summary")
+        dc = self._disk(resp)
+        assert len(dc) == 1
+        assert dc[0]["disk_serial"] == "SN-XYZ."

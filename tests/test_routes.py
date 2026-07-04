@@ -2894,6 +2894,41 @@ class TestStorageNasRoute:
         assert r.get_json()["configured"] == 0
 
 
+class TestDiskSnoozeRoute:
+    """/api/disk/snooze — pause/resume health alerts for one drive by serial."""
+
+    @pytest.fixture(autouse=True)
+    def _tmp(self, tmp_path, monkeypatch):
+        import disk
+
+        monkeypatch.setattr(disk, "DISK_SNOOZE_FILE", str(tmp_path / "ds.json"))
+
+    def test_post_snoozes(self, client):
+        r = client.post("/api/disk/snooze", json={"serial": "ABC-1.", "hours": 12})
+        assert r.status_code == 200
+        assert r.get_json()["ok"] is True
+
+    def test_post_missing_serial_is_400(self, client):
+        assert client.post("/api/disk/snooze", json={}).status_code == 400
+
+    def test_post_bad_hours_is_400(self, client):
+        assert client.post("/api/disk/snooze", json={"serial": "S", "hours": 9999}).status_code == 400
+
+    def test_get_lists_snoozes(self, client):
+        client.post("/api/disk/snooze", json={"serial": "S1"})
+        r = client.get("/api/disk/snoozes")
+        assert r.get_json()["ok"] is True
+        assert len(r.get_json()["snoozes"]) == 1
+
+    def test_delete_resumes(self, client):
+        client.post("/api/disk/snooze", json={"serial": "S1"})
+        assert client.delete("/api/disk/snooze", json={"serial": "S1"}).get_json()["removed"] is True
+        assert client.get("/api/disk/snoozes").get_json()["snoozes"] == {}
+
+    def test_delete_missing_serial_is_400(self, client):
+        assert client.delete("/api/disk/snooze", json={}).status_code == 400
+
+
 class TestGetMemoryConfig:
     """sysinfo.get_memory_config — light Win32_PhysicalMemory DIMM query for the
     dashboard RAM advisory."""

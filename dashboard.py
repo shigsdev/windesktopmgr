@@ -637,9 +637,22 @@ def _compute_dashboard_summary() -> dict:
     # Mirror those two surfaces: any non-Healthy physical disk is a
     # critical, data-loss-risk concern. (Bug: dashboard/daily-report
     # disagreement, 2026-07-04.)
+    # A drive the user has explicitly PAUSED (e.g. a known-failing one mid-
+    # replacement) is suppressed here so it stops nagging — but only that
+    # drive, by serial, and only until the snooze expires.
+    try:
+        import disk as _disk_mod
+
+        _disk_snoozes = _disk_mod._load_disk_snoozes()
+    except Exception:  # noqa: BLE001
+        _disk_mod = None
+        _disk_snoozes = {}
     for p in (results.get("disk") or {}).get("physical", []):
         health = str(p.get("Health") or "").strip()
         if health.lower() in ("", "healthy"):
+            continue
+        serial = str(p.get("SerialNumber") or "")
+        if _disk_mod is not None and _disk_mod.is_disk_snoozed(serial, _disk_snoozes):
             continue
         name = p.get("Name") or "Unknown disk"
         op = _format_operational_status(p.get("Status"))
@@ -653,8 +666,11 @@ def _compute_dashboard_summary() -> dict:
                 "icon": "💾",
                 "title": f"Disk '{name}' reports {health} health",
                 "detail": detail,
-                "action": "View Disk Health",
+                "action": "View Storage",
                 "action_fn": "switchTab('disk')",
+                # Serial lets the dashboard render a "Pause 24h" button that
+                # snoozes exactly this drive.
+                "disk_serial": serial,
             }
         )
 
