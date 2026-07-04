@@ -1283,6 +1283,15 @@ def storage_spaces_route():
     return jsonify(get_storage_spaces())
 
 
+@disk_bp.route("/api/storage/nas")
+def storage_nas_route():
+    """QNAP NAS storage (disks/volumes/fans) over SNMP for the Storage tab.
+    ``configured`` is 0 until nas_config.json is filled in."""
+    import nas
+
+    return jsonify(nas.get_nas_storage())
+
+
 @disk_bp.route("/api/disk/analyze", methods=["POST"])
 def disk_analyze_route():
     """Analyze a path on disk — returns top N largest immediate children."""

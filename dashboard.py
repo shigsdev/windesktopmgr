@@ -436,6 +436,7 @@ def _compute_dashboard_summary() -> dict:
         "warranty": wdm.get_warranty_data,
         "memory_config": wdm.get_memory_config,
         "storage_spaces": wdm.get_storage_spaces,
+        "nas_storage": wdm.get_nas_storage,
     }
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
@@ -695,6 +696,15 @@ def _compute_dashboard_summary() -> dict:
     try:
         concerns.extend(storage_pool_concerns(results.get("storage_spaces") or {}))
     except Exception:  # noqa: BLE001 -- storage spaces is best-effort
+        pass
+
+    # NAS storage (QNAP over SNMP) — unhealthy NAS disk / not-Ready volume /
+    # unreachable NAS. Only active when nas_config.json is filled in. Best-effort.
+    try:
+        import nas as _nas_mod
+
+        concerns.extend(_nas_mod.nas_storage_concerns(results.get("nas_storage") or {}))
+    except Exception:  # noqa: BLE001 -- NAS is best-effort
         pass
 
     # Memory — per-process hogs (backlog #19). Each concern carries

@@ -770,6 +770,7 @@ class TestBackupDashboardConcern:
         mocker.patch.object(wdm, "get_driver_health", return_value={"ok": True})
         mocker.patch.object(wdm, "get_bios_status", return_value={"current": {}, "update": {}})
         mocker.patch.object(wdm, "get_disk_health", return_value={"ok": True})
+        mocker.patch.object(wdm, "get_nas_storage", return_value={"nas": [], "configured": 0})
         mocker.patch.object(wdm, "get_thermals", return_value={"temps": [], "perf": {"CPUPct": 0}, "fans": []})
         mocker.patch.object(wdm, "get_memory_analysis", return_value={"used_mb": 1, "total_mb": 2})
         mocker.patch.object(wdm, "get_credentials_network_health", return_value={})
