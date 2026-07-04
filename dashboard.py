@@ -184,6 +184,7 @@ def _compute_dashboard_summary() -> dict:
         "drivers": wdm.get_driver_health,
         "gpu": wdm.get_gpu_metrics,
         "network": wdm.get_network_metrics,
+        "network_health": wdm.get_network_health,
     }
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
@@ -404,6 +405,22 @@ def _compute_dashboard_summary() -> dict:
                 "action_fn": "switchTab('disk')",
             }
         )
+
+    # Network health — internet reachability / DNS / adapter status. Parity
+    # with the daily health report (SystemHealthDiag.check_network_health),
+    # which flags internet-down / DNS-fail / no-active-adapter as critical.
+    # The `network` collector above only samples throughput/latency for the
+    # Trends card and can't answer "is the internet usable?"; `network_health`
+    # is the dedicated reachability probe. Best-effort — never break the
+    # dashboard on a network hiccup.
+    try:
+        import network as _network_mod
+
+        nh = results.get("network_health") or {}
+        if nh and not nh.get("error"):
+            concerns.extend(_network_mod.network_health_concerns(nh))
+    except Exception:  # noqa: BLE001 -- network health is best-effort
+        pass
 
     # Memory — per-process hogs (backlog #19). Each concern carries
     # pid/process_name/mem_mb so the frontend can render inline action

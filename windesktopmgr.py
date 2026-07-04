@@ -80,6 +80,7 @@ from gpu import (
 from homenet import homenet_bp, homenet_get_inventory
 from network import (
     get_network_data,
+    get_network_health,  # noqa: F401 -- re-exported; dashboard fan-out resolves it via windesktopmgr.get_network_health
     get_network_metrics,  # noqa: F401 -- re-exported; dashboard fan-out resolves it via windesktopmgr.get_network_metrics
     summarize_network,
 )

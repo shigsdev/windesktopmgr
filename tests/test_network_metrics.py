@@ -290,3 +290,170 @@ class TestGetNetworkMetrics:
             "error",
         ):
             assert key in result, f"missing key {key!r}"
+
+
+class TestMeasureDnsLatency:
+    """DNS resolution timing — None on any resolver failure, ms on success."""
+
+    def test_success_returns_rounded_ms(self, mocker):
+        import socket
+
+        mocker.patch.object(socket, "getaddrinfo", return_value=[("fam", "type", 0, "", ("8.8.8.8", 0))])
+        times = iter([2000.0000, 2000.0330])  # 33.0 ms
+        mocker.patch("windesktopmgr.time.perf_counter", side_effect=lambda: next(times))
+        assert net._measure_dns_latency("dns.google") == 33.0
+
+    def test_gaierror_returns_none(self, mocker):
+        import socket
+
+        mocker.patch.object(socket, "getaddrinfo", side_effect=socket.gaierror("SERVFAIL"))
+        assert net._measure_dns_latency("dns.google") is None
+
+    def test_timeout_returns_none(self, mocker):
+        import socket
+
+        mocker.patch.object(socket, "getaddrinfo", side_effect=TimeoutError("resolver timed out"))
+        assert net._measure_dns_latency("dns.google") is None
+
+    def test_slow_resolution_times_out_to_none(self, mocker):
+        import socket
+        import time as _t
+
+        def _slow(*_a, **_k):
+            _t.sleep(0.3)
+            return []
+
+        mocker.patch.object(socket, "getaddrinfo", side_effect=_slow)
+        # Bounded worker gives up well before the resolver returns.
+        assert net._measure_dns_latency("dns.google", timeout=0.05) is None
+
+    def test_does_not_mutate_global_socket_timeout(self, mocker):
+        import socket
+
+        mocker.patch.object(socket, "getaddrinfo", return_value=[("f", "t", 0, "", ("8.8.8.8", 0))])
+        sentinel = socket.getdefaulttimeout()
+        net._measure_dns_latency("dns.google")
+        assert socket.getdefaulttimeout() == sentinel, "must not touch process-global socket timeout"
+
+
+class TestMeasureReachability:
+    """Reachable if ANY raw-IP target connects; None only when all fail."""
+
+    def test_first_target_wins(self, mocker):
+        mocker.patch.object(net, "_measure_tcp_latency", side_effect=[12.3])
+        assert net._measure_reachability((("8.8.8.8", 53),)) == 12.3
+
+    def test_falls_through_to_second_target(self, mocker):
+        # First target blocked (None), second succeeds — no false "down".
+        mocker.patch.object(net, "_measure_tcp_latency", side_effect=[None, 44.0])
+        assert net._measure_reachability((("8.8.8.8", 53), ("1.1.1.1", 443))) == 44.0
+
+    def test_all_fail_returns_none(self, mocker):
+        mocker.patch.object(net, "_measure_tcp_latency", side_effect=[None, None])
+        assert net._measure_reachability((("8.8.8.8", 53), ("1.1.1.1", 443))) is None
+
+
+class TestGetNetworkHealth:
+    def test_healthy_shape(self, mocker):
+        mocker.patch.object(net, "_measure_reachability", return_value=25.0)
+        mocker.patch.object(net, "_measure_dns_latency", return_value=30.0)
+        mocker.patch("windesktopmgr.psutil.net_if_stats", return_value={"Ethernet": SimpleNamespace(isup=True)})
+        h = net.get_network_health()
+        assert h["internet_reachable"] is True
+        assert h["ping_latency_ms"] == 25.0
+        assert h["dns_working"] is True
+        assert h["dns_latency_ms"] == 30.0
+        assert h["adapters"] == [{"name": "Ethernet", "up": True}]
+
+    def test_down_shape(self, mocker):
+        mocker.patch.object(net, "_measure_reachability", return_value=None)
+        mocker.patch.object(net, "_measure_dns_latency", return_value=None)
+        mocker.patch("windesktopmgr.psutil.net_if_stats", return_value={"Ethernet": SimpleNamespace(isup=False)})
+        h = net.get_network_health()
+        assert h["internet_reachable"] is False
+        assert h["dns_working"] is False
+
+    def test_loopback_excluded(self, mocker):
+        mocker.patch.object(net, "_measure_reachability", return_value=10.0)
+        mocker.patch.object(net, "_measure_dns_latency", return_value=10.0)
+        mocker.patch(
+            "windesktopmgr.psutil.net_if_stats",
+            return_value={
+                "Loopback Pseudo-Interface 1": SimpleNamespace(isup=True),
+                "Ethernet": SimpleNamespace(isup=True),
+            },
+        )
+        names = [a["name"] for a in net.get_network_health()["adapters"]]
+        assert names == ["Ethernet"]
+
+    def test_net_if_stats_exception_is_safe(self, mocker):
+        mocker.patch.object(net, "_measure_reachability", return_value=10.0)
+        mocker.patch.object(net, "_measure_dns_latency", return_value=10.0)
+        mocker.patch("windesktopmgr.psutil.net_if_stats", side_effect=OSError("wmi down"))
+        h = net.get_network_health()
+        assert h["adapters"] == []
+        assert h["internet_reachable"] is True  # probe path independent of adapters
+
+
+class TestNetworkHealthConcerns:
+    def _base(self, **over):
+        d = {
+            "available": True,
+            "internet_reachable": True,
+            "ping_latency_ms": 20.0,
+            "dns_working": True,
+            "dns_latency_ms": 20.0,
+            "adapters": [{"name": "Ethernet", "up": True}],
+        }
+        d.update(over)
+        return d
+
+    def test_healthy_no_concerns(self):
+        assert net.network_health_concerns(self._base()) == []
+
+    def test_internet_unreachable_is_critical(self):
+        cs = net.network_health_concerns(self._base(internet_reachable=False, ping_latency_ms=None))
+        assert len(cs) == 1
+        assert cs[0]["level"] == "critical"
+        assert cs[0]["tab"] == "network"
+        assert "unreachable" in cs[0]["title"].lower()
+
+    def test_dns_failing_is_critical(self):
+        cs = net.network_health_concerns(self._base(dns_working=False, dns_latency_ms=None))
+        assert [c["level"] for c in cs] == ["critical"]
+        assert "dns" in cs[0]["title"].lower()
+
+    def test_no_active_adapter_is_critical(self):
+        cs = net.network_health_concerns(
+            self._base(adapters=[{"name": "Ethernet", "up": False}, {"name": "Wi-Fi", "up": False}])
+        )
+        assert any("No active network adapter" in c["title"] for c in cs)
+        assert all(c["level"] == "critical" for c in cs)
+
+    def test_high_ping_is_warning_not_critical(self):
+        cs = net.network_health_concerns(self._base(ping_latency_ms=350.0))
+        assert [c["level"] for c in cs] == ["warning"]
+        assert "latency" in cs[0]["title"].lower()
+
+    def test_slow_dns_is_warning(self):
+        cs = net.network_health_concerns(self._base(dns_latency_ms=900.0))
+        assert [c["level"] for c in cs] == ["warning"]
+
+    def test_fully_down_three_criticals(self):
+        cs = net.network_health_concerns(
+            self._base(
+                internet_reachable=False,
+                ping_latency_ms=None,
+                dns_working=False,
+                dns_latency_ms=None,
+                adapters=[{"name": "Ethernet", "up": False}],
+            )
+        )
+        assert len(cs) == 3
+        assert all(c["level"] == "critical" for c in cs)
+
+    def test_empty_adapters_no_false_adapter_critical(self):
+        # No adapters enumerated at all (psutil failed) must NOT fire the
+        # "no active adapter" critical — absence of data != everything down.
+        cs = net.network_health_concerns(self._base(adapters=[]))
+        assert not any("No active network adapter" in c["title"] for c in cs)

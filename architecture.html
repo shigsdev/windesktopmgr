@@ -193,7 +193,7 @@
       <button type="button" onclick="exportPDF()" title="Open the browser print dialog — choose 'Save as PDF'" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--yellow);border:none;cursor:pointer;border-right:1px solid var(--border)">Export PDF</button>
       <button type="button" onclick="exportHTML()" title="Download a self-contained copy of this diagram" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--blue);border:none;cursor:pointer">Export HTML</button>
     </div>
-    <div class="badge" style="color:var(--green);border-color:#00e67633">2,908 tests · 87% coverage</div>
+    <div class="badge" style="color:var(--green);border-color:#00e67633">2,929 tests · 87% coverage</div>
     <div class="badge">
       <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
     </div>
@@ -287,7 +287,7 @@
 
   <!-- ── LAYER 2: FLASK BACKEND ───────────────────────────────── -->
   <div class="row row-flask" id="layer-flask">
-    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~5,067 lines + bsod.py · ~901 lines + events.py · ~656 lines + processes.py · ~1,674 lines + sysinfo.py · ~1,375 lines + dashboard.py · ~823 lines (+ _build_gauges hero-gauge readouts, redesign PR2) + credentials.py · ~706 lines + thermals.py · ~185 lines + lhm.py · ~271 lines (LibreHardwareMonitor in-app installer: pinned download + SHA256 verify + zip-slip-guarded extract + UAC elevated launch) + ai_identify.py · ~277 lines (GLOBAL AI identifier: when a local KB can't name an entity — process/service/startup/driver/MAC/BIOS — a bounded Claude call resolves it, cached; reuses the self-learning worker+cache pattern) + gpu.py · ~623 lines + network.py · ~375 lines + timeline.py · ~525 lines + bios.py · ~428 lines + homenet.py Blueprint · ~3,892 lines + disk.py Blueprint · ~1,202 lines + remediation.py Blueprint · ~445 lines + nlq.py Blueprint · ~416 lines + baseline.py · ~2,549 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · applogging.py RotatingFileHandler · dashboard summary cache (30s TTL + single-flight background refresh) · request-log flood suppressor · SAFE_PROCESSES kill guard + SYSTEM_PROCESSES_GLOSSARY · pynvml GPU metrics collector · psutil+socket network metrics collector · mac-vendor-lookup IEEE OUI (~36k vendors) + zeroconf mDNS for device name resolution · baseline.py drift detection (startup + services + tasks)</div>
+    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~5,067 lines + bsod.py · ~901 lines + events.py · ~656 lines + processes.py · ~1,674 lines + sysinfo.py · ~1,375 lines + dashboard.py · ~840 lines (+ _build_gauges hero-gauge readouts, redesign PR2) + credentials.py · ~706 lines + thermals.py · ~185 lines + lhm.py · ~271 lines (LibreHardwareMonitor in-app installer: pinned download + SHA256 verify + zip-slip-guarded extract + UAC elevated launch) + ai_identify.py · ~277 lines (GLOBAL AI identifier: when a local KB can't name an entity — process/service/startup/driver/MAC/BIOS — a bounded Claude call resolves it, cached; reuses the self-learning worker+cache pattern) + gpu.py · ~623 lines + network.py · ~375 lines + timeline.py · ~525 lines + bios.py · ~428 lines + homenet.py Blueprint · ~3,892 lines + disk.py Blueprint · ~1,202 lines + remediation.py Blueprint · ~445 lines + nlq.py Blueprint · ~416 lines + baseline.py · ~2,549 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · applogging.py RotatingFileHandler · dashboard summary cache (30s TTL + single-flight background refresh) · request-log flood suppressor · SAFE_PROCESSES kill guard + SYSTEM_PROCESSES_GLOSSARY · pynvml GPU metrics collector · psutil+socket network metrics collector + reachability/DNS health check · mac-vendor-lookup IEEE OUI (~36k vendors) + zeroconf mDNS for device name resolution · baseline.py drift detection (startup + services + tasks)</div>
     <div style="margin-bottom:10px">
       <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes (73 endpoints)</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
@@ -722,7 +722,7 @@
           </div>
           <div class="fs-chip" style="border-color:#ff6ec733">
             <div class="fs-title" style="color:var(--pink)">network.py</div>
-            <div class="fs-sub">Network monitor module · ~375 lines · psutil adapters/connections + throughput delta-tracker + socket TCP-latency probe (#54 PR H)</div>
+            <div class="fs-sub">Network monitor module · ~538 lines · psutil adapters/connections + throughput delta-tracker + socket TCP-latency probe + reachability/DNS health check (dashboard concern parity with daily report) (#54 PR H)</div>
           </div>
           <div class="fs-chip" style="border-color:#ff6ec733">
             <div class="fs-title" style="color:var(--pink)">timeline.py</div>
