@@ -135,6 +135,25 @@ def _build_gauges(results: dict) -> list:
     ]
 
 
+def _format_operational_status(status) -> str:
+    """Normalise a physical disk's OperationalStatus into a display string.
+
+    ``Get-PhysicalDisk`` surfaces OperationalStatus as a scalar ("OK"), a
+    JSON array (``["IO Error", "OK"]`` when a disk is throwing errors), or
+    a wrapped object (``{"value": ["IO Error", "OK"], "Count": 2}``)
+    depending on how PowerShell serialised it. Flatten any of those into a
+    comma-joined string; return "" for empty / None.
+    """
+    if status is None:
+        return ""
+    if isinstance(status, dict):
+        status = status.get("value", "")
+    if isinstance(status, list | tuple):
+        parts = [str(s).strip() for s in status if str(s).strip()]
+        return ", ".join(parts)
+    return str(status).strip()
+
+
 def _compute_dashboard_summary() -> dict:
     """Synchronous fan-out over every dashboard collector.
 
@@ -354,6 +373,37 @@ def _compute_dashboard_summary() -> dict:
                     "action_fn": "switchTab('disk')",
                 }
             )
+
+    # Physical-disk SMART/health status. The drive loops above only cover
+    # logical-volume *fullness* (disk_percent); a physical disk reporting
+    # a non-Healthy HealthStatus (Warning / Unhealthy / an "IO Error"
+    # OperationalStatus) never reached the dashboard concerns feed before
+    # this block, so a failing disk showed up in the daily health report
+    # (SystemHealthDiag.check_disk_health) and on the Disk tab
+    # (disk.summarize_disk) but was silently absent from the dashboard.
+    # Mirror those two surfaces: any non-Healthy physical disk is a
+    # critical, data-loss-risk concern. (Bug: dashboard/daily-report
+    # disagreement, 2026-07-04.)
+    for p in (results.get("disk") or {}).get("physical", []):
+        health = str(p.get("Health") or "").strip()
+        if health.lower() in ("", "healthy"):
+            continue
+        name = p.get("Name") or "Unknown disk"
+        op = _format_operational_status(p.get("Status"))
+        detail = "Back up important data now and investigate — a disk in this state can lose data."
+        if op and op.lower() not in ("ok", "healthy"):
+            detail = f"Operational status: {op}. " + detail
+        concerns.append(
+            {
+                "level": "critical",
+                "tab": "disk",
+                "icon": "💾",
+                "title": f"Disk '{name}' reports {health} health",
+                "detail": detail,
+                "action": "View Disk Health",
+                "action_fn": "switchTab('disk')",
+            }
+        )
 
     # Memory — per-process hogs (backlog #19). Each concern carries
     # pid/process_name/mem_mb so the frontend can render inline action
