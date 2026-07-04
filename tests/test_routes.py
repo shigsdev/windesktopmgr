@@ -2017,6 +2017,10 @@ class TestDashboardSummaryRoute:
                 {"pools": [], "virtual_disks": [], "members": [], "repair_jobs": [], "has_spaces": False},
             ),
         )
+        mocker.patch(
+            "windesktopmgr.get_nas_storage",
+            return_value=overrides.get("nas_storage", {"nas": [], "configured": 0}),
+        )
         # Task-watcher concerns — default to empty so the clean-state test
         # doesn't pick up real SystemHealthDiag logs on the dev machine.
         import task_watcher as _tw
@@ -2866,6 +2870,28 @@ class TestStorageSpacesRoute:
         r = client.get("/api/storage/spaces")
         assert r.status_code == 200
         assert r.get_json()["has_spaces"] is False
+
+
+class TestStorageNasRoute:
+    """/api/storage/nas — QNAP NAS storage over SNMP for the Storage tab."""
+
+    def test_returns_nas_payload(self, client, mocker):
+        mocker.patch(
+            "nas.get_nas_storage",
+            return_value={
+                "nas": [{"name": "nas2", "reachable": True, "disks": [], "volumes": [], "fans": []}],
+                "configured": 1,
+            },
+        )
+        r = client.get("/api/storage/nas")
+        assert r.status_code == 200
+        assert r.get_json()["configured"] == 1
+
+    def test_no_nas_configured(self, client, mocker):
+        mocker.patch("nas.get_nas_storage", return_value={"nas": [], "configured": 0})
+        r = client.get("/api/storage/nas")
+        assert r.status_code == 200
+        assert r.get_json()["configured"] == 0
 
 
 class TestGetMemoryConfig:

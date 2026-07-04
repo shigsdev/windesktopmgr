@@ -83,6 +83,9 @@ from gpu import (
     get_nvidia_update_info,
 )
 from homenet import homenet_bp, homenet_get_inventory
+from nas import (
+    get_nas_storage,  # noqa: F401 -- re-exported; dashboard fan-out resolves it via windesktopmgr.get_nas_storage
+)
 from network import (
     get_network_data,
     get_network_health,  # noqa: F401 -- re-exported; dashboard fan-out resolves it via windesktopmgr.get_network_health

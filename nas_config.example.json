@@ -1,0 +1,13 @@
+{
+  "_README": "Template for nas_config.json (which is gitignored — copy this file to nas_config.json and fill it in). Powers the Storage tab's NAS section via read-only SNMP. On each QNAP: Control Panel -> Network & File Services -> SNMP -> Enable, choose SNMPv2c, set a READ-ONLY community string, Apply. Then put that string in 'community' below. For SNMPv3 instead, set snmp_version to 'v3' and add v3_user / v3_auth_key / v3_priv_key (auth+priv, SHA/AES recommended).",
+  "poll_timeout_s": 3,
+  "nas": [
+    {
+      "name": "my-qnap",
+      "host": "192.168.1.100",
+      "snmp_version": "v2c",
+      "community": "your-readonly-community",
+      "enabled": true
+    }
+  ]
+}

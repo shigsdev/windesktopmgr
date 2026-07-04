@@ -105,6 +105,8 @@ class TestDashboardPhysicalDiskHealth:
             "windesktopmgr.get_storage_spaces",
             return_value={"pools": [], "virtual_disks": [], "members": [], "repair_jobs": [], "has_spaces": False},
         )
+        # Default: no NAS configured so no NAS concern leaks in.
+        mocker.patch("windesktopmgr.get_nas_storage", return_value={"nas": [], "configured": 0})
         import task_watcher as _tw
 
         mocker.patch.object(_tw, "get_all_task_health", return_value=[])

@@ -209,6 +209,7 @@ class TestDashboardRuleIntegration:
             return_value={"onedrive_suspended": False, "fast_startup_enabled": False, "drives_down": []},
         )
         mocker.patch("windesktopmgr.get_disk_health", return_value={"ok": True, "drives": []})
+        mocker.patch("windesktopmgr.get_nas_storage", return_value={"nas": [], "configured": 0})
         mocker.patch(
             "windesktopmgr.get_driver_health",
             return_value={"old_drivers": [], "problematic_drivers": [], "nvidia": None},
