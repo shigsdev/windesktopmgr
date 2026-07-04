@@ -58,7 +58,7 @@
       <div class="rail-group">Hardware</div>
       <button class="page-tab" data-page="thermals">🌡 Temps &amp; Power</button>
       <button class="page-tab" data-page="drivers">⟳ Drivers</button>
-      <button class="page-tab" data-page="disk">💾 Disk Health</button>
+      <button class="page-tab" data-page="disk">💾 Storage</button>
       <button class="page-tab" data-page="memory">🧠 Memory</button>
       <button class="page-tab" data-page="bios">🔩 BIOS &amp; Firmware</button>
       <button class="page-tab" data-page="network">🌐 Network</button>
@@ -598,7 +598,11 @@
         <h2 style="margin:24px 0 12px">Network Shares <span style="font-size:12px;color:var(--muted);font-weight:400">· mapped CIFS/SMB drives (not local storage)</span></h2>
         <div id="dk-network-drives" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px"></div>
       </div>
-      <h2 style="margin:24px 0 12px">Physical Disks</h2>
+      <div id="dk-spaces-section" style="display:none">
+        <h2 style="margin:24px 0 12px">Storage Spaces <span style="font-size:12px;color:var(--muted);font-weight:400">· software RAID pools — Windows raises no alert when one degrades</span></h2>
+        <div id="dk-spaces"></div>
+      </div>
+      <h2 style="margin:24px 0 12px">Physical Drives <span style="font-size:12px;color:var(--muted);font-weight:400">· every drive on the system, with its physical slot — hover a slot for how to find it</span></h2>
       <table style="width:100%;border-collapse:collapse;font-size:13px">
         <thead><tr style="color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">
           <th style="padding:8px 12px">Drive</th>
@@ -607,6 +611,8 @@
           <th style="padding:8px 12px">Health</th>
           <th style="padding:8px 12px">Status</th>
           <th style="padding:8px 12px">Bus</th>
+          <th style="padding:8px 12px">Serial</th>
+          <th style="padding:8px 12px">Physical slot</th>
         </tr></thead>
         <tbody id="dk-tbody"></tbody>
       </table>
