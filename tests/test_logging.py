@@ -22,6 +22,20 @@ def _propagate_logs():
     root.propagate = prev
 
 
+def _app_handlers(root):
+    """Handlers that *applogging* attached, excluding any injected by the
+    test framework itself.
+
+    pytest's logging plugin attaches its own capture handlers to the
+    ``windesktopmgr`` logger during a test (pytest 9 added a
+    ``_LiveLoggingNullHandler`` — itself a ``logging.NullHandler`` subclass —
+    plus a ``_FileHandler`` pointing at the null device). Those are harness
+    state, not something applogging is responsible for, so we filter them out
+    by module before asserting on what applogging did.
+    """
+    return [h for h in root.handlers if not type(h).__module__.startswith("_pytest")]
+
+
 class TestConfigure:
     def test_pytest_uses_null_handler_not_file(self):
         """Regression: test runs must NEVER write to the production log file.
@@ -34,11 +48,13 @@ class TestConfigure:
         import logging as _logging
 
         root = applogging.configure()
-        # We're inside pytest, so there must be exactly one handler and it must
-        # be a NullHandler -- no file handler should ever be attached during tests
-        assert len(root.handlers) == 1
-        assert isinstance(root.handlers[0], _logging.NullHandler)
-        # Confirm no RotatingFileHandler snuck in
+        # Inside pytest, applogging must attach exactly one handler and it must
+        # be a NullHandler -- no file handler should ever be attached during
+        # tests. (pytest's own capture handlers are excluded — see _app_handlers.)
+        app_handlers = _app_handlers(root)
+        assert len(app_handlers) == 1
+        assert isinstance(app_handlers[0], _logging.NullHandler)
+        # Confirm no RotatingFileHandler snuck in anywhere on the logger.
         for h in root.handlers:
             assert not isinstance(h, _logging.handlers.RotatingFileHandler)
 
@@ -48,7 +64,7 @@ class TestConfigure:
         root1 = applogging.configure()
         root2 = applogging.configure()
         assert root1 is root2
-        assert len(root1.handlers) == 1
+        assert len(_app_handlers(root1)) == 1
 
     def test_get_logger_returns_child(self):
         log = applogging.get_logger("ps")
