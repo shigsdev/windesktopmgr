@@ -1110,7 +1110,7 @@ async function dkLoadNas() {
     let html = '';
     (nd.nas||[]).forEach(n => {
       const online = !!n.reachable;
-      const sub = online ? `· ${esc(n.model)} · fw ${esc(n.firmware)} · CPU ${esc(n.cpu)}` : '';
+      const sub = online ? `· ${esc(n.model)} · fw ${esc(n.firmware)}` : '';
       const badge = online
         ? '<span style="color:var(--cyan);font-weight:700">online</span>'
         : '<span style="color:var(--orange);font-weight:700">unreachable</span>';
@@ -1119,6 +1119,14 @@ async function dkLoadNas() {
         html += `<div style="background:var(--card);border:1px solid var(--orange);border-radius:10px;padding:16px;margin-bottom:16px">${hdr}<div style="color:var(--orange);font-size:12px">${esc(n.error||'Could not reach this NAS over SNMP.')}</div></div>`;
         return;
       }
+      // Compact system stats row (CPU / RAM / temps) under the header.
+      const stat = (label, val) => (val!==null && val!==undefined && val!=='') ? `<span style="color:var(--muted)">${label} <b style="color:var(--fg)">${esc(val)}</b></span>` : '';
+      const stats = `<div style="display:flex;gap:18px;flex-wrap:wrap;font-size:11px;margin:-2px 0 12px">
+        ${stat('CPU', n.cpu)}
+        ${n.mem_used_pct!=null ? stat('RAM', n.mem_used_pct + '% of ' + (n.mem_total_gb!=null?Math.round(n.mem_total_gb):'?') + ' GB') : ''}
+        ${n.sys_temp_c!=null ? stat('System', n.sys_temp_c + '°C') : ''}
+        ${n.cpu_temp_c!=null ? stat('CPU temp', n.cpu_temp_c + '°C') : ''}
+      </div>`;
       let disks = `<div style="font-size:11px;color:var(--muted);margin-bottom:4px">Disks (${(n.disks||[]).length})</div><table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:12px"><thead><tr style="color:var(--muted);text-align:left;border-bottom:1px solid var(--border)"><th style="padding:5px 10px">Bay</th><th style="padding:5px 10px">Model</th><th style="padding:5px 10px">Capacity</th><th style="padding:5px 10px">Temp</th><th style="padding:5px 10px">Health</th></tr></thead><tbody>`;
       (n.disks||[]).forEach(d => {
         const bad = !d.healthy;
@@ -1134,7 +1142,7 @@ async function dkLoadNas() {
       });
       vols += `</tbody></table>`;
       const fans = (n.fans||[]).length ? `<div style="font-size:11px;color:var(--muted);margin-top:10px">Fans: ${(n.fans||[]).map(f=>esc(f.name)+' '+esc(f.speed)).join(' · ')}</div>` : '';
-      html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px">${hdr}${disks}${vols}${fans}</div>`;
+      html += `<div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px">${hdr}${stats}${disks}${vols}${fans}</div>`;
     });
     document.getElementById('dk-nas').innerHTML = html;
     sec.style.display = '';
