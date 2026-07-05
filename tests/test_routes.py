@@ -2928,6 +2928,23 @@ class TestDiskSnoozeRoute:
     def test_delete_missing_serial_is_400(self, client):
         assert client.delete("/api/disk/snooze", json={}).status_code == 400
 
+    def test_snooze_invalidates_dashboard_cache(self, client, mocker):
+        # Without this the Pause button looks like a no-op — the dashboard
+        # re-serves the cached concern until the 30s TTL (PR #137 class of bug).
+        spy = mocker.patch("dashboard._dashboard_cache_clear")
+        client.post("/api/disk/snooze", json={"serial": "S1"})
+        assert spy.called
+
+    def test_resume_invalidates_dashboard_cache(self, client, mocker):
+        spy = mocker.patch("dashboard._dashboard_cache_clear")
+        client.delete("/api/disk/snooze", json={"serial": "S1"})
+        assert spy.called
+
+    def test_failed_snooze_does_not_clear_cache(self, client, mocker):
+        spy = mocker.patch("dashboard._dashboard_cache_clear")
+        client.post("/api/disk/snooze", json={"serial": "S", "hours": 9999})  # bad hours -> 400
+        assert not spy.called
+
 
 class TestGetMemoryConfig:
     """sysinfo.get_memory_config — light Win32_PhysicalMemory DIMM query for the

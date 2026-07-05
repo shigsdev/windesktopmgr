@@ -1397,6 +1397,20 @@ def storage_nas_route():
     return jsonify(nas.get_nas_storage())
 
 
+def _invalidate_dashboard_cache() -> None:
+    """Drop the dashboard summary cache so a snooze/resume shows up on the very
+    next /api/dashboard/summary instead of after the 30s TTL. Without this the
+    UI re-serves the cached concern and the Pause button looks like a no-op
+    (same class of bug as PR #137's lingering killed process). Lazy import +
+    best-effort so a dashboard hiccup never breaks the snooze itself."""
+    try:
+        from dashboard import _dashboard_cache_clear
+
+        _dashboard_cache_clear()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @disk_bp.route("/api/disk/snooze", methods=["POST"])
 def disk_snooze_route():
     """Pause dashboard health alerts for one drive (by serial) for N hours."""
@@ -1409,6 +1423,8 @@ def disk_snooze_route():
     except (TypeError, ValueError):
         hours = 24
     result = add_disk_snooze(serial, hours)
+    if result.get("ok"):
+        _invalidate_dashboard_cache()
     return jsonify(result), (200 if result.get("ok") else 400)
 
 
@@ -1419,7 +1435,9 @@ def disk_snooze_delete_route():
     serial = data.get("serial")
     if not serial:
         return jsonify({"ok": False, "error": "Missing required field: serial"}), 400
-    return jsonify(remove_disk_snooze(serial))
+    result = remove_disk_snooze(serial)
+    _invalidate_dashboard_cache()
+    return jsonify(result)
 
 
 @disk_bp.route("/api/disk/snoozes")
