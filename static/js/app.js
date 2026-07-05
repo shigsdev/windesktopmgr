@@ -3528,7 +3528,7 @@ async function snoozeMemoryConcern(name, hours) {
 // Pause / resume dashboard health alerts for one physical drive (by serial).
 // Used by the "⏸ Pause 24h" button on a disk-health concern and the "resume"
 // link the Storage tab shows on a paused drive.
-async function pauseDiskConcern(serial, hours) {
+async function pauseDiskConcern(serial, hours, btnEl) {
   if (!serial) return;
   const h = parseInt(hours, 10) || 24;
   try {
@@ -3538,8 +3538,18 @@ async function pauseDiskConcern(serial, hours) {
       body: JSON.stringify({serial: serial, hours: h}),
     });
     const d = await r.json();
-    if (d.ok) { setTimeout(loadDashboard, 200); }
-    else { alert(`Failed to pause drive: ${d.error || "unknown error"}`); }
+    if (d.ok) {
+      // Optimistic feedback: fade the concern card immediately so the click is
+      // visibly acknowledged. The backend already cleared the dashboard cache,
+      // so the reload recomputes fresh and drops the concern for real.
+      if (btnEl && btnEl.closest) {
+        const card = btnEl.closest(".concern-card");
+        if (card) { card.style.transition = "opacity .3s"; card.style.opacity = "0.35"; }
+      }
+      setTimeout(loadDashboard, 300);
+    } else {
+      alert(`Failed to pause drive: ${d.error || "unknown error"}`);
+    }
   } catch (e) { alert(`Failed to pause drive: ${e.message}`); }
 }
 
@@ -3928,7 +3938,7 @@ function renderDashboard(d) {
   });
   // Disk-health "Pause 24h" buttons — snooze one drive by serial.
   concernsEl.querySelectorAll("button[data-disk-snooze]").forEach(btn => {
-    btn.addEventListener("click", () => pauseDiskConcern(btn.dataset.diskSnooze));
+    btn.addEventListener("click", () => pauseDiskConcern(btn.dataset.diskSnooze, 24, btn));
   });
   }
 
