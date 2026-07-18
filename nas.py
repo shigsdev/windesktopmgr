@@ -19,8 +19,25 @@ concern logic (``nas_storage_concerns``) are pure and fully unit-tested.
 import json
 import os
 import re
+import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 _NAS_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nas_config.json")
+_NAS_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nas_cache.json")
+
+# A full SNMP poll costs ~12s per NAS, and the dashboard fan-out waits on its
+# slowest collector -- so polling inline made a cold dashboard block ~25s after
+# every reboot (looked like the app had hung). Reads are now cache-first and
+# never block; refreshes run on a background thread. Snapshot is persisted so a
+# freshly-restarted tray serves last-known NAS state immediately.
+NAS_CACHE_TTL_S = 300
+
+_nas_cache: dict | None = None
+_nas_cache_ts: float = 0.0
+_nas_lock = threading.RLock()
+_nas_refreshing = False
 
 # QNAP NAS-MIB columns (index by the trailing .N). Verified on TS-X72 / QTS 5.2.9.
 _QNAP = "1.3.6.1.4.1.24681.1.2"
@@ -86,6 +103,11 @@ def _parse_volume_name(raw: str) -> tuple[str, str]:
     if m:
         return m.group(1).strip(), m.group(2).strip()
     return s.strip("[]"), ""
+
+
+def _under_pytest() -> bool:
+    """True inside the test suite -- gates real SNMP I/O and background threads."""
+    return "pytest" in sys.modules
 
 
 def _load_nas_config(path: str = _NAS_CONFIG_FILE) -> dict:
@@ -214,12 +236,10 @@ def _snmp_collect(nas: dict, timeout: float) -> dict | None:  # pragma: no cover
     Isolated so tests mock this boundary; the async pysnmp calls only run
     against a real device.
     """
-    import sys
-
     # Safety net: NEVER do a real SNMP/network call under pytest, even if a
     # dashboard-summary test forgot to mock get_nas_storage. Returns None
     # (NAS reads as unreachable) with zero network I/O.
-    if "pytest" in sys.modules:
+    if _under_pytest():
         return None
 
     try:
@@ -292,32 +312,158 @@ def _snmp_collect(nas: dict, timeout: float) -> dict | None:  # pragma: no cover
         return None
 
 
-def get_nas_storage() -> dict:
-    """All configured NAS storage for the Storage tab. Best-effort: an
-    unreachable / mis-communitied NAS becomes a ``reachable: False`` entry,
-    never an exception. ``configured`` is 0 when nas_config.json is missing or
-    still holds the placeholder (feature simply dormant)."""
+def _collect_one(nas: dict, timeout: float) -> dict:
+    """Poll a single NAS. Never raises -- an unreachable / mis-communitied NAS
+    becomes a ``reachable: False`` entry."""
+    raw = _snmp_collect(nas, timeout)
+    if raw is None:
+        return {
+            "name": nas.get("name") or nas.get("host"),
+            "host": nas.get("host"),
+            "reachable": False,
+            "disks": [],
+            "volumes": [],
+            "fans": [],
+            "error": "No SNMP response (NAS off, SNMP disabled, or wrong community).",
+        }
+    return _build_nas_result(nas, raw["sys_info"], raw["disk_cols"], raw["vol_cols"], raw["fan_cols"])
+
+
+def _collect_all_nas() -> dict:
+    """Poll every configured NAS in PARALLEL. They're independent hosts, so the
+    old serial loop just summed their latencies (~12s each)."""
     cfg = _load_nas_config()
     nas_list = _configured_nas(cfg)
+    if not nas_list:
+        return {"nas": [], "configured": 0}
     timeout = cfg.get("poll_timeout_s", 3)
-    results = []
-    for nas in nas_list:
-        raw = _snmp_collect(nas, timeout)
-        if raw is None:
-            results.append(
-                {
-                    "name": nas.get("name") or nas.get("host"),
-                    "host": nas.get("host"),
-                    "reachable": False,
-                    "disks": [],
-                    "volumes": [],
-                    "fans": [],
-                    "error": "No SNMP response (NAS off, SNMP disabled, or wrong community).",
-                }
-            )
-            continue
-        results.append(_build_nas_result(nas, raw["sys_info"], raw["disk_cols"], raw["vol_cols"], raw["fan_cols"]))
+    with ThreadPoolExecutor(max_workers=min(4, len(nas_list))) as ex:
+        results = list(ex.map(lambda n: _collect_one(n, timeout), nas_list))
     return {"nas": results, "configured": len(nas_list)}
+
+
+def _load_nas_cache(path: str | None = None) -> tuple[dict | None, float]:
+    """Restore the last snapshot from disk. Missing / malformed -> (None, 0.0).
+
+    Path resolves at CALL time (not as a default arg) so it stays patchable.
+    """
+    path = path or _NAS_CACHE_FILE
+    try:
+        with open(path, encoding="utf-8") as f:
+            blob = json.load(f)
+        data = blob.get("data")
+        if not isinstance(data, dict):
+            return None, 0.0
+        return data, float(blob.get("ts") or 0.0)
+    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError, AttributeError):
+        return None, 0.0
+
+
+def _save_nas_cache(data: dict, ts: float, path: str | None = None) -> None:
+    """Persist atomically. A cache-write failure must never break a poll.
+
+    The temp name is per-writer: a Storage-tab ``wait=True`` poll can run
+    concurrently with the background refresh (single-flight only guards the
+    latter), and a shared ``.tmp`` would let the two interleave into a corrupt
+    file. Catches TypeError/ValueError too -- json.dump raises those, not
+    OSError, and letting one escape would 500 the route it was called from.
+    """
+    path = path or _NAS_CACHE_FILE
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"data": data, "ts": ts}, f)
+        os.replace(tmp, path)
+    except (OSError, TypeError, ValueError) as e:
+        print(f"[NASCache] Save error: {e}")
+        try:
+            os.remove(tmp)  # don't leave a partial temp behind
+        except OSError:
+            pass
+
+
+def _refresh_nas_cache() -> dict:
+    """Do a real poll and update both the in-memory and on-disk snapshot."""
+    global _nas_cache, _nas_cache_ts
+    data = _collect_all_nas()
+    ts = time.time()
+    with _nas_lock:
+        _nas_cache = data
+        _nas_cache_ts = ts
+    _save_nas_cache(data, ts)
+    return data
+
+
+def _start_nas_refresh() -> None:
+    """Kick a background refresh unless one is already in flight (single-flight,
+    so a burst of dashboard polls can't stack up N concurrent SNMP sweeps)."""
+    global _nas_refreshing
+    with _nas_lock:
+        if _nas_refreshing:
+            return
+        _nas_refreshing = True
+
+    def _run() -> None:
+        global _nas_refreshing
+        try:
+            _refresh_nas_cache()
+        except Exception as e:  # noqa: BLE001 -- background thread must not die loudly
+            print(f"[NASCache] Refresh error: {e}")
+        finally:
+            with _nas_lock:
+                _nas_refreshing = False
+
+    threading.Thread(target=_run, name="nas-refresh", daemon=True).start()
+
+
+def _reset_nas_cache() -> None:
+    """Test hook -- drop the in-memory snapshot."""
+    global _nas_cache, _nas_cache_ts, _nas_refreshing
+    with _nas_lock:
+        _nas_cache = None
+        _nas_cache_ts = 0.0
+        _nas_refreshing = False
+
+
+def get_nas_storage(wait: bool = False) -> dict:
+    """All configured NAS storage for the Storage tab, served from cache.
+
+    Cache-first and NON-BLOCKING by default: returns the last snapshot straight
+    away and refreshes in the background, so a slow NAS can never stall the
+    dashboard fan-out. ``wait=True`` (the Storage tab route) blocks for a real
+    poll only when nothing has ever been cached, so the tab isn't empty on a
+    first-ever visit.
+
+    ``configured`` is 0 when nas_config.json is missing or still holds the
+    placeholder (feature simply dormant).
+    """
+    global _nas_cache, _nas_cache_ts
+    with _nas_lock:
+        cached, ts = _nas_cache, _nas_cache_ts
+
+    # Cold process: try the snapshot left by the previous run before polling.
+    if cached is None:
+        cached, ts = _load_nas_cache()
+        if cached is not None:
+            with _nas_lock:
+                if _nas_cache is None:
+                    _nas_cache, _nas_cache_ts = cached, ts
+
+    if cached is not None and (time.time() - ts) < NAS_CACHE_TTL_S:
+        return cached
+
+    if cached is None and wait:
+        return _refresh_nas_cache()
+
+    if not _under_pytest():
+        _start_nas_refresh()
+    if cached is not None:
+        return cached  # stale, but instant -- refresh lands on the next poll
+
+    # Never collected yet: report pending so the dashboard renders immediately
+    # and raises NO false "unreachable" concerns for a NAS we simply haven't
+    # reached yet.
+    return {"nas": [], "configured": len(_configured_nas(_load_nas_config())), "pending": True}
 
 
 def nas_storage_concerns(data: dict) -> list[dict]:

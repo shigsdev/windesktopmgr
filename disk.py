@@ -1391,10 +1391,14 @@ def storage_spaces_route():
 @disk_bp.route("/api/storage/nas")
 def storage_nas_route():
     """QNAP NAS storage (disks/volumes/fans) over SNMP for the Storage tab.
-    ``configured`` is 0 until nas_config.json is filled in."""
+    ``configured`` is 0 until nas_config.json is filled in.
+
+    ``wait=True``: the user is looking right at this tab, so block for a real
+    poll if nothing has ever been cached. Warm/stale hits still return instantly.
+    """
     import nas
 
-    return jsonify(nas.get_nas_storage())
+    return jsonify(nas.get_nas_storage(wait=True))
 
 
 def _invalidate_dashboard_cache() -> None:

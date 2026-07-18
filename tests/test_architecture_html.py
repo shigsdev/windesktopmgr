@@ -72,6 +72,14 @@ TEST_FILES = [
     "test_lhm.py",
     "test_identify.py",
     "test_identify_integration.py",
+    # These four existed for several PRs before being listed here. While they
+    # were missing, _unit_test_total() undercounted by ~389 and silently forced
+    # the badge to be capped BELOW the real test count -- a drift guard that was
+    # itself drifting. New tests/test_*.py MUST be added here.
+    "test_dashboard.py",
+    "test_drivers_disk.py",
+    "test_homenet_topology.py",
+    "test_nas.py",
 ]
 
 
@@ -135,6 +143,22 @@ class TestArchitectureHtmlDriftTotalTestCount:
         for claimed_str in matches:
             claimed = int(claimed_str.replace(",", ""))
             assert _within_tolerance(claimed, actual), _drift_msg("total test count badge", claimed, actual)
+
+
+class TestTestFilesListIsComplete:
+    """A drift guard is only trustworthy if it knows about every test file.
+
+    TEST_FILES silently fell 4 files behind, which made _unit_test_total()
+    undercount and capped the badge below the true test count. This keeps the
+    list self-correcting instead of relying on someone remembering.
+    """
+
+    def test_test_files_matches_disk(self):
+        actual = {p.name for p in (REPO_ROOT / "tests").glob("test_*.py")}
+        listed = set(TEST_FILES)
+        assert listed == actual, (
+            f"TEST_FILES out of sync — missing: {sorted(actual - listed)}, stale: {sorted(listed - actual)}"
+        )
 
 
 class TestArchitectureHtmlDriftFileLines:

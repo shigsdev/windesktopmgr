@@ -120,3 +120,4 @@ desktop.ini
 !.claude/commands/**
 scripts/_probe_dumps/
 backups/
+nas_cache.json

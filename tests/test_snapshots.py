@@ -170,9 +170,19 @@ class TestGetDiskHealthSnapshot:
         expected = load_fixture("parsed/parsed_get_disk_health.json")
         result = wdm.get_disk_health()
         assert "drives" in result or "physical" in result
-        # Verify same number of drives parsed
+        # Drive letters come from a LIVE logical-drive enumeration, not from the
+        # mocked PS output -- so the count tracks the real machine and changes
+        # legitimately whenever a volume is added, removed, or taken offline
+        # (this assertion used to be `len(...) == len(...)` and broke the whole
+        # suite the moment a Storage Spaces volume went offline). Assert the
+        # parse produced well-formed drives matching the fixture's SHAPE, which
+        # is what this snapshot test actually exists to verify.
         if "drives" in expected and "drives" in result:
-            assert len(result["drives"]) == len(expected["drives"])
+            assert result["drives"], "expected at least one parsed drive"
+            expected_keys = set(expected["drives"][0])
+            for d in result["drives"]:
+                missing = expected_keys - set(d)
+                assert not missing, f"drive {d.get('Letter')} missing keys: {sorted(missing)}"
 
     def test_drives_have_health_fields(self, mocker):
         _mock_multi_ps(mocker, ["ps_disk_health.json", "ps_disk_io.json"])
