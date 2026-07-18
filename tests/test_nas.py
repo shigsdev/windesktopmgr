@@ -6,8 +6,22 @@ live against a TS-X72 on QTS 5.2.9.
 """
 
 import json
+import os
+import time
+
+import pytest
 
 import nas
+
+
+@pytest.fixture(autouse=True)
+def _isolate_nas_cache(tmp_path, monkeypatch):
+    """Fresh in-memory + on-disk NAS cache per test, so cache state never leaks
+    between tests or writes nas_cache.json into the repo."""
+    monkeypatch.setattr(nas, "_NAS_CACHE_FILE", str(tmp_path / "nas_cache.json"))
+    nas._reset_nas_cache()
+    yield
+    nas._reset_nas_cache()
 
 
 class TestParseTempC:
@@ -177,7 +191,7 @@ class TestGetNasStorage:
             return_value={"nas": [{"name": "n", "host": "1.1.1.1", "community": "c", "enabled": True}]},
         )
         mocker.patch("nas._snmp_collect", return_value=None)
-        out = nas.get_nas_storage()
+        out = nas.get_nas_storage(wait=True)
         assert out["configured"] == 1
         assert out["nas"][0]["reachable"] is False
         assert out["nas"][0]["error"]
@@ -208,13 +222,13 @@ class TestGetNasStorage:
                 "fan_cols": {"descr": {1: "FAN 1"}, "speed": {1: "700 RPM"}},
             },
         )
-        out = nas.get_nas_storage()
+        out = nas.get_nas_storage(wait=True)
         assert out["nas"][0]["reachable"] is True
         assert out["nas"][0]["disks"][0]["model"] == "WD Red"
 
     def test_no_config_configured_zero(self, mocker):
         mocker.patch("nas._load_nas_config", return_value={"nas": []})
-        out = nas.get_nas_storage()
+        out = nas.get_nas_storage(wait=True)
         assert out == {"nas": [], "configured": 0}
 
 
@@ -255,3 +269,147 @@ class TestNasStorageConcerns:
     def test_empty_data_no_concern(self):
         assert nas.nas_storage_concerns({}) == []
         assert nas.nas_storage_concerns({"nas": []}) == []
+
+    def test_pending_produces_no_false_unreachable(self):
+        # A not-yet-polled NAS must NOT render as a down NAS on the dashboard.
+        assert nas.nas_storage_concerns({"nas": [], "configured": 2, "pending": True}) == []
+
+
+class TestNasCachePersistence:
+    def test_roundtrip(self, tmp_path):
+        p = str(tmp_path / "c.json")
+        nas._save_nas_cache({"nas": [], "configured": 2}, 123.0, p)
+        assert nas._load_nas_cache(p) == ({"nas": [], "configured": 2}, 123.0)
+
+    def test_missing_file(self, tmp_path):
+        assert nas._load_nas_cache(str(tmp_path / "nope.json")) == (None, 0.0)
+
+    def test_malformed(self, tmp_path):
+        p = tmp_path / "bad.json"
+        p.write_text("{ not json", encoding="utf-8")
+        assert nas._load_nas_cache(str(p)) == (None, 0.0)
+
+    def test_non_dict_payload(self, tmp_path):
+        p = tmp_path / "x.json"
+        p.write_text(json.dumps({"data": "nope", "ts": 1}), encoding="utf-8")
+        assert nas._load_nas_cache(str(p)) == (None, 0.0)
+
+    def test_save_error_never_raises(self, mocker, tmp_path):
+        mocker.patch("builtins.open", side_effect=OSError("disk full"))
+        nas._save_nas_cache({"nas": []}, 1.0, str(tmp_path / "x.json"))  # must not raise
+
+    def test_unserializable_payload_never_raises(self, tmp_path):
+        """json.dump raises TypeError, not OSError. Letting it escape would 500
+        the Storage-tab route that triggered the poll."""
+        nas._save_nas_cache({"nas": [{"bad": object()}]}, 1.0, str(tmp_path / "x.json"))
+
+    def test_partial_temp_removed_on_failure(self, tmp_path):
+        nas._save_nas_cache({"nas": [{"bad": object()}]}, 1.0, str(tmp_path / "x.json"))
+        assert not list(tmp_path.glob("*.tmp")), "partial temp file left behind"
+
+    def test_temp_name_is_per_writer(self, tmp_path, mocker):
+        """A wait=True poll can overlap the background refresh; a shared .tmp
+        would let the two interleave into a corrupt file."""
+        seen = []
+        real_open = open
+        mocker.patch("builtins.open", side_effect=lambda p, *a, **k: (seen.append(str(p)), real_open(p, *a, **k))[1])
+        nas._save_nas_cache({"nas": []}, 1.0, str(tmp_path / "x.json"))
+        assert any(str(os.getpid()) in s and s.endswith(".tmp") for s in seen), seen
+
+
+class TestCollectAllNas:
+    def _hosts(self, n):
+        return [{"name": f"n{i}", "host": f"10.0.0.{i}", "community": "c", "enabled": True} for i in range(n)]
+
+    def test_no_config(self, mocker):
+        mocker.patch("nas._load_nas_config", return_value={"nas": []})
+        assert nas._collect_all_nas() == {"nas": [], "configured": 0}
+
+    def test_polls_every_configured_nas(self, mocker):
+        mocker.patch("nas._load_nas_config", return_value={"nas": self._hosts(2)})
+        mocker.patch("nas._snmp_collect", return_value=None)
+        out = nas._collect_all_nas()
+        assert out["configured"] == 2
+        assert all(n["reachable"] is False for n in out["nas"])
+
+    def test_order_preserved_despite_parallelism(self, mocker):
+        # Parallel workers finish out of order; ex.map must still yield input order.
+        mocker.patch("nas._load_nas_config", return_value={"nas": self._hosts(4)})
+        mocker.patch("nas._snmp_collect", return_value=None)
+        out = nas._collect_all_nas()
+        assert [n["name"] for n in out["nas"]] == ["n0", "n1", "n2", "n3"]
+
+
+class TestGetNasStorageCaching:
+    def _cfg(self, mocker, n=1):
+        mocker.patch(
+            "nas._load_nas_config",
+            return_value={
+                "nas": [{"name": f"n{i}", "host": f"1.1.1.{i}", "community": "c", "enabled": True} for i in range(n)]
+            },
+        )
+
+    def test_never_collected_returns_pending_without_polling(self, mocker):
+        """The regression this fix exists for: a cold dashboard must NOT block
+        on a ~25s SNMP sweep."""
+        self._cfg(mocker, 2)
+        spy = mocker.patch("nas._collect_all_nas")
+        out = nas.get_nas_storage()
+        assert out["pending"] is True
+        assert out["nas"] == []
+        assert out["configured"] == 2
+        spy.assert_not_called()
+
+    def test_wait_true_collects_when_nothing_cached(self, mocker):
+        self._cfg(mocker, 1)
+        mocker.patch("nas._collect_all_nas", return_value={"nas": [{"name": "n0"}], "configured": 1})
+        assert nas.get_nas_storage(wait=True)["nas"][0]["name"] == "n0"
+
+    def test_fresh_cache_served_without_polling(self, mocker):
+        self._cfg(mocker, 1)
+        spy = mocker.patch("nas._collect_all_nas")
+        nas._nas_cache = {"nas": [{"name": "cached"}], "configured": 1}
+        nas._nas_cache_ts = time.time()
+        assert nas.get_nas_storage()["nas"][0]["name"] == "cached"
+        spy.assert_not_called()
+
+    def test_stale_cache_returned_instantly_and_refreshes_in_background(self, mocker):
+        self._cfg(mocker, 1)
+        mocker.patch("nas._under_pytest", return_value=False)
+        start = mocker.patch("nas._start_nas_refresh")
+        nas._nas_cache = {"nas": [{"name": "stale"}], "configured": 1}
+        nas._nas_cache_ts = time.time() - (nas.NAS_CACHE_TTL_S + 10)
+        assert nas.get_nas_storage()["nas"][0]["name"] == "stale"
+        start.assert_called_once()
+
+    def test_disk_snapshot_used_on_cold_process(self, mocker):
+        """After a tray restart the in-memory cache is empty -- the on-disk
+        snapshot must serve the dashboard rather than an SNMP sweep."""
+        self._cfg(mocker, 1)
+        nas._save_nas_cache({"nas": [{"name": "fromdisk"}], "configured": 1}, time.time())
+        spy = mocker.patch("nas._collect_all_nas")
+        assert nas.get_nas_storage()["nas"][0]["name"] == "fromdisk"
+        spy.assert_not_called()
+
+    def test_no_background_thread_under_pytest(self, mocker):
+        self._cfg(mocker, 1)
+        thread = mocker.patch("nas.threading.Thread")
+        nas.get_nas_storage()
+        thread.assert_not_called()
+
+
+class TestRefreshAndSingleFlight:
+    def test_refresh_updates_memory_and_disk(self, mocker):
+        mocker.patch("nas._collect_all_nas", return_value={"nas": [{"name": "x"}], "configured": 1})
+        assert nas._refresh_nas_cache()["nas"][0]["name"] == "x"
+        assert nas._nas_cache["nas"][0]["name"] == "x"
+        data, ts = nas._load_nas_cache()
+        assert data["nas"][0]["name"] == "x"
+        assert ts > 0
+
+    def test_single_flight_skips_when_already_refreshing(self, mocker):
+        """A burst of dashboard polls must not stack up N concurrent SNMP sweeps."""
+        thread = mocker.patch("nas.threading.Thread")
+        nas._nas_refreshing = True
+        nas._start_nas_refresh()
+        thread.assert_not_called()
