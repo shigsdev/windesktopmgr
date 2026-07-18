@@ -1380,8 +1380,14 @@
 
 
 <div class="footer">
-  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 3,046 tests · ~37,101 lines</span>
-  <span>github.com/shigsdev/windesktopmgr · Updated 2026-05-18</span>
+  <!-- "~N lines" here means PYTHON RUNTIME SOURCE ONLY, EXCLUDING tests/.
+       Do NOT substitute /arch-update's generic line command: that one also
+       counts .html/.js/.css (~79k) and swapping it in would silently DOUBLE
+       this number by changing what it measures. Regenerate with:
+         python -c "import pathlib;S={'.git','.claude','.pytest_cache','.ruff_cache','__pycache__'};print(sum(sum(1 for _ in p.open(encoding='utf-8',errors='replace')) for p in pathlib.Path('.').rglob('*.py') if p.is_file() and not set(p.parts)&S and 'tests' not in p.parts))"
+  -->
+  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 3,046 tests · ~36,568 lines</span>
+  <span>github.com/shigsdev/windesktopmgr · Updated 2026-07-18</span>
 </div>
 
 
