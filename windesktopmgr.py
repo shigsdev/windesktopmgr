@@ -3195,11 +3195,31 @@ def _spawn_replacement() -> subprocess.Popen:
     return p
 
 
+def _restart_worker() -> None:
+    """Spawn the replacement, then hard-exit — or stay alive if the spawn fails.
+
+    Module-level (not a closure) so the spawn-succeeds -> os._exit vs.
+    spawn-fails -> stay-alive branch is unit-testable. If ``_spawn_replacement``
+    raises, we deliberately do NOT os._exit: a stale tray beats a trayless
+    machine, and the failure is recorded in restart.log rather than vanishing.
+    """
+    time.sleep(0.3)  # let the HTTP response flush
+    try:
+        _spawn_replacement()
+    except Exception as e:  # noqa: BLE001 — must fail safe; never leave the box trayless
+        _restart_log(f"relaunch FAILED, staying alive: {type(e).__name__}: {e}")
+        return
+    time.sleep(0.3)
+    os._exit(0)  # noqa: SLF001 — hard exit kills daemon threads immediately
+
+
 @app.route("/api/restart", methods=["POST"])
 def api_restart():
     """Schedule a full app restart. Spawns a new pythonw process running the
-    same entry point, then exits the current one after a short delay. Callers
-    should poll /api/health to detect the new instance.
+    same entry point, then exits the current one after a short delay — unless
+    the relaunch spawn fails, in which case the current process stays alive
+    (a stale tray beats a trayless machine). Callers should poll /api/health
+    to detect the new instance.
 
     Localhost-only — refuses any request not from 127.0.0.1/::1.
     """
@@ -3207,19 +3227,7 @@ def api_restart():
     if remote not in ("127.0.0.1", "::1", "localhost"):
         return jsonify({"ok": False, "error": "restart is localhost-only"}), 403
 
-    def _do_restart():
-        time.sleep(0.3)  # let the HTTP response flush
-        try:
-            _spawn_replacement()
-        except Exception as e:  # noqa: BLE001 — see below; we must not leave the box trayless
-            # Relaunch failed: keep the current process alive rather than
-            # os._exit() into a trayless machine. A stale tray beats no tray.
-            _restart_log(f"relaunch FAILED, staying alive: {type(e).__name__}: {e}")
-            return
-        time.sleep(0.3)
-        os._exit(0)  # noqa: SLF001 — hard exit kills daemon threads immediately
-
-    threading.Thread(target=_do_restart, daemon=True, name="RestartWorker").start()
+    threading.Thread(target=_restart_worker, daemon=True, name="RestartWorker").start()
     return jsonify({"ok": True, "status": "restart scheduled"}), 202
 
 

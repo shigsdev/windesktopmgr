@@ -1544,6 +1544,36 @@ class TestRestartRelaunchCommand:
         assert mock_popen.call_args.kwargs.get("cwd") == wdm.APP_DIR
         assert not any("SNMPv2-SMI.py" in part for part in spawned_cmd)
 
+    def test_restart_worker_stays_alive_when_spawn_fails(self, mocker):
+        """The core safety branch: if the relaunch spawn raises, the worker must
+        NOT os._exit — a stale tray beats a trayless machine — and must record
+        the failure so it isn't silent.
+        """
+        import windesktopmgr as wdm
+
+        mocker.patch.object(wdm.time, "sleep")  # no real delays
+        mock_exit = mocker.patch("windesktopmgr.os._exit")
+        mock_log = mocker.patch.object(wdm, "_restart_log")
+        mocker.patch.object(wdm, "_spawn_replacement", side_effect=OSError("spawn boom"))
+
+        wdm._restart_worker()
+
+        mock_exit.assert_not_called()  # stayed alive
+        assert any("FAILED" in str(c.args[0]) for c in mock_log.call_args_list), "relaunch failure must be logged"
+
+    def test_restart_worker_exits_when_spawn_succeeds(self, mocker):
+        """Happy path: a successful relaunch hard-exits the old process."""
+        import windesktopmgr as wdm
+
+        mocker.patch.object(wdm.time, "sleep")
+        mock_exit = mocker.patch("windesktopmgr.os._exit")
+        mocker.patch.object(wdm, "_restart_log")
+        mocker.patch.object(wdm, "_spawn_replacement", return_value=mocker.MagicMock())
+
+        wdm._restart_worker()
+
+        mock_exit.assert_called_once_with(0)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GET  /api/health-history/data

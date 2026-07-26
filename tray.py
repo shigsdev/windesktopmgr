@@ -390,8 +390,16 @@ def restart_app(icon, item, stop_event):
     # the live value points at a MIB file, not tray.py. cwd is pinned so a
     # relative entry still resolves. Same fix as windesktopmgr._do_restart.
     app_dir = os.path.dirname(os.path.abspath(__file__))
+    cmd = [sys.executable, *_ORIGINAL_ARGV]
+    # Trace to restart.log so the tray-menu path isn't a silent blind spot
+    # either (parity with windesktopmgr._restart_log). Best-effort.
+    try:
+        with open(os.path.join(app_dir, "restart.log"), "a", encoding="utf-8") as _f:
+            _f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} pid={os.getpid()} [tray menu] relaunching: {cmd!r}\n")
+    except Exception:  # noqa: BLE001 — logging must never break a restart
+        pass
     _sp.Popen(  # noqa: S603
-        [sys.executable, *_ORIGINAL_ARGV],
+        cmd,
         cwd=app_dir,
         creationflags=_sp.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
