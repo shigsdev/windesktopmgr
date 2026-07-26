@@ -25,6 +25,15 @@ import webbrowser
 
 from PIL import Image, ImageDraw
 
+# Snapshot the launch command at import time, before anything mutates it.
+# pysnmp's MIB loader (used by the NAS SNMP collector in windesktopmgr, which
+# shares this process) rewrites sys.argv[0] to a MIB source path at runtime, so
+# a restart that relaunched [python, *sys.argv] would run that MIB file instead
+# of the tray and die silently. Resolved to an absolute path so the relaunch is
+# working-directory independent. See windesktopmgr._ORIGINAL_ARGV for the same
+# guard on the /api/restart path.
+_ORIGINAL_ARGV = [os.path.abspath(sys.argv[0]), *sys.argv[1:]] if sys.argv and sys.argv[0] else list(sys.argv)
+
 # ── Configuration ─────────────────────────────────────────────────────────────
 
 POLL_INTERVAL = 300  # seconds between health checks (5 minutes)
@@ -375,9 +384,15 @@ def restart_app(icon, item, stop_event):
     # On Windows os.execv is unreliable with pythonw.exe — it spawns a child
     # and terminates the parent, but the child may fail silently.
     # Using subprocess.Popen + sys.exit is the safe Windows pattern.
-    python = sys.executable
+    #
+    # Relaunch via _ORIGINAL_ARGV (absolute, snapshotted at import), NOT the
+    # live sys.argv — pysnmp's MIB loader rewrites sys.argv[0] at runtime, so
+    # the live value points at a MIB file, not tray.py. cwd is pinned so a
+    # relative entry still resolves. Same fix as windesktopmgr._do_restart.
+    app_dir = os.path.dirname(os.path.abspath(__file__))
     _sp.Popen(  # noqa: S603
-        [python] + sys.argv,
+        [sys.executable, *_ORIGINAL_ARGV],
+        cwd=app_dir,
         creationflags=_sp.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
 

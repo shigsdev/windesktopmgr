@@ -974,7 +974,6 @@ class TestGlossarySafeProcessesInvariant:
         assert "memcompression" in processes.SAFE_PROCESSES
 
     def test_vmmem_is_in_safe_processes(self):
-
         assert "vmmem" in processes.SAFE_PROCESSES
         assert "vmmemwsl" in processes.SAFE_PROCESSES
 
@@ -1492,6 +1491,58 @@ class TestRestartEndpoint:
         assert mock_thread.called
         kwargs = mock_thread.call_args.kwargs
         assert kwargs.get("daemon") is True
+
+
+class TestRestartRelaunchCommand:
+    """Regression coverage for the sys.argv-mutation restart bug.
+
+    pysnmp's MIB loader rewrites sys.argv[0] to a MIB source file path at
+    runtime (once the NAS SNMP collector has run). The old restart spawned
+    [sys.executable, *sys.argv], so after a NAS poll it relaunched that MIB
+    file instead of the tray and died silently. The fix snapshots argv at
+    import (_ORIGINAL_ARGV) and relaunches that instead.
+    """
+
+    def test_original_argv_snapshot_is_absolute(self):
+        import windesktopmgr as wdm
+
+        assert wdm._ORIGINAL_ARGV, "snapshot must not be empty"
+        assert os.path.isabs(wdm._ORIGINAL_ARGV[0]), (
+            "argv[0] snapshot must be absolute so the relaunch is CWD-independent"
+        )
+
+    def test_build_relaunch_cmd_uses_snapshot_not_live_argv(self, mocker):
+        import windesktopmgr as wdm
+
+        # Simulate pysnmp having rewritten the live argv to a MIB file path.
+        mocker.patch.object(
+            wdm.sys,
+            "argv",
+            [r"C:\Python\Lib\site-packages\pysnmp\smi\mibs\SNMPv2-SMI.py"],
+        )
+        cmd = wdm._build_relaunch_cmd()
+        # Must relaunch the snapshot, never the mutated live argv.
+        assert cmd == [wdm.sys.executable, *wdm._ORIGINAL_ARGV]
+        assert not any("SNMPv2-SMI.py" in part for part in cmd), (
+            "relaunch command must not contain the pysnmp MIB path from mutated sys.argv"
+        )
+        assert not any("pysnmp" in part.lower() for part in cmd)
+
+    def test_spawn_replacement_passes_snapshot_and_cwd(self, mocker):
+        import windesktopmgr as wdm
+
+        mocker.patch.object(wdm, "_restart_log")  # don't write restart.log in tests
+        mock_popen = mocker.patch("windesktopmgr.subprocess.Popen")
+        # Even with a mutated live argv, the spawn must use the snapshot.
+        mocker.patch.object(wdm.sys, "argv", [r"C:\x\pysnmp\smi\mibs\SNMPv2-SMI.py"])
+
+        wdm._spawn_replacement()
+
+        assert mock_popen.called
+        spawned_cmd = mock_popen.call_args.args[0]
+        assert spawned_cmd == [wdm.sys.executable, *wdm._ORIGINAL_ARGV]
+        assert mock_popen.call_args.kwargs.get("cwd") == wdm.APP_DIR
+        assert not any("SNMPv2-SMI.py" in part for part in spawned_cmd)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

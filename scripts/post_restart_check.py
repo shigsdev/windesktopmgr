@@ -28,7 +28,12 @@ BOLD = "\033[1m"
 RESET = "\033[0m"
 
 DEFAULT_HOST = "http://localhost:5000"
-HEARTBEAT_TIMEOUT_S = 45
+# 120 s (was 45). windesktopmgr.start_server warms every collector cache before
+# Werkzeug binds, so the new instance's first /api/health can legitimately take
+# 60-120 s on a cold cache (measured ~90-120 s after a full stop). 45 s made
+# this client give up while the replacement was still starting — a false
+# "restart broken" that masked the real bug (sys.argv rewritten by pysnmp).
+HEARTBEAT_TIMEOUT_S = 120
 HEARTBEAT_POLL_INTERVAL_S = 1.0
 # Must be >= the server's own selftest budget (overall_budget = 180 s in
 # windesktopmgr.api_selftest). 120 s was below it, so a cold-start selftest
