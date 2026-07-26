@@ -1148,6 +1148,109 @@ class TestKillProcess:
         assert ps_mock.call_count == 0
 
 
+class TestClassifyKillFailure:
+    """Explains WHY a kill was denied + whether an elevated retry can help."""
+
+    def test_tamper_protected_name_detection(self):
+        assert processes._is_tamper_protected_name("mc-fw-host.exe")
+        assert processes._is_tamper_protected_name("mc-fw-host")
+        assert processes._is_tamper_protected_name("MsMpEng.exe")
+        assert processes._is_tamper_protected_name("mfeXYZsvc.exe")  # prefix family
+        assert not processes._is_tamper_protected_name("notepad.exe")
+        assert not processes._is_tamper_protected_name("")
+
+    def test_known_security_product_is_protected_no_elevate(self, mocker):
+        proc = mocker.MagicMock()
+        proc.name.return_value = "mc-fw-host.exe"
+        mocker.patch("processes.psutil.Process", return_value=proc)
+        info = processes.classify_kill_failure(3888)
+        assert info["reason"] == "protected"
+        assert info["can_elevate"] is False
+        assert "self-protection" in info["message"].lower()
+
+    def test_same_user_unreadable_path_is_protected(self, mocker):
+        import psutil as _psutil
+
+        target = mocker.MagicMock()
+        target.name.return_value = "weird.exe"
+        target.exe.side_effect = _psutil.AccessDenied(pid=42)  # can't read own path -> tamper
+        target.username.return_value = "PC\\me"
+        me = mocker.MagicMock()
+        me.username.return_value = "PC\\me"
+        mocker.patch("processes.psutil.Process", side_effect=lambda pid=None: target if pid else me)
+        info = processes.classify_kill_failure(42)
+        assert info["reason"] == "protected"
+        assert info["can_elevate"] is False
+
+    def test_cross_owner_is_needs_admin_can_elevate(self, mocker):
+        target = mocker.MagicMock()
+        target.name.return_value = "someservice.exe"
+        target.exe.return_value = r"C:\Windows\System32\someservice.exe"
+        target.username.return_value = "NT AUTHORITY\\SYSTEM"
+        me = mocker.MagicMock()
+        me.username.return_value = "PC\\me"
+        mocker.patch("processes.psutil.Process", side_effect=lambda pid=None: target if pid else me)
+        info = processes.classify_kill_failure(500)
+        assert info["reason"] == "needs_admin"
+        assert info["can_elevate"] is True
+
+    def test_gone_process(self, mocker):
+        import psutil as _psutil
+
+        mocker.patch("processes.psutil.Process", side_effect=_psutil.NoSuchProcess(pid=1))
+        info = processes.classify_kill_failure(1)
+        assert info["reason"] == "gone"
+        assert info["can_elevate"] is False
+
+    def test_access_denied_on_construction_defaults_needs_admin(self, mocker):
+        """If even constructing psutil.Process(pid) raises AccessDenied (can't
+        read anything about it), default to needs_admin so the user can still
+        try an elevated retry — never crash."""
+        import psutil as _psutil
+
+        mocker.patch("processes.psutil.Process", side_effect=_psutil.AccessDenied(pid=7))
+        info = processes.classify_kill_failure(7)
+        assert info["reason"] == "needs_admin"
+        assert info["can_elevate"] is True
+
+
+class TestKillProcessElevated:
+    """Elevated (UAC) taskkill fallback. ``_run_elevated`` is mocked so no real
+    UAC prompt / process launch happens in tests."""
+
+    def test_success_maps_to_ok(self, mocker):
+        run = mocker.patch("processes._run_elevated", return_value=0)
+        result = processes.kill_process_elevated(1234)
+        assert result["ok"] is True
+        exe, params = run.call_args.args
+        assert exe.lower().endswith("taskkill.exe")  # absolute path, not PATH-hijackable
+        assert params == "/F /PID 1234"
+
+    def test_uac_cancelled_maps_to_error(self, mocker):
+        mocker.patch("processes._run_elevated", return_value=-1)
+        result = processes.kill_process_elevated(1234)
+        assert result["ok"] is False
+        assert "cancelled" in result["error"].lower()
+
+    def test_nonzero_exit_maps_to_protected_message(self, mocker):
+        mocker.patch("processes._run_elevated", return_value=1)
+        result = processes.kill_process_elevated(1234)
+        assert result["ok"] is False
+        assert "anti-tamper" in result["error"].lower() or "self-protection" in result["error"].lower()
+
+    def test_invalid_pid_rejected_without_launching(self, mocker):
+        run = mocker.patch("processes._run_elevated")
+        result = processes.kill_process_elevated(0)
+        assert result["ok"] is False
+        run.assert_not_called()
+
+    def test_pid_is_integer_cast_into_command(self, mocker):
+        run = mocker.patch("processes._run_elevated", return_value=0)
+        processes.kill_process_elevated(1234.9)
+        # int() cast prevents anything but a bare integer reaching the command
+        assert run.call_args.args[1] == "/F /PID 1234"
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # get_thermals
 # ══════════════════════════════════════════════════════════════════════════════

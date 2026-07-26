@@ -98,9 +98,11 @@ from processes import (
     SAFE_PROCESSES,
     SYSTEM_PROCESSES_GLOSSARY,
     add_memory_snooze,
+    classify_kill_failure,
     get_memory_analysis,  # noqa: F401 -- re-exported; resolved by-name via globals() in SELFTEST_CHECKS
     get_process_list,  # noqa: F401 -- re-exported; resolved by-name via globals() in SELFTEST_CHECKS
     kill_process,
+    kill_process_elevated,
     remove_memory_snooze,
     summarize_memory,
     summarize_processes,
@@ -3514,6 +3516,66 @@ def process_kill():
         # up to the cache TTL (2026-06-29 user report: "I killed the process
         # but it still shows up on the dashboard" -- killProcessFromConcern
         # already re-fetches, but it was getting the stale cached snapshot).
+        _dashboard_cache_clear()
+    elif "denied" in result.get("error", "").lower():
+        # Access denied: explain WHY and whether an elevated retry could help,
+        # so the client can offer a "Kill as administrator" button (needs_admin)
+        # or an honest "can't kill this" message (protected security software).
+        info = classify_kill_failure(pid)
+        result["reason"] = info.get("reason")
+        result["can_elevate"] = info.get("can_elevate", False)
+        result["error"] = info.get("message") or result.get("error")
+    return jsonify(result)
+
+
+@app.route("/api/processes/kill-elevated", methods=["POST"])
+def process_kill_elevated():
+    """Kill a process with an elevated (UAC) taskkill — the fallback the client
+    offers when /api/processes/kill returns ``can_elevate: true``.
+
+    Localhost-only, and the SAFE_PROCESSES guard is re-applied here (fail-closed:
+    if the process name can't be read, the elevated kill is refused) so elevation
+    cannot be used to bypass the system-process protection. Triggers a UAC prompt
+    on the host; will still fail (with a clear message) on tamper-protected
+    security software.
+    """
+    remote = request.remote_addr or ""
+    if remote not in ("127.0.0.1", "::1", "localhost"):
+        return jsonify({"ok": False, "error": "elevated kill is localhost-only"}), 403
+
+    data = request.get_json() or {}
+    try:
+        pid = int(data.get("pid", 0))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "pid must be an integer"}), 400
+    if pid <= 0:
+        return jsonify({"ok": False, "error": "Invalid PID"}), 400
+
+    # Re-apply the SAFE_PROCESSES guard (defence-in-depth: elevation must not
+    # bypass it). This MUST fail closed: if we can't read the process name we
+    # can't apply the guard, and an elevated `taskkill /F` on an unidentified
+    # SYSTEM/critical process (lsass, csrss, wininit, services, smss...) would
+    # BSOD the machine. A non-elevated tray reading a high-integrity process is
+    # exactly when name() raises AccessDenied — precisely the PIDs the guard
+    # protects — so we refuse rather than kill blind (mirrors the non-elevated
+    # /api/processes/kill route).
+    try:
+        proc_name = psutil.Process(pid).name() or ""
+    except psutil.NoSuchProcess:
+        return jsonify({"ok": False, "error": f"No such process: {pid}"}), 404
+    except psutil.AccessDenied:
+        return jsonify({"ok": False, "error": "Access denied reading process name — refusing elevated kill"}), 403
+    except Exception as e:  # noqa: BLE001 — any lookup failure fails closed
+        return jsonify({"ok": False, "error": f"process lookup failed: {e}"}), 500
+
+    name_l = proc_name.lower()
+    if name_l in SAFE_PROCESSES or name_l.removesuffix(".exe") in SAFE_PROCESSES:
+        return jsonify(
+            {"ok": False, "error": f"Refusing to kill protected system process: {proc_name}", "protected": True}
+        ), 403
+
+    result = kill_process_elevated(pid)
+    if result.get("ok"):
         _dashboard_cache_clear()
     return jsonify(result)
 
