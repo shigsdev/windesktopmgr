@@ -919,6 +919,114 @@ class TestProcessKillSafeProcessesGuard:
         assert "Access denied" in data["error"]
 
 
+class TestProcessKillElevationHint:
+    """On Access-denied, /api/processes/kill enriches the response with a
+    classification so the client can offer an elevated retry (needs_admin) or an
+    honest can't-kill message (protected security software)."""
+
+    def _deny_kill(self, mocker, name="someservice.exe"):
+        import psutil as _psutil
+
+        proc = mocker.MagicMock()
+        proc.name.return_value = name
+        proc.kill.side_effect = _psutil.AccessDenied(pid=500)
+        mocker.patch("windesktopmgr.psutil.Process", return_value=proc)
+
+    def test_needs_admin_sets_can_elevate_true(self, client, mocker):
+        self._deny_kill(mocker)
+        mocker.patch(
+            "windesktopmgr.classify_kill_failure",
+            return_value={"reason": "needs_admin", "can_elevate": True, "message": "needs admin", "name": "x"},
+        )
+        resp = client.post("/api/processes/kill", json={"pid": 500})
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert data["can_elevate"] is True
+        assert data["reason"] == "needs_admin"
+        assert data["error"] == "needs admin"
+
+    def test_protected_sets_can_elevate_false(self, client, mocker):
+        self._deny_kill(mocker, name="mc-fw-host.exe")
+        mocker.patch(
+            "windesktopmgr.classify_kill_failure",
+            return_value={
+                "reason": "protected",
+                "can_elevate": False,
+                "message": "mc-fw-host.exe is protected by anti-tamper self-protection.",
+                "name": "mc-fw-host.exe",
+            },
+        )
+        resp = client.post("/api/processes/kill", json={"pid": 500})
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert data["can_elevate"] is False
+        assert data["reason"] == "protected"
+        assert "self-protection" in data["error"].lower()
+
+
+class TestProcessKillElevatedRoute:
+    """POST /api/processes/kill-elevated — UAC-elevated taskkill fallback.
+    Localhost-only, SAFE_PROCESSES guard re-applied, kill_process_elevated mocked
+    (no real UAC prompt in tests)."""
+
+    def test_non_localhost_rejected(self, client, mocker):
+        elev = mocker.patch("windesktopmgr.kill_process_elevated")
+        resp = client.post(
+            "/api/processes/kill-elevated", json={"pid": 1234}, environ_base={"REMOTE_ADDR": "192.168.1.5"}
+        )
+        assert resp.status_code == 403
+        assert "localhost" in resp.get_json()["error"]
+        elev.assert_not_called()
+
+    def test_invalid_pid_rejected(self, client, mocker):
+        elev = mocker.patch("windesktopmgr.kill_process_elevated")
+        resp = client.post("/api/processes/kill-elevated", json={"pid": 0}, environ_base={"REMOTE_ADDR": "127.0.0.1"})
+        assert resp.status_code == 400
+        elev.assert_not_called()
+
+    def test_safe_process_rejected_even_elevated(self, client, mocker):
+        proc = mocker.MagicMock()
+        proc.name.return_value = "csrss.exe"
+        mocker.patch("windesktopmgr.psutil.Process", return_value=proc)
+        elev = mocker.patch("windesktopmgr.kill_process_elevated")
+        resp = client.post("/api/processes/kill-elevated", json={"pid": 4}, environ_base={"REMOTE_ADDR": "127.0.0.1"})
+        assert resp.status_code == 403
+        assert resp.get_json().get("protected") is True
+        elev.assert_not_called()  # elevation must not bypass the system-process guard
+
+    def test_success_invokes_elevated_and_clears_cache(self, client, mocker):
+        from datetime import datetime
+
+        import windesktopmgr as wdm
+
+        proc = mocker.MagicMock()
+        proc.name.return_value = "notepad.exe"
+        mocker.patch("windesktopmgr.psutil.Process", return_value=proc)
+        mocker.patch("windesktopmgr.kill_process_elevated", return_value={"ok": True, "error": ""})
+        wdm._dashboard_state["data"] = {"concerns": []}
+        wdm._dashboard_state["ts"] = datetime.now()
+        resp = client.post(
+            "/api/processes/kill-elevated", json={"pid": 12345}, environ_base={"REMOTE_ADDR": "127.0.0.1"}
+        )
+        assert resp.get_json()["ok"] is True
+        assert wdm._dashboard_state["data"] is None  # cache invalidated
+
+    def test_elevated_failure_surfaced(self, client, mocker):
+        proc = mocker.MagicMock()
+        proc.name.return_value = "notepad.exe"
+        mocker.patch("windesktopmgr.psutil.Process", return_value=proc)
+        mocker.patch(
+            "windesktopmgr.kill_process_elevated",
+            return_value={"ok": False, "error": "Elevated kill failed — protected by anti-tamper."},
+        )
+        resp = client.post(
+            "/api/processes/kill-elevated", json={"pid": 12345}, environ_base={"REMOTE_ADDR": "127.0.0.1"}
+        )
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert "failed" in data["error"].lower()
+
+
 class TestProcessesGlossaryRoute:
     """/api/processes/glossary backs the Memory tab info-icon tooltips."""
 

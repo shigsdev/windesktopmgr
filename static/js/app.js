@@ -1855,6 +1855,35 @@ function renderProcesses() {
   document.getElementById("pr-content").style.display = "";
 }
 
+// Shared elevated-kill fallback (proc_ = Processes tab). When /api/processes/kill
+// returns can_elevate, offer a UAC-elevated taskkill retry that succeeds for
+// SYSTEM / other-user / higher-integrity processes. When it returns a protected
+// (anti-tamper) reason, just show the honest message — elevation won't help.
+async function proc_elevatedKill(pid, name, onSuccess) {
+  try {
+    const r = await fetch("/api/processes/kill-elevated", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({pid}),
+    });
+    const d = await r.json();
+    if (d.ok) { onSuccess(); }
+    else { alert(`Elevated kill of ${name} failed: ${d.error || "unknown error"}`); }
+  } catch (e) {
+    alert(`Elevated kill of ${name} failed: ${e.message}`);
+  }
+}
+
+function proc_handleKillFailure(d, pid, name, onSuccess) {
+  if (d.can_elevate) {
+    if (confirm(`${d.error}\n\nRetry killing ${name} (PID ${pid}) as administrator? A Windows UAC prompt will appear.`)) {
+      proc_elevatedKill(pid, name, onSuccess);
+    }
+  } else {
+    // protected / anti-tamper (or any non-elevatable failure) — honest message
+    alert(`Cannot kill ${name}: ${d.error || "unknown error"}`);
+  }
+}
+
 async function killProc(pid, name) {
   if (!confirm(`Kill process "${name}" (PID ${pid})? Unsaved work in this process will be lost.`)) return;
   const r = await fetch("/api/processes/kill", {
@@ -1863,7 +1892,7 @@ async function killProc(pid, name) {
   });
   const d = await r.json();
   if (d.ok) { loadProcesses(); }
-  else { alert("Kill failed: " + (d.error||"Unknown error")); }
+  else { proc_handleKillFailure(d, pid, name, loadProcesses); }
 }
 
 function togglePrAutoRefresh() {
@@ -3497,7 +3526,9 @@ async function killProcessFromConcern(pid, name) {
     if (d.ok) {
       setTimeout(loadDashboard, 500);  // refresh — the concern should disappear
     } else {
-      alert(`Failed to kill ${name}: ${d.error || "unknown error"}`);
+      // Offer elevated retry (SYSTEM/other-user procs) or honest message
+      // (anti-tamper security software) instead of a bare "Access is denied".
+      proc_handleKillFailure(d, pid, name, () => setTimeout(loadDashboard, 500));
     }
   } catch (e) {
     alert(`Failed to kill ${name}: ${e.message}`);

@@ -19,6 +19,10 @@ is a verbatim relocation.
 
 ``subprocess`` is NOT used here (both subsystems are pure psutil / win32api /
 urllib). ``win32api`` is imported for the file-version-info process lookup.
+The one exception is the elevated-kill path (``kill_process_elevated`` /
+``_run_elevated``), which uses ``ctypes`` + ShellExecuteEx 'runas' to obtain a
+UAC prompt — the only way to terminate a cross-owner / higher-integrity process
+without running the whole tray elevated.
 """
 
 from __future__ import annotations
@@ -1206,6 +1210,201 @@ def kill_process(pid: int) -> dict:
         return {"ok": False, "error": "Access is denied"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+# Security products that run under kernel-backed self-protection / anti-tamper
+# (or as Protected Process Light). Windows blocks TerminateProcess on these
+# even for Administrator/SYSTEM, so offering an elevated retry is pointless —
+# the honest answer is to disable the product's self-protection or uninstall it.
+# Matched case-insensitively, with and without the ".exe" suffix, and by prefix
+# for vendor families whose helper names vary by version.
+TAMPER_PROTECTED_NAMES = frozenset(
+    {
+        # McAfee / WPS
+        "mc-fw-host",
+        "mc-neo-host",
+        "mc-extn-browserhost",
+        "mcshield",
+        "masvc",
+        "macmnsvc",
+        "mfemms",
+        "mfevtps",
+        # Microsoft Defender (PPL)
+        "msmpeng",
+        "nissrv",
+        "mpdefendercoreservice",
+        "securityhealthservice",
+        # Other common self-protecting AV
+        "ccsvchst",  # Norton/Symantec
+        "avp",  # Kaspersky
+        "bdagent",  # Bitdefender
+    }
+)
+TAMPER_PROTECTED_PREFIXES = ("mc-", "mfe")  # McAfee families vary by version
+
+
+def _is_tamper_protected_name(name: str) -> bool:
+    """True if ``name`` matches a known self-protecting security product."""
+    n = (name or "").lower().removesuffix(".exe")
+    if not n:
+        return False
+    if n in TAMPER_PROTECTED_NAMES:
+        return True
+    return any(n.startswith(pfx) for pfx in TAMPER_PROTECTED_PREFIXES)
+
+
+def classify_kill_failure(pid: int) -> dict:
+    """Explain WHY a kill was denied and whether elevation could help.
+
+    Returns ``{reason, can_elevate, message, name}`` where reason is:
+
+    * ``protected``   — anti-tamper / PPL security software; elevation won't
+      help (``can_elevate`` False). The app genuinely cannot kill it.
+    * ``needs_admin`` — owned by SYSTEM / another user / higher integrity; an
+      elevated retry should succeed (``can_elevate`` True).
+    * ``gone``        — the process already exited.
+
+    Heuristics: a known security-product name, OR a same-user process whose
+    executable path we cannot even read (the tell-tale of self-protection —
+    you can normally read the path of your own process), is ``protected``.
+    Everything else defaults to ``needs_admin`` so the user gets the elevated
+    retry that fixes the common cross-owner case.
+    """
+    pid = int(pid)
+    try:
+        proc = psutil.Process(pid)
+        name = proc.name() or ""
+    except psutil.NoSuchProcess:
+        return {"reason": "gone", "can_elevate": False, "message": "Process already exited.", "name": ""}
+    except psutil.AccessDenied:
+        name = ""
+        proc = None
+
+    if _is_tamper_protected_name(name):
+        return {
+            "reason": "protected",
+            "can_elevate": False,
+            "name": name,
+            "message": (
+                f"{name} is protected by anti-tamper self-protection (typical of security "
+                "software such as McAfee or Windows Defender). Windows blocks termination even "
+                "for administrators. To stop it, disable the product's self-protection setting "
+                "or use its official uninstaller."
+            ),
+        }
+
+    # Same-user but path unreadable == self-protection (you can normally read
+    # your own process's exe). Different owner / unreadable owner == needs admin.
+    path_readable = True
+    same_user = False
+    if proc is not None:
+        try:
+            proc.exe()
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            path_readable = False
+        try:
+            same_user = proc.username() == psutil.Process().username()
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            same_user = False
+
+    if proc is not None and same_user and not path_readable:
+        return {
+            "reason": "protected",
+            "can_elevate": False,
+            "name": name,
+            "message": (
+                f"{name or 'This process'} appears to be protected by anti-tamper self-protection. "
+                "Windows blocks termination even for administrators. Disable the product's "
+                "self-protection or use its official uninstaller to stop it."
+            ),
+        }
+
+    return {
+        "reason": "needs_admin",
+        "can_elevate": True,
+        "name": name,
+        "message": (
+            f"Killing {name or 'this process'} requires administrator rights "
+            "(it is owned by SYSTEM, another user, or an elevated app)."
+        ),
+    }
+
+
+def _run_elevated(exe: str, params: str) -> int:
+    """Run ``exe params`` elevated via ShellExecuteEx 'runas' (UAC), wait, and
+    return its exit code. Returns ``-1`` if the UAC prompt was cancelled or the
+    launch failed. Isolated so callers can be unit-tested by mocking this.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    SEE_MASK_NOCLOSEPROCESS = 0x00000040
+    SW_HIDE = 0
+    INFINITE = 0xFFFFFFFF
+
+    class SHELLEXECUTEINFOW(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("fMask", ctypes.c_ulong),
+            ("hwnd", wintypes.HWND),
+            ("lpVerb", wintypes.LPCWSTR),
+            ("lpFile", wintypes.LPCWSTR),
+            ("lpParameters", wintypes.LPCWSTR),
+            ("lpDirectory", wintypes.LPCWSTR),
+            ("nShow", ctypes.c_int),
+            ("hInstApp", wintypes.HINSTANCE),
+            ("lpIDList", ctypes.c_void_p),
+            ("lpClass", wintypes.LPCWSTR),
+            ("hkeyClass", wintypes.HKEY),
+            ("dwHotKey", wintypes.DWORD),
+            ("hIcon", wintypes.HANDLE),
+            ("hProcess", wintypes.HANDLE),
+        ]
+
+    info = SHELLEXECUTEINFOW()
+    info.cbSize = ctypes.sizeof(info)
+    info.fMask = SEE_MASK_NOCLOSEPROCESS
+    info.lpVerb = "runas"
+    info.lpFile = exe
+    info.lpParameters = params
+    info.nShow = SW_HIDE
+
+    if not ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(info)) or not info.hProcess:
+        return -1  # UAC declined or launch failed
+    try:
+        ctypes.windll.kernel32.WaitForSingleObject(info.hProcess, INFINITE)
+        code = wintypes.DWORD()
+        ctypes.windll.kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(code))
+        return int(code.value)
+    finally:
+        ctypes.windll.kernel32.CloseHandle(info.hProcess)
+
+
+def kill_process_elevated(pid: int) -> dict:
+    """Kill a process with an elevated ``taskkill /F`` (triggers a UAC prompt).
+
+    Fixes 'Access is denied' for processes owned by SYSTEM, another user, or an
+    elevated app. Will NOT kill tamper-protected security software (McAfee /
+    Defender PPL) even elevated — taskkill returns non-zero and we surface a
+    clear message. ``pid`` is coerced to ``int`` so nothing user-controlled is
+    interpolated into the command line.
+    """
+    pid = int(pid)
+    if pid <= 0:
+        return {"ok": False, "error": "Invalid PID"}
+    code = _run_elevated("taskkill", f"/F /PID {pid}")
+    if code == 0:
+        return {"ok": True, "error": ""}
+    if code == -1:
+        return {"ok": False, "error": "Elevation cancelled (UAC prompt declined)."}
+    return {
+        "ok": False,
+        "error": (
+            "Elevated kill failed — the process is likely protected by anti-tamper "
+            "self-protection and cannot be terminated. Disable the product's self-protection "
+            "or use its official uninstaller."
+        ),
+    }
 
 
 def summarize_processes(data: dict) -> dict:
