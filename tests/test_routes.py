@@ -994,6 +994,38 @@ class TestProcessKillElevatedRoute:
         assert resp.get_json().get("protected") is True
         elev.assert_not_called()  # elevation must not bypass the system-process guard
 
+    def test_name_lookup_access_denied_fails_closed(self, client, mocker):
+        """SECURITY REGRESSION: if the name can't be read, the elevated kill MUST
+        be refused (fail closed) — otherwise an elevated taskkill /F on an
+        unidentified SYSTEM process (lsass/csrss/...) would BSOD the box. The
+        guard is name-keyed, so a failed name read must NOT fall through to kill.
+        """
+        import psutil as _psutil
+
+        mocker.patch("windesktopmgr.psutil.Process", side_effect=_psutil.AccessDenied(pid=4))
+        elev = mocker.patch("windesktopmgr.kill_process_elevated")
+        resp = client.post("/api/processes/kill-elevated", json={"pid": 4}, environ_base={"REMOTE_ADDR": "127.0.0.1"})
+        assert resp.status_code == 403
+        assert resp.get_json()["ok"] is False
+        elev.assert_not_called()  # MUST NOT reach the elevated kill
+
+    def test_no_such_process_returns_404(self, client, mocker):
+        import psutil as _psutil
+
+        mocker.patch("windesktopmgr.psutil.Process", side_effect=_psutil.NoSuchProcess(pid=99))
+        elev = mocker.patch("windesktopmgr.kill_process_elevated")
+        resp = client.post("/api/processes/kill-elevated", json={"pid": 99}, environ_base={"REMOTE_ADDR": "127.0.0.1"})
+        assert resp.status_code == 404
+        elev.assert_not_called()
+
+    def test_non_integer_pid_rejected(self, client, mocker):
+        elev = mocker.patch("windesktopmgr.kill_process_elevated")
+        resp = client.post(
+            "/api/processes/kill-elevated", json={"pid": "abc"}, environ_base={"REMOTE_ADDR": "127.0.0.1"}
+        )
+        assert resp.status_code == 400
+        elev.assert_not_called()
+
     def test_success_invokes_elevated_and_clears_cache(self, client, mocker):
         from datetime import datetime
 

@@ -1361,6 +1361,19 @@ def _run_elevated(exe: str, params: str) -> int:
             ("hProcess", wintypes.HANDLE),
         ]
 
+    # Declare argtypes/restype so the 64-bit HANDLE isn't marshalled as a 32-bit
+    # C int (which could truncate the handle -> failed wait + leaked handle).
+    shell32 = ctypes.windll.shell32
+    shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(SHELLEXECUTEINFOW)]
+    shell32.ShellExecuteExW.restype = wintypes.BOOL
+    k32 = ctypes.windll.kernel32
+    k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    k32.WaitForSingleObject.restype = wintypes.DWORD
+    k32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    k32.GetExitCodeProcess.restype = wintypes.BOOL
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    k32.CloseHandle.restype = wintypes.BOOL
+
     info = SHELLEXECUTEINFOW()
     info.cbSize = ctypes.sizeof(info)
     info.fMask = SEE_MASK_NOCLOSEPROCESS
@@ -1369,15 +1382,15 @@ def _run_elevated(exe: str, params: str) -> int:
     info.lpParameters = params
     info.nShow = SW_HIDE
 
-    if not ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(info)) or not info.hProcess:
+    if not shell32.ShellExecuteExW(ctypes.byref(info)) or not info.hProcess:
         return -1  # UAC declined or launch failed
     try:
-        ctypes.windll.kernel32.WaitForSingleObject(info.hProcess, INFINITE)
+        k32.WaitForSingleObject(info.hProcess, INFINITE)
         code = wintypes.DWORD()
-        ctypes.windll.kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(code))
+        k32.GetExitCodeProcess(info.hProcess, ctypes.byref(code))
         return int(code.value)
     finally:
-        ctypes.windll.kernel32.CloseHandle(info.hProcess)
+        k32.CloseHandle(info.hProcess)
 
 
 def kill_process_elevated(pid: int) -> dict:
@@ -1392,7 +1405,10 @@ def kill_process_elevated(pid: int) -> dict:
     pid = int(pid)
     if pid <= 0:
         return {"ok": False, "error": "Invalid PID"}
-    code = _run_elevated("taskkill", f"/F /PID {pid}")
+    # Absolute System32 path (not a bare "taskkill") so an elevated launch can't
+    # be PATH-hijacked into running an attacker's taskkill.exe with admin rights.
+    taskkill = os.path.join(os.environ.get("SYSTEMROOT", r"C:\Windows"), "System32", "taskkill.exe")
+    code = _run_elevated(taskkill, f"/F /PID {pid}")
     if code == 0:
         return {"ok": True, "error": ""}
     if code == -1:

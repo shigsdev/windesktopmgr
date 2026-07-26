@@ -1202,6 +1202,17 @@ class TestClassifyKillFailure:
         assert info["reason"] == "gone"
         assert info["can_elevate"] is False
 
+    def test_access_denied_on_construction_defaults_needs_admin(self, mocker):
+        """If even constructing psutil.Process(pid) raises AccessDenied (can't
+        read anything about it), default to needs_admin so the user can still
+        try an elevated retry — never crash."""
+        import psutil as _psutil
+
+        mocker.patch("processes.psutil.Process", side_effect=_psutil.AccessDenied(pid=7))
+        info = processes.classify_kill_failure(7)
+        assert info["reason"] == "needs_admin"
+        assert info["can_elevate"] is True
+
 
 class TestKillProcessElevated:
     """Elevated (UAC) taskkill fallback. ``_run_elevated`` is mocked so no real
@@ -1211,7 +1222,9 @@ class TestKillProcessElevated:
         run = mocker.patch("processes._run_elevated", return_value=0)
         result = processes.kill_process_elevated(1234)
         assert result["ok"] is True
-        run.assert_called_once_with("taskkill", "/F /PID 1234")
+        exe, params = run.call_args.args
+        assert exe.lower().endswith("taskkill.exe")  # absolute path, not PATH-hijackable
+        assert params == "/F /PID 1234"
 
     def test_uac_cancelled_maps_to_error(self, mocker):
         mocker.patch("processes._run_elevated", return_value=-1)
@@ -1235,7 +1248,7 @@ class TestKillProcessElevated:
         run = mocker.patch("processes._run_elevated", return_value=0)
         processes.kill_process_elevated(1234.9)
         # int() cast prevents anything but a bare integer reaching the command
-        run.assert_called_once_with("taskkill", "/F /PID 1234")
+        assert run.call_args.args[1] == "/F /PID 1234"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

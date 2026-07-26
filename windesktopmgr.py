@@ -3533,10 +3533,11 @@ def process_kill_elevated():
     """Kill a process with an elevated (UAC) taskkill — the fallback the client
     offers when /api/processes/kill returns ``can_elevate: true``.
 
-    Localhost-only, and the SAFE_PROCESSES guard is re-applied here so elevation
-    can never be used to bypass the system-process protection. Triggers a UAC
-    prompt on the host; will still fail (with a clear message) on tamper-
-    protected security software.
+    Localhost-only, and the SAFE_PROCESSES guard is re-applied here (fail-closed:
+    if the process name can't be read, the elevated kill is refused) so elevation
+    cannot be used to bypass the system-process protection. Triggers a UAC prompt
+    on the host; will still fail (with a clear message) on tamper-protected
+    security software.
     """
     remote = request.remote_addr or ""
     if remote not in ("127.0.0.1", "::1", "localhost"):
@@ -3551,19 +3552,27 @@ def process_kill_elevated():
         return jsonify({"ok": False, "error": "Invalid PID"}), 400
 
     # Re-apply the SAFE_PROCESSES guard (defence-in-depth: elevation must not
-    # bypass it). Best-effort name lookup — if we can't read the name, proceed
-    # (the elevated taskkill itself won't touch a truly critical PPL process).
+    # bypass it). This MUST fail closed: if we can't read the process name we
+    # can't apply the guard, and an elevated `taskkill /F` on an unidentified
+    # SYSTEM/critical process (lsass, csrss, wininit, services, smss...) would
+    # BSOD the machine. A non-elevated tray reading a high-integrity process is
+    # exactly when name() raises AccessDenied — precisely the PIDs the guard
+    # protects — so we refuse rather than kill blind (mirrors the non-elevated
+    # /api/processes/kill route).
     try:
         proc_name = psutil.Process(pid).name() or ""
-        name_l = proc_name.lower()
-        if name_l in SAFE_PROCESSES or name_l.removesuffix(".exe") in SAFE_PROCESSES:
-            return jsonify(
-                {"ok": False, "error": f"Refusing to kill protected system process: {proc_name}", "protected": True}
-            ), 403
     except psutil.NoSuchProcess:
         return jsonify({"ok": False, "error": f"No such process: {pid}"}), 404
-    except (psutil.AccessDenied, Exception):  # noqa: BLE001 — name lookup is best-effort here
-        pass
+    except psutil.AccessDenied:
+        return jsonify({"ok": False, "error": "Access denied reading process name — refusing elevated kill"}), 403
+    except Exception as e:  # noqa: BLE001 — any lookup failure fails closed
+        return jsonify({"ok": False, "error": f"process lookup failed: {e}"}), 500
+
+    name_l = proc_name.lower()
+    if name_l in SAFE_PROCESSES or name_l.removesuffix(".exe") in SAFE_PROCESSES:
+        return jsonify(
+            {"ok": False, "error": f"Refusing to kill protected system process: {proc_name}", "protected": True}
+        ), 403
 
     result = kill_process_elevated(pid)
     if result.get("ok"):
