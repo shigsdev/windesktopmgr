@@ -570,15 +570,29 @@ class TestRestartApp(unittest.TestCase):
     @patch("tray.os._exit")
     @patch("tray.time.sleep")
     @patch("subprocess.Popen")
-    def test_restart_preserves_sys_argv(self, mock_popen, mock_sleep, mock_exit):
+    def test_restart_uses_argv_snapshot_not_live(self, mock_popen, mock_sleep, mock_exit):
+        """Relaunch must use the import-time argv snapshot, never live sys.argv.
+
+        pysnmp's MIB loader rewrites sys.argv[0] to a MIB source path at
+        runtime; relaunching the live sys.argv would run that MIB file instead
+        of the tray and die silently (the original restart bug).
+        """
         stop_event = threading.Event()
         mock_icon = MagicMock()
-        original_argv = sys.argv[:]
-        tray.restart_app(mock_icon, None, stop_event)
-        # First positional arg is the command list
+        with patch.object(tray.sys, "argv", [r"C:\x\pysnmp\smi\mibs\SNMPv2-SMI.py"]):
+            tray.restart_app(mock_icon, None, stop_event)
         cmd = mock_popen.call_args[0][0]
         assert cmd[0] == sys.executable
-        assert cmd[1:] == original_argv
+        assert cmd[1:] == tray._ORIGINAL_ARGV
+        assert not any("SNMPv2-SMI.py" in part for part in cmd), (
+            "relaunch must not use the pysnmp MIB path from mutated sys.argv"
+        )
+        # cwd must be pinned so a relative entry still resolves
+        assert mock_popen.call_args.kwargs.get("cwd")
+
+    def test_original_argv_snapshot_is_absolute(self):
+        assert tray._ORIGINAL_ARGV, "snapshot must not be empty"
+        assert os.path.isabs(tray._ORIGINAL_ARGV[0])
 
     @patch("tray.os._exit")
     @patch("tray.time.sleep")

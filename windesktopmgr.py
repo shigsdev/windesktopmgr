@@ -239,6 +239,18 @@ subprocess.run = _headless_subprocess_run
 
 app = Flask(__name__)
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Snapshot the launch command at import time, before anything can mutate it.
+# pysnmp's MIB loader rewrites sys.argv[0] to a MIB source file path when the
+# NAS SNMP collector runs — and PR #153's background NAS-refresh thread triggers
+# that automatically a few minutes after startup. Once mutated, the live
+# sys.argv points at e.g. ...\pysnmp\smi\mibs\SNMPv2-SMI.py, so a restart that
+# relaunched [sys.executable, *sys.argv] would run that MIB file instead of the
+# tray and silently die with no replacement. This module is imported during
+# tray startup (before any NAS poll), so sys.argv is still the real launch
+# command here. Resolve argv[0] to an absolute path so the relaunch does not
+# depend on the child's working directory.
+_ORIGINAL_ARGV = [os.path.abspath(sys.argv[0]), *sys.argv[1:]] if sys.argv and sys.argv[0] else list(sys.argv)
 # EVENT_CACHE_FILE now lives in events.py (#54 PR B).
 # BSOD_CACHE_FILE / REPORT_DIR / BUGCHECK_CODES / RECOMMENDATIONS_DB /
 # DRIVER_CONTEXT now live in bsod.py and are re-imported at the top of this file.
@@ -3138,11 +3150,76 @@ def api_selftest():
     )
 
 
+RESTART_LOG = os.path.join(APP_DIR, "restart.log")
+
+
+def _restart_log(msg: str) -> None:
+    """Append a line to restart.log — best-effort, must never break a restart.
+
+    The replacement tray is spawned with no console (CREATE_NO_WINDOW), so a
+    failed relaunch otherwise leaves no trace anywhere. That silent-failure
+    blind spot is exactly what hid the sys.argv-mutation bug for weeks
+    ("clean 202, then silence, no traceback").
+    """
+    try:
+        with open(RESTART_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now().isoformat(timespec='seconds')} pid={os.getpid()} {msg}\n")
+    except Exception:  # noqa: BLE001 — logging must never break a restart
+        pass
+
+
+def _build_relaunch_cmd() -> list[str]:
+    """Build the command that relaunches this app.
+
+    Uses ``_ORIGINAL_ARGV`` (snapshotted at import, absolute) — deliberately NOT
+    the live ``sys.argv``, which pysnmp's MIB loader rewrites to a MIB source
+    path once the NAS SNMP collector has run.
+    """
+    return [sys.executable, *_ORIGINAL_ARGV]
+
+
+def _spawn_replacement() -> subprocess.Popen:
+    """Spawn the replacement process with an explicit working directory.
+
+    Extracted from the restart worker so it is unit-testable without the
+    ``os._exit()`` that would otherwise kill the test runner.
+    """
+    cmd = _build_relaunch_cmd()
+    _restart_log(f"relaunching: {cmd!r} cwd={APP_DIR!r}")
+    p = subprocess.Popen(  # noqa: S603
+        cmd,
+        cwd=APP_DIR,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
+    _restart_log(f"spawned replacement pid={p.pid}")
+    return p
+
+
+def _restart_worker() -> None:
+    """Spawn the replacement, then hard-exit — or stay alive if the spawn fails.
+
+    Module-level (not a closure) so the spawn-succeeds -> os._exit vs.
+    spawn-fails -> stay-alive branch is unit-testable. If ``_spawn_replacement``
+    raises, we deliberately do NOT os._exit: a stale tray beats a trayless
+    machine, and the failure is recorded in restart.log rather than vanishing.
+    """
+    time.sleep(0.3)  # let the HTTP response flush
+    try:
+        _spawn_replacement()
+    except Exception as e:  # noqa: BLE001 — must fail safe; never leave the box trayless
+        _restart_log(f"relaunch FAILED, staying alive: {type(e).__name__}: {e}")
+        return
+    time.sleep(0.3)
+    os._exit(0)  # noqa: SLF001 — hard exit kills daemon threads immediately
+
+
 @app.route("/api/restart", methods=["POST"])
 def api_restart():
     """Schedule a full app restart. Spawns a new pythonw process running the
-    same entry point, then exits the current one after a short delay. Callers
-    should poll /api/health to detect the new instance.
+    same entry point, then exits the current one after a short delay — unless
+    the relaunch spawn fails, in which case the current process stays alive
+    (a stale tray beats a trayless machine). Callers should poll /api/health
+    to detect the new instance.
 
     Localhost-only — refuses any request not from 127.0.0.1/::1.
     """
@@ -3150,19 +3227,7 @@ def api_restart():
     if remote not in ("127.0.0.1", "::1", "localhost"):
         return jsonify({"ok": False, "error": "restart is localhost-only"}), 403
 
-    def _do_restart():
-        time.sleep(0.3)  # let the HTTP response flush
-        try:
-            python = sys.executable
-            subprocess.Popen(  # noqa: S603
-                [python, *sys.argv],
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-            )
-        finally:
-            time.sleep(0.3)
-            os._exit(0)  # noqa: SLF001 — hard exit kills daemon threads immediately
-
-    threading.Thread(target=_do_restart, daemon=True, name="RestartWorker").start()
+    threading.Thread(target=_restart_worker, daemon=True, name="RestartWorker").start()
     return jsonify({"ok": True, "status": "restart scheduled"}), 202
 
 
