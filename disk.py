@@ -515,6 +515,93 @@ def build_pcie_card_topology(physical: list[dict], members: list[dict] | None = 
     }
 
 
+# PCIe switch chips used on multi-M.2 add-in cards, keyed by "vendor:device"
+# (lowercase hex). A switch-based card (vs passive bifurcation) fans the drives
+# out through one of these, so the NVMe controllers share it as their parent
+# bridge — that's how we name the card generically without a brand string.
+_PCIE_SWITCH_CHIPS = {
+    "1b21:812b": "ASMedia ASM2812",
+    "1b21:812a": "ASMedia ASM2812",
+    "1b21:2824": "ASMedia ASM2824",
+    "10b5:8724": "Broadcom/PLX PEX8724",
+    "10b5:8747": "Broadcom/PLX PEX8747",
+    "1b4b:1b81": "Marvell 88NR2241",
+}
+_PCIE_SWITCH_VENDORS = {
+    "1b21": "ASMedia",
+    "10b5": "Broadcom/PLX",
+    "1000": "Broadcom",
+    "1b4b": "Marvell",
+    "12d8": "Pericom",
+    "104c": "Texas Instruments",
+}
+
+
+def _switch_friendly_name(ven_dev: str) -> str:
+    """Map a "vendor:device" id to a display name, degrading gracefully: exact
+    chip if known, else "<vendor> PCIe switch", else a bare "PCIe switch"."""
+    key = (ven_dev or "").lower()
+    if not key:
+        return ""
+    if key in _PCIE_SWITCH_CHIPS:
+        return _PCIE_SWITCH_CHIPS[key]
+    ven = key.split(":", 1)[0]
+    vendor = _PCIE_SWITCH_VENDORS.get(ven, "")
+    return f"{vendor} PCIe switch" if vendor else "PCIe switch"
+
+
+def _pick_card_switch(parents: list[dict]) -> dict:
+    """From ``[{ven_dev, count}]`` pick the add-in card's switch: the non-Intel
+    parent bridge shared by >= 2 NVMe controllers (a switch fans out to several;
+    Intel VEN_8086 parents are onboard CPU/PCH root ports, not a card)."""
+    best_vd, best_cnt = "", 0
+    for p in parents:
+        vd = str(p.get("ven_dev", "")).lower()
+        try:
+            cnt = int(p.get("count", 0) or 0)
+        except (TypeError, ValueError):
+            cnt = 0
+        if not vd or vd.split(":", 1)[0] == "8086" or cnt < 2:
+            continue
+        if cnt > best_cnt:
+            best_vd, best_cnt = vd, cnt
+    return {"switch": _switch_friendly_name(best_vd), "ven_dev": best_vd}
+
+
+def detect_pcie_switch() -> dict:
+    """Best-effort: identify the PCIe switch chip fanning out an add-in NVMe
+    card, by reading the shared parent bridge of the present NVMe controllers via
+    PnP. Returns ``{"switch", "ven_dev"}`` ("" when there's no switch-based card
+    or on any failure — a passive-bifurcation card has no shared switch and
+    returns "")."""
+    ps = r"""
+$nvme = Get-PnpDevice -Class SCSIAdapter -PresentOnly -ErrorAction SilentlyContinue |
+        Where-Object { $_.FriendlyName -match 'NVM' }
+$counts = @{}
+foreach ($d in $nvme) {
+    $p = (Get-PnpDeviceProperty -InstanceId $d.InstanceId -KeyName 'DEVPKEY_Device_Parent' -ErrorAction SilentlyContinue).Data
+    if ($p -match 'VEN_([0-9A-Fa-f]{4})&DEV_([0-9A-Fa-f]{4})') {
+        $k = ($Matches[1] + ':' + $Matches[2]).ToLower()
+        if ($counts.ContainsKey($k)) { $counts[$k]++ } else { $counts[$k] = 1 }
+    }
+}
+@($counts.GetEnumerator() | ForEach-Object { [PSCustomObject]@{ ven_dev = $_.Key; count = $_.Value } }) | ConvertTo-Json
+"""
+    try:
+        r = subprocess.run(
+            ["powershell", "-NonInteractive", "-Command", ps],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        raw = json.loads(r.stdout.strip() or "[]")
+        parents = raw if isinstance(raw, list) else [raw]
+    except Exception as e:  # noqa: BLE001 -- switch detection is best-effort, never fatal
+        print(f"[PCIe switch detect error] {e}")
+        return {"switch": "", "ven_dev": ""}
+    return _pick_card_switch(parents)
+
+
 def get_storage_spaces() -> dict:
     """Windows Storage Spaces health — pools, virtual disks, member drives, and
     repair jobs. Powers the Storage tab's pool view and the dashboard
@@ -1524,6 +1611,9 @@ def storage_pcie_topology_route():
     health = get_disk_health()
     spaces = get_storage_spaces()
     topo = build_pcie_card_topology(health.get("physical", []), spaces.get("members", []))
+    # Name the card by its switch chip (e.g. "ASMedia ASM2812") when it's a
+    # switch-based card — only bother if we actually found an add-in card.
+    topo["card_switch"] = detect_pcie_switch().get("switch", "") if topo.get("has_card") else ""
     return jsonify({"ok": True, **topo})
 
 

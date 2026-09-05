@@ -3137,6 +3137,8 @@ class TestStoragePcieTopologyRoute:
             "disk.get_storage_spaces",
             return_value={"members": [{"Serial": "0025_384C_3145_20C4.", "Usage": "Retired", "Health": "Healthy"}]},
         )
+        # Mock switch detection so the route doesn't shell out to real PowerShell.
+        mocker.patch("disk.detect_pcie_switch", return_value={"switch": "ASMedia ASM2812", "ven_dev": "1b21:812b"})
         r = client.get("/api/storage/pcie-topology")
         assert r.status_code == 200
         d = r.get_json()
@@ -3144,6 +3146,7 @@ class TestStoragePcieTopologyRoute:
         assert d["has_card"] is True
         assert d["card_drives"][0]["flag"] == "retired"
         assert d["failed_serial_short"] == "20C4"
+        assert d["card_switch"] == "ASMedia ASM2812"
 
     def test_empty_shape(self, client, mocker):
         mocker.patch("disk.get_disk_health", return_value={"physical": []})
