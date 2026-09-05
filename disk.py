@@ -553,48 +553,64 @@ def _switch_friendly_name(ven_dev: str) -> str:
     return f"{vendor} PCIe switch" if vendor else "PCIe switch"
 
 
-def _pick_card_switch(parents: list[dict]) -> dict:
-    """From ``[{ven_dev, count}]`` pick the add-in card's switch: the parent
-    bridge shared by >= 2 card NVMe controllers that is NOT a CPU/chipset root
-    port. The PS query only counts controllers reporting a "PCI Slot" location
-    (i.e. on a card), so onboard drives can't skew this regardless of vendor;
-    excluding root-port vendors then means a passive-bifurcation card (drives
-    directly off Intel/AMD root ports) correctly yields no switch name."""
-    best_vd, best_cnt = "", 0
-    for p in parents:
-        vd = str(p.get("ven_dev", "")).lower()
+def _pick_card_switch_from_controllers(controllers: list[dict], card_buses: set[int] | None) -> dict:
+    """Pick the add-in card's switch from raw NVMe-controller rows.
+
+    ``controllers`` is ``[{bus, ven_dev}]`` (bus = the controller's own PCIe bus,
+    ven_dev = its parent bridge). Pure so it's unit-testable without PowerShell.
+
+    Correlate to the card by BUS: count only controllers whose bus is one of the
+    card drives' buses (``card_buses`` from build_pcie_card_topology), so onboard
+    M.2 can never be attributed to the card regardless of vendor. Then pick the
+    parent shared by >= 2 of those controllers that is NOT a CPU/chipset root
+    port — so a passive-bifurcation card (drives hanging directly off Intel/AMD
+    root ports) correctly yields no switch name.
+    """
+    counts: dict[str, int] = {}
+    for c in controllers:
         try:
-            cnt = int(p.get("count", 0) or 0)
+            bus = int(c.get("bus")) if c.get("bus") is not None else None
         except (TypeError, ValueError):
-            cnt = 0
-        if not vd or vd.split(":", 1)[0] in _PCIE_ROOT_PORT_VENDORS or cnt < 2:
+            bus = None
+        if card_buses is not None and bus not in card_buses:
             continue
-        if cnt > best_cnt:
+        vd = str(c.get("ven_dev", "")).lower()
+        if not vd or vd.split(":", 1)[0] in _PCIE_ROOT_PORT_VENDORS:
+            continue
+        counts[vd] = counts.get(vd, 0) + 1
+
+    best_vd, best_cnt = "", 0
+    for vd, cnt in counts.items():
+        if cnt >= 2 and cnt > best_cnt:
             best_vd, best_cnt = vd, cnt
     return {"switch": _switch_friendly_name(best_vd), "ven_dev": best_vd}
 
 
-def detect_pcie_switch() -> dict:
+def detect_pcie_switch(card_buses=None) -> dict:
     """Best-effort: identify the PCIe switch chip fanning out an add-in NVMe
-    card, by reading the shared parent bridge of the card's NVMe controllers via
-    PnP. Only controllers whose own location is a "PCI Slot" are counted, so
-    onboard M.2 (any vendor) can never be attributed to the card. Returns
-    ``{"switch", "ven_dev"}`` ("" when there's no switch-based card or on any
-    failure — a passive-bifurcation card has no shared switch and returns "")."""
+    card, by reading the card NVMe controllers' shared parent bridge via PnP.
+
+    ``card_buses`` is the set/iterable of PCIe bus numbers of the drives that are
+    on the add-in card (from ``build_pcie_card_topology``). Only controllers on
+    those buses are considered, so onboard M.2 (any vendor) is never attributed
+    to the card. The NVMe controller's own ``LocationInfo`` reads
+    "PCI bus N, device 0, function 0" (NOT "PCI Slot" — that's on the disk), so
+    we correlate on that bus number. Returns ``{"switch", "ven_dev"}`` ("" when
+    there's no switch-based card or on any failure)."""
     ps = r"""
 $nvme = Get-PnpDevice -Class SCSIAdapter -PresentOnly -ErrorAction SilentlyContinue |
         Where-Object { $_.FriendlyName -match 'NVM' }
-$counts = @{}
+$out = @()
 foreach ($d in $nvme) {
     $loc = (Get-PnpDeviceProperty -InstanceId $d.InstanceId -KeyName 'DEVPKEY_Device_LocationInfo' -ErrorAction SilentlyContinue).Data
-    if ($loc -notmatch 'PCI Slot') { continue }  # add-in-card controllers only
+    $bus = $null
+    if ($loc -match 'bus\s+(\d+)') { $bus = [int]$Matches[1] }
     $p = (Get-PnpDeviceProperty -InstanceId $d.InstanceId -KeyName 'DEVPKEY_Device_Parent' -ErrorAction SilentlyContinue).Data
     if ($p -match 'VEN_([0-9A-Fa-f]{4})&DEV_([0-9A-Fa-f]{4})') {
-        $k = ($Matches[1] + ':' + $Matches[2]).ToLower()
-        if ($counts.ContainsKey($k)) { $counts[$k]++ } else { $counts[$k] = 1 }
+        $out += [PSCustomObject]@{ bus = $bus; ven_dev = ($Matches[1] + ':' + $Matches[2]).ToLower() }
     }
 }
-@($counts.GetEnumerator() | ForEach-Object { [PSCustomObject]@{ ven_dev = $_.Key; count = $_.Value } }) | ConvertTo-Json
+@($out) | ConvertTo-Json
 """
     try:
         r = subprocess.run(
@@ -604,11 +620,12 @@ foreach ($d in $nvme) {
             timeout=30,
         )
         raw = json.loads(r.stdout.strip() or "[]")
-        parents = raw if isinstance(raw, list) else [raw]
+        controllers = raw if isinstance(raw, list) else [raw]
     except Exception as e:  # noqa: BLE001 -- switch detection is best-effort, never fatal
         print(f"[PCIe switch detect error] {e}")
         return {"switch": "", "ven_dev": ""}
-    return _pick_card_switch(parents)
+    buses = None if card_buses is None else {int(b) for b in card_buses if b is not None}
+    return _pick_card_switch_from_controllers(controllers, buses)
 
 
 def get_storage_spaces() -> dict:
@@ -1621,8 +1638,13 @@ def storage_pcie_topology_route():
     spaces = get_storage_spaces()
     topo = build_pcie_card_topology(health.get("physical", []), spaces.get("members", []))
     # Name the card by its switch chip (e.g. "ASMedia ASM2812") when it's a
-    # switch-based card — only bother if we actually found an add-in card.
-    topo["card_switch"] = detect_pcie_switch().get("switch", "") if topo.get("has_card") else ""
+    # switch-based card — only bother if we found an add-in card, and correlate
+    # by the card drives' PCIe buses so onboard M.2 can't be attributed to it.
+    if topo.get("has_card"):
+        card_buses = [d.get("bus") for d in topo.get("card_drives", [])]
+        topo["card_switch"] = detect_pcie_switch(card_buses).get("switch", "")
+    else:
+        topo["card_switch"] = ""
     return jsonify({"ok": True, **topo})
 
 

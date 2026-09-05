@@ -1747,26 +1747,51 @@ class TestDetectPcieSwitch:
     def test_friendly_name_empty(self):
         assert disk._switch_friendly_name("") == ""
 
-    def test_pick_ignores_intel_root_ports(self):
-        # Intel (8086) parents are onboard root ports; the ASM2812 switch is
-        # shared by all 4 card drives -> it's the card.
-        parents = [{"ven_dev": "8086:1234", "count": 1}, {"ven_dev": "1b21:812b", "count": 4}]
-        assert disk._pick_card_switch(parents) == {"switch": "ASMedia ASM2812", "ven_dev": "1b21:812b"}
+    # controllers are [{bus, ven_dev}] rows; card_buses restricts to the card.
+    def test_pick_correlates_by_bus_and_names_switch(self):
+        # This machine: card drives on buses 6/9/12/15 behind ASM2812; the two
+        # onboard drives (bus 0) share an Intel root port and must be ignored.
+        controllers = [
+            {"bus": 0, "ven_dev": "8086:1234"},
+            {"bus": 0, "ven_dev": "8086:5678"},
+            {"bus": 6, "ven_dev": "1b21:812b"},
+            {"bus": 9, "ven_dev": "1b21:812b"},
+            {"bus": 12, "ven_dev": "1b21:812b"},
+            {"bus": 15, "ven_dev": "1b21:812b"},
+        ]
+        out = disk._pick_card_switch_from_controllers(controllers, card_buses={6, 9, 12, 15})
+        assert out == {"switch": "ASMedia ASM2812", "ven_dev": "1b21:812b"}
 
-    def test_pick_ignores_amd_root_ports(self):
-        # AMD (1022) root ports must also be excluded so a passive-bifurcation
-        # card on an AMD board isn't mislabeled as switch-based.
-        assert disk._pick_card_switch([{"ven_dev": "1022:43f4", "count": 4}])["switch"] == ""
+    def test_pick_onboard_bridge_not_attributed_to_card(self):
+        # AMD box: 3 onboard drives share a chipset bridge (bus 0-2), a real
+        # ASM2812 card fans 2 drives (buses 6/9). Correlating by the card's buses
+        # must pick the card switch, never the onboard bridge.
+        controllers = [
+            {"bus": 0, "ven_dev": "1022:43f4"},
+            {"bus": 1, "ven_dev": "1022:43f4"},
+            {"bus": 2, "ven_dev": "1022:43f4"},
+            {"bus": 6, "ven_dev": "1b21:812b"},
+            {"bus": 9, "ven_dev": "1b21:812b"},
+        ]
+        out = disk._pick_card_switch_from_controllers(controllers, card_buses={6, 9})
+        assert out["switch"] == "ASMedia ASM2812"
 
-    def test_pick_requires_shared_parent(self):
-        # a single non-root device (count 1) is not a fan-out switch
-        assert disk._pick_card_switch([{"ven_dev": "1b21:812b", "count": 1}])["switch"] == ""
+    def test_pick_passive_card_root_ports_no_switch(self):
+        # A passive-bifurcation card: card drives hang directly off Intel/AMD
+        # root ports (no switch chip) -> no switch name.
+        controllers = [{"bus": 6, "ven_dev": "8086:1111"}, {"bus": 9, "ven_dev": "8086:2222"}]
+        assert disk._pick_card_switch_from_controllers(controllers, card_buses={6, 9})["switch"] == ""
+
+    def test_pick_requires_two_card_controllers(self):
+        controllers = [{"bus": 6, "ven_dev": "1b21:812b"}]
+        assert disk._pick_card_switch_from_controllers(controllers, card_buses={6, 9})["switch"] == ""
 
     def test_pick_empty(self):
-        assert disk._pick_card_switch([])["switch"] == ""
+        assert disk._pick_card_switch_from_controllers([], card_buses={6})["switch"] == ""
 
-    def test_pick_non_numeric_count_safe(self):
-        assert disk._pick_card_switch([{"ven_dev": "1b21:812b", "count": "oops"}])["switch"] == ""
+    def test_pick_non_numeric_bus_safe(self):
+        controllers = [{"bus": "oops", "ven_dev": "1b21:812b"}, {"bus": None, "ven_dev": "1b21:812b"}]
+        assert disk._pick_card_switch_from_controllers(controllers, card_buses={6, 9})["switch"] == ""
 
     def _mock_run(self, mocker, stdout, timeout=False):
         if timeout:
@@ -1779,39 +1804,42 @@ class TestDetectPcieSwitch:
         m.return_value.stderr = ""
         return m
 
+    def _rows(self):
+        return json.dumps([{"bus": 6, "ven_dev": "1b21:812b"}, {"bus": 9, "ven_dev": "1b21:812b"}])
+
     def test_detect_parses_ps_output(self, mocker):
-        self._mock_run(mocker, json.dumps([{"ven_dev": "1b21:812b", "count": 4}]))
-        assert disk.detect_pcie_switch()["switch"] == "ASMedia ASM2812"
+        self._mock_run(mocker, self._rows())
+        assert disk.detect_pcie_switch(card_buses=[6, 9])["switch"] == "ASMedia ASM2812"
 
     def test_detect_single_object_normalized(self, mocker):
-        # ConvertTo-Json emits a bare object (not a list) for a single entry
-        self._mock_run(mocker, json.dumps({"ven_dev": "1b21:812b", "count": 4}))
-        assert disk.detect_pcie_switch()["switch"] == "ASMedia ASM2812"
+        # ConvertTo-Json emits a bare object (not a list) for a single row
+        self._mock_run(mocker, json.dumps({"bus": 6, "ven_dev": "1b21:812b"}))
+        # single controller -> count 1 -> not enough for a switch, but must not crash
+        assert disk.detect_pcie_switch(card_buses=[6, 9]) == {"switch": "", "ven_dev": ""}
 
     def test_detect_empty_output_safe(self, mocker):
         self._mock_run(mocker, "")
-        assert disk.detect_pcie_switch() == {"switch": "", "ven_dev": ""}
+        assert disk.detect_pcie_switch(card_buses=[6]) == {"switch": "", "ven_dev": ""}
 
     def test_detect_malformed_json_safe(self, mocker):
         self._mock_run(mocker, "not json{")
-        assert disk.detect_pcie_switch() == {"switch": "", "ven_dev": ""}
+        assert disk.detect_pcie_switch(card_buses=[6]) == {"switch": "", "ven_dev": ""}
 
     def test_detect_timeout_safe(self, mocker):
         self._mock_run(mocker, "", timeout=True)
-        assert disk.detect_pcie_switch() == {"switch": "", "ven_dev": ""}
+        assert disk.detect_pcie_switch(card_buses=[6]) == {"switch": "", "ven_dev": ""}
 
     def test_detect_nonzero_returncode_safe(self, mocker):
-        # A PS failure (non-zero exit, empty stdout) must degrade to no switch.
         m = self._mock_run(mocker, "")
         m.return_value.returncode = 1
-        assert disk.detect_pcie_switch() == {"switch": "", "ven_dev": ""}
+        assert disk.detect_pcie_switch(card_buses=[6]) == {"switch": "", "ven_dev": ""}
 
-    def test_detect_command_queries_parent_and_filters_to_card(self, mocker):
+    def test_detect_command_queries_parent_and_location(self, mocker):
         m = self._mock_run(mocker, "[]")
-        disk.detect_pcie_switch()
+        disk.detect_pcie_switch(card_buses=[6])
         cmd = " ".join(m.call_args.args[0])
         assert "DEVPKEY_Device_Parent" in cmd
-        assert "PCI Slot" in cmd  # only counts add-in-card controllers
+        assert "DEVPKEY_Device_LocationInfo" in cmd  # reads the controller's bus for correlation
 
 
 class TestGetStorageSpaces:
