@@ -1600,6 +1600,88 @@ class TestDescribeDiskLocation:
         assert info["hint"]  # non-empty, doesn't guess a slot
 
 
+class TestBuildPcieCardTopology:
+    """Group disks into add-in-card sockets vs onboard M.2 + flag the failed one.
+    Modelled on this machine: 2 onboard M.2 + a 4x M.2 switch card whose ...20C4
+    drive is pool-Retired while SMART still reads Healthy."""
+
+    def _phys(self, name, serial, health, location):
+        return {
+            "Name": name,
+            "SerialNumber": serial,
+            "Health": health,
+            "SizeGB": 1863.0,
+            "LocationInfo": disk.describe_disk_location(location, "NVMe"),
+        }
+
+    def _machine(self):
+        physical = [
+            self._phys("Samsung 990 PRO 1TB", "AAAA.", "Healthy", "Integrated : Bus 0 : Device 14 : Function 0"),
+            self._phys("SK hynix PC811 1TB", "BBBB.", "Healthy", "Integrated : Bus 0 : Device 14 : Function 0"),
+            # card drives, deliberately out of bus order to prove sorting
+            self._phys("Samsung 970 EVO Plus 2TB", "9E72.", "Healthy", "PCI Slot 13 : Bus 15 : Device 0 : Adapter 4"),
+            self._phys("Samsung 990 PRO 2TB", "20C4.", "Healthy", "PCI Slot 1 : Bus 6 : Device 0 : Adapter 1"),
+            self._phys("Samsung 990 PRO 2TB", "29B7.", "Healthy", "PCI Slot 5 : Bus 9 : Device 0 : Adapter 2"),
+            self._phys("Samsung 970 EVO Plus 2TB", "18B5.", "Healthy", "PCI Slot 9 : Bus 12 : Device 0 : Adapter 3"),
+        ]
+        members = [
+            {"Serial": "20C4.", "Usage": "Retired", "Health": "Healthy"},
+            {"Serial": "29B7.", "Usage": "Auto-Select", "Health": "Healthy"},
+            {"Serial": "18B5.", "Usage": "Auto-Select", "Health": "Healthy"},
+            {"Serial": "9E72.", "Usage": "Auto-Select", "Health": "Healthy"},
+        ]
+        return physical, members
+
+    def test_onboard_split_from_card(self):
+        physical, members = self._machine()
+        topo = disk.build_pcie_card_topology(physical, members)
+        assert topo["has_card"] is True
+        assert len(topo["onboard"]) == 2
+        assert len(topo["card_drives"]) == 4
+
+    def test_sockets_ordered_by_bus(self):
+        physical, members = self._machine()
+        topo = disk.build_pcie_card_topology(physical, members)
+        sockets = [(d["socket"], d["bus"], d["serial_short"]) for d in topo["card_drives"]]
+        assert sockets == [(1, 6, "20C4"), (2, 9, "29B7"), (3, 12, "18B5"), (4, 15, "9E72")]
+
+    def test_retired_flag_wins_over_healthy_smart(self):
+        """The definitive case: ...20C4 reads Healthy but is pool-Retired -> failed."""
+        physical, members = self._machine()
+        topo = disk.build_pcie_card_topology(physical, members)
+        failed = topo["card_drives"][0]
+        assert failed["serial_short"] == "20C4"
+        assert failed["retired"] is True
+        assert failed["flag"] == "retired"
+        assert topo["failed_serial_short"] == "20C4"
+        # the healthy siblings are not flagged
+        assert all(d["flag"] == "ok" for d in topo["card_drives"][1:])
+
+    def test_unhealthy_flag_without_pool(self):
+        physical = [self._phys("Some NVMe 2TB", "DEAD.", "Unhealthy", "PCI Slot 1 : Bus 6 : Device 0 : Adapter 1")]
+        topo = disk.build_pcie_card_topology(physical, members=[])
+        assert topo["card_drives"][0]["flag"] == "unhealthy"
+        assert topo["failed_serial_short"] == "DEAD"
+
+    def test_no_card_all_onboard(self):
+        physical = [self._phys("Boot 1TB", "AAAA.", "Healthy", "Integrated : Bus 0 : Device 14")]
+        topo = disk.build_pcie_card_topology(physical, members=[])
+        assert topo["has_card"] is False
+        assert topo["card_drives"] == []
+        assert len(topo["onboard"]) == 1
+
+    def test_empty_input_safe(self):
+        topo = disk.build_pcie_card_topology([], [])
+        assert topo["has_card"] is False
+        assert topo["failed_serial"] == ""
+        assert topo["note"]
+
+    def test_note_says_verify_by_serial(self):
+        physical, members = self._machine()
+        topo = disk.build_pcie_card_topology(physical, members)
+        assert "serial" in topo["note"].lower()
+
+
 class TestGetStorageSpaces:
     def _mock(self, mocker, payload, returncode=0):
         m = mocker.patch("disk.subprocess.run")

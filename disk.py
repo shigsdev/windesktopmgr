@@ -401,6 +401,75 @@ def describe_disk_location(location: str, bus_type: str = "") -> dict:
     return {"slot": slot, "bus": bus, "integrated": integrated, "raw": raw, "hint": hint}
 
 
+def build_pcie_card_topology(physical: list[dict], members: list[dict] | None = None) -> dict:
+    """Group physical disks into add-in-card sockets vs onboard M.2 so the
+    Storage tab can draw a physical card view that highlights a failed/retired
+    drive during a hardware swap.
+
+    Pure function over already-collected data (``get_disk_health()['physical']``
+    plus ``get_storage_spaces()['members']``) — no PowerShell here.
+
+    Add-in-card drives (``LocationInfo.integrated`` False, bus known) are sorted
+    by PCIe bus, which increases with socket order on a bifurcation/switch card,
+    so the lowest-bus drive is socket 1 (usually nearest the bracket). Each entry
+    carries the drive SERIAL as the foolproof physical anchor plus a ``flag``:
+    ``retired`` (dropped from a Storage Spaces pool — the definitive "this is the
+    dead one" marker, even when SMART still reads Healthy) beats ``unhealthy``
+    (HealthStatus != Healthy) beats ``ok``.
+    """
+    members = members or []
+    usage_by_serial: dict[str, str] = {}
+    for m in members:
+        key = _normalize_serial(m.get("Serial", ""))
+        if key:
+            usage_by_serial[key] = str(m.get("Usage", "")).strip()
+
+    onboard: list[dict] = []
+    card: list[dict] = []
+    for p in physical:
+        loc = p.get("LocationInfo") or {}
+        serial = str(p.get("SerialNumber", "")).strip()
+        usage = usage_by_serial.get(_normalize_serial(serial), "")
+        health = str(p.get("Health", "")).strip()
+        retired = usage.lower() == "retired"
+        unhealthy = bool(health) and health.lower() != "healthy"
+        entry = {
+            "model": p.get("Name", ""),
+            "size_gb": p.get("SizeGB"),
+            "serial": serial,
+            "serial_short": serial.replace(".", "").strip()[-4:] if serial else "",
+            "health": health or "Unknown",
+            "usage": usage,
+            "retired": retired,
+            "flag": "retired" if retired else ("unhealthy" if unhealthy else "ok"),
+            "slot": loc.get("slot", ""),
+            "bus": loc.get("bus"),
+        }
+        if loc.get("integrated"):
+            onboard.append(entry)
+        else:
+            card.append(entry)
+
+    # PCIe bus increases with socket order; unknown-bus drives sort last.
+    card.sort(key=lambda e: (e["bus"] is None, e["bus"] if e["bus"] is not None else 0))
+    for i, e in enumerate(card):
+        e["socket"] = i + 1
+
+    failed = next((e for e in card if e["flag"] != "ok"), None) or next((e for e in onboard if e["flag"] != "ok"), None)
+    return {
+        "has_card": len(card) > 0,
+        "card_drives": card,
+        "onboard": onboard,
+        "failed_serial": failed["serial"] if failed else "",
+        "failed_serial_short": failed["serial_short"] if failed else "",
+        "note": (
+            "Socket order follows the PCIe bus / switch-port order; the silk-screen "
+            "numbering on your card may run the other way. Always confirm the drive by "
+            "the serial printed on its label before removing it."
+        ),
+    }
+
+
 def get_storage_spaces() -> dict:
     """Windows Storage Spaces health — pools, virtual disks, member drives, and
     repair jobs. Powers the Storage tab's pool view and the dashboard
@@ -1399,6 +1468,18 @@ def storage_nas_route():
     import nas
 
     return jsonify(nas.get_nas_storage(wait=True))
+
+
+@disk_bp.route("/api/storage/pcie-topology")
+def storage_pcie_topology_route():
+    """Physical layout for a drive swap: add-in-card sockets vs onboard M.2,
+    with the failed/retired drive flagged. Correlates Get-PhysicalDisk health
+    with Storage Spaces Usage so a pool-retired disk is caught even when SMART
+    still reads Healthy. Powers the Storage tab's physical card diagram."""
+    health = get_disk_health()
+    spaces = get_storage_spaces()
+    topo = build_pcie_card_topology(health.get("physical", []), spaces.get("members", []))
+    return jsonify({"ok": True, **topo})
 
 
 def _invalidate_dashboard_cache() -> None:
