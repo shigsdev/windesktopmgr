@@ -1045,6 +1045,7 @@ async function loadDisk() {
     document.getElementById('dk-tbody').innerHTML = physRows || '<tr><td colspan="8" style="padding:24px;text-align:center;color:var(--muted)">No disk info available</td></tr>';
     dkLoadSpaces();
     dkLoadNas();
+    dkLoadTopology();
     fetchSummary('disk', d, 'summary-disk');
     document.getElementById('dk-loading').style.display = 'none';
     document.getElementById('dk-content').style.display = '';
@@ -1095,6 +1096,106 @@ async function dkLoadSpaces() {
     document.getElementById('dk-spaces').innerHTML = html;
     sec.style.display = '';
   } catch(e) { console.error('Failed to load storage spaces:', e); }
+}
+
+// Physical card view (dk = Storage tab). Draws the add-in PCIe M.2 card's
+// sockets top-to-bottom in PCIe-bus (switch-port) order, highlighting a
+// failed/retired drive for a hardware swap, and lists the onboard M.2 drives
+// as "do not touch". Built with DOM APIs + textContent (no innerHTML) so the
+// live drive model/serial strings can't inject markup. Shown only when the
+// machine actually has an add-in card (has_card).
+async function dkLoadTopology() {
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  const sec = document.getElementById('dk-card-section');
+  const host = document.getElementById('dk-card');
+  if (!sec || !host) return;
+  try {
+    const r = await fetch('/api/storage/pcie-topology');
+    const t = await r.json();
+    if (!t || !t.ok || !t.has_card) { sec.style.display = 'none'; return; }
+    while (host.firstChild) host.removeChild(host.firstChild);
+
+    const flagColor = f => f === 'retired' ? '#ff4d4f' : (f === 'unhealthy' ? '#ffd740' : '#8b949e');
+    const drives = t.card_drives || [];
+    const rowH = 72, top = 58, W = 700, H = top + drives.length * rowH + 16;
+    const svg = document.createElementNS(SVGNS, 'svg');
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    svg.setAttribute('width', '100%');
+    const rect = (x, y, w, h, o = {}) => {
+      const e = document.createElementNS(SVGNS, 'rect');
+      e.setAttribute('x', x); e.setAttribute('y', y); e.setAttribute('width', w); e.setAttribute('height', h);
+      e.setAttribute('rx', o.rx || 6);
+      if (o.fill) e.setAttribute('fill', o.fill);
+      if (o.stroke) { e.setAttribute('stroke', o.stroke); e.setAttribute('stroke-width', o.sw || 1.5); }
+      svg.appendChild(e); return e;
+    };
+    const text = (x, y, s, o = {}) => {
+      const e = document.createElementNS(SVGNS, 'text');
+      e.setAttribute('x', x); e.setAttribute('y', y);
+      e.setAttribute('fill', o.fill || '#e6edf3'); e.setAttribute('font-size', o.size || 13);
+      if (o.weight) e.setAttribute('font-weight', o.weight);
+      if (o.mono) e.setAttribute('font-family', 'ui-monospace,Consolas,monospace');
+      e.textContent = s; svg.appendChild(e); return e;
+    };
+    // card PCB + bracket
+    rect(60, 20, W - 80, H - 30, {rx: 10, fill: '#11161d', stroke: '#30363d', sw: 2});
+    rect(34, 12, 26, H - 14, {rx: 4, fill: '#1c2530', stroke: '#30363d'});
+    text(48, 40, 'PCIe M.2 carrier card', {fill: '#8b949e', size: 12});
+    drives.forEach((d, i) => {
+      const y = top + i * rowH;
+      const failed = d.flag !== 'ok';
+      rect(80, y, W - 110, rowH - 12, failed ? {fill: '#2d1416', stroke: '#ff4d4f', sw: 2.5} : {fill: '#0d1117', stroke: '#30363d'});
+      const c = flagColor(d.flag);
+      const slotTxt = d.slot ? ` · ${d.slot}` : '';
+      const busTxt = (d.bus !== null && d.bus !== undefined) ? ` · bus ${d.bus}` : '';
+      const tag = failed ? (d.retired ? '✖ RETIRED — REMOVE THIS ONE' : '⚠ unhealthy — check this drive') : '✓ healthy';
+      text(96, y + 23, `Socket ${d.socket}${slotTxt}${busTxt}    ${tag}`, {fill: c, size: 12, mono: true, weight: '700'});
+      text(96, y + 43, `${d.model || ''}${d.size_gb ? ' · ' + Math.round(d.size_gb) + ' GB' : ''}`, {size: 13});
+      // Full serial is the foolproof anchor — show it in full, not just last-4.
+      text(96, y + 61, `serial ${d.serial || ('…' + (d.serial_short || '????'))}`, {fill: c, size: 12, mono: true, weight: failed ? '700' : '400'});
+    });
+    host.appendChild(svg);
+
+    const note = document.createElement('div');
+    note.style.cssText = 'font-size:11px;color:var(--muted);margin-top:6px';
+    note.textContent = t.note || '';
+    host.appendChild(note);
+
+    // Drives that dropped off the bus entirely (dead / already pulled) but are
+    // still known to a pool — the real swap scenario. Show them so the view
+    // never looks all-healthy while a drive is actually gone.
+    if ((t.missing || []).length) {
+      const mv = document.createElement('div');
+      mv.style.cssText = 'font-size:12px;color:#ff4d4f;margin-top:10px;font-weight:700';
+      mv.textContent = 'Dropped / not detected (pool member no longer visible to Windows):';
+      host.appendChild(mv);
+      t.missing.forEach(d => {
+        const line = document.createElement('div');
+        line.style.cssText = 'font-size:12px;color:#ff4d4f';
+        line.textContent = `✖ ${d.model || ''} · serial ${d.serial || ('…' + (d.serial_short || '????'))} · ${d.usage || 'dropped'}`;
+        host.appendChild(line);
+      });
+    }
+
+    if ((t.onboard || []).length) {
+      const ob = document.createElement('div');
+      ob.style.cssText = 'font-size:12px;color:var(--muted);margin-top:10px';
+      const h = document.createElement('div');
+      h.style.cssText = 'font-weight:700;margin-bottom:2px';
+      h.textContent = 'Not on the card (motherboard M.2 / SATA — do not remove for this swap):';
+      ob.appendChild(h);
+      t.onboard.forEach(d => {
+        const bad = d.flag && d.flag !== 'ok';
+        const line = document.createElement('div');
+        if (bad) line.style.cssText = 'color:#ff4d4f;font-weight:700';
+        const tag = bad ? (d.retired ? '  ✖ RETIRED — but this one is NOT on the card' : '  ⚠ unhealthy — NOT on the card') : '';
+        line.textContent = `• ${d.model || ''} · serial ${d.serial || ('…' + (d.serial_short || '????'))}${tag}`;
+        ob.appendChild(line);
+      });
+      host.appendChild(ob);
+    }
+    sec.style.display = '';
+  } catch (e) { console.error('Failed to load PCIe topology:', e); sec.style.display = 'none'; }
 }
 
 // NAS storage (QNAP over SNMP). Rendered only when nas_config.json is filled in

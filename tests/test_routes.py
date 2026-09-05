@@ -3115,6 +3115,46 @@ class TestStorageNasRoute:
         assert r.get_json()["configured"] == 0
 
 
+class TestStoragePcieTopologyRoute:
+    """/api/storage/pcie-topology — physical card view for a drive swap."""
+
+    def test_flags_retired_card_drive(self, client, mocker):
+        mocker.patch(
+            "disk.get_disk_health",
+            return_value={
+                "physical": [
+                    {
+                        "Name": "Samsung 990 PRO 2TB",
+                        "SerialNumber": "0025_384C_3145_20C4.",
+                        "Health": "Healthy",
+                        "SizeGB": 1863.0,
+                        "LocationInfo": {"slot": "PCI Slot 1", "bus": 6, "integrated": False},
+                    }
+                ]
+            },
+        )
+        mocker.patch(
+            "disk.get_storage_spaces",
+            return_value={"members": [{"Serial": "0025_384C_3145_20C4.", "Usage": "Retired", "Health": "Healthy"}]},
+        )
+        r = client.get("/api/storage/pcie-topology")
+        assert r.status_code == 200
+        d = r.get_json()
+        assert d["ok"] is True
+        assert d["has_card"] is True
+        assert d["card_drives"][0]["flag"] == "retired"
+        assert d["failed_serial_short"] == "20C4"
+
+    def test_empty_shape(self, client, mocker):
+        mocker.patch("disk.get_disk_health", return_value={"physical": []})
+        mocker.patch("disk.get_storage_spaces", return_value={"members": []})
+        r = client.get("/api/storage/pcie-topology")
+        assert r.status_code == 200
+        d = r.get_json()
+        assert d["ok"] is True
+        assert d["has_card"] is False
+
+
 class TestDiskSnoozeRoute:
     """/api/disk/snooze — pause/resume health alerts for one drive by serial."""
 
