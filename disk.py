@@ -48,6 +48,14 @@ def _normalize_serial(serial: str) -> str:
     return re.sub(r"[^a-z0-9]", "", str(serial or "").lower())
 
 
+def _short_serial(serial: str) -> str:
+    """Last 4 alphanumerics of a serial, uppercased — a compact but unambiguous
+    label for the physical card view (e.g. '20C4'). Strips the trailing '.' and
+    underscores Get-PhysicalDisk adds so the suffix is always real serial chars."""
+    clean = re.sub(r"[^A-Za-z0-9]", "", str(serial or ""))
+    return clean[-4:].upper()
+
+
 def _load_disk_snoozes() -> dict:
     """Return ``{serial_key: expiry_iso}`` with expired entries dropped."""
     with _disk_snooze_lock:
@@ -409,13 +417,17 @@ def build_pcie_card_topology(physical: list[dict], members: list[dict] | None = 
     Pure function over already-collected data (``get_disk_health()['physical']``
     plus ``get_storage_spaces()['members']``) — no PowerShell here.
 
-    Add-in-card drives (``LocationInfo.integrated`` False, bus known) are sorted
-    by PCIe bus, which increases with socket order on a bifurcation/switch card,
-    so the lowest-bus drive is socket 1 (usually nearest the bracket). Each entry
-    carries the drive SERIAL as the foolproof physical anchor plus a ``flag``:
-    ``retired`` (dropped from a Storage Spaces pool — the definitive "this is the
-    dead one" marker, even when SMART still reads Healthy) beats ``unhealthy``
-    (HealthStatus != Healthy) beats ``ok``.
+    A drive is an add-in-card socket ONLY when Windows reports a real "PCI Slot"
+    location; integrated M.2 / SATA / USB / unknown-location drives go to
+    ``onboard`` ("not on the card") so a non-card drive is never drawn as a
+    socket that doesn't exist. Card drives are sorted by PCIe bus, which
+    increases with socket order on a bifurcation/switch card, so the lowest-bus
+    drive is socket 1 (usually nearest the bracket). Each entry carries the drive
+    SERIAL as the foolproof physical anchor plus a ``flag``: ``retired`` (dropped
+    from a Storage Spaces pool — the definitive "dead one" marker even when SMART
+    still reads Healthy) beats ``unhealthy`` (HealthStatus != Healthy) beats
+    ``ok``. Pool members with no matching physical disk (fully dropped off the
+    bus) are returned in ``missing``.
     """
     members = members or []
     usage_by_serial: dict[str, str] = {}
@@ -426,46 +438,79 @@ def build_pcie_card_topology(physical: list[dict], members: list[dict] | None = 
 
     onboard: list[dict] = []
     card: list[dict] = []
+    seen_serials: set[str] = set()
     for p in physical:
         loc = p.get("LocationInfo") or {}
         serial = str(p.get("SerialNumber", "")).strip()
-        usage = usage_by_serial.get(_normalize_serial(serial), "")
+        norm = _normalize_serial(serial)
+        if norm:
+            seen_serials.add(norm)
+        usage = usage_by_serial.get(norm, "")
         health = str(p.get("Health", "")).strip()
         retired = usage.lower() == "retired"
         unhealthy = bool(health) and health.lower() != "healthy"
+        slot = str(loc.get("slot", ""))
         entry = {
             "model": p.get("Name", ""),
             "size_gb": p.get("SizeGB"),
-            "serial": serial,
-            "serial_short": serial.replace(".", "").strip()[-4:] if serial else "",
+            "serial": serial.rstrip("."),
+            "serial_short": _short_serial(serial),
             "health": health or "Unknown",
             "usage": usage,
             "retired": retired,
             "flag": "retired" if retired else ("unhealthy" if unhealthy else "ok"),
-            "slot": loc.get("slot", ""),
+            "slot": slot,
             "bus": loc.get("bus"),
         }
-        if loc.get("integrated"):
-            onboard.append(entry)
-        else:
+        # A drive is on the add-in card only if Windows reports a real "PCI Slot"
+        # location. Everything else — integrated M.2, SATA, USB, or a drive whose
+        # location Windows leaves blank — is NOT on the card, so it must never be
+        # drawn as a card socket (that would send the user to a socket that does
+        # not exist during a swap).
+        if slot.lower().startswith("pci slot"):
             card.append(entry)
+        else:
+            onboard.append(entry)
 
     # PCIe bus increases with socket order; unknown-bus drives sort last.
     card.sort(key=lambda e: (e["bus"] is None, e["bus"] if e["bus"] is not None else 0))
     for i, e in enumerate(card):
         e["socket"] = i + 1
 
-    failed = next((e for e in card if e["flag"] != "ok"), None) or next((e for e in onboard if e["flag"] != "ok"), None)
+    # Pool members with no matching physical disk have fully dropped off the bus
+    # (dead or already pulled) — the exact swap scenario. Surface them explicitly
+    # so the view never shows all-healthy while a drive is actually gone.
+    missing: list[dict] = []
+    for m in members:
+        norm = _normalize_serial(m.get("Serial", ""))
+        if norm and norm not in seen_serials:
+            s = str(m.get("Serial", "")).strip()
+            missing.append(
+                {
+                    "model": m.get("Name", ""),
+                    "serial": s.rstrip("."),
+                    "serial_short": _short_serial(s),
+                    "usage": str(m.get("Usage", "")).strip(),
+                    "flag": "missing",
+                }
+            )
+
+    failed = (
+        next((e for e in card if e["flag"] != "ok"), None)
+        or next((e for e in onboard if e["flag"] != "ok"), None)
+        or (missing[0] if missing else None)
+    )
     return {
         "has_card": len(card) > 0,
         "card_drives": card,
         "onboard": onboard,
+        "missing": missing,
         "failed_serial": failed["serial"] if failed else "",
         "failed_serial_short": failed["serial_short"] if failed else "",
         "note": (
             "Socket order follows the PCIe bus / switch-port order; the silk-screen "
             "numbering on your card may run the other way. Always confirm the drive by "
-            "the serial printed on its label before removing it."
+            "the full serial printed on its label before removing it."
         ),
     }
 

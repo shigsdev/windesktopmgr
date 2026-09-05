@@ -1148,10 +1148,11 @@ async function dkLoadTopology() {
       const c = flagColor(d.flag);
       const slotTxt = d.slot ? ` · ${d.slot}` : '';
       const busTxt = (d.bus !== null && d.bus !== undefined) ? ` · bus ${d.bus}` : '';
-      text(96, y + 23, `Socket ${d.socket}${slotTxt}${busTxt}`, {fill: c, size: 12, mono: true, weight: '700'});
-      text(96, y + 43, `${d.model || ''}${d.size_gb ? ' · ' + Math.round(d.size_gb) + ' GB' : ''}`, {size: 13});
       const tag = failed ? (d.retired ? '✖ RETIRED — REMOVE THIS ONE' : '⚠ unhealthy — check this drive') : '✓ healthy';
-      text(96, y + 61, `serial …${d.serial_short || '????'}    ${tag}`, {fill: c, size: 12, mono: true, weight: failed ? '700' : '400'});
+      text(96, y + 23, `Socket ${d.socket}${slotTxt}${busTxt}    ${tag}`, {fill: c, size: 12, mono: true, weight: '700'});
+      text(96, y + 43, `${d.model || ''}${d.size_gb ? ' · ' + Math.round(d.size_gb) + ' GB' : ''}`, {size: 13});
+      // Full serial is the foolproof anchor — show it in full, not just last-4.
+      text(96, y + 61, `serial ${d.serial || ('…' + (d.serial_short || '????'))}`, {fill: c, size: 12, mono: true, weight: failed ? '700' : '400'});
     });
     host.appendChild(svg);
 
@@ -1160,16 +1161,35 @@ async function dkLoadTopology() {
     note.textContent = t.note || '';
     host.appendChild(note);
 
+    // Drives that dropped off the bus entirely (dead / already pulled) but are
+    // still known to a pool — the real swap scenario. Show them so the view
+    // never looks all-healthy while a drive is actually gone.
+    if ((t.missing || []).length) {
+      const mv = document.createElement('div');
+      mv.style.cssText = 'font-size:12px;color:#ff4d4f;margin-top:10px;font-weight:700';
+      mv.textContent = 'Dropped / not detected (pool member no longer visible to Windows):';
+      host.appendChild(mv);
+      t.missing.forEach(d => {
+        const line = document.createElement('div');
+        line.style.cssText = 'font-size:12px;color:#ff4d4f';
+        line.textContent = `✖ ${d.model || ''} · serial ${d.serial || ('…' + (d.serial_short || '????'))} · ${d.usage || 'dropped'}`;
+        host.appendChild(line);
+      });
+    }
+
     if ((t.onboard || []).length) {
       const ob = document.createElement('div');
       ob.style.cssText = 'font-size:12px;color:var(--muted);margin-top:10px';
       const h = document.createElement('div');
       h.style.cssText = 'font-weight:700;margin-bottom:2px';
-      h.textContent = 'On the motherboard — not on the card (do not remove):';
+      h.textContent = 'Not on the card (motherboard M.2 / SATA — do not remove for this swap):';
       ob.appendChild(h);
       t.onboard.forEach(d => {
+        const bad = d.flag && d.flag !== 'ok';
         const line = document.createElement('div');
-        line.textContent = `• ${d.model || ''} · serial …${d.serial_short || '????'}`;
+        if (bad) line.style.cssText = 'color:#ff4d4f;font-weight:700';
+        const tag = bad ? (d.retired ? '  ✖ RETIRED — but this one is NOT on the card' : '  ⚠ unhealthy — NOT on the card') : '';
+        line.textContent = `• ${d.model || ''} · serial ${d.serial || ('…' + (d.serial_short || '????'))}${tag}`;
         ob.appendChild(line);
       });
       host.appendChild(ob);
