@@ -1731,6 +1731,89 @@ class TestBuildPcieCardTopology:
         assert d["serial"] == "0025_384C_3145_20C4"  # full serial, trailing '.' stripped
 
 
+class TestDetectPcieSwitch:
+    """Name the add-in card by its PCIe switch chip, read from the NVMe
+    controllers' shared parent bridge."""
+
+    def test_friendly_name_known_chip(self):
+        assert disk._switch_friendly_name("1b21:812b") == "ASMedia ASM2812"
+
+    def test_friendly_name_vendor_only(self):
+        assert disk._switch_friendly_name("10b5:9999") == "Broadcom/PLX PCIe switch"
+
+    def test_friendly_name_unknown_vendor(self):
+        assert disk._switch_friendly_name("abcd:1234") == "PCIe switch"
+
+    def test_friendly_name_empty(self):
+        assert disk._switch_friendly_name("") == ""
+
+    def test_pick_ignores_intel_root_ports(self):
+        # Intel (8086) parents are onboard root ports; the ASM2812 switch is
+        # shared by all 4 card drives -> it's the card.
+        parents = [{"ven_dev": "8086:1234", "count": 1}, {"ven_dev": "1b21:812b", "count": 4}]
+        assert disk._pick_card_switch(parents) == {"switch": "ASMedia ASM2812", "ven_dev": "1b21:812b"}
+
+    def test_pick_ignores_amd_root_ports(self):
+        # AMD (1022) root ports must also be excluded so a passive-bifurcation
+        # card on an AMD board isn't mislabeled as switch-based.
+        assert disk._pick_card_switch([{"ven_dev": "1022:43f4", "count": 4}])["switch"] == ""
+
+    def test_pick_requires_shared_parent(self):
+        # a single non-root device (count 1) is not a fan-out switch
+        assert disk._pick_card_switch([{"ven_dev": "1b21:812b", "count": 1}])["switch"] == ""
+
+    def test_pick_empty(self):
+        assert disk._pick_card_switch([])["switch"] == ""
+
+    def test_pick_non_numeric_count_safe(self):
+        assert disk._pick_card_switch([{"ven_dev": "1b21:812b", "count": "oops"}])["switch"] == ""
+
+    def _mock_run(self, mocker, stdout, timeout=False):
+        if timeout:
+            return mocker.patch(
+                "disk.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=30)
+            )
+        m = mocker.patch("disk.subprocess.run")
+        m.return_value.stdout = stdout
+        m.return_value.returncode = 0
+        m.return_value.stderr = ""
+        return m
+
+    def test_detect_parses_ps_output(self, mocker):
+        self._mock_run(mocker, json.dumps([{"ven_dev": "1b21:812b", "count": 4}]))
+        assert disk.detect_pcie_switch()["switch"] == "ASMedia ASM2812"
+
+    def test_detect_single_object_normalized(self, mocker):
+        # ConvertTo-Json emits a bare object (not a list) for a single entry
+        self._mock_run(mocker, json.dumps({"ven_dev": "1b21:812b", "count": 4}))
+        assert disk.detect_pcie_switch()["switch"] == "ASMedia ASM2812"
+
+    def test_detect_empty_output_safe(self, mocker):
+        self._mock_run(mocker, "")
+        assert disk.detect_pcie_switch() == {"switch": "", "ven_dev": ""}
+
+    def test_detect_malformed_json_safe(self, mocker):
+        self._mock_run(mocker, "not json{")
+        assert disk.detect_pcie_switch() == {"switch": "", "ven_dev": ""}
+
+    def test_detect_timeout_safe(self, mocker):
+        self._mock_run(mocker, "", timeout=True)
+        assert disk.detect_pcie_switch() == {"switch": "", "ven_dev": ""}
+
+    def test_detect_nonzero_returncode_safe(self, mocker):
+        # A PS failure (non-zero exit, empty stdout) must degrade to no switch.
+        m = self._mock_run(mocker, "")
+        m.return_value.returncode = 1
+        assert disk.detect_pcie_switch() == {"switch": "", "ven_dev": ""}
+
+    def test_detect_command_queries_parent_and_filters_to_card(self, mocker):
+        m = self._mock_run(mocker, "[]")
+        disk.detect_pcie_switch()
+        cmd = " ".join(m.call_args.args[0])
+        assert "DEVPKEY_Device_Parent" in cmd
+        assert "PCI Slot" in cmd  # only counts add-in-card controllers
+
+
 class TestGetStorageSpaces:
     def _mock(self, mocker, payload, returncode=0):
         m = mocker.patch("disk.subprocess.run")
