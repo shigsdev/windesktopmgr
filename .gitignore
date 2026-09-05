@@ -121,3 +121,6 @@ desktop.ini
 scripts/_probe_dumps/
 backups/
 nas_cache.json
+
+# Elevated pool-repair progress state (runtime only)
+pool_repair_state.json

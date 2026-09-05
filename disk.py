@@ -1603,6 +1603,182 @@ def summarize_disk(data: dict) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# STORAGE POOL REPAIR — replace a retired disk, rebuild parity, drop the old one
+# ══════════════════════════════════════════════════════════════════════════════
+# Drives scripts/repair_storage_pool.ps1 (elevated, because Storage Spaces
+# cmdlets require admin) and polls its JSON state file. The script hard-gates
+# the destructive Remove-PhysicalDisk on a VERIFIED-healthy rebuild — with
+# PhysicalDiskRedundancy=1, removing the old disk mid-rebuild can lose the
+# volume, so a failed/suspended/timed-out repair stops before the removal.
+POOL_REPAIR_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pool_repair_state.json")
+_POOL_REPAIR_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "repair_storage_pool.ps1")
+
+# Pool / virtual-disk / serial strings are read from Windows and re-sanitised
+# before they reach a command line — nothing user-supplied is interpolated.
+_PS_ARG_SAFE = re.compile(r"[^A-Za-z0-9 _.\-]")
+
+
+def _ps_arg(value: str) -> str:
+    return _PS_ARG_SAFE.sub("", str(value or ""))
+
+
+def _launch_elevated_ps(script: str, args: str) -> dict:
+    """Fire-and-forget elevated PowerShell via a UAC prompt. Mirrors the
+    ShellExecuteW('runas') pattern already used in backup.py / lhm.py (a shared
+    util for all four call sites is a known follow-up)."""
+    import ctypes
+
+    params = f'-NoProfile -ExecutionPolicy Bypass -File "{script}" {args}'
+    try:
+        rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", "powershell.exe", params, None, 0)
+    except Exception as e:  # noqa: BLE001 -- ShellExecuteW unavailable -> graceful
+        return {"ok": False, "error": f"ShellExecuteW failed: {type(e).__name__}: {e}"}
+    if rc <= 32:
+        return {"ok": False, "error": f"Elevation declined or failed (rc={rc})."}
+    return {"ok": True}
+
+
+def start_pool_repair(preview: bool = False) -> dict:
+    """Kick off the replace-and-rebuild sequence for the degraded pool.
+
+    Targets are derived from the live Storage Spaces state (never from the
+    request) so the caller can't point this at an arbitrary pool/disk.
+    ``preview=True`` runs the script's plan-only mode and changes nothing.
+    """
+    spaces = get_storage_spaces()
+    pools = spaces.get("pools") or []
+    vds = spaces.get("virtual_disks") or []
+    members = spaces.get("members") or []
+    if not pools or not vds:
+        return {"ok": False, "error": "No Storage Spaces pool / virtual disk found on this machine."}
+
+    pool = _ps_arg(pools[0].get("Name", ""))
+    vdisk = _ps_arg(vds[0].get("Name", ""))
+    retired = [
+        m
+        for m in members
+        if str(m.get("Usage", "")).strip().lower() == "retired"
+        or re.search(r"lost communication|unrecognized|removed", str(m.get("Operational", "")), re.I)
+    ]
+    if not retired:
+        return {"ok": False, "error": "No retired/missing disk in the pool — nothing to replace."}
+    if len(retired) > 1:
+        return {"ok": False, "error": f"{len(retired)} retired/missing disks — resolve manually."}
+    serial = _ps_arg(retired[0].get("Serial", ""))
+
+    if not preview:
+        # Clear any stale state so the UI doesn't poll a previous run's result.
+        try:
+            if os.path.exists(POOL_REPAIR_STATE_FILE):
+                os.remove(POOL_REPAIR_STATE_FILE)
+        except OSError:
+            pass
+
+    args = (
+        f'-PoolName "{pool}" -VirtualDiskName "{vdisk}" -RetiredSerial "{serial}" -StateFile "{POOL_REPAIR_STATE_FILE}"'
+    )
+    if preview:
+        args += " -Preview"
+    launched = _launch_elevated_ps(_POOL_REPAIR_SCRIPT, args)
+    if not launched.get("ok"):
+        return launched
+    return {"ok": True, "started": True, "preview": bool(preview), "pool": pool, "virtual_disk": vdisk}
+
+
+def get_pool_repair_plan() -> dict:
+    """Non-elevated preview: which disk would be added and which retired disk
+    removed. ``Get-PhysicalDisk -CanPool`` needs no admin, so the UI can show a
+    real confirmation before triggering the UAC prompt.
+
+    ``ready`` is True only when there is exactly one retired/missing member AND
+    exactly one poolable replacement — otherwise ``blockers`` explains why.
+    """
+    spaces = get_storage_spaces()
+    pools = spaces.get("pools") or []
+    vds = spaces.get("virtual_disks") or []
+    members = spaces.get("members") or []
+    blockers: list[str] = []
+    if not pools or not vds:
+        return {"ok": True, "ready": False, "blockers": ["No Storage Spaces pool / virtual disk on this machine."]}
+
+    retired = [
+        m
+        for m in members
+        if str(m.get("Usage", "")).strip().lower() == "retired"
+        or re.search(r"lost communication|unrecognized|removed", str(m.get("Operational", "")), re.I)
+    ]
+    if not retired:
+        blockers.append("No retired or missing disk in the pool — nothing to replace.")
+    elif len(retired) > 1:
+        blockers.append(f"{len(retired)} retired/missing disks — resolve manually.")
+
+    ps = (
+        "Get-PhysicalDisk -CanPool $true -ErrorAction SilentlyContinue | ForEach-Object { "
+        '[PSCustomObject]@{ Name=$_.FriendlyName; Serial="$($_.SerialNumber)".Trim(); '
+        "SizeGB=[math]::Round($_.Size/1GB) } } | ConvertTo-Json"
+    )
+    candidates: list[dict] = []
+    try:
+        r = subprocess.run(
+            ["powershell", "-NonInteractive", "-Command", ps],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        raw = json.loads(r.stdout.strip() or "[]")
+        candidates = raw if isinstance(raw, list) else [raw]
+    except Exception as e:  # noqa: BLE001 -- plan is advisory, never fatal
+        blockers.append(f"Could not enumerate replacement disks: {e}")
+
+    if not candidates:
+        blockers.append("No new poolable disk detected — fit the replacement drive (it must be uninitialised).")
+    elif len(candidates) > 1:
+        blockers.append(f"{len(candidates)} poolable disks detected — leave only the replacement unpooled.")
+
+    return {
+        "ok": True,
+        "ready": not blockers,
+        "blockers": blockers,
+        "pool": str(pools[0].get("Name", "")),
+        "virtual_disk": str(vds[0].get("Name", "")),
+        "resiliency": str(vds[0].get("Resiliency", "")),
+        "remove": (
+            {
+                "model": retired[0].get("Name", ""),
+                "serial": str(retired[0].get("Serial", "")).rstrip("."),
+                "usage": retired[0].get("Usage", ""),
+            }
+            if retired
+            else None
+        ),
+        "add": (
+            {
+                "model": candidates[0].get("Name", ""),
+                "serial": str(candidates[0].get("Serial", "")).rstrip("."),
+                "size_gb": candidates[0].get("SizeGB"),
+            }
+            if len(candidates) == 1
+            else None
+        ),
+    }
+
+
+def get_pool_repair_status() -> dict:
+    """Read the elevated script's JSON progress file. ``stage='idle'`` when no
+    run has happened yet."""
+    try:
+        with open(POOL_REPAIR_STATE_FILE, encoding="utf-8") as f:
+            state = json.load(f)
+        if not isinstance(state, dict):
+            raise ValueError("bad state shape")
+        return {"ok": True, **state}
+    except FileNotFoundError:
+        return {"ok": True, "stage": "idle", "done": False, "percent": 0, "message": ""}
+    except Exception as e:  # noqa: BLE001 -- status must never 500 the tab
+        return {"ok": True, "stage": "idle", "done": False, "percent": 0, "message": "", "read_error": str(e)}
+
+
 @disk_bp.route("/api/disk/data")
 def disk_data_route():
     return jsonify(get_disk_health())
@@ -1646,6 +1822,32 @@ def storage_pcie_topology_route():
     else:
         topo["card_switch"] = ""
     return jsonify({"ok": True, **topo})
+
+
+@disk_bp.route("/api/storage/pool-repair", methods=["POST"])
+def storage_pool_repair_route():
+    """Start (or preview) the replace-and-rebuild sequence for the degraded
+    pool. Localhost-only: this triggers a UAC prompt and, on success, an
+    irreversible Remove-PhysicalDisk once the rebuild verifies healthy.
+    Body: ``{"preview": true}`` to plan only."""
+    remote = request.remote_addr or ""
+    if remote not in ("127.0.0.1", "::1", "localhost"):
+        return jsonify({"ok": False, "error": "pool repair is localhost-only"}), 403
+    data = request.get_json(silent=True) or {}
+    return jsonify(start_pool_repair(preview=bool(data.get("preview"))))
+
+
+@disk_bp.route("/api/storage/pool-repair/plan")
+def storage_pool_repair_plan_route():
+    """Non-elevated preview of the replace-and-rebuild plan, so the UI can
+    confirm exactly which disk is added and which removed before any UAC."""
+    return jsonify(get_pool_repair_plan())
+
+
+@disk_bp.route("/api/storage/pool-repair/status")
+def storage_pool_repair_status_route():
+    """Progress of the elevated pool-repair run (stage/percent/message/done)."""
+    return jsonify(get_pool_repair_status())
 
 
 def _invalidate_dashboard_cache() -> None:
