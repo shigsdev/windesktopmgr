@@ -1793,6 +1793,11 @@ class TestDetectPcieSwitch:
         controllers = [{"bus": "oops", "ven_dev": "1b21:812b"}, {"bus": None, "ven_dev": "1b21:812b"}]
         assert disk._pick_card_switch_from_controllers(controllers, card_buses={6, 9})["switch"] == ""
 
+    def test_pick_no_correlation_counts_all(self):
+        # card_buses=None (no bus filter) counts every non-root-port controller.
+        controllers = [{"bus": 6, "ven_dev": "1b21:812b"}, {"bus": 9, "ven_dev": "1b21:812b"}]
+        assert disk._pick_card_switch_from_controllers(controllers, card_buses=None)["switch"] == "ASMedia ASM2812"
+
     def _mock_run(self, mocker, stdout, timeout=False):
         if timeout:
             return mocker.patch(
@@ -1840,6 +1845,11 @@ class TestDetectPcieSwitch:
         cmd = " ".join(m.call_args.args[0])
         assert "DEVPKEY_Device_Parent" in cmd
         assert "DEVPKEY_Device_LocationInfo" in cmd  # reads the controller's bus for correlation
+
+    def test_detect_all_none_buses_safe(self, mocker):
+        # card drives with no parseable bus -> empty bus set -> nothing counted.
+        self._mock_run(mocker, self._rows())
+        assert disk.detect_pcie_switch(card_buses=[None]) == {"switch": "", "ven_dev": ""}
 
 
 class TestGetStorageSpaces:
