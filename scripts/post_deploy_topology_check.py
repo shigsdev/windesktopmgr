@@ -40,6 +40,15 @@ from collections.abc import Callable
 
 DEFAULT_HOST = "http://localhost:5000"
 
+# Per-call HTTP timeouts (seconds).
+# Most endpoints return cached/shape-only data and answer well under a
+# second. /api/homenet/topology is the exception: it kicks off a live
+# network scan of the home network that legitimately takes ~12s on real
+# hardware. The old flat 10s budget false-failed the gate on a healthy-
+# but-slow topology fetch, so topology checks get a wider budget.
+DEFAULT_TIMEOUT = 10
+TOPOLOGY_TIMEOUT = 30
+
 GREEN = "\033[92m"
 RED = "\033[91m"
 YELLOW = "\033[93m"
@@ -48,9 +57,9 @@ BOLD = "\033[1m"
 RESET = "\033[0m"
 
 
-def _get(host: str, path: str) -> dict | None:
+def _get(host: str, path: str, timeout: float = DEFAULT_TIMEOUT) -> dict | None:
     try:
-        with urllib.request.urlopen(host + path, timeout=10) as resp:  # noqa: S310
+        with urllib.request.urlopen(host + path, timeout=timeout) as resp:  # noqa: S310
             return json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ConnectionResetError) as e:
         return {"_fetch_error": str(e)}
@@ -61,7 +70,7 @@ def _get(host: str, path: str) -> dict | None:
 
 def check_topology_basics(host: str) -> str | None:
     """Topology API must return ok=True with the renderer-required keys."""
-    t = _get(host, "/api/homenet/topology")
+    t = _get(host, "/api/homenet/topology", timeout=TOPOLOGY_TIMEOUT)
     if t is None or "_fetch_error" in t:
         return f"topology fetch failed: {t.get('_fetch_error') if t else 'no response'}"
     if not t.get("ok"):
@@ -77,7 +86,7 @@ def check_moca_bridge_count_matches_strict_vendors(host: str) -> str | None:
     set by the user, OR (b) have a vendor in the strict ETHERNET_MOCA_BRIDGE
     list. Catches the 2026-05-12 regression where Commscope/Arris STBs
     spawned phantom bridge columns."""
-    t = _get(host, "/api/homenet/topology")
+    t = _get(host, "/api/homenet/topology", timeout=TOPOLOGY_TIMEOUT)
     if not t or not t.get("ok"):
         return None  # covered by check_topology_basics
     devices = t.get("devices", {})
@@ -131,7 +140,7 @@ def check_dashboard_concerns_well_formed(host: str) -> str | None:
 def check_no_self_referential_classifier_loop(host: str) -> str | None:
     """A device must not appear in both moca_bridges AND moca_children of
     itself. Sanity check on the classifier."""
-    t = _get(host, "/api/homenet/topology")
+    t = _get(host, "/api/homenet/topology", timeout=TOPOLOGY_TIMEOUT)
     if not t or not t.get("ok"):
         return None
     bridges = set(t.get("moca_bridges", []))
@@ -150,7 +159,7 @@ def check_orbi_satellite_visibility(host: str) -> str | None:
     aps list, surface the firmware-quirk explanation. Not a failure --
     just a visible warning so the operator knows this hasn't been
     silently regressed."""
-    t = _get(host, "/api/homenet/topology")
+    t = _get(host, "/api/homenet/topology", timeout=TOPOLOGY_TIMEOUT)
     if not t or not t.get("ok"):
         return None
     aps = t.get("aps") or []
@@ -170,7 +179,7 @@ def check_no_phantom_actiontec_blink_bridges(host: str) -> str | None:
     """The Blink Sync Module uses an Actiontec OUI; if it ever returns as
     a MoCA bridge that's a regression of PR #29's hostname-negative-match
     guard."""
-    t = _get(host, "/api/homenet/topology")
+    t = _get(host, "/api/homenet/topology", timeout=TOPOLOGY_TIMEOUT)
     if not t or not t.get("ok"):
         return None
     devices = t.get("devices", {})

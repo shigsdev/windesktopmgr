@@ -44,7 +44,7 @@ class TestCheckMocaBridgeStrictVendors:
                 "00:03:7F:11:22:33": {"vendor": "Actiontec Electronics"},
             }
         )
-        monkeypatch.setattr(checker, "_get", lambda host, path: topo)
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: topo)
         assert checker.check_moca_bridge_count_matches_strict_vendors("http://x") is None
 
     def test_returns_none_when_user_attested(self, monkeypatch):
@@ -54,7 +54,7 @@ class TestCheckMocaBridgeStrictVendors:
                 "B0:5D:D4:76:2A:C0": {"vendor": "Commscope", "wired_via": "moca_bridge"},
             }
         )
-        monkeypatch.setattr(checker, "_get", lambda host, path: topo)
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: topo)
         assert checker.check_moca_bridge_count_matches_strict_vendors("http://x") is None
 
     def test_fails_when_phantom_commscope_appears(self, monkeypatch):
@@ -64,7 +64,7 @@ class TestCheckMocaBridgeStrictVendors:
                 "B0:5D:D4:76:2A:C0": {"vendor": "Commscope", "wired_via": ""},
             }
         )
-        monkeypatch.setattr(checker, "_get", lambda host, path: topo)
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: topo)
         result = checker.check_moca_bridge_count_matches_strict_vendors("http://x")
         assert result is not None
         assert "Commscope" in result
@@ -77,7 +77,7 @@ class TestCheckNoSelfReferentialLoop:
             "moca_bridges": ["AA:AA:AA:AA:AA:AA"],
             "moca_children": {"AA:AA:AA:AA:AA:AA": ["CC:CC:CC:CC:CC:CC"]},
         }
-        monkeypatch.setattr(checker, "_get", lambda host, path: topo)
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: topo)
         assert checker.check_no_self_referential_classifier_loop("http://x") is None
 
     def test_fails_when_bridge_is_its_own_child(self, monkeypatch):
@@ -86,7 +86,7 @@ class TestCheckNoSelfReferentialLoop:
             "moca_bridges": ["AA:AA:AA:AA:AA:AA"],
             "moca_children": {"AA:AA:AA:AA:AA:AA": ["AA:AA:AA:AA:AA:AA"]},
         }
-        monkeypatch.setattr(checker, "_get", lambda host, path: topo)
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: topo)
         result = checker.check_no_self_referential_classifier_loop("http://x")
         assert result is not None
         assert "classifier loop" in result
@@ -99,7 +99,7 @@ class TestCheckNoSelfReferentialLoop:
             "moca_bridges": ["AA:AA:AA:AA:AA:AA", "BB:BB:BB:BB:BB:BB"],
             "moca_children": {"AA:AA:AA:AA:AA:AA": ["BB:BB:BB:BB:BB:BB"]},
         }
-        monkeypatch.setattr(checker, "_get", lambda host, path: topo)
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: topo)
         result = checker.check_no_self_referential_classifier_loop("http://x")
         assert result is not None
         assert "both a bridge" in result
@@ -115,7 +115,7 @@ class TestCheckNoPhantomBlinkBridges:
             "moca_bridges": ["88:DE:7C:C2:57:36"],
             "devices": {"88:DE:7C:C2:57:36": {"vendor": "ASKEY", "dns_hostname": ""}},
         }
-        monkeypatch.setattr(checker, "_get", lambda host, path: topo)
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: topo)
         assert checker.check_no_phantom_actiontec_blink_bridges("http://x") is None
 
     def test_fails_when_blink_appears_as_bridge(self, monkeypatch):
@@ -129,7 +129,7 @@ class TestCheckNoPhantomBlinkBridges:
                 }
             },
         }
-        monkeypatch.setattr(checker, "_get", lambda host, path: topo)
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: topo)
         result = checker.check_no_phantom_actiontec_blink_bridges("http://x")
         assert result is not None
         assert "blink-sync" in result.lower() or "blink" in result.lower()
@@ -143,11 +143,11 @@ class TestCheckDashboardConcernsWellFormed:
                 {"level": "warning", "title": "Z", "detail": "W"},
             ]
         }
-        monkeypatch.setattr(checker, "_get", lambda host, path: data)
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: data)
         assert checker.check_dashboard_concerns_well_formed("http://x") is None
 
     def test_passes_when_no_concerns(self, monkeypatch):
-        monkeypatch.setattr(checker, "_get", lambda host, path: {"concerns": []})
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: {"concerns": []})
         assert checker.check_dashboard_concerns_well_formed("http://x") is None
 
     def test_fails_when_concern_missing_required_key(self, monkeypatch):
@@ -156,7 +156,7 @@ class TestCheckDashboardConcernsWellFormed:
                 {"level": "info", "title": "X"},  # missing 'detail'
             ]
         }
-        monkeypatch.setattr(checker, "_get", lambda host, path: data)
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: data)
         result = checker.check_dashboard_concerns_well_formed("http://x")
         assert result is not None
         assert "detail" in result
@@ -169,7 +169,7 @@ class TestCheckInventoryLoadNotFailed:
         monkeypatch.setattr(
             checker,
             "_get",
-            lambda host, path: {
+            lambda host, path, timeout=None: {
                 "devices": [{"mac": "AA:BB:CC:DD:EE:FF"}],
                 "last_scan": "2026-05-13T00:00:00",
             },
@@ -177,7 +177,7 @@ class TestCheckInventoryLoadNotFailed:
         assert checker.check_inventory_load_not_failed("http://x") is None
 
     def test_passes_on_first_run_no_scan_yet(self, monkeypatch):
-        monkeypatch.setattr(checker, "_get", lambda host, path: {"devices": [], "last_scan": None})
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: {"devices": [], "last_scan": None})
         assert checker.check_inventory_load_not_failed("http://x") is None
 
     def test_fails_when_scan_recorded_but_devices_empty(self, monkeypatch):
@@ -187,7 +187,7 @@ class TestCheckInventoryLoadNotFailed:
         monkeypatch.setattr(
             checker,
             "_get",
-            lambda host, path: {"devices": [], "last_scan": "2026-05-13T00:00:00"},
+            lambda host, path, timeout=None: {"devices": [], "last_scan": "2026-05-13T00:00:00"},
         )
         result = checker.check_inventory_load_not_failed("http://x")
         assert result is not None
@@ -208,7 +208,7 @@ class TestCheckOrbiSatelliteVisibility:
             ],
             "orbi_mesh_unknown_ap": [],
         }
-        monkeypatch.setattr(checker, "_get", lambda host, path: topo)
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: topo)
         assert checker.check_orbi_satellite_visibility("http://x") is None
 
     def test_no_warn_when_unknown_count_is_small(self, monkeypatch):
@@ -217,7 +217,7 @@ class TestCheckOrbiSatelliteVisibility:
             "aps": [{"id": "ap-base", "is_base": True}],
             "orbi_mesh_unknown_ap": ["MAC1"],  # only 1 -- tolerable
         }
-        monkeypatch.setattr(checker, "_get", lambda host, path: topo)
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: topo)
         assert checker.check_orbi_satellite_visibility("http://x") is None
 
     def test_warns_when_many_clients_unknown_and_only_base(self, monkeypatch):
@@ -227,7 +227,7 @@ class TestCheckOrbiSatelliteVisibility:
             "aps": [{"id": "ap-base", "is_base": True}],
             "orbi_mesh_unknown_ap": [f"M{i}" for i in range(29)],
         }
-        monkeypatch.setattr(checker, "_get", lambda host, path: topo)
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: topo)
         result = checker.check_orbi_satellite_visibility("http://x")
         assert result is not None
         assert "WARN" in result
@@ -254,7 +254,7 @@ class TestCheckNoRecentBiosAuditErrors:
         monkeypatch.setattr(
             checker,
             "_get",
-            lambda host, path: {"history": [{"kind": "baseline", "timestamp": self._now_iso()}]},
+            lambda host, path, timeout=None: {"history": [{"kind": "baseline", "timestamp": self._now_iso()}]},
         )
         assert checker.check_no_recent_bios_audit_errors("http://x") is None
 
@@ -263,7 +263,7 @@ class TestCheckNoRecentBiosAuditErrors:
         monkeypatch.setattr(
             checker,
             "_get",
-            lambda host, path: {
+            lambda host, path, timeout=None: {
                 "history": [
                     {
                         "kind": "error",
@@ -283,7 +283,7 @@ class TestCheckNoRecentBiosAuditErrors:
         monkeypatch.setattr(
             checker,
             "_get",
-            lambda host, path: {
+            lambda host, path, timeout=None: {
                 "history": [
                     {
                         "kind": "error",
@@ -302,7 +302,7 @@ class TestCheckNoRecentBiosAuditErrors:
         monkeypatch.setattr(
             checker,
             "_get",
-            lambda host, path: {
+            lambda host, path, timeout=None: {
                 "history": [
                     {
                         "kind": "error",
@@ -323,7 +323,7 @@ class TestCheckNoRecentBiosAuditErrors:
         monkeypatch.setattr(
             checker,
             "_get",
-            lambda host, path: {
+            lambda host, path, timeout=None: {
                 "history": [
                     {
                         "kind": "error",
@@ -350,13 +350,13 @@ class TestCheckNoRecentBiosAuditErrors:
 
 class TestCheckTopologyBasics:
     def test_fails_when_fetch_errors(self, monkeypatch):
-        monkeypatch.setattr(checker, "_get", lambda host, path: {"_fetch_error": "boom"})
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: {"_fetch_error": "boom"})
         result = checker.check_topology_basics("http://x")
         assert result is not None
         assert "boom" in result
 
     def test_fails_when_ok_false(self, monkeypatch):
-        monkeypatch.setattr(checker, "_get", lambda host, path: {"ok": False})
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: {"ok": False})
         result = checker.check_topology_basics("http://x")
         assert result is not None
         assert "ok=False" in result
@@ -372,10 +372,100 @@ class TestCheckTopologyBasics:
             "moca_children": {},
             "devices": {},
         }
-        monkeypatch.setattr(checker, "_get", lambda host, path: topo)
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: topo)
         result = checker.check_topology_basics("http://x")
         assert result is not None
         assert "stats" in result
+
+
+class TestTopologyFetchTimeout:
+    """Regression guard for the false-fail bug: /api/homenet/topology
+    triggers a ~12s live network scan on real hardware, but the checker's
+    _get() used a flat 10s timeout, so a healthy-but-slow topology fetch
+    reported 'topology fetch failed: timed out' and failed the deploy gate.
+
+    Fix: _get() takes a per-call timeout and topology checks request the
+    wider TOPOLOGY_TIMEOUT budget.
+    """
+
+    def _full_topology(self):
+        return {
+            "ok": True,
+            "router": {},
+            "switches": [],
+            "aps": [],
+            "moca_bridges": [],
+            "moca_children": {},
+            "devices": {},
+            "stats": {},
+        }
+
+    def test_topology_timeout_is_wider_than_default(self):
+        assert checker.TOPOLOGY_TIMEOUT > checker.DEFAULT_TIMEOUT
+
+    def test_topology_basics_requests_extended_timeout(self, monkeypatch):
+        """check_topology_basics must ask _get for the wider budget, not
+        the default that false-failed on a ~12s scan."""
+        calls: list[tuple[str, float | None]] = []
+
+        def spy(host, path, timeout=checker.DEFAULT_TIMEOUT):
+            calls.append((path, timeout))
+            return self._full_topology()
+
+        monkeypatch.setattr(checker, "_get", spy)
+        assert checker.check_topology_basics("http://x") is None
+        assert calls == [("/api/homenet/topology", checker.TOPOLOGY_TIMEOUT)]
+
+    def test_all_topology_checks_use_extended_timeout(self, monkeypatch):
+        """Every check that hits /api/homenet/topology must use the wider
+        budget -- otherwise the sibling checks silently no-op (return None
+        -> PASS) on a slow fetch, turning them into false-passes."""
+        seen: list[float | None] = []
+
+        def spy(host, path, timeout=checker.DEFAULT_TIMEOUT):
+            if path == "/api/homenet/topology":
+                seen.append(timeout)
+            return self._full_topology()
+
+        monkeypatch.setattr(checker, "_get", spy)
+        for _name, fn, _sev in checker.CHECKS:
+            fn("http://x")
+        assert seen, "no check fetched the topology endpoint"
+        assert all(t == checker.TOPOLOGY_TIMEOUT for t in seen), seen
+
+    @staticmethod
+    def _patch_urlopen(monkeypatch, body: bytes):
+        """Stub urllib.request.urlopen and return a dict that captures the
+        timeout it was called with."""
+        captured: dict[str, float] = {}
+
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return body
+
+        def fake_urlopen(url, timeout=None):
+            captured["timeout"] = timeout
+            return _FakeResp()
+
+        monkeypatch.setattr(checker.urllib.request, "urlopen", fake_urlopen)
+        return captured
+
+    def test_get_passes_timeout_through_to_urlopen(self, monkeypatch):
+        """_get must honor its timeout argument (not the old hardcoded 10)."""
+        captured = self._patch_urlopen(monkeypatch, b'{"ok": true}')
+        assert checker._get("http://x", "/api/foo", timeout=30) == {"ok": True}
+        assert captured["timeout"] == 30
+
+    def test_get_defaults_to_default_timeout(self, monkeypatch):
+        captured = self._patch_urlopen(monkeypatch, b"{}")
+        checker._get("http://x", "/api/foo")
+        assert captured["timeout"] == checker.DEFAULT_TIMEOUT
 
 
 class TestCheckNvidiaStatusEndpoint:
@@ -392,16 +482,16 @@ class TestCheckNvidiaStatusEndpoint:
             "UpdateAvailable": False,
             "UpdateSource": "nvidia_api",
         }
-        monkeypatch.setattr(checker, "_get", lambda host, path: data)
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: data)
         assert checker.check_nvidia_status_endpoint("http://x") is None
 
     def test_passes_with_no_nvidia_gpu(self, monkeypatch):
         data = {"ok": True, "has_nvidia": False}
-        monkeypatch.setattr(checker, "_get", lambda host, path: data)
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: data)
         assert checker.check_nvidia_status_endpoint("http://x") is None
 
     def test_fails_on_fetch_error(self, monkeypatch):
-        monkeypatch.setattr(checker, "_get", lambda host, path: {"_fetch_error": "404"})
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: {"_fetch_error": "404"})
         result = checker.check_nvidia_status_endpoint("http://x")
         assert result is not None
         assert "fetch failed" in result
@@ -415,7 +505,7 @@ class TestCheckNvidiaStatusEndpoint:
             "UpdateAvailable": False,
             "UpdateSource": "none",
         }
-        monkeypatch.setattr(checker, "_get", lambda host, path: data)
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: data)
         result = checker.check_nvidia_status_endpoint("http://x")
         assert result is not None
         assert "InstalledVersion" in result
@@ -427,7 +517,7 @@ class TestCheckNvidiaStatusEndpoint:
             "Name": "NVIDIA GeForce RTX 4060 Ti",
             # Missing InstalledVersion, UpdateAvailable, UpdateSource
         }
-        monkeypatch.setattr(checker, "_get", lambda host, path: data)
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: data)
         result = checker.check_nvidia_status_endpoint("http://x")
         assert result is not None
         assert "missing required key" in result
@@ -443,5 +533,5 @@ class TestCheckNvidiaStatusEndpoint:
             "UpdateAvailable": True,
             "UpdateSource": "nvidia_api",
         }
-        monkeypatch.setattr(checker, "_get", lambda host, path: data)
+        monkeypatch.setattr(checker, "_get", lambda host, path, timeout=None: data)
         assert checker.check_nvidia_status_endpoint("http://x") is None
