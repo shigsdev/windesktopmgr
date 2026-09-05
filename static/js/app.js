@@ -1140,7 +1140,10 @@ async function dkLoadTopology() {
     // card PCB + bracket
     rect(60, 20, W - 80, H - 30, {rx: 10, fill: '#11161d', stroke: '#30363d', sw: 2});
     rect(34, 12, 26, H - 14, {rx: 4, fill: '#1c2530', stroke: '#30363d'});
-    const cardLabel = t.card_switch ? `PCIe M.2 carrier card · ${t.card_switch} switch` : 'PCIe M.2 carrier card';
+    // card_switch already reads as a full noun ("ASMedia ASM2812", "PCIe
+    // switch", "Broadcom/PLX PCIe switch") — don't append "switch" or fallbacks
+    // double it ("PCIe switch switch").
+    const cardLabel = t.card_switch ? `PCIe M.2 carrier card · ${t.card_switch}` : 'PCIe M.2 carrier card';
     text(48, 40, cardLabel, {fill: '#8b949e', size: 12});
     drives.forEach((d, i) => {
       const y = top + i * rowH;

@@ -1753,12 +1753,20 @@ class TestDetectPcieSwitch:
         parents = [{"ven_dev": "8086:1234", "count": 1}, {"ven_dev": "1b21:812b", "count": 4}]
         assert disk._pick_card_switch(parents) == {"switch": "ASMedia ASM2812", "ven_dev": "1b21:812b"}
 
+    def test_pick_ignores_amd_root_ports(self):
+        # AMD (1022) root ports must also be excluded so a passive-bifurcation
+        # card on an AMD board isn't mislabeled as switch-based.
+        assert disk._pick_card_switch([{"ven_dev": "1022:43f4", "count": 4}])["switch"] == ""
+
     def test_pick_requires_shared_parent(self):
-        # a single non-Intel device (count 1) is not a fan-out switch
+        # a single non-root device (count 1) is not a fan-out switch
         assert disk._pick_card_switch([{"ven_dev": "1b21:812b", "count": 1}])["switch"] == ""
 
     def test_pick_empty(self):
         assert disk._pick_card_switch([])["switch"] == ""
+
+    def test_pick_non_numeric_count_safe(self):
+        assert disk._pick_card_switch([{"ven_dev": "1b21:812b", "count": "oops"}])["switch"] == ""
 
     def _mock_run(self, mocker, stdout, timeout=False):
         if timeout:
@@ -1792,11 +1800,18 @@ class TestDetectPcieSwitch:
         self._mock_run(mocker, "", timeout=True)
         assert disk.detect_pcie_switch() == {"switch": "", "ven_dev": ""}
 
-    def test_detect_command_queries_parent_bridge(self, mocker):
+    def test_detect_nonzero_returncode_safe(self, mocker):
+        # A PS failure (non-zero exit, empty stdout) must degrade to no switch.
+        m = self._mock_run(mocker, "")
+        m.return_value.returncode = 1
+        assert disk.detect_pcie_switch() == {"switch": "", "ven_dev": ""}
+
+    def test_detect_command_queries_parent_and_filters_to_card(self, mocker):
         m = self._mock_run(mocker, "[]")
         disk.detect_pcie_switch()
         cmd = " ".join(m.call_args.args[0])
         assert "DEVPKEY_Device_Parent" in cmd
+        assert "PCI Slot" in cmd  # only counts add-in-card controllers
 
 
 class TestGetStorageSpaces:
