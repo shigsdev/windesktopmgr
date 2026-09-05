@@ -1046,7 +1046,6 @@ async function loadDisk() {
     dkLoadSpaces();
     dkLoadNas();
     dkLoadTopology();
-    dkLoadPoolRepair();
     fetchSummary('disk', d, 'summary-disk');
     document.getElementById('dk-loading').style.display = 'none';
     document.getElementById('dk-content').style.display = '';
@@ -1201,99 +1200,6 @@ async function dkLoadTopology() {
     }
     sec.style.display = '';
   } catch (e) { console.error('Failed to load PCIe topology:', e); sec.style.display = 'none'; }
-}
-
-// Replace & repair pool (dk = Storage tab). Shown only when the pool has a
-// retired/missing member. The plan is fetched WITHOUT elevation so the confirm
-// dialog can name the exact disks; only the run itself triggers UAC. The
-// elevated script hard-gates the destructive Remove-PhysicalDisk on a verified
-// healthy rebuild. DOM-built (no innerHTML) — live model/serial strings.
-let _dkPoolTimer = null;
-
-function dkPoolLine(host, text, css) {
-  const d = document.createElement('div');
-  if (css) d.style.cssText = css;
-  d.textContent = text;
-  host.appendChild(d);
-  return d;
-}
-
-async function dkLoadPoolRepair() {
-  const sec = document.getElementById('dk-poolrepair-section');
-  const host = document.getElementById('dk-poolrepair');
-  if (!sec || !host) return;
-  try {
-    const r = await fetch('/api/storage/pool-repair/plan');
-    const p = await r.json();
-    if (!p || !p.remove) { sec.style.display = 'none'; return; }  // nothing to replace
-    while (host.firstChild) host.removeChild(host.firstChild);
-
-    dkPoolLine(host, `Pool "${p.pool}" · ${p.virtual_disk} (${p.resiliency || 'resilient'})`,
-      'font-size:12px;color:var(--muted);margin-bottom:6px');
-    dkPoolLine(host, `Remove (old): ${p.remove.model} · serial ${p.remove.serial} · ${p.remove.usage || 'retired'}`,
-      'font-size:13px;color:var(--red)');
-    if (p.add) {
-      dkPoolLine(host, `Add (new): ${p.add.model} · serial ${p.add.serial}${p.add.size_gb ? ' · ' + p.add.size_gb + ' GB' : ''}`,
-        'font-size:13px;color:var(--cyan)');
-    }
-    (p.blockers || []).forEach(b => dkPoolLine(host, `⚠ ${b}`, 'font-size:12px;color:var(--orange);margin-top:4px'));
-
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.textContent = p.ready ? '▶ Replace & repair pool' : 'Replace & repair pool (not ready)';
-    btn.disabled = !p.ready;
-    btn.style.cssText = 'margin-top:10px;padding:8px 14px;font-size:12px;border-radius:6px;cursor:' +
-      (p.ready ? 'pointer' : 'not-allowed') + ';background:transparent;color:' +
-      (p.ready ? 'var(--cyan)' : 'var(--muted)') + ';border:1px solid ' + (p.ready ? 'var(--cyan)' : 'var(--border)');
-    btn.onclick = () => dkStartPoolRepair(p);
-    host.appendChild(btn);
-
-    const status = document.createElement('div');
-    status.id = 'dk-poolrepair-status';
-    status.style.cssText = 'font-size:12px;color:var(--muted);margin-top:8px';
-    host.appendChild(status);
-
-    sec.style.display = '';
-    dkPollPoolRepair();  // pick up an already-running repair
-  } catch (e) { console.error('pool repair plan failed:', e); sec.style.display = 'none'; }
-}
-
-async function dkStartPoolRepair(plan) {
-  const msg = `Replace and repair pool "${plan.pool}"?\n\n` +
-    `ADD:    ${plan.add ? plan.add.model + ' (serial ' + plan.add.serial + ')' : '?'}\n` +
-    `REMOVE: ${plan.remove.model} (serial ${plan.remove.serial})\n\n` +
-    `Windows will ask for administrator permission. The parity rebuild can run for HOURS.\n` +
-    `The old disk is only removed AFTER the rebuild verifies healthy — if it fails or stalls, ` +
-    `the removal is skipped and the pool is left recoverable.`;
-  if (!confirm(msg)) return;
-  try {
-    const r = await fetch('/api/storage/pool-repair', {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({}),
-    });
-    const d = await r.json();
-    if (!d.ok) { alert('Could not start pool repair: ' + (d.error || 'unknown error')); return; }
-    dkPollPoolRepair();
-  } catch (e) { alert('Could not start pool repair: ' + e.message); }
-}
-
-async function dkPollPoolRepair() {
-  const el = document.getElementById('dk-poolrepair-status');
-  if (!el) return;
-  if (_dkPoolTimer) { clearInterval(_dkPoolTimer); _dkPoolTimer = null; }
-  const tick = async () => {
-    try {
-      const r = await fetch('/api/storage/pool-repair/status');
-      const s = await r.json();
-      if (!s || s.stage === 'idle') { el.textContent = ''; return; }
-      const pct = (s.percent !== null && s.percent !== undefined) ? ` — ${s.percent}%` : '';
-      el.textContent = `${s.stage}${pct}: ${s.message || ''}${s.error ? ' · ' + s.error : ''}`;
-      el.style.color = s.error ? 'var(--red)' : (s.done ? 'var(--cyan)' : 'var(--muted)');
-      if (s.done) { clearInterval(_dkPoolTimer); _dkPoolTimer = null; }
-    } catch (e) { /* transient — keep polling */ }
-  };
-  tick();
-  clearInterval(_dkPoolTimer);  // never stack pollers (2026-04-18 timer-leak rule)
-  _dkPoolTimer = setInterval(tick, 5000);
 }
 
 // NAS storage (QNAP over SNMP). Rendered only when nas_config.json is filled in

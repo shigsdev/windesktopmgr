@@ -3158,41 +3158,6 @@ class TestStoragePcieTopologyRoute:
         assert d["has_card"] is False
 
 
-class TestPoolRepairRoutes:
-    """/api/storage/pool-repair{,/plan,/status} — elevated replace-and-rebuild."""
-
-    def test_start_is_localhost_only(self, client, mocker):
-        start = mocker.patch("disk.start_pool_repair")
-        r = client.post("/api/storage/pool-repair", json={}, environ_base={"REMOTE_ADDR": "192.168.1.9"})
-        assert r.status_code == 403
-        assert "localhost" in r.get_json()["error"]
-        start.assert_not_called()  # never elevate for a remote caller
-
-    def test_start_invokes_runner(self, client, mocker):
-        start = mocker.patch("disk.start_pool_repair", return_value={"ok": True, "started": True})
-        r = client.post("/api/storage/pool-repair", json={}, environ_base={"REMOTE_ADDR": "127.0.0.1"})
-        assert r.status_code == 200
-        assert r.get_json()["started"] is True
-        assert start.call_args.kwargs.get("preview") is False
-
-    def test_start_preview_flag_passed(self, client, mocker):
-        start = mocker.patch("disk.start_pool_repair", return_value={"ok": True})
-        client.post("/api/storage/pool-repair", json={"preview": True}, environ_base={"REMOTE_ADDR": "127.0.0.1"})
-        assert start.call_args.kwargs.get("preview") is True
-
-    def test_plan_route(self, client, mocker):
-        mocker.patch("disk.get_pool_repair_plan", return_value={"ok": True, "ready": False, "blockers": ["no disk"]})
-        r = client.get("/api/storage/pool-repair/plan")
-        assert r.status_code == 200
-        assert r.get_json()["ready"] is False
-
-    def test_status_route(self, client, mocker):
-        mocker.patch("disk.get_pool_repair_status", return_value={"ok": True, "stage": "repairing", "percent": 30})
-        r = client.get("/api/storage/pool-repair/status")
-        assert r.status_code == 200
-        assert r.get_json()["stage"] == "repairing"
-
-
 class TestDiskSnoozeRoute:
     """/api/disk/snooze — pause/resume health alerts for one drive by serial."""
 
