@@ -9291,19 +9291,35 @@ function mnt_el(tag, css, text) {
   return e;
 }
 
-async function mnt_scan() {
+// The scan runs in a background thread server-side (a full %TEMP% walk can take
+// ~a minute), so we poll: fetch returns status 'running' until the result is
+// ready, then 'done'. force=true asks the server for a fresh scan.
+async function mnt_scan(force) {
   const host = document.getElementById("mnt-junk");
   const totalEl = document.getElementById("mnt-total");
   const btn = document.getElementById("mnt-scan-btn");
   if (!host) return;
   if (btn) { btn.disabled = true; btn.textContent = "Scanning…"; }
   while (host.firstChild) host.removeChild(host.firstChild);
-  host.appendChild(mnt_el("div", "color:var(--muted);font-size:13px;padding:12px", "Scanning…"));
+  const progress = mnt_el("div", "color:var(--muted);font-size:13px;padding:12px", "Scanning…");
+  host.appendChild(progress);
+  const t0 = Date.now();
   try {
-    const r = await fetch("/api/maintenance/junk/scan");
-    const d = await r.json();
+    let d = null;
+    let url = "/api/maintenance/junk/scan" + (force ? "?refresh=1" : "");
+    for (let i = 0; i < 120; i++) {  // up to ~3 min
+      const r = await fetch(url);
+      d = await r.json();
+      if (!d || d.status !== "running") break;
+      progress.textContent = `Scanning… (${Math.round((Date.now() - t0) / 1000)}s)`;
+      await new Promise(res => setTimeout(res, 1500));
+      url = "/api/maintenance/junk/scan";  // subsequent polls read the in-flight scan
+    }
     while (host.firstChild) host.removeChild(host.firstChild);
-    if (!d.ok) { host.appendChild(mnt_el("div", "color:var(--red);padding:12px", "Scan failed.")); return; }
+    if (!d || !d.ok || d.status === "running") {
+      host.appendChild(mnt_el("div", "color:var(--red);padding:12px", d && d.error ? "Scan failed: " + d.error : "Scan timed out."));
+      return;
+    }
     if (totalEl) totalEl.textContent = `${d.total_human} reclaimable`;
 
     (d.categories || []).forEach(c => {
@@ -9358,7 +9374,7 @@ async function mnt_clean() {
     const d = await r.json();
     if (!d.ok) { if (res) { res.textContent = "Clean failed: " + (d.error || "unknown"); res.style.color = "var(--red)"; } return; }
     if (res) { res.textContent = `Freed ${d.total_human}.`; res.style.color = "var(--cyan)"; }
-    setTimeout(mnt_scan, 600);  // refresh the numbers
+    setTimeout(() => mnt_scan(true), 600);  // force a fresh scan so freed space is reflected
   } catch (e) {
     if (res) { res.textContent = "Clean error: " + e.message; res.style.color = "var(--red)"; }
   }

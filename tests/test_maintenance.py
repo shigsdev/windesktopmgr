@@ -312,14 +312,92 @@ class TestCleanJunk:
         assert out["cleaned"][0]["removed"] == 0
 
 
-class TestRoutes:
-    def test_scan_route(self, client, mocker):
-        mocker.patch(
-            "maintenance.scan_junk", return_value={"ok": True, "categories": [], "total_bytes": 0, "total_human": "0 B"}
+class TestScanAsync:
+    """The scan is non-blocking: a background thread does the walk and the route
+    reports running/done so a slow %TEMP% never ties up a worker thread."""
+
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        # Module-global scan cache — reset around each test.
+        maintenance._scan_state.update({"running": False, "result": None, "ts": 0.0})
+        yield
+        maintenance._scan_state.update({"running": False, "result": None, "ts": 0.0})
+
+    def test_first_call_starts_background_scan(self, mocker):
+        thread = mocker.patch("maintenance.threading.Thread")
+        out = maintenance.start_or_get_scan()
+        assert out["status"] == "running"
+        thread.assert_called_once()  # spawned a worker, did not block
+        assert thread.call_args.kwargs.get("daemon") is True
+
+    def test_running_returns_running_without_respawn(self, mocker):
+        maintenance._scan_state["running"] = True
+        thread = mocker.patch("maintenance.threading.Thread")
+        out = maintenance.start_or_get_scan()
+        assert out["status"] == "running"
+        thread.assert_not_called()  # single-flight
+
+    def test_fresh_cache_returns_done(self, mocker):
+        maintenance._scan_state.update(
+            {"running": False, "result": {"ok": True, "categories": [], "total_human": "1 GB"}, "ts": time.time()}
         )
+        thread = mocker.patch("maintenance.threading.Thread")
+        out = maintenance.start_or_get_scan()
+        assert out["status"] == "done" and out["total_human"] == "1 GB"
+        thread.assert_not_called()  # served from cache
+
+    def test_force_rescans_even_when_cached(self, mocker):
+        maintenance._scan_state.update({"running": False, "result": {"ok": True, "categories": []}, "ts": time.time()})
+        thread = mocker.patch("maintenance.threading.Thread")
+        out = maintenance.start_or_get_scan(force=True)
+        assert out["status"] == "running"
+        thread.assert_called_once()
+
+    def test_worker_stores_result_and_clears_running(self, mocker):
+        maintenance._scan_state["running"] = True
+        mocker.patch("maintenance.scan_junk", return_value={"ok": True, "categories": [], "total_human": "0 B"})
+        maintenance._run_scan()
+        assert maintenance._scan_state["running"] is False
+        assert maintenance._scan_state["result"]["ok"] is True
+
+    def test_worker_scan_exception_clears_running_and_reports_error(self, mocker):
+        # A scan failure inside the worker must surface ok:False and never
+        # leave the flag stuck True (which would wedge the tab forever).
+        maintenance._scan_state["running"] = True
+        mocker.patch("maintenance.scan_junk", side_effect=OSError("disk gone"))
+        maintenance._run_scan()
+        assert maintenance._scan_state["running"] is False
+        assert maintenance._scan_state["result"]["ok"] is False
+        assert "disk gone" in maintenance._scan_state["result"]["error"]
+
+    def test_thread_start_failure_rolls_back_running(self, mocker):
+        # If the OS refuses a new thread, running must roll back so the next
+        # (force) call can recover instead of returning running forever.
+        mocker.patch("maintenance.threading.Thread", side_effect=RuntimeError("can't start thread"))
+        out = maintenance.start_or_get_scan()
+        assert out["ok"] is False
+        assert out["status"] == "error"
+        assert maintenance._scan_state["running"] is False
+
+
+class TestRoutes:
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        maintenance._scan_state.update({"running": False, "result": None, "ts": 0.0})
+
+    def test_scan_route_is_nonblocking(self, client, mocker):
+        thread = mocker.patch("maintenance.threading.Thread")
         r = client.get("/api/maintenance/junk/scan")
         assert r.status_code == 200
-        assert r.get_json()["ok"] is True
+        assert r.get_json()["status"] == "running"  # returns immediately, scan runs in a thread
+        thread.assert_called_once()
+
+    def test_scan_route_refresh_forces(self, client, mocker):
+        maintenance._scan_state.update({"running": False, "result": {"ok": True, "categories": []}, "ts": time.time()})
+        thread = mocker.patch("maintenance.threading.Thread")
+        r = client.get("/api/maintenance/junk/scan?refresh=1")
+        assert r.get_json()["status"] == "running"
+        thread.assert_called_once()  # forced despite the warm cache
 
     def test_clean_localhost_only(self, client, mocker):
         clean = mocker.patch("maintenance.clean_junk")

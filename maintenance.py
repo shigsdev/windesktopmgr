@@ -25,12 +25,21 @@ from __future__ import annotations
 import ctypes
 import os
 import shutil
+import threading
 import time
 from ctypes import wintypes
 
 from flask import Blueprint, jsonify, request
 
 maintenance_bp = Blueprint("maintenance", __name__)
+
+# A full %TEMP% walk can take ~a minute on a busy machine (100k+ files), so the
+# scan runs in a background thread and the UI polls — the request never blocks a
+# worker thread for the whole walk. Single-flight: one scan at a time; the last
+# result is cached (short TTL) so re-opening the tab is instant.
+_SCAN_TTL_S = 90
+_scan_lock = threading.Lock()
+_scan_state: dict = {"running": False, "result": None, "ts": 0.0}
 
 
 # ── Junk categories ───────────────────────────────────────────────────────────
@@ -303,6 +312,43 @@ def scan_junk() -> dict:
     return {"ok": True, "categories": cats, "total_bytes": total, "total_human": _human(total)}
 
 
+def _run_scan() -> None:
+    """Background worker: run scan_junk() and cache the result."""
+    try:
+        result = scan_junk()
+    except Exception as e:  # noqa: BLE001 -- a scan failure must not wedge the tab
+        result = {"ok": False, "error": str(e), "categories": [], "total_bytes": 0, "total_human": "0 B"}
+    with _scan_lock:
+        _scan_state["result"] = result
+        _scan_state["ts"] = time.time()
+        _scan_state["running"] = False
+
+
+def start_or_get_scan(*, force: bool = False) -> dict:
+    """Non-blocking scan accessor. Returns ``{status: 'running'}`` while a scan
+    is in flight, ``{status: 'done', **result}`` when a fresh result is cached,
+    and kicks off a background scan (single-flight) otherwise. ``force`` starts a
+    fresh scan even if a cached one is still warm."""
+    with _scan_lock:
+        if _scan_state["running"]:
+            return {"ok": True, "status": "running"}
+        cached = _scan_state["result"]
+        # Only a *successful* result is worth caching for the full TTL; a failed
+        # scan (transient I/O error) should be retried on the next poll, not
+        # served stale for 90s.
+        fresh = cached is not None and cached.get("ok") is True and (time.time() - _scan_state["ts"]) < _SCAN_TTL_S
+        if fresh and not force:
+            return {"ok": True, "status": "done", **_scan_state["result"]}
+        _scan_state["running"] = True
+    try:
+        threading.Thread(target=_run_scan, daemon=True, name="JunkScan").start()
+    except Exception as e:  # noqa: BLE001 -- thread exhaustion must not wedge the tab
+        with _scan_lock:
+            _scan_state["running"] = False
+        return {"ok": False, "status": "error", "error": f"Could not start scan: {e}"}
+    return {"ok": True, "status": "running"}
+
+
 # ── Cleaning ──────────────────────────────────────────────────────────────────
 
 _FO_DELETE = 0x0003
@@ -436,8 +482,13 @@ def clean_junk(keys: list[str]) -> dict:
 
 @maintenance_bp.route("/api/maintenance/junk/scan")
 def maintenance_junk_scan_route():
-    """Read-only preview of removable junk (count + bytes per category)."""
-    return jsonify(scan_junk())
+    """Read-only preview of removable junk (count + bytes per category).
+
+    Non-blocking: a full %TEMP% walk can take ~a minute, so this returns
+    ``status: 'running'`` and runs the scan in a background thread; the client
+    polls until ``status: 'done'``. ``?refresh=1`` forces a fresh scan."""
+    force = request.args.get("refresh") in ("1", "true", "yes")
+    return jsonify(start_or_get_scan(force=force))
 
 
 @maintenance_bp.route("/api/maintenance/junk/clean", methods=["POST"])
