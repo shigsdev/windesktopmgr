@@ -360,6 +360,25 @@ class TestScanAsync:
         assert maintenance._scan_state["running"] is False
         assert maintenance._scan_state["result"]["ok"] is True
 
+    def test_worker_scan_exception_clears_running_and_reports_error(self, mocker):
+        # A scan failure inside the worker must surface ok:False and never
+        # leave the flag stuck True (which would wedge the tab forever).
+        maintenance._scan_state["running"] = True
+        mocker.patch("maintenance.scan_junk", side_effect=OSError("disk gone"))
+        maintenance._run_scan()
+        assert maintenance._scan_state["running"] is False
+        assert maintenance._scan_state["result"]["ok"] is False
+        assert "disk gone" in maintenance._scan_state["result"]["error"]
+
+    def test_thread_start_failure_rolls_back_running(self, mocker):
+        # If the OS refuses a new thread, running must roll back so the next
+        # (force) call can recover instead of returning running forever.
+        mocker.patch("maintenance.threading.Thread", side_effect=RuntimeError("can't start thread"))
+        out = maintenance.start_or_get_scan()
+        assert out["ok"] is False
+        assert out["status"] == "error"
+        assert maintenance._scan_state["running"] is False
+
 
 class TestRoutes:
     @pytest.fixture(autouse=True)

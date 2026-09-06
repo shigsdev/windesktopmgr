@@ -332,11 +332,20 @@ def start_or_get_scan(*, force: bool = False) -> dict:
     with _scan_lock:
         if _scan_state["running"]:
             return {"ok": True, "status": "running"}
-        fresh = _scan_state["result"] is not None and (time.time() - _scan_state["ts"]) < _SCAN_TTL_S
+        cached = _scan_state["result"]
+        # Only a *successful* result is worth caching for the full TTL; a failed
+        # scan (transient I/O error) should be retried on the next poll, not
+        # served stale for 90s.
+        fresh = cached is not None and cached.get("ok") is True and (time.time() - _scan_state["ts"]) < _SCAN_TTL_S
         if fresh and not force:
             return {"ok": True, "status": "done", **_scan_state["result"]}
         _scan_state["running"] = True
-    threading.Thread(target=_run_scan, daemon=True, name="JunkScan").start()
+    try:
+        threading.Thread(target=_run_scan, daemon=True, name="JunkScan").start()
+    except Exception as e:  # noqa: BLE001 -- thread exhaustion must not wedge the tab
+        with _scan_lock:
+            _scan_state["running"] = False
+        return {"ok": False, "status": "error", "error": f"Could not start scan: {e}"}
     return {"ok": True, "status": "running"}
 
 
