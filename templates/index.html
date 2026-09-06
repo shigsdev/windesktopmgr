@@ -73,6 +73,7 @@
       <button class="page-tab" data-page="homenet">🏠 Home Network</button>
       <button class="page-tab" data-page="remediation">🔧 Remediation</button>
       <button class="page-tab" data-page="utilities">🛠 Utilities</button>
+      <button class="page-tab" data-page="maintenance">🧹 Cleanup</button>
       <button class="page-tab" data-page="logs">📜 Logs</button>
       <button class="page-tab" data-page="architecture">🏗 Architecture</button>
     </nav>
@@ -2265,6 +2266,28 @@
         Both plugins installed at user scope from <code style="color:var(--text-bright)">claude-plugins-official</code> (2026-05-28).
         These are Claude Code skills, not tray-side scanners — the tray can't invoke them. Copy the command, paste into your Claude Code session.
       </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       PAGE: MAINTENANCE / CLEANUP
+  ══════════════════════════════════════════ -->
+  <div id="page-maintenance" style="display:none">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin:20px 0 20px">
+      <div>
+        <h2 style="margin:0;font-family:var(--font-head);font-size:20px">Cleanup</h2>
+        <div style="font-size:11px;color:var(--muted);margin-top:3px">Reclaim disk space by clearing safe, regenerated junk — scan first, then choose what to remove</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span id="mnt-total" style="font-size:12px;color:var(--muted)"></span>
+        <button id="mnt-scan-btn" onclick="mnt_scan()" class="btn-action" style="padding:6px 16px;font-size:12px">▶ Scan now</button>
+      </div>
+    </div>
+    <div id="mnt-junk"><div style="color:var(--muted);font-size:13px;padding:12px">Click <b>Scan now</b> to see what can be cleaned.</div></div>
+    <div style="margin-top:20px;padding:14px;background:var(--card);border:1px solid var(--border);border-radius:10px">
+      <div style="font-weight:700;font-size:13px;margin-bottom:4px">System-level junk (Windows Temp, Windows Update leftovers)</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px">These need administrator rights, so the app hands them to <b>Windows' own Disk Cleanup</b> rather than deleting system files itself.</div>
+      <button type="button" onclick="mnt_diskCleanup()" style="padding:6px 14px;font-size:12px;border-radius:6px;background:transparent;color:var(--cyan);border:1px solid var(--cyan);cursor:pointer">Open Windows Disk Cleanup</button>
     </div>
   </div>
 

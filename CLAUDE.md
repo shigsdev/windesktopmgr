@@ -383,7 +383,8 @@ Prefix all tab-specific functions with tab abbreviation to prevent global scope 
 `drv` = Drivers, `bsod` = BSOD, `su` = Startup, `dk` = Disk, `net` = Network,
 `upd` = Updates, `ev` = Events, `proc` = Processes, `th` = Thermals, `svc` = Services,
 `hh` = Health History, `tl` = Timeline, `mem` = Memory, `bios` = BIOS, `si` = SysInfo,
-`bl` = Baseline, `bk` = Backup, `cc` = CloudCopy (Backup §3), `util` = Utilities (code-health scanners).
+`bl` = Baseline, `bk` = Backup, `cc` = CloudCopy (Backup §3), `util` = Utilities (code-health scanners),
+`mnt` = Cleanup/Maintenance (junk cleanup + system maintenance, maintenance.py).
 
 ---
 

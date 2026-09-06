@@ -80,6 +80,7 @@ TEST_FILES = [
     "test_drivers_disk.py",
     "test_homenet_topology.py",
     "test_nas.py",
+    "test_maintenance.py",
 ]
 
 
