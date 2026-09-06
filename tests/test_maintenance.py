@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import time
 
+import pytest
+
 import maintenance
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -66,7 +68,47 @@ class TestHuman:
         assert maintenance._human(5 * 1024 * 1024) == "5.0 MB"
 
 
+class TestSafetyGuards:
+    def test_within_profile_accepts_paths_under_profile(self, tmp_path, mocker):
+        mocker.patch.dict(os.environ, {"USERPROFILE": str(tmp_path)})
+        assert maintenance._within_profile(str(tmp_path / "AppData" / "Local" / "Temp")) is True
+
+    def test_within_profile_rejects_drive_root(self, tmp_path, mocker):
+        mocker.patch.dict(os.environ, {"USERPROFILE": str(tmp_path)})
+        assert maintenance._within_profile("C:\\") is False
+
+    def test_within_profile_rejects_outside_profile(self, tmp_path, mocker):
+        mocker.patch.dict(os.environ, {"USERPROFILE": str(tmp_path / "prof")})
+        assert maintenance._within_profile("C:\\Windows\\Temp") is False
+
+    def test_within_profile_rejects_relative(self, tmp_path, mocker):
+        mocker.patch.dict(os.environ, {"USERPROFILE": str(tmp_path)})
+        assert maintenance._within_profile("Microsoft\\Windows\\Explorer") is False
+
+    def test_resolved_roots_dedupes_and_confines(self, tmp_path, mocker):
+        mocker.patch.dict(os.environ, {"USERPROFILE": str(tmp_path)})
+        inside = str(tmp_path / "Temp")
+        os.makedirs(inside, exist_ok=True)
+        cat = {"roots": [inside, inside, "C:\\Windows\\Temp"]}  # dup + outside-profile
+        roots = maintenance._resolved_roots(cat)
+        assert roots == [inside]  # de-duped, and the drive-scope root dropped
+
+    def test_tree_has_recent(self, tmp_path):
+        d = str(tmp_path / "d")
+        _mkfile(os.path.join(d, "old.bin"), 10, age_days=10)
+        cutoff = time.time() - 86400
+        assert maintenance._tree_has_recent(d, cutoff) is False
+        _mkfile(os.path.join(d, "sub", "fresh.bin"), 10, age_days=0)
+        assert maintenance._tree_has_recent(d, cutoff) is True
+
+
 class TestScanJunk:
+    @pytest.fixture(autouse=True)
+    def _profile(self, tmp_path, mocker):
+        # Category roots in these tests live under tmp_path, so point the
+        # profile there — _resolved_roots confines cleanup to %USERPROFILE%.
+        mocker.patch.dict(os.environ, {"USERPROFILE": str(tmp_path)})
+
     def _cats(self, tmp_path):
         root = str(tmp_path / "temp")
         _mkfile(os.path.join(root, "junk.tmp"), 400, age_days=5)
@@ -98,6 +140,13 @@ class TestScanJunk:
         assert by["recycle_bin"]["count"] == 3 and by["recycle_bin"]["bytes"] == 5000
         assert out["total_bytes"] == 5400
 
+    def test_recycle_bin_is_default_off(self, mocker):
+        # The irreversible Recycle-Bin empty must not be pre-checked by the UI.
+        mocker.patch("maintenance._recycle_bin_info", return_value=(0, 0))
+        out = maintenance.scan_junk()  # real categories
+        rb = next(c for c in out["categories"] if c["key"] == "recycle_bin")
+        assert rb["default_off"] is True
+
     def test_scan_never_deletes(self, tmp_path, mocker):
         cats = self._cats(tmp_path)
         mocker.patch("maintenance._junk_categories", return_value=cats)
@@ -107,6 +156,10 @@ class TestScanJunk:
 
 
 class TestCleanJunk:
+    @pytest.fixture(autouse=True)
+    def _profile(self, tmp_path, mocker):
+        mocker.patch.dict(os.environ, {"USERPROFILE": str(tmp_path)})
+
     def test_safe_category_deletes_permanently(self, tmp_path, mocker):
         root = str(tmp_path / "t")
         f = _mkfile(os.path.join(root, "a.tmp"), 300, age_days=5)
@@ -171,6 +224,62 @@ class TestCleanJunk:
         assert out["cleaned"] == []
         assert out["total_freed"] == 0
         assert os.path.exists(f)  # nothing touched
+
+    def test_old_dir_with_fresh_file_is_protected(self, tmp_path, mocker):
+        # A temp working dir created long ago but holding a fresh (in-use) file
+        # must NOT be deleted wholesale by a min-age category.
+        root = str(tmp_path / "t")
+        d = os.path.join(root, "installer_work")
+        _mkfile(os.path.join(d, "payload.bin"), 500, age_days=0)  # fresh file
+        old = time.time() - 10 * 86400
+        os.utime(d, (old, old))  # dir itself is old
+        mocker.patch(
+            "maintenance._junk_categories",
+            return_value=[
+                {
+                    "key": "user_temp",
+                    "label": "Temp",
+                    "description": "d",
+                    "roots": [root],
+                    "min_age_days": 1,
+                    "risk": "safe",
+                }
+            ],
+        )
+        out = maintenance.clean_junk(["user_temp"])
+        assert out["total_freed"] == 0
+        assert os.path.exists(os.path.join(d, "payload.bin"))  # live data untouched
+
+    def test_reparse_dir_is_skipped(self, tmp_path, mocker):
+        root = str(tmp_path / "t")
+        d = os.path.join(root, "junction")
+        _mkfile(os.path.join(d, "x.tmp"), 100, age_days=5)
+        mocker.patch("maintenance._is_reparse", return_value=True)  # treat as a junction
+        deleter = mocker.patch("maintenance._delete_entry")
+        mocker.patch(
+            "maintenance._junk_categories",
+            return_value=[{"key": "user_temp", "label": "Temp", "description": "d", "roots": [root], "risk": "safe"}],
+        )
+        out = maintenance.clean_junk(["user_temp"])
+        deleter.assert_not_called()  # never delete through a reparse point
+        assert out["total_freed"] == 0
+
+    def test_root_outside_profile_is_ignored(self, tmp_path, mocker):
+        # A category root not under %USERPROFILE% must be skipped entirely.
+        prof = tmp_path / "profile"
+        prof.mkdir()
+        outside = str(tmp_path / "elsewhere")  # under tmp_path but NOT under the profile
+        f = _mkfile(os.path.join(outside, "a.tmp"), 100, age_days=5)
+        mocker.patch.dict(os.environ, {"USERPROFILE": str(prof)})
+        mocker.patch(
+            "maintenance._junk_categories",
+            return_value=[
+                {"key": "user_temp", "label": "Temp", "description": "d", "roots": [outside], "risk": "safe"}
+            ],
+        )
+        out = maintenance.clean_junk(["user_temp"])
+        assert out["total_freed"] == 0
+        assert os.path.exists(f)  # confinement held
 
     def test_recycle_bin_special_uses_empty(self, mocker):
         mocker.patch(

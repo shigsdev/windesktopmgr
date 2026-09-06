@@ -9310,7 +9310,9 @@ async function mnt_scan() {
       const row = mnt_el("label", "display:flex;align-items:center;gap:12px;padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer");
       const cb = document.createElement("input");
       cb.type = "checkbox"; cb.value = c.key; cb.className = "mnt-cb";
-      cb.checked = c.bytes > 0;
+      // Pre-check only non-empty, non-irreversible categories. The Recycle Bin
+      // (default_off) empties permanently, so the user must opt in explicitly.
+      cb.checked = c.bytes > 0 && !c.default_off;
       cb.disabled = c.bytes === 0 && c.count === 0;
       row.appendChild(cb);
       const mid = mnt_el("div", "flex:1;min-width:0");

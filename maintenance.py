@@ -96,9 +96,10 @@ def _junk_categories() -> list[dict]:
         {
             "key": "recycle_bin",
             "label": "Recycle Bin",
-            "description": "Everything currently in the Recycle Bin, for all drives.",
+            "description": "Everything currently in the Recycle Bin, for all drives. This is permanent — off by default.",
             "special": "recycle_bin",
             "risk": "safe",
+            "default_off": True,  # emptying the bin is irreversible; don't pre-check it
         },
     ]
 
@@ -113,13 +114,91 @@ def _matches(name: str, patterns: tuple[str, ...] | None) -> bool:
     return any(low.startswith(p.lower()) for p in patterns)
 
 
+def _is_reparse(entry: os.DirEntry) -> bool:
+    """True if a DirEntry is a symlink OR a junction/mount-point (reparse point).
+
+    os.path.islink is False for directory junctions, so we check both — we never
+    traverse INTO or delete THROUGH a reparse point (a junction planted in %TEMP%
+    pointing at Documents must never be followed)."""
+    try:
+        if entry.is_symlink():
+            return True
+        is_junction = getattr(entry, "is_junction", None)
+        if callable(is_junction) and is_junction():
+            return True
+    except OSError:
+        return True  # can't tell -> treat as reparse; do not follow/delete
+    return False
+
+
+def _tree_has_recent(path: str, cutoff: float) -> bool:
+    """True if any file under ``path`` has mtime newer than ``cutoff``.
+
+    Lets a min-age category skip a whole directory that was created long ago but
+    still holds fresh files (an active installer's temp dir): writing to an
+    existing file does NOT bump the parent dir's mtime, so a top-level age check
+    alone would delete live data. Short-circuits; never follows reparse points."""
+    try:
+        for entry in os.scandir(path):
+            try:
+                if entry.is_file(follow_symlinks=False):
+                    if entry.stat(follow_symlinks=False).st_mtime > cutoff:
+                        return True
+                elif (
+                    entry.is_dir(follow_symlinks=False)
+                    and not _is_reparse(entry)
+                    and _tree_has_recent(entry.path, cutoff)
+                ):
+                    return True
+            except OSError:
+                continue
+    except OSError:
+        return False
+    return False
+
+
+def _within_profile(root: str) -> bool:
+    """Defence-in-depth: a cleanup root must be an absolute path UNDER the user
+    profile. Rejects a drive root or a relative path from a misconfigured env
+    var (e.g. %TEMP%=C:\\, or an empty %LOCALAPPDATA% yielding a relative root),
+    so cleanup can never iterate the drive root or somewhere outside the profile.
+    Every Tier-1 category lives under %USERPROFILE%."""
+    if not root or not os.path.isabs(root):
+        return False
+    prof = os.path.expandvars("%USERPROFILE%")
+    if not prof or not os.path.isabs(prof):
+        return False
+    n = os.path.normcase(os.path.normpath(root))
+    if len(n.rstrip("\\/")) <= 2:  # drive root like "C:"
+        return False
+    p = os.path.normcase(os.path.normpath(prof))
+    return n == p or n.startswith(p + os.sep)
+
+
+def _resolved_roots(cat: dict) -> list[str]:
+    """Category roots, de-duplicated (case-insensitive) and confined to the
+    profile. %TEMP% and %TMP% usually resolve to the same dir; without de-dup the
+    scan preview would double-count."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for root in cat.get("roots", []):
+        if not _within_profile(root):
+            continue
+        key = os.path.normcase(os.path.normpath(root))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(root)
+    return out
+
+
 def _scan_dir(root: str, *, min_age_days: int = 0, recurse: bool = True, patterns=None) -> tuple[int, int, list[str]]:
     """Return (file_count, total_bytes, sample_paths) under ``root``.
 
-    Read-only. Silently skips entries it can't stat (locked/permission). Only
-    counts top-level entries matching ``patterns`` (a directory that matches is
-    fully summed). ``min_age_days`` skips entries modified within that window.
-    """
+    Read-only. Silently skips entries it can't stat (locked/permission) and never
+    follows reparse points. Only counts top-level entries matching ``patterns``.
+    ``min_age_days`` skips entries modified within that window; for a directory it
+    also skips the whole tree if it holds any file newer than the cutoff."""
     count = 0
     total = 0
     samples: list[str] = []
@@ -134,16 +213,23 @@ def _scan_dir(root: str, *, min_age_days: int = 0, recurse: bool = True, pattern
         try:
             if not _matches(entry.name, patterns):
                 continue
-            if cutoff is not None and entry.stat(follow_symlinks=False).st_mtime > cutoff:
-                continue
             if entry.is_file(follow_symlinks=False):
-                sz = entry.stat(follow_symlinks=False).st_size
+                if cutoff is not None and entry.stat(follow_symlinks=False).st_mtime > cutoff:
+                    continue
                 count += 1
-                total += sz
+                total += entry.stat(follow_symlinks=False).st_size
             elif entry.is_dir(follow_symlinks=False) and recurse:
+                if _is_reparse(entry):
+                    continue  # never traverse a junction/symlink
+                if cutoff is not None and (
+                    entry.stat(follow_symlinks=False).st_mtime > cutoff or _tree_has_recent(entry.path, cutoff)
+                ):
+                    continue  # dir holds fresh files — leave it alone
                 c, b, _ = _scan_dir(entry.path, min_age_days=0, recurse=True, patterns=None)
                 count += c + 1
                 total += b
+            else:
+                continue
             if len(samples) < 5:
                 samples.append(entry.path)
         except OSError:
@@ -190,7 +276,7 @@ def scan_junk() -> dict:
             count = 0
             nbytes = 0
             samples = []
-            for root in c.get("roots", []):
+            for root in _resolved_roots(c):
                 rc, rb, rs = _scan_dir(
                     root,
                     min_age_days=c.get("min_age_days", 0),
@@ -207,6 +293,7 @@ def scan_junk() -> dict:
                 "label": c["label"],
                 "description": c["description"],
                 "risk": c.get("risk", "safe"),
+                "default_off": bool(c.get("default_off")),
                 "count": count,
                 "bytes": nbytes,
                 "human": _human(nbytes),
@@ -294,7 +381,8 @@ def clean_junk(keys: list[str]) -> dict:
             errors = 0 if ok else 1
         else:
             to_bin = c.get("risk") == "caution"
-            for root in c.get("roots", []):
+            recurse = c.get("recurse", True)
+            for root in _resolved_roots(c):  # confined to the profile, de-duped
                 if not os.path.isdir(root):
                     continue
                 try:
@@ -306,13 +394,22 @@ def clean_junk(keys: list[str]) -> dict:
                     try:
                         if not _matches(entry.name, c.get("patterns")):
                             continue
-                        if cutoff is not None and entry.stat(follow_symlinks=False).st_mtime > cutoff:
-                            continue
                         sz = 0
                         if entry.is_file(follow_symlinks=False):
+                            if cutoff is not None and entry.stat(follow_symlinks=False).st_mtime > cutoff:
+                                continue
                             sz = entry.stat(follow_symlinks=False).st_size
                         elif entry.is_dir(follow_symlinks=False):
+                            if not recurse or _is_reparse(entry):
+                                continue  # never delete through a junction; honor recurse=False
+                            if cutoff is not None and (
+                                entry.stat(follow_symlinks=False).st_mtime > cutoff
+                                or _tree_has_recent(entry.path, cutoff)
+                            ):
+                                continue  # dir holds fresh files — leave it alone
                             _, sz, _ = _scan_dir(entry.path, min_age_days=0, recurse=True)
+                        else:
+                            continue  # reparse file / other — skip
                         if _delete_entry(entry.path, to_recycle_bin=to_bin):
                             removed += 1
                             freed += sz
