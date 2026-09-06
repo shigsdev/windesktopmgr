@@ -338,6 +338,8 @@ document.querySelectorAll(".page-tab").forEach(btn => {
       // codehealth status) are cheap reads, and the user opening this
       // tab is the strongest signal they want fresh numbers.
       util_load();
+    } else if (page === "maintenance") {
+      if (!_tabLoaded["maintenance"]) { _tabLoaded["maintenance"] = true; mnt_scan(); }
     } else if (page === "logs") {
       if (!_tabLoaded["logs"])           { _tabLoaded["logs"]           = true; logLoad(); }
     } else if (page === "architecture") {
@@ -9275,6 +9277,101 @@ function logParseLevel() {
     return { level: lvl, exact: true, label: lvl + " only" };
   }
   return { level: raw, exact: false, label: raw + " and above" };
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// MAINTENANCE / CLEANUP (mnt = Cleanup tab)
+// Scan is read-only; clean acts only on whitelisted category KEYS. DOM-built
+// (no innerHTML) since it renders live filesystem paths/sizes.
+// ══════════════════════════════════════════════════════════════════════════
+function mnt_el(tag, css, text) {
+  const e = document.createElement(tag);
+  if (css) e.style.cssText = css;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+async function mnt_scan() {
+  const host = document.getElementById("mnt-junk");
+  const totalEl = document.getElementById("mnt-total");
+  const btn = document.getElementById("mnt-scan-btn");
+  if (!host) return;
+  if (btn) { btn.disabled = true; btn.textContent = "Scanning…"; }
+  while (host.firstChild) host.removeChild(host.firstChild);
+  host.appendChild(mnt_el("div", "color:var(--muted);font-size:13px;padding:12px", "Scanning…"));
+  try {
+    const r = await fetch("/api/maintenance/junk/scan");
+    const d = await r.json();
+    while (host.firstChild) host.removeChild(host.firstChild);
+    if (!d.ok) { host.appendChild(mnt_el("div", "color:var(--red);padding:12px", "Scan failed.")); return; }
+    if (totalEl) totalEl.textContent = `${d.total_human} reclaimable`;
+
+    (d.categories || []).forEach(c => {
+      const row = mnt_el("label", "display:flex;align-items:center;gap:12px;padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer");
+      const cb = document.createElement("input");
+      cb.type = "checkbox"; cb.value = c.key; cb.className = "mnt-cb";
+      // Pre-check only non-empty, non-irreversible categories. The Recycle Bin
+      // (default_off) empties permanently, so the user must opt in explicitly.
+      cb.checked = c.bytes > 0 && !c.default_off;
+      cb.disabled = c.bytes === 0 && c.count === 0;
+      row.appendChild(cb);
+      const mid = mnt_el("div", "flex:1;min-width:0");
+      mid.appendChild(mnt_el("div", "font-weight:600;font-size:13px", c.label));
+      mid.appendChild(mnt_el("div", "font-size:11px;color:var(--muted)", c.description));
+      row.appendChild(mid);
+      const size = mnt_el("div", `font-family:monospace;font-size:13px;white-space:nowrap;color:${c.bytes > 0 ? "var(--fg)" : "var(--muted)"}`,
+        `${c.human}${c.count ? " · " + c.count + " item" + (c.count === 1 ? "" : "s") : ""}`);
+      row.appendChild(size);
+      host.appendChild(row);
+    });
+
+    const bar = mnt_el("div", "display:flex;align-items:center;gap:12px;padding:12px");
+    const clean = document.createElement("button");
+    clean.type = "button"; clean.textContent = "🧹 Clean selected";
+    clean.style.cssText = "padding:8px 16px;font-size:12px;border-radius:6px;background:transparent;color:var(--cyan);border:1px solid var(--cyan);cursor:pointer";
+    clean.onclick = mnt_clean;
+    bar.appendChild(clean);
+    bar.appendChild(mnt_el("span", "font-size:11px;color:var(--muted)", "Safe, regenerated files are removed permanently; nothing outside these categories is touched."));
+    host.appendChild(bar);
+    const res = mnt_el("div", "font-size:12px;padding:0 12px");
+    res.id = "mnt-result";
+    host.appendChild(res);
+  } catch (e) {
+    while (host.firstChild) host.removeChild(host.firstChild);
+    host.appendChild(mnt_el("div", "color:var(--red);padding:12px", "Scan error: " + e.message));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "▶ Scan now"; }
+  }
+}
+
+async function mnt_clean() {
+  const keys = [...document.querySelectorAll(".mnt-cb:checked")].map(cb => cb.value);
+  if (!keys.length) { alert("Select at least one category to clean."); return; }
+  const labels = [...document.querySelectorAll(".mnt-cb:checked")].map(cb => cb.closest("label").querySelector("div div").textContent);
+  if (!confirm(`Clean these ${keys.length} categories?\n\n• ${labels.join("\n• ")}\n\nSafe, regenerated files are removed permanently.`)) return;
+  const res = document.getElementById("mnt-result");
+  if (res) res.textContent = "Cleaning…";
+  try {
+    const r = await fetch("/api/maintenance/junk/clean", {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({keys}),
+    });
+    const d = await r.json();
+    if (!d.ok) { if (res) { res.textContent = "Clean failed: " + (d.error || "unknown"); res.style.color = "var(--red)"; } return; }
+    if (res) { res.textContent = `Freed ${d.total_human}.`; res.style.color = "var(--cyan)"; }
+    setTimeout(mnt_scan, 600);  // refresh the numbers
+  } catch (e) {
+    if (res) { res.textContent = "Clean error: " + e.message; res.style.color = "var(--red)"; }
+  }
+}
+
+async function mnt_diskCleanup() {
+  try {
+    const r = await fetch("/api/disk/run-tool", {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({tool: "cleanmgr"}),
+    });
+    const d = await r.json();
+    if (!d.ok) alert("Could not launch Disk Cleanup: " + (d.error || "unknown error"));
+  } catch (e) { alert("Could not launch Disk Cleanup: " + e.message); }
 }
 
 async function logLoad() {

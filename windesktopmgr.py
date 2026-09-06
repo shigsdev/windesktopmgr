@@ -83,6 +83,7 @@ from gpu import (
     get_nvidia_update_info,
 )
 from homenet import homenet_bp, homenet_get_inventory
+from maintenance import maintenance_bp
 from nas import (
     get_nas_storage,  # noqa: F401 -- re-exported; dashboard fan-out resolves it via windesktopmgr.get_nas_storage
 )
@@ -5209,6 +5210,7 @@ def report_export():
 app.register_blueprint(disk_bp)
 app.register_blueprint(homenet_bp)
 app.register_blueprint(remediation_bp)
+app.register_blueprint(maintenance_bp)
 
 
 # ==============================================================================

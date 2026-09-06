@@ -65,6 +65,7 @@ TAB_IDS = [
     "baseline",
     "backup",
     "utilities",
+    "maintenance",
 ]
 
 
@@ -2323,3 +2324,33 @@ class TestStorageTabSlotsAndSpaces:
             if visible == (configured > 0):
                 break
         assert visible == (configured > 0), f"nas section visible={visible} but configured={configured}"
+
+
+class TestMaintenanceTabCleanup:
+    """Cleanup tab (Tier 1 junk cleanup): the scan renders category rows with a
+    'Clean selected' button, and the system-junk Disk Cleanup handoff is present.
+    Regression gate for the maintenance suite. Read-only (scan) — never clicks
+    Clean, so it deletes nothing."""
+
+    def test_scan_renders_category_rows(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("switchTab('maintenance')")
+        # mnt_scan() populates #mnt-junk with category rows (checkboxes) + the
+        # Clean button; wait for it to move past the 'Scanning…' placeholder.
+        page.wait_for_function(
+            """
+            () => {
+                const el = document.getElementById('mnt-junk');
+                if (!el) return false;
+                return el.querySelectorAll('.mnt-cb').length > 0;
+            }
+            """,
+            timeout=15_000,
+        )
+        rows = page.evaluate("document.querySelectorAll('.mnt-cb').length")
+        assert rows >= 1, "expected at least one junk category row"
+        # The Disk Cleanup handoff for system-scope junk is present.
+        has_handoff = page.evaluate(
+            "!![...document.querySelectorAll('#page-maintenance button')].find(b => /Disk Cleanup/i.test(b.textContent))"
+        )
+        assert has_handoff, "expected the Windows Disk Cleanup handoff button"
