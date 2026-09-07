@@ -2326,6 +2326,44 @@ class TestStorageTabSlotsAndSpaces:
         assert visible == (configured > 0), f"nas section visible={visible} but configured={configured}"
 
 
+class TestMaintenancePollMessaging:
+    """A scan we stopped waiting for has NOT failed.
+
+    Live verification caught the Cleanup tab printing 'Scan timed out.' while
+    the backend worker was still running happily and about to cache its result
+    — a cold %TEMP% walk on a busy machine really can outlast the poll budget.
+    Reporting that as a failure trains people to distrust the tab, so these
+    gate the wording."""
+
+    def test_still_running_is_not_reported_as_failure(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("switchTab('maintenance')")
+        out = page.evaluate("JSON.stringify(mnt_pollProblem({ok: true, status: 'running'}))")
+        assert "fail" not in out.lower(), out
+        assert "timed out" not in out.lower(), out
+        assert "Still scanning" in out, out
+
+    def test_real_failure_still_reads_as_a_failure(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("switchTab('maintenance')")
+        out = page.evaluate("JSON.stringify(mnt_pollProblem({ok: false, status: 'error', error: 'boom'}))")
+        assert "Scan failed" in out and "boom" in out, out
+
+    def test_no_response_is_distinguished(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("switchTab('maintenance')")
+        out = page.evaluate("JSON.stringify(mnt_pollProblem(null))")
+        assert "No response" in out, out
+
+    def test_poll_budget_is_generous_enough_for_a_cold_temp_walk(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("switchTab('maintenance')")
+        # The default ceiling must comfortably exceed the ~3.5 min this machine
+        # took on a cold cache; 20x1.5s + rest x3s.
+        src = page.evaluate("mnt_poll.toString()")
+        assert "260" in src, "expected a raised default poll ceiling"
+
+
 class TestMaintenanceTabCleanup:
     """Cleanup tab (Tier 1 junk cleanup): the scan renders category rows with a
     'Clean selected' button, and the system-junk Disk Cleanup handoff is present.
