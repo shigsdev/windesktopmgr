@@ -2354,3 +2354,69 @@ class TestMaintenanceTabCleanup:
             "!![...document.querySelectorAll('#page-maintenance button')].find(b => /Disk Cleanup/i.test(b.textContent))"
         )
         assert has_handoff, "expected the Windows Disk Cleanup handoff button"
+
+
+class TestMaintenanceTabSpaceAnalysis:
+    """Cleanup tab Tier 2 (space analysis): the big-files and duplicate scans
+    render results from the live tray. Read-only by construction — these
+    endpoints only report, so the test cannot delete anything.
+
+    Guards the wiring that unit tests cannot see: the controls exist, the poll
+    driver resolves, and results land in the right containers."""
+
+    def test_space_controls_are_present(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("switchTab('maintenance')")
+        for el_id in ("mnt-space-root", "mnt-bigfiles-btn", "mnt-dupes-btn", "mnt-bigfiles", "mnt-dupes"):
+            assert page.evaluate(f"!!document.getElementById('{el_id}')"), f"missing #{el_id}"
+
+    def test_big_files_scan_renders_a_result(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("switchTab('maintenance')")
+        # Scope the scan to a small folder so it finishes fast and never walks
+        # the whole profile during a test run.
+        page.evaluate("document.getElementById('mnt-space-root').value = 'C:\\\\Windows\\\\Fonts'")
+        page.evaluate("mnt_bigFiles(true)")
+        page.wait_for_function(
+            """
+            () => {
+                const el = document.getElementById('mnt-bigfiles');
+                if (!el) return false;
+                const t = el.textContent || '';
+                return t.includes('walked') || t.includes('Nothing over') || t.includes('failed');
+            }
+            """,
+            timeout=60_000,
+        )
+        text = page.evaluate("document.getElementById('mnt-bigfiles').textContent")
+        assert "Scan error" not in text, text
+        assert "failed" not in text.lower(), text
+
+    def test_duplicate_scan_renders_a_result(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("switchTab('maintenance')")
+        page.evaluate("document.getElementById('mnt-space-root').value = 'C:\\\\Windows\\\\Fonts'")
+        page.evaluate("mnt_dupes(true)")
+        page.wait_for_function(
+            """
+            () => {
+                const el = document.getElementById('mnt-dupes');
+                if (!el) return false;
+                const t = el.textContent || '';
+                return t.includes('duplicate set') || t.includes('No duplicates') || t.includes('failed');
+            }
+            """,
+            timeout=60_000,
+        )
+        text = page.evaluate("document.getElementById('mnt-dupes').textContent")
+        assert "Scan error" not in text, text
+        assert "failed" not in text.lower(), text
+
+    def test_disk_tab_crosslink_is_present(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("switchTab('maintenance')")
+        # Folder drill-down + WinSxS live on the Disk tab; the Cleanup tab must
+        # point there rather than shipping a second copy of that analysis.
+        text = page.evaluate("document.getElementById('page-maintenance').textContent")
+        assert "Analyze Space" in text
+        assert "WinSxS" in text

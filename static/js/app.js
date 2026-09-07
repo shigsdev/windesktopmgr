@@ -9390,6 +9390,147 @@ async function mnt_diskCleanup() {
   } catch (e) { alert("Could not launch Disk Cleanup: " + e.message); }
 }
 
+// ── Tier 2: space analysis (read-only) ──────────────────────────────────────
+// Shared poll driver for the background scans. The server returns
+// {status:'running'} until the worker finishes, so every space scan polls the
+// same way; onTick reports elapsed seconds so the UI can show progress.
+async function mnt_poll(url, force, onTick, maxPolls) {
+  const t0 = Date.now();
+  let u = url + (url.includes("?") ? "&" : "?") + (force ? "refresh=1" : "");
+  let d = null;
+  for (let i = 0; i < (maxPolls || 130); i++) {
+    const r = await fetch(u);
+    d = await r.json();
+    if (!d || d.status !== "running") break;
+    if (onTick) onTick(Math.round((Date.now() - t0) / 1000));
+    await new Promise(res => setTimeout(res, 1500));
+    u = url;  // later polls read the in-flight scan; never re-force
+  }
+  return d;
+}
+
+function mnt_spaceRoot() {
+  const el = document.getElementById("mnt-space-root");
+  return (el && el.value.trim()) || "";
+}
+
+// Truncation is reported honestly rather than silently: a capped walk is a
+// partial answer and the user needs to know before concluding anything.
+function mnt_truncNote(d) {
+  if (!d.truncated) return null;
+  return mnt_el("div", "font-size:11px;color:var(--amber);padding:6px 12px",
+    `Stopped early after ${(d.scanned || 0).toLocaleString()} files (size/time cap) — results are partial. Scan a narrower folder for a complete answer.`);
+}
+
+function mnt_openFolder(path) {
+  fetch("/api/disk/open", {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({path}),
+  }).then(r => r.json()).then(d => { if (!d.ok) alert("Could not open: " + (d.error || "unknown")); })
+    .catch(e => alert("Could not open: " + e.message));
+}
+
+function mnt_fileRow(f, extra) {
+  const row = mnt_el("div", "display:flex;align-items:center;gap:12px;padding:8px 12px;border-bottom:1px solid var(--border)");
+  const mid = mnt_el("div", "flex:1;min-width:0");
+  mid.appendChild(mnt_el("div", "font-weight:600;font-size:12px;word-break:break-all", f.name));
+  mid.appendChild(mnt_el("div", "font-size:10px;color:var(--muted);word-break:break-all", f.dir || ""));
+  row.appendChild(mid);
+  if (extra) row.appendChild(extra);
+  row.appendChild(mnt_el("div", "font-family:monospace;font-size:12px;white-space:nowrap", f.human));
+  const open = document.createElement("button");
+  open.type = "button"; open.textContent = "Open";
+  open.style.cssText = "padding:3px 10px;font-size:11px;border-radius:5px;background:transparent;color:var(--cyan);border:1px solid var(--cyan);cursor:pointer";
+  open.onclick = () => mnt_openFolder(f.dir || f.path);
+  row.appendChild(open);
+  return row;
+}
+
+async function mnt_bigFiles(force) {
+  const host = document.getElementById("mnt-bigfiles");
+  const btn = document.getElementById("mnt-bigfiles-btn");
+  if (!host) return;
+  if (btn) { btn.disabled = true; btn.textContent = "Scanning…"; }
+  while (host.firstChild) host.removeChild(host.firstChild);
+  const progress = mnt_el("div", "color:var(--muted);font-size:12px;padding:10px 12px", "Scanning…");
+  host.appendChild(progress);
+  try {
+    const root = mnt_spaceRoot();
+    const url = "/api/maintenance/space/large-files" + (root ? "?root=" + encodeURIComponent(root) : "");
+    const d = await mnt_poll(url, force, s => { progress.textContent = `Scanning… (${s}s)`; });
+    while (host.firstChild) host.removeChild(host.firstChild);
+    if (!d || !d.ok || d.status === "running") {
+      host.appendChild(mnt_el("div", "color:var(--red);font-size:12px;padding:10px 12px",
+        d && d.error ? "Scan failed: " + d.error : "Scan timed out."));
+      return;
+    }
+    const head = mnt_el("div", "font-size:11px;color:var(--muted);padding:6px 12px",
+      `${d.files.length} file${d.files.length === 1 ? "" : "s"} over ${d.min_human} · ${d.total_human} total · walked ${(d.scanned || 0).toLocaleString()} files in ${d.root}`);
+    host.appendChild(head);
+    const note = mnt_truncNote(d);
+    if (note) host.appendChild(note);
+    if (!d.files.length) {
+      host.appendChild(mnt_el("div", "font-size:12px;color:var(--muted);padding:10px 12px",
+        `Nothing over ${d.min_human} here.`));
+      return;
+    }
+    d.files.forEach(f => host.appendChild(mnt_fileRow(f, null)));
+  } catch (e) {
+    while (host.firstChild) host.removeChild(host.firstChild);
+    host.appendChild(mnt_el("div", "color:var(--red);font-size:12px;padding:10px 12px", "Scan error: " + e.message));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Find big files"; }
+  }
+}
+
+async function mnt_dupes(force) {
+  const host = document.getElementById("mnt-dupes");
+  const btn = document.getElementById("mnt-dupes-btn");
+  if (!host) return;
+  if (btn) { btn.disabled = true; btn.textContent = "Scanning…"; }
+  while (host.firstChild) host.removeChild(host.firstChild);
+  const progress = mnt_el("div", "color:var(--muted);font-size:12px;padding:10px 12px", "Scanning…");
+  host.appendChild(progress);
+  try {
+    const root = mnt_spaceRoot();
+    const url = "/api/maintenance/space/duplicates" + (root ? "?root=" + encodeURIComponent(root) : "");
+    const d = await mnt_poll(url, force, s => { progress.textContent = `Hashing… (${s}s)`; });
+    while (host.firstChild) host.removeChild(host.firstChild);
+    if (!d || !d.ok || d.status === "running") {
+      host.appendChild(mnt_el("div", "color:var(--red);font-size:12px;padding:10px 12px",
+        d && d.error ? "Scan failed: " + d.error : "Scan timed out."));
+      return;
+    }
+    const shown = (d.groups || []).length;
+    host.appendChild(mnt_el("div", "font-size:11px;color:var(--muted);padding:6px 12px",
+      `${d.group_count} duplicate set${d.group_count === 1 ? "" : "s"}${shown < d.group_count ? ` (showing ${shown})` : ""} · ${d.total_wasted_human} wasted · files over ${d.min_human} in ${d.root}`));
+    const note = mnt_truncNote(d);
+    if (note) host.appendChild(note);
+    if (!shown) {
+      host.appendChild(mnt_el("div", "font-size:12px;color:var(--muted);padding:10px 12px", "No duplicates found."));
+      return;
+    }
+    d.groups.forEach(g => {
+      const wrap = mnt_el("div", "border-bottom:1px solid var(--border);padding:6px 0");
+      wrap.appendChild(mnt_el("div", "font-size:11px;color:var(--amber);padding:4px 12px",
+        `${g.count} copies × ${g.human} — ${g.wasted_human} wasted`));
+      g.files.forEach((f, i) => {
+        // The first copy is labelled as the one to keep; the app never deletes
+        // here, so this is guidance for the user, not an action.
+        const tag = mnt_el("span",
+          `font-size:10px;padding:2px 6px;border-radius:4px;white-space:nowrap;border:1px solid ${i === 0 ? "var(--green)" : "var(--border)"};color:${i === 0 ? "var(--green)" : "var(--muted)"}`,
+          i === 0 ? "keep" : "copy");
+        wrap.appendChild(mnt_fileRow(f, tag));
+      });
+      host.appendChild(wrap);
+    });
+  } catch (e) {
+    while (host.firstChild) host.removeChild(host.firstChild);
+    host.appendChild(mnt_el("div", "color:var(--red);font-size:12px;padding:10px 12px", "Scan error: " + e.message));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Find duplicates"; }
+  }
+}
+
 async function logLoad() {
   const container = document.getElementById("log-container");
   const summary = document.getElementById("log-summary");

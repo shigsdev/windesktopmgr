@@ -23,6 +23,8 @@ Design choices (carried over from the drive-swap review):
 from __future__ import annotations
 
 import ctypes
+import hashlib
+import heapq
 import os
 import shutil
 import threading
@@ -31,15 +33,25 @@ from ctypes import wintypes
 
 from flask import Blueprint, jsonify, request
 
+from disk import _validate_analyze_path  # drive-rooted / no-UNC / exists guard
+
 maintenance_bp = Blueprint("maintenance", __name__)
 
-# A full %TEMP% walk can take ~a minute on a busy machine (100k+ files), so the
-# scan runs in a background thread and the UI polls — the request never blocks a
-# worker thread for the whole walk. Single-flight: one scan at a time; the last
-# result is cached (short TTL) so re-opening the tab is instant.
+# Every scan here walks a lot of filesystem (a %TEMP% walk alone is 100k+ files),
+# so scans run in a background thread and the UI polls — a request never blocks a
+# worker thread for the whole walk. One registry entry per scan key gives each of
+# them the same hardened behaviour: single-flight (one run at a time), a short
+# result cache so re-opening the tab is instant, and a rollback if the thread
+# cannot start. Keeping this in ONE place matters — the concurrency here is
+# subtle enough that three hand-rolled copies would drift.
 _SCAN_TTL_S = 90
-_scan_lock = threading.Lock()
-_scan_state: dict = {"running": False, "result": None, "ts": 0.0}
+_SCANS_MAX = 24  # registry ceiling — see _evict_stale()
+_scans_lock = threading.Lock()
+_scans: dict[str, dict] = {"junk": {"running": False, "result": None, "ts": 0.0}}
+# Legacy aliases: the junk scan predates the registry and callers/tests reference
+# these names — they must stay bound to the same objects the registry uses.
+_scan_lock = _scans_lock
+_scan_state: dict = _scans["junk"]
 
 
 # ── Junk categories ───────────────────────────────────────────────────────────
@@ -312,41 +324,319 @@ def scan_junk() -> dict:
     return {"ok": True, "categories": cats, "total_bytes": total, "total_human": _human(total)}
 
 
-def _run_scan() -> None:
-    """Background worker: run scan_junk() and cache the result."""
+def _slot(key: str) -> dict:
+    """Return the registry entry for ``key`` (created on first use).
+    Callers must already hold ``_scans_lock``."""
+    return _scans.setdefault(key, {"running": False, "result": None, "ts": 0.0})
+
+
+def _evict_stale() -> None:
+    """Keep the registry bounded. Scan keys embed user-supplied parameters (the
+    folder being scanned), and the tray runs for weeks — without this, every
+    distinct folder a user ever types would keep its full result set alive for
+    the life of the process. Oldest completed scans go first; a running scan is
+    never evicted (its worker still needs the slot) and neither is the junk
+    scan, which the tab reads on every open. Caller holds ``_scans_lock``."""
+    if len(_scans) <= _SCANS_MAX:
+        return
+    evictable = sorted((st["ts"], k) for k, st in _scans.items() if k != "junk" and not st["running"])
+    for _, key in evictable[: len(_scans) - _SCANS_MAX]:
+        _scans.pop(key, None)
+
+
+def _scan_worker(key: str, fn) -> None:
+    """Background worker: run ``fn`` and cache its result under ``key``."""
     try:
-        result = scan_junk()
+        result = fn()
     except Exception as e:  # noqa: BLE001 -- a scan failure must not wedge the tab
-        result = {"ok": False, "error": str(e), "categories": [], "total_bytes": 0, "total_human": "0 B"}
-    with _scan_lock:
-        _scan_state["result"] = result
-        _scan_state["ts"] = time.time()
-        _scan_state["running"] = False
+        result = {"ok": False, "error": str(e)}
+    with _scans_lock:
+        st = _slot(key)
+        st["result"] = result
+        st["ts"] = time.time()
+        st["running"] = False
 
 
-def start_or_get_scan(*, force: bool = False) -> dict:
+def start_or_get(key: str, fn, *, force: bool = False, ttl: int = _SCAN_TTL_S) -> dict:
     """Non-blocking scan accessor. Returns ``{status: 'running'}`` while a scan
     is in flight, ``{status: 'done', **result}`` when a fresh result is cached,
     and kicks off a background scan (single-flight) otherwise. ``force`` starts a
-    fresh scan even if a cached one is still warm."""
-    with _scan_lock:
-        if _scan_state["running"]:
+    fresh scan even if a cached one is still warm.
+
+    ``key`` namespaces the cache, so parametrised scans (different roots) must
+    fold their parameters into it or they would serve each other's results."""
+    with _scans_lock:
+        st = _slot(key)
+        _evict_stale()
+        if st["running"]:
             return {"ok": True, "status": "running"}
-        cached = _scan_state["result"]
+        cached = st["result"]
         # Only a *successful* result is worth caching for the full TTL; a failed
         # scan (transient I/O error) should be retried on the next poll, not
-        # served stale for 90s.
-        fresh = cached is not None and cached.get("ok") is True and (time.time() - _scan_state["ts"]) < _SCAN_TTL_S
+        # served stale.
+        fresh = cached is not None and cached.get("ok") is True and (time.time() - st["ts"]) < ttl
         if fresh and not force:
-            return {"ok": True, "status": "done", **_scan_state["result"]}
-        _scan_state["running"] = True
+            return {"ok": True, "status": "done", **cached}
+        st["running"] = True
     try:
-        threading.Thread(target=_run_scan, daemon=True, name="JunkScan").start()
+        threading.Thread(target=_scan_worker, args=(key, fn), daemon=True, name=f"Scan-{key}").start()
     except Exception as e:  # noqa: BLE001 -- thread exhaustion must not wedge the tab
-        with _scan_lock:
-            _scan_state["running"] = False
+        with _scans_lock:
+            _slot(key)["running"] = False
         return {"ok": False, "status": "error", "error": f"Could not start scan: {e}"}
     return {"ok": True, "status": "running"}
+
+
+def _run_scan() -> None:
+    """Background worker for the junk scan (thin wrapper over _scan_worker)."""
+    _scan_worker("junk", scan_junk)
+
+
+def start_or_get_scan(*, force: bool = False) -> dict:
+    """Non-blocking accessor for the junk scan."""
+    return start_or_get("junk", scan_junk, force=force)
+
+
+# ── Space analysis (Tier 2 — READ ONLY) ───────────────────────────────────────
+# Answers "what is actually eating my disk?". Deliberately analysis-only: it
+# reports, it never deletes. Junk cleanup above is safe to automate because the
+# categories are a fixed whitelist of regenerated files; the biggest file on your
+# disk is just as likely to be a VM image or a video you care about, so choosing
+# what goes is the user's call (Explorer is one click away via the Disk tab).
+#
+# Folder drill-down and the WinSxS component store are NOT re-implemented here —
+# disk.py already has analyze_disk_path() and _get_winsxs_actual_size(), surfaced
+# by the Disk tab's "Analyze Space" modal and Quick Wins.
+
+_BIGFILE_MIN_BYTES = 50 * 1024 * 1024  # a "big file" worth reporting
+_DUPE_MIN_BYTES = 1024 * 1024  # ignore small files — dedup noise, little payoff
+_DUPE_MAX_GROUPS = 100
+_PARTIAL_HASH_BYTES = 65536
+_HASH_CHUNK = 1024 * 1024
+# A duplicate hunt reads file CONTENT, so it needs a firm ceiling of its own.
+_DUPE_HASH_BUDGET_BYTES = 8 * 1024**3
+# Enumeration ceilings. A scan of C:\ would otherwise run for many minutes; a
+# truncated-but-honest answer beats an unbounded one, and the UI says so.
+_SPACE_MAX_FILES = 500_000
+_SPACE_TIME_BUDGET_S = 150  # inside the frontend's ~3 min poll window
+_CLOCK_EVERY = 200  # re-check the deadline every N files inside one directory
+
+
+def _clamp_top_n(value) -> int:
+    return max(5, min(int(value or 40), 200))
+
+
+def _clamp_min_bytes(value) -> int:
+    return max(4096, int(value or _DUPE_MIN_BYTES))
+
+
+def _new_budget(max_files: int = _SPACE_MAX_FILES, seconds: int = _SPACE_TIME_BUDGET_S) -> dict:
+    return {
+        "files": 0,
+        "max_files": max_files,
+        "deadline": time.monotonic() + seconds,
+        "truncated": False,
+    }
+
+
+def _over_budget(budget: dict) -> bool:
+    return budget["files"] >= budget["max_files"] or time.monotonic() > budget["deadline"]
+
+
+def _walk_files(root: str, budget: dict):
+    """Yield ``(path, size)`` for every regular file under ``root``.
+
+    Iterative (an explicit stack — no recursion limit on deep trees), never
+    follows reparse points (a junction must not make the walk escape the root or
+    loop), and skips directories/files it cannot read. Stops when the budget is
+    spent, setting ``budget["truncated"]``."""
+    stack = [root]
+    while stack:
+        if _over_budget(budget):
+            budget["truncated"] = True
+            return
+        cur = stack.pop()
+        try:
+            with os.scandir(cur) as it:
+                for entry in it:
+                    try:
+                        if _is_reparse(entry):
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(entry.path)
+                            continue
+                        if not entry.is_file(follow_symlinks=False):
+                            continue
+                        size = entry.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        continue  # vanished / locked / denied — skip the entry
+                    budget["files"] += 1
+                    yield entry.path, size
+                    # Enforce mid-directory: one folder can hold 100k files, so
+                    # checking only between directories would sail past the cap.
+                    # The count is a cheap int compare so it runs every file; the
+                    # clock is a syscall, so it runs every _CLOCK_EVERY files.
+                    # That interval is deliberately small: on a spun-down or
+                    # network drive a single stat() can cost ~100ms, so checking
+                    # only every few thousand files would overshoot the time
+                    # budget by minutes and outlive the UI's poll window.
+                    if budget["files"] >= budget["max_files"] or (
+                        budget["files"] % _CLOCK_EVERY == 0 and time.monotonic() > budget["deadline"]
+                    ):
+                        budget["truncated"] = True
+                        return
+        except OSError:
+            continue  # unreadable directory — skip the subtree
+
+
+def _file_row(path: str, size: int) -> dict:
+    return {
+        "path": path,
+        "name": os.path.basename(path),
+        "dir": os.path.dirname(path),
+        "bytes": size,
+        "human": _human(size),
+    }
+
+
+def scan_large_files(root: str, top_n: int = 40) -> dict:
+    """Top ``top_n`` largest individual files under ``root`` (read-only).
+
+    A bounded min-heap keeps memory flat regardless of how many files are walked
+    — only the current top N is ever held."""
+    ok, cleaned = _validate_analyze_path(root)
+    if not ok:
+        return {"ok": False, "error": cleaned, "files": []}
+    top_n = _clamp_top_n(top_n)
+    budget = _new_budget()
+    heap: list[tuple[int, str]] = []
+    for path, size in _walk_files(cleaned, budget):
+        if size < _BIGFILE_MIN_BYTES:
+            continue
+        if len(heap) < top_n:
+            heapq.heappush(heap, (size, path))
+        elif size > heap[0][0]:
+            heapq.heapreplace(heap, (size, path))
+    ranked = sorted(heap, key=lambda t: t[0], reverse=True)
+    total = sum(size for size, _ in ranked)
+    return {
+        "ok": True,
+        "root": cleaned,
+        "scanned": budget["files"],
+        "truncated": budget["truncated"],
+        "min_bytes": _BIGFILE_MIN_BYTES,
+        "min_human": _human(_BIGFILE_MIN_BYTES),
+        "total_bytes": total,
+        "total_human": _human(total),
+        "files": [_file_row(p, s) for s, p in ranked],
+    }
+
+
+def _hash_file(path: str, limit: int | None = None) -> str:
+    """SHA-256 of a file, or of its first ``limit`` bytes. ``""`` if unreadable."""
+    h = hashlib.sha256()
+    remaining = limit
+    try:
+        with open(path, "rb") as f:
+            while True:
+                want = _HASH_CHUNK if remaining is None else min(_HASH_CHUNK, remaining)
+                if want <= 0:
+                    break
+                chunk = f.read(want)
+                if not chunk:
+                    break
+                h.update(chunk)
+                if remaining is not None:
+                    remaining -= len(chunk)
+    except OSError:
+        return ""
+    return h.hexdigest()
+
+
+def find_duplicates(root: str, min_bytes: int = _DUPE_MIN_BYTES, max_groups: int = _DUPE_MAX_GROUPS) -> dict:
+    """Find byte-identical files under ``root`` (read-only — reports only).
+
+    Three passes, cheapest first, so almost no file is read in full:
+      1. group by exact size — files of different sizes cannot be duplicates;
+      2. hash the first 64 KB of each same-size candidate — same-size-but-
+         different files (media especially) diverge early and drop out here;
+      3. full SHA-256 only for files that survive, to confirm.
+    Size alone is never treated as proof."""
+    ok, cleaned = _validate_analyze_path(root)
+    if not ok:
+        return {"ok": False, "error": cleaned, "groups": []}
+    min_bytes = _clamp_min_bytes(min_bytes)
+    max_groups = max(5, min(int(max_groups or _DUPE_MAX_GROUPS), 500))
+    budget = _new_budget()
+    by_size: dict[int, list[str]] = {}
+    for path, size in _walk_files(cleaned, budget):
+        if size < min_bytes:
+            continue
+        by_size.setdefault(size, []).append(path)
+
+    hashed_bytes = 0
+    groups: list[dict] = []
+    # Biggest sizes first: if the hash budget runs out, what we did spend it on is
+    # the duplicates that waste the most space.
+    for size in sorted((s for s, paths in by_size.items() if len(paths) > 1), reverse=True):
+        if _over_budget(budget) or hashed_bytes >= _DUPE_HASH_BUDGET_BYTES:
+            budget["truncated"] = True
+            break
+        candidates = by_size[size]
+        partial: dict[str, list[str]] = {}
+        for p in candidates:
+            digest = _hash_file(p, limit=_PARTIAL_HASH_BYTES)
+            hashed_bytes += min(size, _PARTIAL_HASH_BYTES)
+            if digest:
+                partial.setdefault(digest, []).append(p)
+        for same_head in partial.values():
+            if len(same_head) < 2:
+                continue
+            if size <= _PARTIAL_HASH_BYTES:
+                # The "partial" hash already covered the whole file.
+                confirmed: dict[str, list[str]] = {"whole": same_head}
+            else:
+                confirmed = {}
+                for p in same_head:
+                    digest = _hash_file(p)
+                    hashed_bytes += size
+                    if digest:
+                        confirmed.setdefault(digest, []).append(p)
+            for dupes in confirmed.values():
+                if len(dupes) < 2:
+                    continue
+                wasted = size * (len(dupes) - 1)
+                groups.append(
+                    {
+                        "bytes": size,
+                        "human": _human(size),
+                        "count": len(dupes),
+                        "wasted_bytes": wasted,
+                        "wasted_human": _human(wasted),
+                        "files": [_file_row(p, size) for p in sorted(dupes)],
+                    }
+                )
+
+    groups.sort(key=lambda g: g["wasted_bytes"], reverse=True)
+    total_wasted = sum(g["wasted_bytes"] for g in groups)
+    return {
+        "ok": True,
+        "root": cleaned,
+        "scanned": budget["files"],
+        "truncated": budget["truncated"],
+        "min_bytes": min_bytes,
+        "min_human": _human(min_bytes),
+        "group_count": len(groups),
+        "shown": min(len(groups), max_groups),
+        "total_wasted_bytes": total_wasted,
+        "total_wasted_human": _human(total_wasted),
+        "groups": groups[:max_groups],
+    }
+
+
+def default_scan_root() -> str:
+    """Where a space scan starts if the caller doesn't say: the user profile."""
+    return os.path.expandvars("%USERPROFILE%")
 
 
 # ── Cleaning ──────────────────────────────────────────────────────────────────
@@ -503,3 +793,48 @@ def maintenance_junk_clean_route():
     if not isinstance(keys, list) or not keys:
         return jsonify({"ok": False, "error": "Missing required field: keys (non-empty list)"}), 400
     return jsonify(clean_junk([str(k) for k in keys]))
+
+
+def _space_root() -> str:
+    """Resolve the ``?root=`` query arg, defaulting to the user profile."""
+    return (request.args.get("root") or "").strip() or default_scan_root()
+
+
+def _cache_root(cleaned: str) -> str:
+    """Canonical form of a validated root, for use in a cache key.
+
+    ``C:\\Users\\Bob``, ``C:\\Users\\Bob\\`` and ``C:/Users/Bob`` are the same
+    folder; without normalising, each spelling would mint its own permanent
+    registry entry."""
+    return os.path.normcase(os.path.normpath(cleaned))
+
+
+@maintenance_bp.route("/api/maintenance/space/large-files")
+def maintenance_large_files_route():
+    """Top-N largest individual files under ``?root=`` (default: user profile).
+
+    Read-only. Non-blocking (background thread + poll), same as the junk scan."""
+    ok, cleaned = _validate_analyze_path(_space_root())
+    if not ok:
+        return jsonify({"ok": False, "status": "error", "error": cleaned, "files": []}), 422
+    top_n = _clamp_top_n(request.args.get("top_n", type=int))
+    force = request.args.get("refresh") in ("1", "true", "yes")
+    # Key off the VALIDATED, CLAMPED values. Keying off the raw query args would
+    # let top_n=201 / 5000 / 999999 — all identical after clamping — each mint a
+    # separate permanent registry entry.
+    key = f"large_files:{_cache_root(cleaned)}:{top_n}"
+    return jsonify(start_or_get(key, lambda: scan_large_files(cleaned, top_n), force=force))
+
+
+@maintenance_bp.route("/api/maintenance/space/duplicates")
+def maintenance_duplicates_route():
+    """Byte-identical duplicate files under ``?root=`` (default: user profile).
+
+    Read-only: it reports groups, it never deletes. Non-blocking."""
+    ok, cleaned = _validate_analyze_path(_space_root())
+    if not ok:
+        return jsonify({"ok": False, "status": "error", "error": cleaned, "groups": []}), 422
+    min_bytes = _clamp_min_bytes(request.args.get("min_bytes", type=int))
+    force = request.args.get("refresh") in ("1", "true", "yes")
+    key = f"duplicates:{_cache_root(cleaned)}:{min_bytes}"
+    return jsonify(start_or_get(key, lambda: find_duplicates(cleaned, min_bytes), force=force))
