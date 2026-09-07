@@ -9303,21 +9303,14 @@ async function mnt_scan(force) {
   while (host.firstChild) host.removeChild(host.firstChild);
   const progress = mnt_el("div", "color:var(--muted);font-size:13px;padding:12px", "Scanning…");
   host.appendChild(progress);
-  const t0 = Date.now();
   try {
-    let d = null;
-    let url = "/api/maintenance/junk/scan" + (force ? "?refresh=1" : "");
-    for (let i = 0; i < 120; i++) {  // up to ~3 min
-      const r = await fetch(url);
-      d = await r.json();
-      if (!d || d.status !== "running") break;
-      progress.textContent = `Scanning… (${Math.round((Date.now() - t0) / 1000)}s)`;
-      await new Promise(res => setTimeout(res, 1500));
-      url = "/api/maintenance/junk/scan";  // subsequent polls read the in-flight scan
-    }
+    // Shares mnt_poll with the space scans so all three behave identically.
+    const d = await mnt_poll("/api/maintenance/junk/scan", force,
+      s => { progress.textContent = `Scanning… (${s}s)`; });
     while (host.firstChild) host.removeChild(host.firstChild);
     if (!d || !d.ok || d.status === "running") {
-      host.appendChild(mnt_el("div", "color:var(--red);padding:12px", d && d.error ? "Scan failed: " + d.error : "Scan timed out."));
+      const p = mnt_pollProblem(d);
+      host.appendChild(mnt_el("div", `color:${p.color};padding:12px`, p.text));
       return;
     }
     if (totalEl) totalEl.textContent = `${d.total_human} reclaimable`;
@@ -9398,15 +9391,33 @@ async function mnt_poll(url, force, onTick, maxPolls) {
   const t0 = Date.now();
   let u = url + (url.includes("?") ? "&" : "?") + (force ? "refresh=1" : "");
   let d = null;
-  for (let i = 0; i < (maxPolls || 130); i++) {
+  for (let i = 0; i < (maxPolls || 260); i++) {
     const r = await fetch(u);
     d = await r.json();
     if (!d || d.status !== "running") break;
     if (onTick) onTick(Math.round((Date.now() - t0) / 1000));
-    await new Promise(res => setTimeout(res, 1500));
+    // Snappy at first, then easier on a scan that is clearly going to take a
+    // while. 20x1.5s + 240x3s gives a ~12 min ceiling: a cold %TEMP% walk on a
+    // busy machine really can run past three minutes, and giving up on it was
+    // reported to the user as a failure.
+    await new Promise(res => setTimeout(res, i < 20 ? 1500 : 3000));
     u = url;  // later polls read the in-flight scan; never re-force
   }
   return d;
+}
+
+// A scan we stopped waiting for has NOT failed. Saying "timed out" when the
+// worker is still happily running (and will cache its result) is a lie that
+// trains people to distrust the tab — so the two cases read differently.
+function mnt_pollProblem(d) {
+  if (!d) return {text: "No response from the scanner.", color: "var(--red)"};
+  if (d.status === "running") {
+    return {
+      text: "Still scanning in the background — this folder is unusually large. It will finish on its own; click the scan button again in a moment to pick up the result.",
+      color: "var(--amber)",
+    };
+  }
+  return {text: "Scan failed: " + (d.error || "unknown error"), color: "var(--red)"};
 }
 
 function mnt_spaceRoot() {
@@ -9459,8 +9470,8 @@ async function mnt_bigFiles(force) {
     const d = await mnt_poll(url, force, s => { progress.textContent = `Scanning… (${s}s)`; });
     while (host.firstChild) host.removeChild(host.firstChild);
     if (!d || !d.ok || d.status === "running") {
-      host.appendChild(mnt_el("div", "color:var(--red);font-size:12px;padding:10px 12px",
-        d && d.error ? "Scan failed: " + d.error : "Scan timed out."));
+      const p = mnt_pollProblem(d);
+      host.appendChild(mnt_el("div", `color:${p.color};font-size:12px;padding:10px 12px`, p.text));
       return;
     }
     const head = mnt_el("div", "font-size:11px;color:var(--muted);padding:6px 12px",
@@ -9496,8 +9507,8 @@ async function mnt_dupes(force) {
     const d = await mnt_poll(url, force, s => { progress.textContent = `Hashing… (${s}s)`; });
     while (host.firstChild) host.removeChild(host.firstChild);
     if (!d || !d.ok || d.status === "running") {
-      host.appendChild(mnt_el("div", "color:var(--red);font-size:12px;padding:10px 12px",
-        d && d.error ? "Scan failed: " + d.error : "Scan timed out."));
+      const p = mnt_pollProblem(d);
+      host.appendChild(mnt_el("div", `color:${p.color};font-size:12px;padding:10px 12px`, p.text));
       return;
     }
     const shown = (d.groups || []).length;
