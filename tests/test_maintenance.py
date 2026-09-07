@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import os
 import time
+from urllib.parse import quote
 
 import pytest
 
 import maintenance
+
+_CLOCK_EVERY_TEST_FILES = maintenance._CLOCK_EVERY * 3
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -430,3 +433,378 @@ class TestRoutes:
         )
         assert r.status_code == 200
         clean.assert_called_once_with(["user_temp"])
+
+
+# ── Tier 2: space analysis (read-only) ────────────────────────────────────────
+
+
+def _mkbin(path, blob):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(blob)
+    return path
+
+
+def _raise(exc):
+    raise exc
+
+
+class TestWalkFiles:
+    def test_yields_files_recursively_not_dirs(self, tmp_path):
+        _mkfile(str(tmp_path / "a.bin"), 10)
+        _mkfile(str(tmp_path / "sub" / "b.bin"), 20)
+        budget = maintenance._new_budget()
+        got = {os.path.basename(p): s for p, s in maintenance._walk_files(str(tmp_path), budget)}
+        assert got == {"a.bin": 10, "b.bin": 20}
+        assert budget["files"] == 2
+        assert budget["truncated"] is False
+
+    def test_file_cap_truncates(self, tmp_path):
+        for i in range(5):
+            _mkfile(str(tmp_path / f"f{i}.bin"), 10)
+        budget = maintenance._new_budget(max_files=2)
+        out = list(maintenance._walk_files(str(tmp_path), budget))
+        assert len(out) <= 3  # stops at/just past the cap, never walks all 5
+        assert budget["truncated"] is True
+
+    def test_time_budget_truncates(self, tmp_path):
+        _mkfile(str(tmp_path / "a.bin"), 10)
+        budget = maintenance._new_budget(seconds=-1)  # already expired
+        assert list(maintenance._walk_files(str(tmp_path), budget)) == []
+        assert budget["truncated"] is True
+
+    def test_unreadable_dir_is_skipped_not_fatal(self, tmp_path, mocker):
+        _mkfile(str(tmp_path / "a.bin"), 10)
+        mocker.patch("maintenance.os.scandir", side_effect=OSError("denied"))
+        budget = maintenance._new_budget()
+        assert list(maintenance._walk_files(str(tmp_path), budget)) == []
+
+    def test_reparse_points_are_never_followed(self, tmp_path, mocker):
+        _mkfile(str(tmp_path / "a.bin"), 10)
+        mocker.patch("maintenance._is_reparse", return_value=True)
+        budget = maintenance._new_budget()
+        assert list(maintenance._walk_files(str(tmp_path), budget)) == []
+
+
+class TestScanLargeFiles:
+    def test_ranks_biggest_first(self, tmp_path, mocker):
+        mocker.patch.object(maintenance, "_BIGFILE_MIN_BYTES", 0)
+        for name, size in [("small.bin", 10), ("big.bin", 900), ("mid.bin", 500)]:
+            _mkfile(str(tmp_path / name), size)
+        out = maintenance.scan_large_files(str(tmp_path), top_n=5)
+        assert out["ok"] is True
+        assert [f["name"] for f in out["files"]] == ["big.bin", "mid.bin", "small.bin"]
+        assert out["total_bytes"] == 1410
+
+    def test_top_n_keeps_only_the_largest(self, tmp_path, mocker):
+        mocker.patch.object(maintenance, "_BIGFILE_MIN_BYTES", 0)
+        for i in range(10):
+            _mkfile(str(tmp_path / f"f{i}.bin"), 100 + i)
+        out = maintenance.scan_large_files(str(tmp_path), top_n=5)
+        assert len(out["files"]) == 5
+        assert out["files"][0]["bytes"] == 109  # biggest survives the min-heap
+
+    def test_files_below_threshold_are_ignored(self, tmp_path):
+        _mkfile(str(tmp_path / "tiny.bin"), 100)
+        out = maintenance.scan_large_files(str(tmp_path))
+        assert out["files"] == []
+        assert out["scanned"] == 1  # walked it, just did not report it
+
+    def test_top_n_is_clamped(self, tmp_path):
+        assert maintenance.scan_large_files(str(tmp_path), top_n=99999)["ok"] is True
+        assert maintenance.scan_large_files(str(tmp_path), top_n=0)["ok"] is True
+
+    def test_invalid_root_returns_error_not_raise(self):
+        out = maintenance.scan_large_files(r"\\server\share")
+        assert out["ok"] is False
+        assert out["files"] == []
+        assert "error" in out
+
+    def test_row_carries_path_and_dir(self, tmp_path, mocker):
+        mocker.patch.object(maintenance, "_BIGFILE_MIN_BYTES", 0)
+        p = _mkfile(str(tmp_path / "sub" / "x.bin"), 50)
+        row = maintenance.scan_large_files(str(tmp_path))["files"][0]
+        assert row["path"] == p
+        assert row["dir"] == os.path.dirname(p)
+        assert row["name"] == "x.bin"
+
+
+class TestHashFile:
+    def test_full_hash_matches_for_identical_content(self, tmp_path):
+        a = _mkbin(str(tmp_path / "a"), b"hello world" * 100)
+        b = _mkbin(str(tmp_path / "b"), b"hello world" * 100)
+        assert maintenance._hash_file(a) == maintenance._hash_file(b)
+
+    def test_differing_content_differs(self, tmp_path):
+        a = _mkbin(str(tmp_path / "a"), b"A" * 500)
+        b = _mkbin(str(tmp_path / "b"), b"B" * 500)
+        assert maintenance._hash_file(a) != maintenance._hash_file(b)
+
+    def test_limit_reads_only_the_head(self, tmp_path):
+        # Same first 16 bytes, different tails -> equal partial, different full.
+        a = _mkbin(str(tmp_path / "a"), b"same-head-1234567" + b"A" * 500)
+        b = _mkbin(str(tmp_path / "b"), b"same-head-1234567" + b"B" * 500)
+        assert maintenance._hash_file(a, limit=16) == maintenance._hash_file(b, limit=16)
+        assert maintenance._hash_file(a) != maintenance._hash_file(b)
+
+    def test_unreadable_returns_empty_string(self, tmp_path):
+        assert maintenance._hash_file(str(tmp_path / "nope.bin")) == ""
+
+
+class TestFindDuplicates:
+    def test_finds_identical_files(self, tmp_path):
+        blob = b"D" * 5000
+        _mkbin(str(tmp_path / "a.bin"), blob)
+        _mkbin(str(tmp_path / "sub" / "b.bin"), blob)
+        out = maintenance.find_duplicates(str(tmp_path), min_bytes=1024)
+        assert out["ok"] is True
+        assert out["group_count"] == 1
+        g = out["groups"][0]
+        assert g["count"] == 2
+        assert g["wasted_bytes"] == 5000  # one copy is the keeper
+        assert sorted(f["name"] for f in g["files"]) == ["a.bin", "b.bin"]
+
+    def test_same_size_different_content_is_not_a_duplicate(self, tmp_path):
+        # The bug this guards: grouping by size alone would call these dupes.
+        _mkbin(str(tmp_path / "a.bin"), b"A" * 5000)
+        _mkbin(str(tmp_path / "b.bin"), b"B" * 5000)
+        out = maintenance.find_duplicates(str(tmp_path), min_bytes=1024)
+        assert out["group_count"] == 0
+        assert out["total_wasted_bytes"] == 0
+
+    def test_files_larger_than_partial_window_are_fully_confirmed(self, tmp_path, mocker):
+        # Identical heads, different tails, size > partial window: must NOT group.
+        mocker.patch.object(maintenance, "_PARTIAL_HASH_BYTES", 16)
+        _mkbin(str(tmp_path / "a.bin"), b"same-head-1234567" + b"A" * 5000)
+        _mkbin(str(tmp_path / "b.bin"), b"same-head-1234567" + b"B" * 5000)
+        out = maintenance.find_duplicates(str(tmp_path), min_bytes=1024)
+        assert out["group_count"] == 0
+
+    def test_small_files_below_min_bytes_ignored(self, tmp_path):
+        blob = b"x" * 100
+        _mkbin(str(tmp_path / "a.bin"), blob)
+        _mkbin(str(tmp_path / "b.bin"), blob)
+        out = maintenance.find_duplicates(str(tmp_path), min_bytes=1024)
+        assert out["group_count"] == 0
+
+    def test_three_copies_waste_two_copies_worth(self, tmp_path):
+        blob = b"T" * 4096
+        for n in ("a.bin", "b.bin", "c.bin"):
+            _mkbin(str(tmp_path / n), blob)
+        out = maintenance.find_duplicates(str(tmp_path), min_bytes=1024)
+        assert out["groups"][0]["count"] == 3
+        assert out["groups"][0]["wasted_bytes"] == 8192
+
+    def test_min_bytes_has_a_floor(self, tmp_path):
+        out = maintenance.find_duplicates(str(tmp_path), min_bytes=1)
+        assert out["min_bytes"] >= 4096  # never degenerates into hashing everything
+
+    def test_invalid_root_returns_error_not_raise(self):
+        out = maintenance.find_duplicates(r"\\server\share")
+        assert out["ok"] is False
+        assert out["groups"] == []
+
+    def test_reports_only_never_deletes(self, tmp_path):
+        blob = b"K" * 5000
+        a = _mkbin(str(tmp_path / "a.bin"), blob)
+        b = _mkbin(str(tmp_path / "b.bin"), blob)
+        maintenance.find_duplicates(str(tmp_path), min_bytes=1024)
+        assert os.path.exists(a) and os.path.exists(b)  # analysis is read-only
+
+
+class TestGenericScanRegistry:
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        maintenance._scans.pop("unit", None)
+        yield
+        maintenance._scans.pop("unit", None)
+
+    def test_keys_are_isolated(self, mocker):
+        mocker.patch("maintenance.threading.Thread")
+        maintenance.start_or_get("unit", lambda: {"ok": True})
+        assert maintenance._scans["unit"]["running"] is True
+        assert maintenance._scans["junk"]["running"] is False  # untouched
+
+    def test_worker_caches_under_its_own_key(self):
+        maintenance._scan_worker("unit", lambda: {"ok": True, "v": 1})
+        assert maintenance._scans["unit"]["result"]["v"] == 1
+        assert maintenance._scans["unit"]["running"] is False
+
+    def test_worker_exception_is_captured(self):
+        maintenance._scan_worker("unit", lambda: _raise(OSError("boom")))
+        assert maintenance._scans["unit"]["result"]["ok"] is False
+        assert "boom" in maintenance._scans["unit"]["result"]["error"]
+        assert maintenance._scans["unit"]["running"] is False
+
+    def test_thread_start_failure_rolls_back(self, mocker):
+        mocker.patch("maintenance.threading.Thread", side_effect=RuntimeError("nope"))
+        out = maintenance.start_or_get("unit", lambda: {"ok": True})
+        assert out["ok"] is False and out["status"] == "error"
+        assert maintenance._scans["unit"]["running"] is False
+
+    def test_failed_result_is_not_served_as_fresh(self, mocker):
+        maintenance._scans["unit"] = {"running": False, "result": {"ok": False}, "ts": time.time()}
+        thread = mocker.patch("maintenance.threading.Thread")
+        out = maintenance.start_or_get("unit", lambda: {"ok": True})
+        assert out["status"] == "running"
+        thread.assert_called_once()  # retried rather than serving the stale error
+
+
+class TestSpaceRoutes:
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        for k in [k for k in maintenance._scans if k != "junk"]:
+            maintenance._scans.pop(k)
+        yield
+
+    def test_large_files_route_is_nonblocking(self, client, mocker):
+        thread = mocker.patch("maintenance.threading.Thread")
+        r = client.get("/api/maintenance/space/large-files")
+        assert r.status_code == 200
+        assert r.get_json()["status"] == "running"
+        thread.assert_called_once()
+
+    def test_duplicates_route_is_nonblocking(self, client, mocker):
+        thread = mocker.patch("maintenance.threading.Thread")
+        r = client.get("/api/maintenance/space/duplicates")
+        assert r.status_code == 200
+        assert r.get_json()["status"] == "running"
+        thread.assert_called_once()
+
+    def test_different_roots_do_not_share_a_cache_entry(self, client, mocker):
+        mocker.patch("maintenance.threading.Thread")
+        client.get("/api/maintenance/space/large-files?root=C:\\Users")
+        client.get("/api/maintenance/space/large-files?root=C:\\Windows")
+        keys = [k for k in maintenance._scans if k.startswith("large_files:")]
+        assert len(keys) == 2  # a scan of one root is never served for another
+
+    def test_top_n_is_part_of_the_cache_key(self, client, mocker):
+        mocker.patch("maintenance.threading.Thread")
+        client.get("/api/maintenance/space/large-files?top_n=10")
+        client.get("/api/maintenance/space/large-files?top_n=50")
+        assert len({k for k in maintenance._scans if k.startswith("large_files:")}) == 2
+
+    def test_default_root_is_the_user_profile(self):
+        assert maintenance.default_scan_root() == os.path.expandvars("%USERPROFILE%")
+
+    def test_done_result_is_returned_when_cached(self, client):
+        key = f"large_files:{os.path.normcase(maintenance.default_scan_root())}:40"
+        maintenance._scans[key] = {"running": False, "result": {"ok": True, "files": []}, "ts": time.time()}
+        r = client.get("/api/maintenance/space/large-files")
+        assert r.get_json()["status"] == "done"
+
+
+class TestWalkClockGranularity:
+    def test_clock_is_rechecked_inside_one_large_directory(self, tmp_path, mocker):
+        """The deadline must be re-checked every _CLOCK_EVERY files, not every
+        few thousand. On slow media a single stat() can cost ~100ms, so a coarse
+        interval would overshoot the time budget by minutes and outlive the UI's
+        poll window."""
+        for i in range(_CLOCK_EVERY_TEST_FILES):
+            _mkfile(str(tmp_path / f"f{i}.bin"), 1)
+        # monotonic: call 1 builds the deadline, call 2 is the outer while check
+        # (still inside budget), every later call is far past it — so the walk
+        # must stop at the first in-directory clock check.
+        seq = iter([0.0, 0.0] + [10_000.0] * 100_000)
+        mocker.patch("maintenance.time.monotonic", side_effect=lambda: next(seq))
+        budget = maintenance._new_budget(seconds=1)
+        out = list(maintenance._walk_files(str(tmp_path), budget))
+        assert len(out) == maintenance._CLOCK_EVERY
+        assert budget["truncated"] is True
+
+
+class TestRegistryEviction:
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        yield
+        for k in [k for k in maintenance._scans if k != "junk"]:
+            maintenance._scans.pop(k)
+
+    def test_registry_is_bounded(self):
+        for i in range(maintenance._SCANS_MAX + 20):
+            maintenance._scans[f"x{i}"] = {"running": False, "result": {"ok": True}, "ts": float(i)}
+        with maintenance._scans_lock:
+            maintenance._evict_stale()
+        assert len(maintenance._scans) <= maintenance._SCANS_MAX
+
+    def test_oldest_go_first(self):
+        for i in range(maintenance._SCANS_MAX + 5):
+            maintenance._scans[f"x{i}"] = {"running": False, "result": {"ok": True}, "ts": float(i)}
+        with maintenance._scans_lock:
+            maintenance._evict_stale()
+        assert "x0" not in maintenance._scans  # oldest evicted
+        assert f"x{maintenance._SCANS_MAX + 4}" in maintenance._scans  # newest kept
+
+    def test_running_scans_are_never_evicted(self):
+        maintenance._scans["busy"] = {"running": True, "result": None, "ts": 0.0}
+        for i in range(maintenance._SCANS_MAX + 20):
+            maintenance._scans[f"x{i}"] = {"running": False, "result": {"ok": True}, "ts": float(i + 1)}
+        with maintenance._scans_lock:
+            maintenance._evict_stale()
+        assert maintenance._scans["busy"]["running"] is True  # its worker still needs the slot
+
+    def test_junk_slot_survives_and_keeps_its_identity(self):
+        junk = maintenance._scans["junk"]
+        for i in range(maintenance._SCANS_MAX + 20):
+            maintenance._scans[f"x{i}"] = {"running": False, "result": {"ok": True}, "ts": float(i + 1)}
+        with maintenance._scans_lock:
+            maintenance._evict_stale()
+        assert "junk" in maintenance._scans
+        # The legacy _scan_state alias must still point at the live slot.
+        assert maintenance._scans["junk"] is junk
+        assert maintenance._scan_state is maintenance._scans["junk"]
+
+
+class TestSpaceCacheKeys:
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        for k in [k for k in maintenance._scans if k != "junk"]:
+            maintenance._scans.pop(k)
+        yield
+        for k in [k for k in maintenance._scans if k != "junk"]:
+            maintenance._scans.pop(k)
+
+    def _keys(self, prefix):
+        return {k for k in maintenance._scans if k.startswith(prefix)}
+
+    def test_out_of_range_top_n_values_share_one_entry(self, client, mocker):
+        # All clamp to 200, so they are the same scan and must share one slot.
+        mocker.patch("maintenance.threading.Thread")
+        client.get("/api/maintenance/space/large-files?top_n=201")
+        client.get("/api/maintenance/space/large-files?top_n=5000")
+        client.get("/api/maintenance/space/large-files?top_n=999999")
+        assert len(self._keys("large_files:")) == 1
+
+    def test_equivalent_root_spellings_share_one_entry(self, client, mocker):
+        mocker.patch("maintenance.threading.Thread")
+        prof = maintenance.default_scan_root()
+        client.get("/api/maintenance/space/large-files?root=" + prof)
+        client.get("/api/maintenance/space/large-files?root=" + prof + "\\")
+        client.get("/api/maintenance/space/large-files?root=" + prof.replace("\\", "/"))
+        assert len(self._keys("large_files:")) == 1
+
+    def test_out_of_range_min_bytes_share_one_entry(self, client, mocker):
+        mocker.patch("maintenance.threading.Thread")
+        client.get("/api/maintenance/space/duplicates?min_bytes=1")
+        client.get("/api/maintenance/space/duplicates?min_bytes=100")
+        assert len(self._keys("duplicates:")) == 1  # both clamp to the 4096 floor
+
+    def test_genuinely_different_roots_still_split(self, client, mocker):
+        mocker.patch("maintenance.threading.Thread")
+        client.get("/api/maintenance/space/large-files?root=C:\\Users")
+        client.get("/api/maintenance/space/large-files?root=C:\\Windows")
+        assert len(self._keys("large_files:")) == 2
+
+    def test_invalid_root_is_rejected_without_starting_a_scan(self, client, mocker):
+        thread = mocker.patch("maintenance.threading.Thread")
+        r = client.get("/api/maintenance/space/large-files?root=" + quote(r"\\server\share"))
+        assert r.status_code == 422
+        assert r.get_json()["ok"] is False
+        thread.assert_not_called()  # fails fast rather than spawning a doomed scan
+        assert self._keys("large_files:") == set()  # and leaves no registry entry
+
+    def test_invalid_root_rejected_for_duplicates_too(self, client, mocker):
+        thread = mocker.patch("maintenance.threading.Thread")
+        r = client.get("/api/maintenance/space/duplicates?root=" + quote("Z:\\nope\\missing"))
+        assert r.status_code == 422
+        thread.assert_not_called()
