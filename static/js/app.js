@@ -339,7 +339,7 @@ document.querySelectorAll(".page-tab").forEach(btn => {
       // tab is the strongest signal they want fresh numbers.
       util_load();
     } else if (page === "maintenance") {
-      if (!_tabLoaded["maintenance"]) { _tabLoaded["maintenance"] = true; mnt_scan(); }
+      if (!_tabLoaded["maintenance"]) { _tabLoaded["maintenance"] = true; mnt_scan(); mnt_system(); }
     } else if (page === "logs") {
       if (!_tabLoaded["logs"])           { _tabLoaded["logs"]           = true; logLoad(); }
     } else if (page === "architecture") {
@@ -9381,6 +9381,139 @@ async function mnt_diskCleanup() {
     const d = await r.json();
     if (!d.ok) alert("Could not launch Disk Cleanup: " + (d.error || "unknown error"));
   } catch (e) { alert("Could not launch Disk Cleanup: " + e.message); }
+}
+
+// ── Tier 3: system maintenance (read-only status + hand-offs) ───────────────
+// Nothing here runs a repair. SFC / DISM / Optimize-Volume all need admin, and
+// the app never spawns an elevated repair — it reports what it can read as a
+// normal user and hands the actual work to Windows' own tools.
+
+function mnt_statusRow(label, valueText, color, detail) {
+  const row = mnt_el("div", "display:flex;align-items:flex-start;gap:12px;padding:9px 12px;border-bottom:1px solid var(--border)");
+  const mid = mnt_el("div", "flex:1;min-width:0");
+  mid.appendChild(mnt_el("div", "font-weight:600;font-size:12px", label));
+  if (detail) mid.appendChild(mnt_el("div", "font-size:10px;color:var(--muted)", detail));
+  row.appendChild(mid);
+  row.appendChild(mnt_el("div", `font-size:12px;font-weight:600;white-space:nowrap;color:${color}`, valueText));
+  return row;
+}
+
+async function mnt_runTool(tool, label) {
+  try {
+    const r = await fetch("/api/disk/run-tool", {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({tool}),
+    });
+    const d = await r.json();
+    if (!d.ok) alert(`Could not launch ${label}: ` + (d.error || "unknown error"));
+  } catch (e) { alert(`Could not launch ${label}: ` + e.message); }
+}
+
+function mnt_copyCommand(cli, btn) {
+  navigator.clipboard.writeText(cli).then(() => {
+    const was = btn.textContent;
+    btn.textContent = "Copied";
+    setTimeout(() => { btn.textContent = was; }, 1200);
+  }).catch(() => alert("Copy failed. The command is: " + cli));
+}
+
+async function mnt_system() {
+  const host = document.getElementById("mnt-system");
+  if (!host) return;
+  while (host.firstChild) host.removeChild(host.firstChild);
+  host.appendChild(mnt_el("div", "color:var(--muted);font-size:12px;padding:12px", "Reading system status…"));
+  try {
+    const d = await fetch("/api/maintenance/system/status").then(r => r.json());
+    while (host.firstChild) host.removeChild(host.firstChild);
+    if (!d || !d.ok) {
+      host.appendChild(mnt_el("div", "color:var(--red);font-size:12px;padding:12px",
+        "Could not read system status" + (d && d.error ? ": " + d.error : ".")));
+      return;
+    }
+
+    // TRIM
+    const t = d.trim || {};
+    if (t.known) {
+      const on = t.enabled === true;
+      const names = (t.filesystems || []).map(f => f.filesystem).join(", ");
+      mnt_appendRow(host, "SSD TRIM", on ? "Enabled" : (t.enabled === false ? "DISABLED" : "Unknown"),
+        on ? "var(--green)" : (t.enabled === false ? "var(--red)" : "var(--muted)"),
+        on ? `Windows is sending TRIM to your SSDs (${names}) — this keeps write speed up.`
+           : `TRIM is not being sent (${names}). SSDs slow down over time without it.`);
+    } else {
+      mnt_appendRow(host, "SSD TRIM", "Unknown", "var(--muted)", t.detail || "");
+    }
+
+    // Drive optimization schedule
+    const o = d.optimize || {};
+    if (o.known) {
+      const bad = o.stale || !o.succeeded || !o.enabled;
+      let value, detail;
+      if (!o.enabled) {
+        value = "Disabled"; detail = "Windows' scheduled drive optimization is turned off.";
+      } else if (!o.succeeded) {
+        value = "Last run failed"; detail = `Scheduled optimization returned ${o.result_hex}.`;
+      } else if (o.stale) {
+        value = `${o.days_ago}d ago`; detail = `Last optimization was over ${o.stale_after_days} days ago — the weekly schedule may not be running.`;
+      } else {
+        value = o.days_ago === 0 ? "Today" : `${o.days_ago}d ago`;
+        detail = `Windows optimized your drives on schedule (last result ${o.result_hex}).`;
+      }
+      mnt_appendRow(host, "Drive optimization", value, bad ? "var(--amber)" : "var(--green)", detail);
+    } else {
+      mnt_appendRow(host, "Drive optimization", "Unknown", "var(--muted)", o.detail || "");
+    }
+
+    // Pending reboot
+    const rb = d.reboot || {};
+    const strong = (rb.signals || []).filter(s => s.set && s.strong).map(s => s.label);
+    const soft = (rb.signals || []).filter(s => s.set && !s.strong).map(s => s.label);
+    if (rb.required) {
+      mnt_appendRow(host, "Pending reboot", "Restart needed", "var(--amber)",
+        "Windows is holding a restart: " + strong.join(", ") + ".");
+    } else if (rb.soft_only) {
+      // Deliberately NOT an alarm: PendingFileRenameOperations is set on plenty
+      // of healthy machines, so it is reported as context, not a warning.
+      mnt_appendRow(host, "Pending reboot", "Not required", "var(--green)",
+        "No servicing or update restart is pending. (" + soft.join(", ") + " — normal, not a problem.)");
+    } else {
+      mnt_appendRow(host, "Pending reboot", "Not required", "var(--green)", "Nothing is waiting on a restart.");
+    }
+
+    // Hand-offs — Windows owns these repairs
+    const tools = mnt_el("div", "padding:10px 12px");
+    tools.appendChild(mnt_el("div", "font-size:11px;color:var(--muted);margin-bottom:8px",
+      "These repairs need administrator rights, so they are handed to Windows rather than run by the app."));
+    (d.tools || []).forEach(tool => {
+      const row = mnt_el("div", "display:flex;align-items:flex-start;gap:10px;padding:7px 0");
+      const mid = mnt_el("div", "flex:1;min-width:0");
+      mid.appendChild(mnt_el("div", "font-weight:600;font-size:12px", tool.label));
+      mid.appendChild(mnt_el("div", "font-size:10px;color:var(--muted)", tool.description));
+      if (tool.kind === "command") {
+        mid.appendChild(mnt_el("code", "display:inline-block;margin-top:4px;font-size:11px;color:var(--cyan);background:var(--bg);padding:2px 6px;border-radius:4px", tool.cli));
+      }
+      row.appendChild(mid);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.style.cssText = "padding:5px 12px;font-size:11px;border-radius:6px;background:transparent;color:var(--cyan);border:1px solid var(--cyan);cursor:pointer;white-space:nowrap";
+      if (tool.kind === "launch") {
+        btn.textContent = "Open";
+        btn.onclick = () => mnt_runTool(tool.tool, tool.label);
+      } else {
+        btn.textContent = "Copy";
+        btn.onclick = () => mnt_copyCommand(tool.cli, btn);
+      }
+      row.appendChild(btn);
+      tools.appendChild(row);
+    });
+    host.appendChild(tools);
+  } catch (e) {
+    while (host.firstChild) host.removeChild(host.firstChild);
+    host.appendChild(mnt_el("div", "color:var(--red);font-size:12px;padding:12px", "System status error: " + e.message));
+  }
+}
+
+function mnt_appendRow(host, label, value, color, detail) {
+  host.appendChild(mnt_statusRow(label, value, color, detail));
 }
 
 // ── Tier 2: space analysis (read-only) ──────────────────────────────────────

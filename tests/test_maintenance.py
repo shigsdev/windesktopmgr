@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import threading
 import time
+from datetime import datetime, timezone
 from urllib.parse import quote
 
 import pytest
 
+import disk
 import maintenance
 
 _CLOCK_EVERY_TEST_FILES = maintenance._CLOCK_EVERY * 3
@@ -808,3 +812,397 @@ class TestSpaceCacheKeys:
         r = client.get("/api/maintenance/space/duplicates?root=" + quote("Z:\\nope\\missing"))
         assert r.status_code == 422
         thread.assert_not_called()
+
+
+# ── Tier 3: system maintenance (read-only status + hand-offs) ─────────────────
+
+_FSUTIL_MODERN = (
+    "NTFS DisableDeleteNotify = 0  (Allows TRIM operations to be sent to the storage device)\r\n"
+    "ReFS DisableDeleteNotify = 0  (Allows TRIM operations to be sent to the storage device)\r\n"
+)
+_FSUTIL_LEGACY = "DisableDeleteNotify = 0\r\n"
+_FSUTIL_OFF = (
+    "NTFS DisableDeleteNotify = 1  (Disables TRIM operations)\r\n"
+    "ReFS DisableDeleteNotify = 1  (Disables TRIM operations)\r\n"
+)
+
+
+def _fsutil(mocker, stdout="", stderr="", rc=0):
+    m = mocker.patch("maintenance.subprocess.run")
+    m.return_value.stdout = stdout
+    m.return_value.stderr = stderr
+    m.return_value.returncode = rc
+    return m
+
+
+class TestParseTrim:
+    def test_modern_two_filesystem_output(self):
+        rows = maintenance._parse_trim(_FSUTIL_MODERN)
+        assert [r["filesystem"] for r in rows] == ["NTFS", "ReFS"]
+        assert all(r["enabled"] is True for r in rows)
+
+    def test_legacy_unlabelled_output_defaults_to_ntfs(self):
+        rows = maintenance._parse_trim(_FSUTIL_LEGACY)
+        assert len(rows) == 1
+        assert rows[0]["filesystem"] == "NTFS"
+        assert rows[0]["enabled"] is True
+
+    def test_value_one_means_disabled(self):
+        rows = maintenance._parse_trim(_FSUTIL_OFF)
+        assert all(r["enabled"] is False for r in rows)
+
+    def test_unexpected_value_is_unknown_not_guessed(self):
+        # 2 is neither on nor off — we must not pretend to know.
+        rows = maintenance._parse_trim("NTFS DisableDeleteNotify = 2\r\n")
+        assert rows[0]["enabled"] is None
+
+    def test_garbage_yields_no_rows(self):
+        assert maintenance._parse_trim("not fsutil output at all") == []
+
+    def test_empty_input_is_safe(self):
+        assert maintenance._parse_trim("") == []
+        assert maintenance._parse_trim(None) == []
+
+
+class TestTrimStatus:
+    def test_happy_path(self, mocker):
+        _fsutil(mocker, stdout=_FSUTIL_MODERN)
+        out = maintenance._trim_status()
+        assert out["known"] is True
+        assert out["enabled"] is True
+        assert len(out["filesystems"]) == 2
+
+    def test_disabled_reported(self, mocker):
+        _fsutil(mocker, stdout=_FSUTIL_OFF)
+        assert maintenance._trim_status()["enabled"] is False
+
+    def test_mixed_is_not_reported_as_enabled(self, mocker):
+        _fsutil(mocker, stdout="NTFS DisableDeleteNotify = 0\r\nReFS DisableDeleteNotify = 1\r\n")
+        assert maintenance._trim_status()["enabled"] is False
+
+    def test_empty_output_is_unknown_not_crash(self, mocker):
+        _fsutil(mocker, stdout="   ")
+        out = maintenance._trim_status()
+        assert out["known"] is False
+        assert "detail" in out
+
+    def test_malformed_output_is_unknown(self, mocker):
+        _fsutil(mocker, stdout="???")
+        assert maintenance._trim_status()["known"] is False
+
+    def test_nonzero_returncode_with_stderr(self, mocker):
+        _fsutil(mocker, stdout="", stderr="Access is denied", rc=1)
+        out = maintenance._trim_status()
+        assert out["known"] is False
+        assert "denied" in out["detail"].lower()
+
+    def test_timeout_returns_unknown(self, mocker):
+        mocker.patch(
+            "maintenance.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="fsutil", timeout=15),
+        )
+        assert maintenance._trim_status()["known"] is False
+
+    def test_command_content(self, mocker):
+        m = _fsutil(mocker, stdout=_FSUTIL_MODERN)
+        maintenance._trim_status()
+        argv = m.call_args[0][0]
+        assert argv[:4] == ["fsutil", "behavior", "query", "DisableDeleteNotify"]
+
+
+class TestSummarizeOptimize:
+    def _task(self, **kw):
+        base = {
+            "name": "ScheduledDefrag",
+            "enabled": True,
+            "last_run": "2026-09-06T21:05:54+00:00",
+            "last_run_dt": datetime(2026, 9, 6, 21, 5, 54, tzinfo=timezone.utc),
+            "result": 0,
+        }
+        base.update(kw)
+        return base
+
+    def test_no_tasks_is_unknown(self):
+        out = maintenance._summarize_optimize([])
+        assert out["known"] is False
+
+    def test_recent_success_is_not_stale(self):
+        now = datetime(2026, 9, 10, tzinfo=timezone.utc)
+        out = maintenance._summarize_optimize([self._task()], now=now)
+        assert out["known"] is True
+        assert out["days_ago"] == 3
+        assert out["succeeded"] is True
+        assert out["stale"] is False
+
+    def test_old_run_is_stale(self):
+        now = datetime(2026, 12, 1, tzinfo=timezone.utc)
+        out = maintenance._summarize_optimize([self._task()], now=now)
+        assert out["stale"] is True
+        assert out["days_ago"] > 30
+
+    def test_nonzero_result_is_a_failure(self):
+        now = datetime(2026, 9, 10, tzinfo=timezone.utc)
+        out = maintenance._summarize_optimize([self._task(result=1)], now=now)
+        assert out["succeeded"] is False
+        assert out["result_hex"] == "0x1"
+
+    def test_negative_result_formats_as_unsigned_hex(self):
+        # Task Scheduler reports HRESULTs that arrive as negative ints.
+        now = datetime(2026, 9, 10, tzinfo=timezone.utc)
+        out = maintenance._summarize_optimize([self._task(result=-2147024894)], now=now)
+        assert out["result_hex"] == "0x80070002"
+        assert out["succeeded"] is False
+
+    def test_naive_timestamp_is_handled(self):
+        now = datetime(2026, 9, 10, tzinfo=timezone.utc)
+        task = self._task(last_run_dt=datetime(2026, 9, 6, 21, 5, 54))
+        out = maintenance._summarize_optimize([task], now=now)
+        assert out["days_ago"] == 3
+
+    def test_missing_timestamp_does_not_crash(self):
+        out = maintenance._summarize_optimize([self._task(last_run_dt=None)])
+        assert out["known"] is True
+        assert out["days_ago"] is None
+        assert out["stale"] is False  # unknown age is not asserted as stale
+
+    def test_disabled_schedule_reported(self):
+        now = datetime(2026, 9, 10, tzinfo=timezone.utc)
+        out = maintenance._summarize_optimize([self._task(enabled=False)], now=now)
+        assert out["enabled"] is False
+
+
+class _FakeTask:
+    def __init__(self, name="ScheduledDefrag", enabled=True, last=None, result=0):
+        self.Name = name
+        self.Enabled = enabled
+        self.LastRunTime = last if last is not None else datetime(2026, 9, 6, 21, 5, 54, tzinfo=timezone.utc)
+        self.LastTaskResult = result
+
+
+class _FakeFolder:
+    def __init__(self, tasks):
+        self._tasks = tasks
+
+    def GetTasks(self, flags):  # noqa: N802 -- mirrors the COM API
+        return self._tasks
+
+
+class _FakeSvc:
+    def __init__(self, tasks, expect_path=r"\Microsoft\Windows\Defrag"):
+        self._tasks = tasks
+        self._expect = expect_path
+        self.connected = False
+
+    def Connect(self):  # noqa: N802 -- mirrors the COM API
+        self.connected = True
+
+    def GetFolder(self, path):  # noqa: N802 -- mirrors the COM API
+        assert path == self._expect
+        return _FakeFolder(self._tasks)
+
+
+class _FakeClient:
+    def __init__(self, tasks):
+        self.svc = _FakeSvc(tasks)
+
+    def Dispatch(self, progid):  # noqa: N802 -- mirrors the COM API
+        assert progid == "Schedule.Service"
+        return self.svc
+
+
+class TestReadDefragTasks:
+    def test_parses_task_fields(self):
+        client = _FakeClient([_FakeTask()])
+        rows = maintenance._read_defrag_tasks(client)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["name"] == "ScheduledDefrag"
+        assert row["enabled"] is True
+        assert row["result"] == 0
+        assert row["last_run"] == "2026-09-06T21:05:54+00:00"
+        assert row["last_run_dt"].year == 2026
+        assert client.svc.connected is True  # Connect() is required before use
+
+    def test_missing_last_run_becomes_none(self):
+        rows = maintenance._read_defrag_tasks(_FakeClient([_FakeTask(last=False)]))
+        assert rows[0]["last_run"] is None
+
+    def test_multiple_tasks_all_returned(self):
+        rows = maintenance._read_defrag_tasks(_FakeClient([_FakeTask(), _FakeTask(name="Other", result=1)]))
+        assert [r["name"] for r in rows] == ["ScheduledDefrag", "Other"]
+        assert rows[1]["result"] == 1
+
+
+class TestDefragThreadContext:
+    def test_works_from_a_worker_thread_not_just_main(self):
+        """Regression: COM Dispatch() raises 'CoInitialize has not been called'
+        on a fresh thread, so without pythoncom.CoInitialize() this reported
+        Unknown on EVERY real Flask request while still passing a main-thread
+        hand check. The invariant is that thread context must not change the
+        answer — machine-independent, since both sides are empty on a box with
+        no Defrag task."""
+        main = maintenance._defrag_tasks()
+        box = {}
+
+        def worker():
+            box["result"] = maintenance._defrag_tasks()
+
+        th = threading.Thread(target=worker)
+        th.start()
+        th.join(timeout=30)
+        assert "result" in box, "worker thread did not finish"
+        assert bool(box["result"]) == bool(main), (
+            "drive-optimization read differs between main and worker thread — COM apartment not initialised"
+        )
+
+    def test_status_is_known_on_a_worker_thread(self):
+        # Only assert the verdict when this machine actually exposes the task,
+        # so the test stays honest on a box that has none.
+        if not maintenance._defrag_tasks():
+            pytest.skip("no scheduled Defrag task on this machine")
+        box = {}
+        th = threading.Thread(target=lambda: box.update(s=maintenance._summarize_optimize(maintenance._defrag_tasks())))
+        th.start()
+        th.join(timeout=30)
+        assert box["s"]["known"] is True
+
+
+class TestDefragTasks:
+    def test_missing_pywin32_returns_empty(self, mocker):
+        import builtins
+
+        real = builtins.__import__
+
+        def fake(name, *a, **kw):
+            if name == "win32com.client":
+                raise ImportError("no pywin32")
+            return real(name, *a, **kw)
+
+        mocker.patch.object(builtins, "__import__", side_effect=fake)
+        assert maintenance._defrag_tasks() == []
+
+    def test_com_failure_degrades_quietly(self, mocker):
+        mocker.patch("win32com.client.Dispatch", side_effect=OSError("COM down"))
+        assert maintenance._defrag_tasks() == []
+
+
+class TestPendingReboot:
+    def test_no_signals_means_no_reboot(self, mocker):
+        mocker.patch("maintenance._reboot_signal_set", return_value=False)
+        out = maintenance._pending_reboot()
+        assert out["required"] is False
+        assert out["soft_only"] is False
+        assert len(out["signals"]) == 3
+
+    def test_strong_signal_requires_reboot(self, mocker):
+        mocker.patch(
+            "maintenance._reboot_signal_set",
+            side_effect=lambda sig: sig["key"] == "component_servicing",
+        )
+        out = maintenance._pending_reboot()
+        assert out["required"] is True
+        assert out["soft_only"] is False
+
+    def test_soft_signal_alone_does_not_require_reboot(self, mocker):
+        # PendingFileRenameOperations is set on plenty of healthy machines —
+        # letting it claim "restart needed" would cry wolf.
+        mocker.patch(
+            "maintenance._reboot_signal_set",
+            side_effect=lambda sig: sig["key"] == "pending_file_rename",
+        )
+        out = maintenance._pending_reboot()
+        assert out["required"] is False
+        assert out["soft_only"] is True
+
+    def test_missing_key_is_not_set(self, mocker):
+        mocker.patch("maintenance.winreg.OpenKey", side_effect=FileNotFoundError)
+        assert maintenance._reboot_signal_set(maintenance._REBOOT_SIGNALS[0]) is False
+
+    def test_permission_error_is_not_set(self, mocker):
+        mocker.patch("maintenance.winreg.OpenKey", side_effect=OSError("denied"))
+        assert maintenance._reboot_signal_set(maintenance._REBOOT_SIGNALS[0]) is False
+
+    def test_key_presence_alone_is_the_signal(self, mocker):
+        mocker.patch("maintenance.winreg.OpenKey", mocker.MagicMock())
+        sig = {"path": "x", "value": None}
+        assert maintenance._reboot_signal_set(sig) is True
+
+    def test_empty_pending_rename_array_is_not_a_signal(self, mocker):
+        mocker.patch("maintenance.winreg.OpenKey", mocker.MagicMock())
+        mocker.patch("maintenance.winreg.QueryValueEx", return_value=(["", "  "], 7))
+        sig = {"path": "x", "value": "PendingFileRenameOperations"}
+        assert maintenance._reboot_signal_set(sig) is False
+
+    def test_populated_pending_rename_is_a_signal(self, mocker):
+        mocker.patch("maintenance.winreg.OpenKey", mocker.MagicMock())
+        mocker.patch("maintenance.winreg.QueryValueEx", return_value=([r"\??\C:\x.dll"], 7))
+        sig = {"path": "x", "value": "PendingFileRenameOperations"}
+        assert maintenance._reboot_signal_set(sig) is True
+
+
+class TestSystemStatus:
+    def test_shape(self, mocker):
+        mocker.patch("maintenance._trim_status", return_value={"known": True, "enabled": True})
+        mocker.patch("maintenance._defrag_tasks", return_value=[])
+        mocker.patch("maintenance._reboot_signal_set", return_value=False)
+        out = maintenance.system_status()
+        assert out["ok"] is True
+        for key in ("trim", "optimize", "reboot", "tools"):
+            assert key in out
+
+    def test_tools_are_handoffs_only(self, mocker):
+        mocker.patch("maintenance._trim_status", return_value={"known": False})
+        mocker.patch("maintenance._defrag_tasks", return_value=[])
+        mocker.patch("maintenance._reboot_signal_set", return_value=False)
+        tools = maintenance.system_status()["tools"]
+        keys = {t["key"] for t in tools}
+        assert keys == {"optimize_drives", "sfc", "dism"}
+        # Every tool either launches a Windows tool or shows a command to paste.
+        # Nothing here executes a repair from the app.
+        for t in tools:
+            assert t["kind"] in ("launch", "command")
+            if t["kind"] == "launch":
+                assert t["tool"] in disk._CLEANUP_TOOLS  # allowlisted
+            else:
+                assert t["cli"]
+
+    def test_returned_tools_are_copies(self, mocker):
+        mocker.patch("maintenance._trim_status", return_value={"known": False})
+        mocker.patch("maintenance._defrag_tasks", return_value=[])
+        mocker.patch("maintenance._reboot_signal_set", return_value=False)
+        maintenance.system_status()["tools"][0]["label"] = "MUTATED"
+        assert maintenance._SYSTEM_TOOLS[0]["label"] == "Optimize Drives"
+
+
+class TestSystemStatusRoute:
+    def test_returns_200_and_shape(self, client, mocker):
+        mocker.patch(
+            "maintenance.system_status",
+            return_value={"ok": True, "trim": {}, "optimize": {}, "reboot": {}, "tools": []},
+        )
+        r = client.get("/api/maintenance/system/status")
+        assert r.status_code == 200
+        assert r.get_json()["ok"] is True
+
+    def test_live_call_does_not_raise(self, client):
+        # No mocks: the real reads must degrade rather than 500 on any machine.
+        r = client.get("/api/maintenance/system/status")
+        assert r.status_code == 200
+        d = r.get_json()
+        assert d["ok"] is True
+        assert {"trim", "optimize", "reboot", "tools"} <= set(d)
+        # This assertion is the point: the original version of this test only
+        # checked ok/keys, so it passed while the drive-optimization read was
+        # dead on arrival (COM apartment) and reported Unknown forever. fsutil
+        # is present on every Windows box, so requiring a real TRIM verdict is
+        # portable and would have caught an equivalent regression.
+        assert d["trim"]["known"] is True
+        assert d["reboot"]["required"] in (True, False)
+
+
+class TestDfrguiAllowlisted:
+    def test_dfrgui_is_in_the_tool_allowlist(self):
+        # The Optimize Drives hand-off reuses /api/disk/run-tool rather than
+        # adding a second launcher route.
+        assert "dfrgui" in disk._CLEANUP_TOOLS
+        assert disk._CLEANUP_TOOLS["dfrgui"]["argv"] == ["dfrgui.exe"]
