@@ -9512,6 +9512,124 @@ async function mnt_system() {
   }
 }
 
+
+// ── Tier 4: registry report (read-only) ─────────────────────────────────────
+// There is deliberately no "fix" or "clean" button here. The report shows what
+// is broken and can back the keys up; removing a registry entry stays a
+// decision the user makes deliberately, in regedit.
+
+function mnt_regFinding(f) {
+  const row = mnt_el("div", "display:flex;align-items:flex-start;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border)");
+  const mid = mnt_el("div", "flex:1;min-width:0");
+  const head = mnt_el("div", "display:flex;align-items:center;gap:8px;flex-wrap:wrap");
+  head.appendChild(mnt_el("span", "font-weight:600;font-size:12px", f.name || "(unnamed)"));
+  head.appendChild(mnt_el("span", "font-size:10px;color:var(--muted);border:1px solid var(--border);border-radius:4px;padding:1px 5px", f.hive));
+  head.appendChild(mnt_el("span",
+    `font-size:10px;border-radius:4px;padding:1px 5px;border:1px solid var(--amber);color:var(--amber)`,
+    f.issue === "empty" ? "launches nothing" : "target missing"));
+  mid.appendChild(head);
+  mid.appendChild(mnt_el("div", "font-size:10px;color:var(--muted);margin-top:2px", f.detail || ""));
+  if (f.target) mid.appendChild(mnt_el("div", "font-size:10px;color:var(--muted);word-break:break-all;margin-top:2px", f.target));
+  mid.appendChild(mnt_el("div", "font-size:10px;color:var(--muted);word-break:break-all;opacity:.75", f.hive + "\\" + f.key));
+  row.appendChild(mid);
+  return row;
+}
+
+async function mnt_regBackup(btn) {
+  const host = document.getElementById("mnt-registry-backup");
+  const keys = window._mntRegKeys || [];
+  if (btn) { btn.disabled = true; btn.textContent = "Backing up…"; }
+  try {
+    const r = await fetch("/api/maintenance/registry/backup", {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({keys}),
+    });
+    const d = await r.json();
+    if (host) {
+      while (host.firstChild) host.removeChild(host.firstChild);
+      host.appendChild(mnt_el("div", `font-size:11px;color:${d.ok ? "var(--green)" : "var(--red)"}`,
+        d.ok ? `Backed up ${d.count} key(s) (${d.human}) to ${d.dir}`
+             : "Backup failed: " + (d.error || "unknown error")));
+    }
+  } catch (e) {
+    if (host) host.textContent = "Backup error: " + e.message;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Back up these keys"; }
+  }
+}
+
+async function mnt_registry(force) {
+  const host = document.getElementById("mnt-registry");
+  const btn = document.getElementById("mnt-registry-btn");
+  if (!host) return;
+  if (btn) { btn.disabled = true; btn.textContent = "Scanning…"; }
+  while (host.firstChild) host.removeChild(host.firstChild);
+  const progress = mnt_el("div", "color:var(--muted);font-size:12px;padding:12px", "Scanning…");
+  host.appendChild(progress);
+  try {
+    const d = await mnt_poll("/api/maintenance/registry/scan", force,
+      s => { progress.textContent = `Scanning… (${s}s)`; });
+    while (host.firstChild) host.removeChild(host.firstChild);
+    if (!d || !d.ok || d.status === "running") {
+      const p = mnt_pollProblem(d);
+      host.appendChild(mnt_el("div", `color:${p.color};font-size:12px;padding:10px 12px`, p.text));
+      return;
+    }
+
+    // Headline. "0 problems" is a real, useful result here, not a failure to
+    // find something — say so plainly instead of padding the list.
+    const clean = d.total === 0;
+    const headline = mnt_el("div", `padding:10px 12px;border-bottom:1px solid var(--border);font-size:13px;font-weight:600;color:${clean ? "var(--green)" : "var(--amber)"}`,
+      clean ? `No broken registry entries found (${d.checked.toLocaleString()} checked)`
+            : `${d.total} broken entr${d.total === 1 ? "y" : "ies"} found (${d.checked.toLocaleString()} checked)`);
+    host.appendChild(headline);
+    host.appendChild(mnt_el("div", "font-size:11px;color:var(--muted);padding:8px 12px;border-bottom:1px solid var(--border)", d.note || ""));
+
+    const keys = [];
+    (d.categories || []).forEach(c => {
+      const row = mnt_el("div", "padding:8px 12px;border-bottom:1px solid var(--border)");
+      const line = mnt_el("div", "display:flex;align-items:center;gap:10px");
+      const mid = mnt_el("div", "flex:1;min-width:0");
+      mid.appendChild(mnt_el("div", "font-weight:600;font-size:12px", c.label));
+      mid.appendChild(mnt_el("div", "font-size:10px;color:var(--muted)", c.description || ""));
+      line.appendChild(mid);
+      let tail = `${c.checked.toLocaleString()} checked`;
+      if (c.unverified) tail += ` · ${c.unverified} unverified`;
+      line.appendChild(mnt_el("div", "font-size:10px;color:var(--muted);white-space:nowrap", tail));
+      line.appendChild(mnt_el("div",
+        `font-size:12px;font-weight:600;white-space:nowrap;color:${c.count ? "var(--amber)" : "var(--green)"}`,
+        c.count ? String(c.count) : "0"));
+      row.appendChild(line);
+      if (c.error) row.appendChild(mnt_el("div", "font-size:10px;color:var(--red);margin-top:4px", "Could not read: " + c.error));
+      host.appendChild(row);
+      (c.findings || []).forEach(f => { host.appendChild(mnt_regFinding(f)); if (!keys.includes(f.key)) keys.push(f.key); });
+    });
+    window._mntRegKeys = keys;
+
+    const bar = mnt_el("div", "padding:10px 12px");
+    if (keys.length) {
+      const backup = document.createElement("button");
+      backup.type = "button"; backup.textContent = "Back up these keys";
+      backup.style.cssText = "padding:6px 14px;font-size:12px;border-radius:6px;background:transparent;color:var(--cyan);border:1px solid var(--cyan);cursor:pointer";
+      backup.onclick = () => mnt_regBackup(backup);
+      bar.appendChild(backup);
+      bar.appendChild(mnt_el("div", "font-size:11px;color:var(--muted);margin-top:6px",
+        "Saves a .reg file per key so you can restore it if you remove an entry by hand. Nothing here edits the registry."));
+    } else {
+      bar.appendChild(mnt_el("div", "font-size:11px;color:var(--muted)",
+        "Nothing to back up — no broken entries were found."));
+    }
+    const result = mnt_el("div", "margin-top:6px");
+    result.id = "mnt-registry-backup";
+    bar.appendChild(result);
+    host.appendChild(bar);
+  } catch (e) {
+    while (host.firstChild) host.removeChild(host.firstChild);
+    host.appendChild(mnt_el("div", "color:var(--red);font-size:12px;padding:12px", "Registry scan error: " + e.message));
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Scan registry"; }
+  }
+}
+
 function mnt_appendRow(host, label, value, color, detail) {
   host.appendChild(mnt_statusRow(label, value, color, detail));
 }
