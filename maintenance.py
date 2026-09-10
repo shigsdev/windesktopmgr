@@ -1046,6 +1046,507 @@ def system_status() -> dict:
     }
 
 
+# ── Tier 4: registry report (READ-ONLY — never writes to the registry) ───────
+# Honest framing, because this is the one maintenance category the industry
+# lies about: cleaning the registry does NOT make Windows faster. Windows does
+# not care about a few thousand stale keys. What a registry report is genuinely
+# good for is finding entries that are BROKEN — a startup item pointing at a
+# program you deleted, which produces an error at every boot.
+#
+# So this reports breakage and nothing else, and it offers a .reg backup rather
+# than a delete button. Deciding to remove a registry key is the user's call.
+#
+# Categories deliberately NOT reported, because they manufacture false positives
+# and false positives are how this genre of tool damages systems:
+#   * Uninstall entries with no DisplayName. On this machine that matches 35 of
+#     209 entries — including AddressBook, Connection Manager, DirectDrawEx,
+#     DXM_Runtime and Fontcore, all legitimate Windows components. A "cleaner"
+#     that flags those is not finding junk, it is inventing it.
+#   * Anything launched through a host process (rundll32/msiexec/cmd). The real
+#     target is an argument, and guessing wrong means telling someone a working
+#     entry is dead. Those are reported as UNVERIFIED, never as broken.
+
+_REG_BACKUP_DIR = os.path.join(
+    os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+    "WinDesktopMgr",
+    "registry-backups",
+)
+_REG_EXPORT_TIMEOUT_S = 60
+# Host processes always exist, so "the file is there" says nothing about whether
+# the entry works - the real target is an argument. Matched on the BASENAME: a
+# fully-qualified path to rundll32.exe would sail past a startswith() check and
+# get reported as healthy.
+_HOST_PROCESS_STEMS = frozenset(
+    {"rundll32", "regsvr32", "msiexec", "cmd", "powershell", "pwsh", "wscript", "cscript", "mshta", "explorer"}
+)
+_EXE_RE = re.compile(r"^(.*?\.(?:exe|com|bat|cmd|scr))(?:\s|$)", re.I)
+
+_STARTUP_KEYS = (
+    ("HKLM", winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"),
+    ("HKLM", winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce"),
+    ("HKLM-WOW64", winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run"),
+    ("HKLM-WOW64", winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\RunOnce"),
+    ("HKCU", winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"),
+    ("HKCU", winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce"),
+)
+
+_UNINSTALL_KEYS = (
+    ("HKLM", winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ("HKLM-WOW64", winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ("HKCU", winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+)
+
+# Both the native and the 32-bit (WOW6432Node) views: a broken 32-bit
+# registration lives only in the redirected view and would otherwise never be
+# checked.
+_APP_PATHS_KEYS = (
+    r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths",
+    r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths",
+)
+_SHARED_DLLS_KEYS = (
+    r"SOFTWARE\Microsoft\Windows\CurrentVersion\SharedDLLs",
+    r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\SharedDLLs",
+)
+
+
+def _reg_subkeys(root, path: str) -> list[str]:
+    """Subkey names under ``path``. Empty list if unreadable — never raises."""
+    out: list[str] = []
+    try:
+        with winreg.OpenKey(root, path) as key:
+            count, _, _ = winreg.QueryInfoKey(key)
+            for i in range(count):
+                try:
+                    out.append(winreg.EnumKey(key, i))
+                except OSError:
+                    continue
+    except OSError:
+        return []
+    return out
+
+
+def _reg_values(root, path: str) -> list[tuple[str, object]]:
+    """(name, value) pairs under ``path``. Empty list if unreadable."""
+    out: list[tuple[str, object]] = []
+    try:
+        with winreg.OpenKey(root, path) as key:
+            _, count, _ = winreg.QueryInfoKey(key)
+            for i in range(count):
+                try:
+                    name, value, _ = winreg.EnumValue(key, i)
+                    out.append((name, value))
+                except OSError:
+                    continue
+    except OSError:
+        return []
+    return out
+
+
+def _reg_value(root, path: str, name: str = "") -> str:
+    try:
+        with winreg.OpenKey(root, path) as key:
+            return str(winreg.QueryValueEx(key, name)[0])
+    except OSError:
+        return ""
+
+
+def _is_unc(path: str) -> bool:
+    """True for a network path.
+
+    A UNC target cannot be verified: os.path.exists() on an unreachable share
+    returns False, so a working entry would be reported broken whenever the
+    server is off - and an unreachable UNC can block on SMB timeouts for
+    seconds, which would wreck a scan that otherwise runs in ~60ms. EVERY
+    scanner routes through this, not just the startup one.
+    """
+    return path.startswith(("\\\\", "//"))
+
+
+def _alt_bitness_paths(path: str):
+    """Yield the 32/64-bit siblings of a path.
+
+    This process is 64-bit, so it expands %ProgramFiles% to the native folder
+    and resolves System32 to the native System32. A 32-bit entry (WOW6432Node)
+    means the (x86) / SysWOW64 sibling. Checking only the 64-bit reading would
+    report a perfectly good 32-bit entry as missing."""
+    root = os.environ.get("SYSTEMROOT", r"C:\Windows")
+    pairs = (
+        (
+            os.environ.get("PROGRAMFILES", r"C:\Program Files"),
+            os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
+        ),
+        (os.path.join(root, "System32"), os.path.join(root, "SysWOW64")),
+    )
+    low = path.lower()
+    for first, second in pairs:
+        # Longest prefix first: "C:\Program Files" is a string prefix of
+        # "C:\Program Files (x86)", so testing the short one first would match
+        # an x86 path and build nonsense (or skip the real sibling entirely).
+        for a, b in sorted(((first, second), (second, first)), key=lambda ab: -len(ab[0] or "")):
+            if not a or not b:
+                continue
+            if low.startswith(a.lower()):
+                alt = b + path[len(a) :]
+                if alt.lower() != low:
+                    yield alt
+                break
+
+
+def _target_exists(path: str) -> bool:
+    """Existence check that tolerates 32/64-bit path differences."""
+    if not path:
+        return False
+    try:
+        if os.path.exists(path):
+            return True
+        return any(os.path.exists(alt) for alt in _alt_bitness_paths(path))
+    except OSError:
+        return False
+
+
+def _host_guard(path: str) -> tuple[str, str]:
+    """Downgrade a host-process target to unverified.
+
+    rundll32/msiexec/cmd always exist, so confirming the host is present would
+    pass a broken entry off as healthy. Say we could not verify it instead."""
+    if _is_unc(path):
+        return "", "unverified"
+    stem = os.path.splitext(os.path.basename(path))[0].lower()
+    if stem in _HOST_PROCESS_STEMS:
+        return "", "unverified"
+    return path, "ok"
+
+
+def _resolve_command_target(cmd: str) -> tuple[str, str]:
+    """Resolve a registry command line to the file it actually launches.
+
+    Returns ``(path, status)`` where status is one of:
+      ``ok``         - a path was resolved; the caller checks whether it exists
+      ``empty``      - the entry launches nothing at all (definitively broken)
+      ``unverified`` - a host process or an unparseable command. NEVER reported
+                       as broken: guessing here is exactly how a registry
+                       cleaner talks someone into deleting a working entry."""
+    raw = (cmd or "").strip()
+    if not raw:
+        return "", "empty"
+    text = os.path.expandvars(raw)
+    if text.startswith('"'):
+        end = text.find('"', 1)
+        if end >= 1:
+            inner = text[1:end].strip()
+            # A quoted-empty value ("") launches nothing — genuinely dead.
+            return _host_guard(inner) if inner else ("", "empty")
+        return "", "unverified"  # unbalanced quote — do not guess
+    match = _EXE_RE.match(text)
+    if match:
+        return _host_guard(match.group(1))
+    if os.path.exists(text):
+        return _host_guard(text)
+    return "", "unverified"
+
+
+def _finding(category: str, hive: str, key: str, name: str, target: str, issue: str, detail: str) -> dict:
+    return {
+        "category": category,
+        "hive": hive,
+        "key": key,
+        "name": name,
+        "target": target,
+        "issue": issue,
+        "detail": detail,
+    }
+
+
+def scan_startup_entries() -> tuple[list[dict], int, int]:
+    """Run/RunOnce values whose program is gone. Returns (findings, checked, unverified)."""
+    findings: list[dict] = []
+    checked = 0
+    unverified = 0
+    for hive, root, path in _STARTUP_KEYS:
+        for name, value in _reg_values(root, path):
+            checked += 1
+            target, status = _resolve_command_target(str(value))
+            if status == "unverified":
+                unverified += 1
+                continue
+            if status == "empty":
+                findings.append(
+                    _finding(
+                        "startup",
+                        hive,
+                        path,
+                        name,
+                        "",
+                        "empty",
+                        "This startup entry has no command at all — it launches nothing.",
+                    )
+                )
+                continue
+            if not _target_exists(target):
+                findings.append(
+                    _finding(
+                        "startup",
+                        hive,
+                        path,
+                        name,
+                        target,
+                        "missing",
+                        "Runs at sign-in but the program is gone — Windows reports an error each boot.",
+                    )
+                )
+    return findings, checked, unverified
+
+
+def scan_uninstall_entries() -> tuple[list[dict], int, int]:
+    """Uninstall entries whose InstallLocation no longer exists.
+
+    Only InstallLocation is trusted. UninstallString is very often
+    ``MsiExec.exe /X{GUID}`` — not a path at all, and MsiExec always exists —
+    so treating a parse failure there as breakage would be pure noise."""
+    findings: list[dict] = []
+    checked = 0
+    unverified = 0
+    for hive, root, path in _UNINSTALL_KEYS:
+        for sub in _reg_subkeys(root, path):
+            checked += 1
+            full = f"{path}\\{sub}"
+            location = _reg_value(root, full, "InstallLocation").strip().strip('"')
+            if not location:
+                unverified += 1  # no location recorded — nothing to verify against
+                continue
+            expanded = os.path.expandvars(location)
+            # A bare drive root is a mis-recorded location, not a missing folder.
+            if len(expanded.rstrip("\\/")) <= 2 or _is_unc(expanded):
+                unverified += 1
+                continue
+            if not _target_exists(expanded):
+                display = _reg_value(root, full, "DisplayName").strip() or sub
+                findings.append(
+                    _finding(
+                        "uninstall",
+                        hive,
+                        full,
+                        display,
+                        expanded,
+                        "missing",
+                        "Listed in Add/Remove Programs but its install folder is gone.",
+                    )
+                )
+    return findings, checked, unverified
+
+
+def scan_app_paths() -> tuple[list[dict], int, int]:
+    """App Paths entries whose executable is gone."""
+    findings: list[dict] = []
+    checked = 0
+    unverified = 0
+    for base in _APP_PATHS_KEYS:
+        for sub in _reg_subkeys(winreg.HKEY_LOCAL_MACHINE, base):
+            checked += 1
+            full = f"{base}\\{sub}"
+            default = _reg_value(winreg.HKEY_LOCAL_MACHINE, full, "").strip().strip('"')
+            if not default:
+                unverified += 1
+                continue
+            expanded = os.path.expandvars(default)
+            if _is_unc(expanded):
+                unverified += 1
+                continue
+            if not _target_exists(expanded):
+                findings.append(
+                    _finding(
+                        "app_paths",
+                        "HKLM",
+                        full,
+                        sub,
+                        expanded,
+                        "missing",
+                        "Windows would fail to launch this program by name (Win+R).",
+                    )
+                )
+    return findings, checked, unverified
+
+
+def scan_shared_dlls() -> tuple[list[dict], int, int]:
+    """SharedDLLs reference counts pointing at files that no longer exist."""
+    findings: list[dict] = []
+    checked = 0
+    unverified = 0
+    for base in _SHARED_DLLS_KEYS:
+        for name, _value in _reg_values(winreg.HKEY_LOCAL_MACHINE, base):
+            if not name:
+                continue
+            checked += 1
+            expanded = os.path.expandvars(name)
+            if _is_unc(expanded):
+                unverified += 1
+                continue
+            if not _target_exists(expanded):
+                findings.append(
+                    _finding(
+                        "shared_dlls",
+                        "HKLM",
+                        base,
+                        os.path.basename(expanded) or expanded,
+                        expanded,
+                        "missing",
+                        "Reference count kept for a file that is no longer installed.",
+                    )
+                )
+    return findings, checked, unverified
+
+
+def _registry_categories() -> tuple:
+    """Category table, resolved at call time.
+
+    A function rather than a module constant for the same reason
+    _junk_categories() is: a tuple built at import captures the function
+    OBJECTS, so patching maintenance.scan_shared_dlls would not affect it and
+    the table would quietly keep calling the originals.
+    """
+    return (
+        (
+            "startup",
+            "Startup entries",
+            scan_startup_entries,
+            "Programs Windows runs at sign-in. A broken one shows an error every boot - the one category here worth acting on.",
+        ),
+        (
+            "uninstall",
+            "Add/Remove Programs entries",
+            scan_uninstall_entries,
+            "Leftover entries from programs whose folders are gone. Harmless, but they clutter the uninstall list.",
+        ),
+        (
+            "app_paths",
+            "App Paths",
+            scan_app_paths,
+            "Shortcuts that let you launch a program by name from Win+R.",
+        ),
+        (
+            "shared_dlls",
+            "Shared DLL references",
+            scan_shared_dlls,
+            "Reference counts Windows keeps for shared libraries. Stale ones are inert.",
+        ),
+    )
+
+
+def scan_registry() -> dict:
+    """Read-only registry health report. Never writes to the registry."""
+    categories = []
+    all_findings: list[dict] = []
+    for key, label, fn, description in _registry_categories():
+        try:
+            findings, checked, unverified = fn()
+        except Exception as e:  # noqa: BLE001 -- one bad hive must not sink the report
+            categories.append(
+                {
+                    "key": key,
+                    "label": label,
+                    "description": description,
+                    "checked": 0,
+                    "unverified": 0,
+                    "count": 0,
+                    "error": str(e)[:200],
+                    "findings": [],
+                }
+            )
+            continue
+        all_findings.extend(findings)
+        categories.append(
+            {
+                "key": key,
+                "label": label,
+                "description": description,
+                "checked": checked,
+                "unverified": unverified,
+                "count": len(findings),
+                # Cap what travels to the browser; the count stays exact.
+                "findings": findings[:50],
+            }
+        )
+    total = len(all_findings)
+    return {
+        "ok": True,
+        "categories": categories,
+        "total": total,
+        "checked": sum(c["checked"] for c in categories),
+        # Said plainly, because every commercial tool in this space implies
+        # the opposite and the user deserves the real answer.
+        "note": (
+            "Cleaning the registry does not make Windows faster — that claim is marketing. "
+            "This report only looks for entries that are actually broken."
+        ),
+        "backup_dir": _REG_BACKUP_DIR,
+    }
+
+
+def export_registry_backup(keys: list[str] | None = None) -> dict:
+    """Export the registry keys this report reads into a timestamped folder.
+
+    A backup, not a fix — nothing in Tier 4 edits the registry. This exists so
+    that if the user decides to remove an entry by hand, they can put it back by
+    double-clicking the .reg file.
+
+    One file per key rather than one concatenated file: each is independently
+    importable, and stitching UTF-16 .reg files together is a good way to
+    produce a backup that silently fails to restore."""
+    wanted = keys or [path for _, _, path in _STARTUP_KEYS]
+    # Only ever export keys THIS MODULE knows about. The caller supplies keys
+    # from the report, never a free-form path — otherwise this would be an
+    # arbitrary-registry-read-to-disk primitive.
+    known = {path for _, _, path in _STARTUP_KEYS} | {path for _, _, path in _UNINSTALL_KEYS}
+    known |= set(_APP_PATHS_KEYS) | set(_SHARED_DLLS_KEYS)
+    safe = [k for k in dict.fromkeys(wanted) if k in known]
+    if not safe:
+        return {"ok": False, "error": "No known registry keys to export."}
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    out_dir = os.path.join(_REG_BACKUP_DIR, stamp)
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except OSError as e:
+        return {"ok": False, "error": f"Could not create backup folder: {e}"}
+
+    files = []
+    errors = []
+    for key in safe:
+        for hive_name, hive in (("HKLM", winreg.HKEY_LOCAL_MACHINE), ("HKCU", winreg.HKEY_CURRENT_USER)):
+            # Skip hives where this key does not exist, so we do not litter the
+            # folder with failed exports.
+            if not _reg_values(hive, key) and not _reg_subkeys(hive, key):
+                continue
+            safe_name = re.sub(r"[^A-Za-z0-9]+", "-", f"{hive_name}-{key}").strip("-")[:120]
+            dest = os.path.join(out_dir, f"{safe_name}.reg")
+            try:
+                r = subprocess.run(
+                    ["reg", "export", f"{hive_name}\\{key}", dest, "/y"],
+                    capture_output=True,
+                    text=True,
+                    timeout=_REG_EXPORT_TIMEOUT_S,
+                )
+            except Exception as e:  # noqa: BLE001 -- a failed export must not raise
+                errors.append(str(e)[:120])
+                continue
+            if r.returncode == 0 and os.path.exists(dest):
+                files.append({"key": f"{hive_name}\\{key}", "path": dest, "bytes": os.path.getsize(dest)})
+            else:
+                errors.append((r.stderr or "").strip()[:120] or f"reg export failed for {hive_name}\\{key}")
+
+    if not files:
+        return {"ok": False, "error": "; ".join(errors) or "Nothing could be exported."}
+    total = sum(f["bytes"] for f in files)
+    return {
+        "ok": True,
+        "dir": out_dir,
+        "files": files,
+        "count": len(files),
+        "human": _human(total),
+        "errors": errors,
+    }
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 
@@ -1126,3 +1627,28 @@ def maintenance_system_status_route():
 
     Fast and unelevated — nothing here runs a repair."""
     return jsonify(system_status())
+
+
+@maintenance_bp.route("/api/maintenance/registry/scan")
+def maintenance_registry_scan_route():
+    """Read-only registry report. Never writes to the registry.
+
+    Non-blocking via the shared scan registry: the SharedDLLs hive alone is
+    thousands of entries, each needing a filesystem check."""
+    force = request.args.get("refresh") in ("1", "true", "yes")
+    return jsonify(start_or_get("registry", scan_registry, force=force))
+
+
+@maintenance_bp.route("/api/maintenance/registry/backup", methods=["POST"])
+def maintenance_registry_backup_route():
+    """Export the reported registry keys to .reg files the user can re-import.
+
+    Localhost-only: it writes files to disk. It still does not touch the
+    registry — Tier 4 has no path that modifies it."""
+    remote = request.remote_addr or ""
+    if remote not in ("127.0.0.1", "::1"):
+        return jsonify({"ok": False, "error": "registry backup is localhost-only"}), 403
+    data = request.get_json() or {}
+    keys = data.get("keys")
+    keys = [str(k) for k in keys] if isinstance(keys, list) else None
+    return jsonify(export_registry_backup(keys))

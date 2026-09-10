@@ -1206,3 +1206,513 @@ class TestDfrguiAllowlisted:
         # adding a second launcher route.
         assert "dfrgui" in disk._CLEANUP_TOOLS
         assert disk._CLEANUP_TOOLS["dfrgui"]["argv"] == ["dfrgui.exe"]
+
+
+# ── Tier 4: registry report (read-only) ───────────────────────────────────────
+
+
+class TestResolveCommandTarget:
+    def test_quoted_path_with_args(self):
+        path, status = maintenance._resolve_command_target('"C:\\Program Files\\App\\app.exe" -show')
+        assert status == "ok"
+        assert path == "C:\\Program Files\\App\\app.exe"
+
+    def test_unquoted_path_with_spaces_and_args(self):
+        path, status = maintenance._resolve_command_target(r"C:\Program Files\Foo Bar\thing.exe /AutoRun")
+        assert status == "ok"
+        assert path == r"C:\Program Files\Foo Bar\thing.exe"
+
+    def test_quoted_empty_value_is_broken(self):
+        # The real finding on this machine: a Run value of literally "".
+        path, status = maintenance._resolve_command_target('""')
+        assert status == "empty"
+        assert path == ""
+
+    def test_blank_value_is_broken(self):
+        assert maintenance._resolve_command_target("")[1] == "empty"
+        assert maintenance._resolve_command_target("   ")[1] == "empty"
+        assert maintenance._resolve_command_target(None)[1] == "empty"
+
+    def test_unbalanced_quote_is_unverified_not_guessed(self):
+        assert maintenance._resolve_command_target('"C:\\nope\\app.exe')[1] == "unverified"
+
+    def test_bare_host_process_is_unverified(self):
+        assert maintenance._resolve_command_target("rundll32.exe foo.dll,Entry")[1] == "unverified"
+
+    def test_fully_qualified_host_process_is_also_unverified(self):
+        # The bug this guards: a startswith() check misses the qualified form,
+        # so the entry resolves to rundll32.exe, which exists, and a broken
+        # entry gets reported as healthy.
+        path, status = maintenance._resolve_command_target(
+            r"C:\Windows\system32\rundll32.exe C:\Windows\System32\LogiLDA.dll,LogiFetch"
+        )
+        assert status == "unverified"
+        assert path == ""
+
+    def test_quoted_host_process_is_unverified(self):
+        assert maintenance._resolve_command_target('"C:\\Windows\\System32\\msiexec.exe" /X{GUID}')[1] == "unverified"
+
+    def test_env_vars_are_expanded(self, monkeypatch):
+        monkeypatch.setenv("MYAPPDIR", r"C:\Apps")
+        path, status = maintenance._resolve_command_target(r"%MYAPPDIR%\run.exe")
+        assert status == "ok"
+        assert path == r"C:\Apps\run.exe"
+
+    def test_unparseable_is_unverified(self):
+        assert maintenance._resolve_command_target("some nonsense with no path")[1] == "unverified"
+
+
+class TestHostGuard:
+    def test_normal_exe_passes_through(self):
+        assert maintenance._host_guard(r"C:\Apps\thing.exe") == (r"C:\Apps\thing.exe", "ok")
+
+    def test_host_matched_case_insensitively(self):
+        assert maintenance._host_guard(r"C:\Windows\System32\RUNDLL32.EXE")[1] == "unverified"
+
+    def test_every_listed_host_is_caught(self):
+        for stem in maintenance._HOST_PROCESS_STEMS:
+            assert maintenance._host_guard(f"C:\\Windows\\{stem}.exe")[1] == "unverified"
+
+
+class TestRegistryReaders:
+    def test_missing_key_returns_empty_not_raise(self):
+        assert maintenance._reg_subkeys(maintenance.winreg.HKEY_CURRENT_USER, r"Software\NoSuchKey_WDM") == []
+        assert maintenance._reg_values(maintenance.winreg.HKEY_CURRENT_USER, r"Software\NoSuchKey_WDM") == []
+        assert maintenance._reg_value(maintenance.winreg.HKEY_CURRENT_USER, r"Software\NoSuchKey_WDM", "x") == ""
+
+    def test_readers_survive_enumeration_errors(self, mocker):
+        mocker.patch("maintenance.winreg.QueryInfoKey", return_value=(2, 2, 0))
+        mocker.patch("maintenance.winreg.EnumKey", side_effect=OSError("denied"))
+        mocker.patch("maintenance.winreg.EnumValue", side_effect=OSError("denied"))
+        assert maintenance._reg_subkeys(maintenance.winreg.HKEY_CURRENT_USER, "Software") == []
+        assert maintenance._reg_values(maintenance.winreg.HKEY_CURRENT_USER, "Software") == []
+
+
+class TestScanStartupEntries:
+    def test_missing_target_is_reported(self, mocker):
+        mocker.patch("maintenance._reg_values", return_value=[("Ghost", r"C:\gone\ghost.exe")])
+        mocker.patch("maintenance.os.path.exists", return_value=False)
+        findings, checked, unverified = maintenance.scan_startup_entries()
+        assert len(findings) == len(maintenance._STARTUP_KEYS)
+        assert findings[0]["issue"] == "missing"
+        assert findings[0]["category"] == "startup"
+
+    def test_present_target_is_not_reported(self, mocker):
+        mocker.patch("maintenance._reg_values", return_value=[("Real", r"C:\here\real.exe")])
+        mocker.patch("maintenance.os.path.exists", return_value=True)
+        findings, checked, _ = maintenance.scan_startup_entries()
+        assert findings == []
+        assert checked == len(maintenance._STARTUP_KEYS)
+
+    def test_empty_value_reported_as_empty(self, mocker):
+        mocker.patch("maintenance._reg_values", return_value=[("Dead", '""')])
+        findings, _, _ = maintenance.scan_startup_entries()
+        assert findings[0]["issue"] == "empty"
+
+    def test_unverified_never_becomes_a_finding(self, mocker):
+        mocker.patch("maintenance._reg_values", return_value=[("Host", "rundll32.exe x.dll,Y")])
+        mocker.patch("maintenance.os.path.exists", return_value=False)
+        findings, _, unverified = maintenance.scan_startup_entries()
+        assert findings == []
+        assert unverified == len(maintenance._STARTUP_KEYS)
+
+
+class TestScanUninstallEntries:
+    def test_missing_install_location_reported(self, mocker):
+        mocker.patch("maintenance._reg_subkeys", return_value=["SomeApp"])
+        mocker.patch(
+            "maintenance._reg_value",
+            side_effect=lambda r, k, n="": {
+                "InstallLocation": r"C:\Program Files\Gone",
+                "DisplayName": "Gone App",
+            }.get(n, ""),
+        )
+        mocker.patch("maintenance.os.path.exists", return_value=False)
+        findings, checked, _ = maintenance.scan_uninstall_entries()
+        assert findings[0]["name"] == "Gone App"
+        assert findings[0]["issue"] == "missing"
+
+    def test_entry_without_install_location_is_unverified_not_flagged(self, mocker):
+        # 125 of 209 real entries have no InstallLocation. Flagging those would
+        # be pure noise.
+        mocker.patch("maintenance._reg_subkeys", return_value=["NoLoc"])
+        mocker.patch("maintenance._reg_value", return_value="")
+        findings, _, unverified = maintenance.scan_uninstall_entries()
+        assert findings == []
+        assert unverified == len(maintenance._UNINSTALL_KEYS)
+
+    def test_drive_root_location_is_not_flagged(self, mocker):
+        mocker.patch("maintenance._reg_subkeys", return_value=["Weird"])
+        mocker.patch("maintenance._reg_value", side_effect=lambda r, k, n="": "C:\\" if n == "InstallLocation" else "")
+        mocker.patch("maintenance.os.path.exists", return_value=False)
+        findings, _, unverified = maintenance.scan_uninstall_entries()
+        assert findings == []  # a bare drive root is mis-recorded, not missing
+
+    def test_present_location_not_flagged(self, mocker):
+        mocker.patch("maintenance._reg_subkeys", return_value=["Fine"])
+        mocker.patch(
+            "maintenance._reg_value",
+            side_effect=lambda r, k, n="": r"C:\Apps\Fine" if n == "InstallLocation" else "Fine",
+        )
+        mocker.patch("maintenance.os.path.exists", return_value=True)
+        findings, _, _ = maintenance.scan_uninstall_entries()
+        assert findings == []
+
+
+class TestScanSharedDllsAndAppPaths:
+    def test_shared_dll_missing_reported(self, mocker):
+        mocker.patch("maintenance._reg_values", return_value=[(r"C:\Windows\System32\gone.dll", 1)])
+        mocker.patch("maintenance.os.path.exists", return_value=False)
+        findings, checked, _ = maintenance.scan_shared_dlls()
+        # One per registry view (native + WOW6432Node).
+        views = len(maintenance._SHARED_DLLS_KEYS)
+        assert len(findings) == views
+        assert findings[0]["category"] == "shared_dlls"
+        assert checked == views
+
+    def test_shared_dll_present_not_reported(self, mocker):
+        mocker.patch("maintenance._reg_values", return_value=[(r"C:\Windows\System32\here.dll", 1)])
+        mocker.patch("maintenance.os.path.exists", return_value=True)
+        assert maintenance.scan_shared_dlls()[0] == []
+
+    def test_app_path_missing_reported(self, mocker):
+        mocker.patch("maintenance._reg_subkeys", return_value=["thing.exe"])
+        mocker.patch("maintenance._reg_value", return_value=r"C:\gone\thing.exe")
+        mocker.patch("maintenance.os.path.exists", return_value=False)
+        findings, _, _ = maintenance.scan_app_paths()
+        assert findings[0]["category"] == "app_paths"
+
+    def test_app_path_without_default_is_unverified(self, mocker):
+        mocker.patch("maintenance._reg_subkeys", return_value=["thing.exe"])
+        mocker.patch("maintenance._reg_value", return_value="")
+        findings, _, unverified = maintenance.scan_app_paths()
+        assert findings == []
+        assert unverified == len(maintenance._APP_PATHS_KEYS)
+
+
+class TestScanRegistry:
+    def test_shape_and_totals(self, mocker):
+        mocker.patch("maintenance.scan_startup_entries", return_value=([{"category": "startup"}], 10, 2))
+        mocker.patch("maintenance.scan_uninstall_entries", return_value=([], 20, 5))
+        mocker.patch("maintenance.scan_app_paths", return_value=([], 5, 1))
+        mocker.patch("maintenance.scan_shared_dlls", return_value=([], 100, 0))
+        out = maintenance.scan_registry()
+        assert out["ok"] is True
+        assert out["total"] == 1
+        assert out["checked"] == 135
+        assert len(out["categories"]) == 4
+
+    def test_one_failing_category_does_not_sink_the_report(self, mocker):
+        mocker.patch("maintenance.scan_startup_entries", side_effect=OSError("hive gone"))
+        out = maintenance.scan_registry()
+        assert out["ok"] is True
+        startup = next(c for c in out["categories"] if c["key"] == "startup")
+        assert "error" in startup and startup["count"] == 0
+
+    def test_note_states_the_honest_truth(self):
+        note = maintenance.scan_registry()["note"].lower()
+        assert "does not make windows faster" in note
+
+    def test_findings_are_capped_for_transport(self, mocker):
+        many = [{"category": "shared_dlls", "n": i} for i in range(300)]
+        mocker.patch("maintenance.scan_shared_dlls", return_value=(many, 300, 0))
+        out = maintenance.scan_registry()
+        cat = next(c for c in out["categories"] if c["key"] == "shared_dlls")
+        assert cat["count"] == 300  # exact count preserved
+        assert len(cat["findings"]) == 50  # payload capped
+
+    def test_live_scan_is_read_only_and_returns(self):
+        # No mocks. Must not raise on a real machine, and reports a real total.
+        out = maintenance.scan_registry()
+        assert out["ok"] is True
+        assert out["checked"] > 0
+        assert isinstance(out["total"], int)
+
+
+class TestExportRegistryBackup:
+    def test_unknown_key_is_refused(self):
+        out = maintenance.export_registry_backup([r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies"])
+        assert out["ok"] is False
+        assert "known" in out["error"].lower()
+
+    def test_caller_paths_cannot_escape_the_allowlist(self):
+        # The whole point: keys come from the report, never free-form input.
+        for evil in [r"SOFTWARE\..\..\Secret", "HKLM", "", r"SAM\SAM"]:
+            assert maintenance.export_registry_backup([evil])["ok"] is False
+
+    def test_export_writes_reg_files(self, mocker, tmp_path):
+        mocker.patch.object(maintenance, "_REG_BACKUP_DIR", str(tmp_path))
+        run = mocker.patch("maintenance.subprocess.run")
+        run.return_value.returncode = 0
+        run.return_value.stderr = ""
+
+        def fake_export(argv, **kw):
+            with open(argv[3], "w", encoding="utf-16") as fh:
+                fh.write("Windows Registry Editor Version 5.00")
+            m = mocker.MagicMock()
+            m.returncode = 0
+            m.stderr = ""
+            return m
+
+        run.side_effect = fake_export
+        out = maintenance.export_registry_backup([r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"])
+        assert out["ok"] is True
+        assert out["count"] >= 1
+        assert os.path.isdir(out["dir"])
+
+    def test_export_failure_is_reported(self, mocker, tmp_path):
+        mocker.patch.object(maintenance, "_REG_BACKUP_DIR", str(tmp_path))
+        run = mocker.patch("maintenance.subprocess.run")
+        run.return_value.returncode = 1
+        run.return_value.stderr = "ERROR: Access is denied."
+        out = maintenance.export_registry_backup([r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"])
+        assert out["ok"] is False
+
+    def test_export_never_writes_to_the_registry(self, mocker, tmp_path):
+        # Tier 4 has no registry-write path at all; this pins that contract.
+        mocker.patch.object(maintenance, "_REG_BACKUP_DIR", str(tmp_path))
+        set_value = mocker.patch("maintenance.winreg.SetValueEx", create=True)
+        delete_value = mocker.patch("maintenance.winreg.DeleteValue", create=True)
+        delete_key = mocker.patch("maintenance.winreg.DeleteKey", create=True)
+        run = mocker.patch("maintenance.subprocess.run")
+        run.return_value.returncode = 1
+        run.return_value.stderr = ""
+        maintenance.export_registry_backup([r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"])
+        maintenance.scan_registry()
+        set_value.assert_not_called()
+        delete_value.assert_not_called()
+        delete_key.assert_not_called()
+        # And reg.exe is only ever invoked with "export".
+        for call in run.call_args_list:
+            assert call[0][0][:2] == ["reg", "export"]
+
+
+class TestRegistryRoutes:
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        maintenance._scans.pop("registry", None)
+        yield
+        maintenance._scans.pop("registry", None)
+
+    def test_scan_route_is_nonblocking(self, client, mocker):
+        thread = mocker.patch("maintenance.threading.Thread")
+        r = client.get("/api/maintenance/registry/scan")
+        assert r.status_code == 200
+        assert r.get_json()["status"] == "running"
+        thread.assert_called_once()
+
+    def test_scan_route_returns_cached_result(self, client):
+        maintenance._scans["registry"] = {
+            "running": False,
+            "result": {"ok": True, "total": 0, "categories": [], "checked": 5},
+            "ts": time.time(),
+        }
+        r = client.get("/api/maintenance/registry/scan")
+        assert r.get_json()["status"] == "done"
+
+    def test_backup_route_is_localhost_only(self, client, mocker):
+        export = mocker.patch("maintenance.export_registry_backup")
+        r = client.post("/api/maintenance/registry/backup", json={"keys": []}, environ_base={"REMOTE_ADDR": "10.0.0.5"})
+        assert r.status_code == 403
+        export.assert_not_called()
+
+    def test_backup_route_from_localhost(self, client, mocker):
+        export = mocker.patch("maintenance.export_registry_backup", return_value={"ok": True})
+        r = client.post(
+            "/api/maintenance/registry/backup",
+            json={"keys": ["a"]},
+            environ_base={"REMOTE_ADDR": "127.0.0.1"},
+        )
+        assert r.status_code == 200
+        export.assert_called_once_with(["a"])
+
+    def test_backup_route_without_keys_uses_default(self, client, mocker):
+        export = mocker.patch("maintenance.export_registry_backup", return_value={"ok": True})
+        client.post("/api/maintenance/registry/backup", json={}, environ_base={"REMOTE_ADDR": "127.0.0.1"})
+        export.assert_called_once_with(None)
+
+    def test_no_route_can_modify_the_registry(self, client):
+        # Contract: Tier 4 exposes exactly two registry routes, neither writing.
+        rules = [str(r) for r in client.application.url_map.iter_rules() if "/registry/" in str(r)]
+        assert sorted(rules) == [
+            "/api/maintenance/registry/backup",
+            "/api/maintenance/registry/scan",
+        ]
+
+
+class TestFalsePositiveGuards:
+    """A false 'this entry is broken' is the dangerous failure here — it is how
+    someone gets talked into deleting a working registry entry. These pin the
+    cases where a HEALTHY entry could have been accused."""
+
+    def test_unc_target_is_never_called_broken(self):
+        # os.path.exists() on an unreachable share returns False, so a working
+        # network-launched entry would read as missing whenever the server is
+        # off — and an unreachable UNC can block on SMB timeouts for seconds.
+        for unc in ["\\\\server\\share\\app.exe", "//server/share/app.exe"]:
+            path, status = maintenance._resolve_command_target(unc)
+            assert status == "unverified", unc
+            assert path == ""
+
+    def test_unc_startup_entry_produces_no_finding(self, mocker):
+        mocker.patch("maintenance._reg_values", return_value=[("Net", "\\\\nas\\tools\\run.exe")])
+        mocker.patch("maintenance.os.path.exists", return_value=False)
+        findings, _, unverified = maintenance.scan_startup_entries()
+        assert findings == []
+        assert unverified == len(maintenance._STARTUP_KEYS)
+
+    def test_x86_sibling_counts_as_existing(self, mocker):
+        # A 32-bit entry recording %ProgramFiles% means the (x86) folder, but a
+        # 64-bit process expands it to the native one.
+        native = os.path.join(os.environ.get("PROGRAMFILES", r"C:\Program Files"), "Vendor", "app.exe")
+        x86 = os.path.join(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"), "Vendor", "app.exe")
+        mocker.patch("maintenance.os.path.exists", side_effect=lambda p: p == x86)
+        assert maintenance._target_exists(native) is True
+
+    def test_native_sibling_counts_as_existing(self, mocker):
+        native = os.path.join(os.environ.get("PROGRAMFILES", r"C:\Program Files"), "Vendor", "app.exe")
+        x86 = os.path.join(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"), "Vendor", "app.exe")
+        mocker.patch("maintenance.os.path.exists", side_effect=lambda p: p == native)
+        assert maintenance._target_exists(x86) is True
+
+    def test_syswow64_sibling_counts_as_existing(self, mocker):
+        root = os.environ.get("SYSTEMROOT", r"C:\Windows")
+        sys32 = os.path.join(root, "System32", "thing.exe")
+        wow = os.path.join(root, "SysWOW64", "thing.exe")
+        mocker.patch("maintenance.os.path.exists", side_effect=lambda p: p == wow)
+        assert maintenance._target_exists(sys32) is True
+
+    def test_genuinely_missing_is_still_missing(self, mocker):
+        mocker.patch("maintenance.os.path.exists", return_value=False)
+        assert maintenance._target_exists(r"C:\Nowhere\gone.exe") is False
+
+    def test_target_exists_survives_oserror(self, mocker):
+        mocker.patch("maintenance.os.path.exists", side_effect=OSError("bad path"))
+        assert maintenance._target_exists(r"C:\x\y.exe") is False
+
+    def test_empty_target_is_not_existing(self):
+        assert maintenance._target_exists("") is False
+
+    def test_no_infinite_sibling_recursion_on_nested_names(self):
+        # ProgramFiles is a prefix of "Program Files (x86)" as a string; the
+        # generator must not yield a path that maps back onto itself.
+        x86 = os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")
+        alts = list(maintenance._alt_bitness_paths(os.path.join(x86, "a.exe")))
+        assert all(a != os.path.join(x86, "a.exe") for a in alts)
+
+    def test_non_string_registry_values_never_produce_findings(self, mocker):
+        # REG_DWORD / REG_BINARY / REG_MULTI_SZ arriving where a command string
+        # is expected must not be parsed into a bogus "missing" path.
+        for odd in [1, 0, b"\x00\x01", ["a", "b"]]:
+            mocker.patch("maintenance._reg_values", return_value=[("Odd", odd)])
+            findings, _, _ = maintenance.scan_startup_entries()
+            assert findings == [], odd
+
+    def test_trailing_arg_containing_exe_does_not_shadow_the_real_target(self):
+        path, status = maintenance._resolve_command_target(r"C:\a.exe -log C:\b.exe")
+        assert status == "ok"
+        assert path == r"C:\a.exe"
+
+
+class TestUncGuardCoversEveryScanner:
+    """The UNC guard originally lived only in _host_guard, which is reached from
+    scan_startup_entries alone. The other three scanners call _target_exists
+    directly, so a UNC InstallLocation / App Paths target / SharedDLL on a
+    temporarily-unreachable share was reported as BROKEN — the exact false
+    positive this feature exists to avoid — and could block on SMB timeouts."""
+
+    def test_is_unc_recognises_both_slash_styles(self):
+        assert maintenance._is_unc("\\\\server\\share\\x.dll") is True
+        assert maintenance._is_unc("//server/share/x.dll") is True
+
+    def test_is_unc_ignores_local_paths(self):
+        assert maintenance._is_unc(r"C:\Windows\x.dll") is False
+        assert maintenance._is_unc("") is False
+
+    def test_uninstall_unc_location_is_unverified_not_missing(self, mocker):
+        mocker.patch("maintenance._reg_subkeys", return_value=["NetApp"])
+        mocker.patch(
+            "maintenance._reg_value",
+            side_effect=lambda r, k, n="": "\\\\nas\\apps\\NetApp" if n == "InstallLocation" else "NetApp",
+        )
+        mocker.patch("maintenance._target_exists", return_value=False)
+        findings, _, unverified = maintenance.scan_uninstall_entries()
+        assert findings == []
+        assert unverified == len(maintenance._UNINSTALL_KEYS)
+
+    def test_app_path_unc_target_is_unverified_not_missing(self, mocker):
+        mocker.patch("maintenance._reg_subkeys", return_value=["net.exe"])
+        mocker.patch("maintenance._reg_value", return_value="\\\\nas\\tools\\net.exe")
+        mocker.patch("maintenance._target_exists", return_value=False)
+        findings, _, unverified = maintenance.scan_app_paths()
+        assert findings == []
+        assert unverified >= 1
+
+    def test_shared_dll_unc_target_is_unverified_not_missing(self, mocker):
+        mocker.patch("maintenance._reg_values", return_value=[("\\\\nas\\lib\\shared.dll", 1)])
+        mocker.patch("maintenance._target_exists", return_value=False)
+        findings, _, unverified = maintenance.scan_shared_dlls()
+        assert findings == []
+        assert unverified >= 1
+
+    def test_unc_entries_never_reach_the_filesystem_check(self, mocker):
+        # Also a latency guard: an unreachable UNC can hang os.path.exists for
+        # seconds, which would wreck a scan that otherwise runs in ~60ms.
+        mocker.patch("maintenance._reg_values", return_value=[("\\\\dead\\share\\a.dll", 1)])
+        target = mocker.patch("maintenance._target_exists", return_value=False)
+        maintenance.scan_shared_dlls()
+        target.assert_not_called()
+
+
+class TestThirtyTwoBitViewsAreScanned:
+    """A broken 32-bit registration lives only in the WOW6432Node view; reading
+    the native view alone silently never checks it."""
+
+    def test_startup_covers_the_32bit_runonce(self):
+        paths = [p for _, _, p in maintenance._STARTUP_KEYS]
+        assert any("WOW6432Node" in p and p.endswith("RunOnce") for p in paths)
+        assert any("WOW6432Node" in p and p.endswith("Run") for p in paths)
+
+    def test_app_paths_covers_both_views(self):
+        assert len(maintenance._APP_PATHS_KEYS) == 2
+        assert any("WOW6432Node" in k for k in maintenance._APP_PATHS_KEYS)
+
+    def test_shared_dlls_covers_both_views(self):
+        assert len(maintenance._SHARED_DLLS_KEYS) == 2
+        assert any("WOW6432Node" in k for k in maintenance._SHARED_DLLS_KEYS)
+
+    def test_app_paths_scans_every_listed_view(self, mocker):
+        subkeys = mocker.patch("maintenance._reg_subkeys", return_value=[])
+        maintenance.scan_app_paths()
+        scanned = [c[0][1] for c in subkeys.call_args_list]
+        assert set(scanned) == set(maintenance._APP_PATHS_KEYS)
+
+    def test_shared_dlls_scans_every_listed_view(self, mocker):
+        values = mocker.patch("maintenance._reg_values", return_value=[])
+        maintenance.scan_shared_dlls()
+        scanned = [c[0][1] for c in values.call_args_list]
+        assert set(scanned) == set(maintenance._SHARED_DLLS_KEYS)
+
+    def test_shared_dll_finding_records_the_view_it_came_from(self, mocker):
+        wow = next(k for k in maintenance._SHARED_DLLS_KEYS if "WOW6432Node" in k)
+        mocker.patch(
+            "maintenance._reg_values",
+            side_effect=lambda root, base: [(r"C:\gone\x.dll", 1)] if base == wow else [],
+        )
+        mocker.patch("maintenance._target_exists", return_value=False)
+        findings, _, _ = maintenance.scan_shared_dlls()
+        assert len(findings) == 1
+        assert findings[0]["key"] == wow  # not hardcoded to the native view
+
+    def test_export_allowlist_knows_the_new_keys(self, mocker, tmp_path):
+        # The allowlist is what stops a caller-supplied path being exported; it
+        # has to track the key constants or valid backups get refused.
+        # Backup dir redirected and reg.exe stubbed: this test is about the
+        # allowlist, and must not write real files or spawn real subprocesses.
+        mocker.patch.object(maintenance, "_REG_BACKUP_DIR", str(tmp_path))
+        run = mocker.patch("maintenance.subprocess.run")
+        run.return_value.returncode = 1
+        run.return_value.stderr = ""
+        for key in list(maintenance._APP_PATHS_KEYS) + list(maintenance._SHARED_DLLS_KEYS):
+            out = maintenance.export_registry_backup([key])
+            assert "No known registry keys" not in out.get("error", ""), key

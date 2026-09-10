@@ -2320,6 +2320,20 @@
         <div id="mnt-system" style="margin-top:12px;background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden">
           <div style="color:var(--muted);font-size:12px;padding:12px">Reading system status&hellip;</div>
         </div>
+        <!-- Tier 4: registry report - read only, no fix button by design -->
+        <div style="margin-top:24px">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+            <div>
+              <h3 style="margin:0;font-family:var(--font-head);font-size:16px">Registry report</h3>
+              <div style="font-size:11px;color:var(--muted);margin-top:3px">Finds registry entries that are actually <b>broken</b>. Read-only &mdash; it reports and backs up, it never edits the registry.</div>
+            </div>
+            <button id="mnt-registry-btn" type="button" onclick="mnt_registry(true)" style="padding:6px 16px;font-size:12px;border-radius:6px;background:transparent;color:var(--cyan);border:1px solid var(--cyan);cursor:pointer">Scan registry</button>
+          </div>
+          <div id="mnt-registry" style="margin-top:12px;background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden">
+            <div style="color:var(--muted);font-size:12px;padding:12px">Click <b>Scan registry</b> to check for broken entries.</div>
+          </div>
+        </div>
+
         <div style="margin-top:12px;padding:12px 14px;background:var(--card);border:1px solid var(--border);border-radius:10px">
           <div style="font-size:12px;color:var(--muted)">Want these run for you instead of copying commands? The <b>Remediation</b> tab has one-click <b>Repair Windows Image (DISM + SFC)</b> and <b>Clear Windows Update Cache</b> actions.</div>
         </div>

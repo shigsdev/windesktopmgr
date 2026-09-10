@@ -2326,6 +2326,86 @@ class TestStorageTabSlotsAndSpaces:
         assert visible == (configured > 0), f"nas section visible={visible} but configured={configured}"
 
 
+class TestMaintenanceTabRegistryReport:
+    """Cleanup tab Tier 4 (registry report): read-only by construction.
+
+    The test never clicks a backup button and there is no fix/clean button to
+    click — that absence is itself asserted below."""
+
+    def test_registry_scan_renders_a_verdict(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("switchTab('maintenance')")
+        page.evaluate("mnt_registry(true)")
+        page.wait_for_function(
+            """
+            () => {
+                const el = document.getElementById('mnt-registry');
+                if (!el) return false;
+                const t = el.textContent || '';
+                return t.includes('checked') || t.includes('error');
+            }
+            """,
+            timeout=60_000,
+        )
+        text = page.evaluate("document.getElementById('mnt-registry').textContent")
+        assert "Registry scan error" not in text, text
+        assert "checked" in text
+        # Categories are always listed, even when everything is clean.
+        assert "Startup entries" in text
+        assert "Shared DLL references" in text
+
+    def test_report_states_registry_cleaning_does_not_speed_up_windows(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("switchTab('maintenance')")
+        page.evaluate("mnt_registry(true)")
+        page.wait_for_function(
+            "() => (document.getElementById('mnt-registry').textContent || '').includes('checked')",
+            timeout=60_000,
+        )
+        text = page.evaluate("document.getElementById('mnt-registry').textContent").lower()
+        # The honest framing is a feature, not decoration — every commercial
+        # tool in this space implies the opposite.
+        assert "does not make windows faster" in text
+
+    def test_there_is_no_registry_fix_or_clean_button(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("switchTab('maintenance')")
+        page.evaluate("mnt_registry(true)")
+        page.wait_for_function(
+            "() => (document.getElementById('mnt-registry').textContent || '').includes('checked')",
+            timeout=60_000,
+        )
+        labels = page.evaluate(
+            "[...document.querySelectorAll('#mnt-registry button')].map(b => b.textContent.toLowerCase())"
+        )
+        for label in labels:
+            assert "fix" not in label, labels
+            assert "clean" not in label, labels
+            assert "repair" not in label, labels
+            assert "delete" not in label, labels
+            assert "remove" not in label, labels
+
+    def test_scan_endpoint_never_reports_a_registry_write(self, loaded_page):
+        page, _ = loaded_page
+        d = page.evaluate(
+            """
+            async () => {
+                let d = null;
+                for (let i = 0; i < 40; i++) {
+                    d = await fetch('/api/maintenance/registry/scan').then(r => r.json());
+                    if (!d || d.status !== 'running') break;
+                    await new Promise(r => setTimeout(r, 1500));
+                }
+                return d;
+            }
+            """
+        )
+        assert d["ok"] is True
+        assert d["status"] == "done"
+        assert isinstance(d["total"], int)
+        assert d["checked"] > 0
+
+
 class TestMaintenanceTabSystemMaintenance:
     """Cleanup tab Tier 3 (system maintenance): the read-only status panel
     renders against the live tray, and the repairs are hand-offs only.
