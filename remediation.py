@@ -17,6 +17,7 @@ tests still pass, routes now served by ``remediation_bp``.
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import re
@@ -241,7 +242,30 @@ Write-Output "Removed:$removed Errors:$errors"
         return {"ok": False, "message": str(e)}
 
 
+def _is_admin() -> bool:
+    """True if this process is elevated.
+
+    The tray normally runs UNELEVATED, and the fixes below genuinely cannot
+    work without admin. Checking up front lets us say so in a second instead of
+    failing after a 30-minute DISM run — or, worse, reporting success for work
+    that never happened."""
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:  # noqa: BLE001 -- non-Windows / API missing
+        return False
+
+
+_NEEDS_ADMIN = (
+    "This fix needs administrator rights, and WinDesktopMgr is not running "
+    "elevated. Restart it as administrator, or run the command yourself from "
+    "an admin terminal (see the Cleanup tab for the exact commands)."
+)
+
+
 def _rem_repair_image() -> dict:
+    if not _is_admin():
+        # DISM/SFC would run for up to 30 minutes and then fail; say so now.
+        return {"ok": False, "message": _NEEDS_ADMIN}
     try:
         r_dism = subprocess.run(
             ["dism.exe", "/Online", "/Cleanup-Image", "/RestoreHealth"],
@@ -276,6 +300,8 @@ def _rem_clear_wu_cache() -> dict:
         "SoftwareDistribution",
         "Download",
     )
+    removed = 0
+    failed = 0
     try:
         if os.path.isdir(download_path):
             for item in os.listdir(download_path):
@@ -285,8 +311,15 @@ def _rem_clear_wu_cache() -> dict:
                         shutil.rmtree(item_path, ignore_errors=True)
                     else:
                         os.remove(item_path)
-                except Exception:
+                except Exception:  # noqa: BLE001 -- locked/denied items are counted, not fatal
                     pass
+                # Check the outcome rather than trusting the call: rmtree with
+                # ignore_errors=True never raises, so counting exceptions alone
+                # would report a clean sweep after deleting nothing.
+                if os.path.exists(item_path):
+                    failed += 1
+                else:
+                    removed += 1
     except Exception as e:
         return {"ok": False, "message": f"Failed to clear cache: {e}"}
 
@@ -295,7 +328,20 @@ def _rem_clear_wu_cache() -> dict:
     except Exception:
         pass  # Best-effort restart
 
-    return {"ok": True, "message": "Windows Update cache cleared."}
+    # Unelevated, EVERY delete here is denied. Reporting "cache cleared" in that
+    # case is a flat lie — the user believes a fix ran that never did.
+    if failed and not removed:
+        detail = _NEEDS_ADMIN if not _is_admin() else "the files are in use."
+        return {
+            "ok": False,
+            "message": f"Could not remove any of the {failed} cached update file(s) — {detail}",
+        }
+    if failed:
+        return {
+            "ok": True,
+            "message": f"Cleared {removed} item(s); {failed} could not be removed (in use or needs admin).",
+        }
+    return {"ok": True, "message": f"Windows Update cache cleared ({removed} item(s))."}
 
 
 def _rem_restart_spooler() -> dict:

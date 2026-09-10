@@ -4001,6 +4001,7 @@ class TestRemediationCommands:
     # ── repair_image (direct exe — dism.exe + sfc) ─────────────────────────────
 
     def test_repair_image_calls_dism_and_sfc_directly(self, mocker):
+        mocker.patch("remediation._is_admin", return_value=True)
         m = _mock_rem_run(mocker, stdout="", returncode=0)
         remediation._rem_repair_image()
         assert m.call_count == 2
@@ -4012,10 +4013,12 @@ class TestRemediationCommands:
         assert "/scannow" in cmd2
 
     def test_repair_image_ok_true_on_success(self, mocker):
+        mocker.patch("remediation._is_admin", return_value=True)
         _mock_rem_run(mocker, stdout="", returncode=0)
         assert remediation._rem_repair_image()["ok"] is True
 
     def test_repair_image_ok_false_on_dism_failure(self, mocker):
+        mocker.patch("remediation._is_admin", return_value=True)
         m = _mock_rem_run(mocker)
         m.side_effect = [
             type("R", (), {"stdout": "", "returncode": 1, "stderr": "DISM failed"})(),
@@ -4024,6 +4027,7 @@ class TestRemediationCommands:
         assert remediation._rem_repair_image()["ok"] is False
 
     def test_repair_image_ok_false_on_sfc_failure(self, mocker):
+        mocker.patch("remediation._is_admin", return_value=True)
         m = _mock_rem_run(mocker)
         m.side_effect = [
             type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})(),
@@ -4033,6 +4037,7 @@ class TestRemediationCommands:
 
     def test_repair_image_no_powershell(self, mocker):
         """Regression: Batch D removed the PS wrapper."""
+        mocker.patch("remediation._is_admin", return_value=True)
         m = _mock_rem_run(mocker, stdout="", returncode=0)
         remediation._rem_repair_image()
         for call in m.call_args_list:
