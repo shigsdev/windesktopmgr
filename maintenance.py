@@ -26,10 +26,14 @@ import ctypes
 import hashlib
 import heapq
 import os
+import re
 import shutil
+import subprocess
 import threading
 import time
+import winreg
 from ctypes import wintypes
+from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
 
@@ -767,6 +771,281 @@ def clean_junk(keys: list[str]) -> dict:
     return {"ok": True, "cleaned": results, "total_freed": total_freed, "total_human": _human(total_freed)}
 
 
+# ── Tier 3: system maintenance (READ-ONLY status + hand-offs) ─────────────────
+# What this deliberately does NOT do: run SFC, DISM, or Optimize-Volume itself.
+# All three need administrator rights, and this app never runs an elevated
+# system repair of its own — the same rule that kept the Storage-pool repair a
+# script the user runs rather than a button. Windows already ships an elevated
+# tool for each (dfrgui for Optimize Drives, an admin terminal for SFC/DISM), so
+# this reports the state it CAN read unelevated and hands the repairs to Windows.
+#
+# Every read below was verified to work as a normal user on this machine:
+#   fsutil behavior query DisableDeleteNotify  -> works
+#   Schedule.Service ScheduledDefrag last-run  -> works
+#   winreg pending-reboot keys                 -> works
+#   Optimize-Volume -Analyze                   -> Access denied (so: not used)
+
+_FSUTIL_TIMEOUT_S = 15
+_OPTIMIZE_STALE_DAYS = 30
+_TRIM_RE = re.compile(r"(?:(NTFS|ReFS)\s+)?DisableDeleteNotify\s*=\s*(\d+)", re.I)
+
+# Strong signals mean Windows itself is holding a reboot.
+# PendingFileRenameOperations is NOT strong: it sits set on plenty of perfectly
+# healthy machines because any installer that scheduled a file replacement leaves
+# it behind. Letting it drive a "reboot required" headline would cry wolf, so it
+# is reported as context only.
+_REBOOT_SIGNALS = (
+    {
+        "key": "component_servicing",
+        "label": "Windows servicing (CBS)",
+        "path": r"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending",
+        "value": None,
+        "strong": True,
+    },
+    {
+        "key": "windows_update",
+        "label": "Windows Update",
+        "path": r"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired",
+        "value": None,
+        "strong": True,
+    },
+    {
+        "key": "pending_file_rename",
+        "label": "Files queued for replacement at next boot",
+        "path": r"SYSTEM\CurrentControlSet\Control\Session Manager",
+        "value": "PendingFileRenameOperations",
+        "strong": False,
+    },
+)
+
+
+def _parse_trim(stdout: str) -> list[dict]:
+    """Parse ``fsutil behavior query DisableDeleteNotify`` output.
+
+    Modern Windows reports one line per filesystem (NTFS, ReFS); older builds
+    print a single unlabelled line. 0 means TRIM is sent to the device."""
+    rows = []
+    for fs, raw in _TRIM_RE.findall(stdout or ""):
+        try:
+            value = int(raw)
+        except ValueError:
+            continue
+        rows.append(
+            {
+                "filesystem": "ReFS" if (fs or "NTFS").upper() == "REFS" else (fs or "NTFS").upper(),
+                "value": value,
+                # Only 0 is definitively "enabled". 1 is off; anything else is a
+                # state we should not guess at, so it reads as unknown.
+                "enabled": True if value == 0 else (False if value == 1 else None),
+            }
+        )
+    return rows
+
+
+def _trim_status() -> dict:
+    """Is Windows sending TRIM to SSDs?
+
+    fsutil rather than winreg on purpose: the DisableDeleteNotify registry value
+    is ABSENT on a default install, and absent means enabled — so the registry
+    alone cannot tell "enabled by default" apart from "key missing". fsutil
+    reports the effective value."""
+    try:
+        r = subprocess.run(
+            ["fsutil", "behavior", "query", "DisableDeleteNotify"],
+            capture_output=True,
+            text=True,
+            timeout=_FSUTIL_TIMEOUT_S,
+        )
+        rows = _parse_trim(r.stdout)
+        if not rows:
+            detail = (r.stderr or r.stdout or "").strip()[:200]
+            return {"known": False, "detail": detail or "No TRIM state reported."}
+    except Exception as e:  # noqa: BLE001 -- status must degrade, not raise
+        return {"known": False, "detail": str(e)[:200]}
+    known = [x["enabled"] for x in rows if x["enabled"] is not None]
+    return {
+        "known": True,
+        "filesystems": rows,
+        "enabled": all(known) if known else None,
+    }
+
+
+def _read_defrag_tasks(win32com_client) -> list[dict]:
+    """Pull the Defrag folder's tasks out of the Task Scheduler COM API.
+
+    Split out from _defrag_tasks so every COM reference (service, folder, task)
+    is a local of THIS frame and is released when it returns — releasing an
+    IUnknown after the caller's CoUninitialize throws a Win32 exception."""
+    svc = win32com_client.Dispatch("Schedule.Service")
+    svc.Connect()
+    folder = svc.GetFolder(r"\Microsoft\Windows\Defrag")
+    out = []
+    for task in folder.GetTasks(0):
+        last = task.LastRunTime
+        out.append(
+            {
+                "name": str(task.Name),
+                "enabled": bool(task.Enabled),
+                "last_run": last.isoformat() if last else None,
+                "last_run_dt": last,
+                "result": int(task.LastTaskResult),
+            }
+        )
+    return out
+
+
+def _defrag_tasks() -> list[dict]:
+    """Last-run info for Windows' own scheduled drive optimization.
+
+    Python-first via the Task Scheduler COM API (pywin32 is already a
+    dependency) instead of shelling out to Get-ScheduledTaskInfo."""
+    try:
+        import win32com.client
+    except ImportError:
+        return []
+    # A Flask worker thread has no COM apartment, so Dispatch() raises
+    # "CoInitialize has not been called" — without this the panel would silently
+    # report Unknown on EVERY real request and only work from the main thread
+    # (which is exactly how it passed a hand test). Same pattern and same reason
+    # as baseline.py / thermals.py / windesktopmgr.py.
+    pythoncom = None
+    coinit_ok = False
+    try:
+        import pythoncom
+
+        pythoncom.CoInitialize()
+        coinit_ok = True
+    except Exception:  # noqa: BLE001 -- already initialised / absent; query may still work
+        pass
+    try:
+        return _read_defrag_tasks(win32com.client)
+    except Exception:  # noqa: BLE001 -- COM/permissions vary; degrade quietly
+        return []
+    finally:
+        # Only uninitialise if WE initialised on this thread — an unbalanced
+        # CoUninitialize corrupts the thread's COM apartment.
+        if coinit_ok and pythoncom is not None:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _summarize_optimize(tasks: list[dict], now=None) -> dict:
+    """Turn the raw scheduled-task rows into a maintenance verdict."""
+    if not tasks:
+        return {"known": False, "detail": "Windows drive-optimization schedule not readable."}
+    task = tasks[0]
+    last = task.get("last_run_dt")
+    days = None
+    if last is not None:
+        try:
+            ref = now or datetime.now(timezone.utc)
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            days = max(0, (ref - last).days)
+        except Exception:  # noqa: BLE001 -- a bad timestamp must not sink the panel
+            days = None
+    result = task.get("result", 0)
+    return {
+        "known": True,
+        "name": task.get("name"),
+        "enabled": task.get("enabled"),
+        "last_run": task.get("last_run"),
+        "days_ago": days,
+        "result": result,
+        "result_hex": f"0x{result & 0xFFFFFFFF:X}",
+        "succeeded": result == 0,
+        # Windows retrims/defrags weekly by default, so a month of silence means
+        # the schedule is not actually running.
+        "stale": bool(days is not None and days > _OPTIMIZE_STALE_DAYS),
+        "stale_after_days": _OPTIMIZE_STALE_DAYS,
+    }
+
+
+def _reboot_signal_set(sig: dict) -> bool:
+    """True if one reboot marker is actually set."""
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, sig["path"]) as key:
+            if not sig["value"]:
+                return True  # the key existing IS the signal
+            value, _ = winreg.QueryValueEx(key, sig["value"])
+            # An empty PendingFileRenameOperations array is not a signal.
+            items = value if isinstance(value, (list, tuple)) else [value]
+            return any(str(v).strip() for v in items)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return False
+
+
+def _pending_reboot() -> dict:
+    """Which reboot-pending markers Windows has set (pure winreg, no elevation)."""
+    signals = [
+        {
+            "key": sig["key"],
+            "label": sig["label"],
+            "set": _reboot_signal_set(sig),
+            "strong": sig["strong"],
+        }
+        for sig in _REBOOT_SIGNALS
+    ]
+    strong_set = [s for s in signals if s["set"] and s["strong"]]
+    soft_set = [s for s in signals if s["set"] and not s["strong"]]
+    return {
+        "required": bool(strong_set),
+        "signals": signals,
+        "soft_only": bool(soft_set and not strong_set),
+    }
+
+
+# Repairs Windows owns. "launch" goes through the existing disk.py tool
+# allowlist (/api/disk/run-tool); "command" is shown for the user to paste into
+# an admin terminal, because this app does not spawn elevated repair processes.
+_SYSTEM_TOOLS = (
+    {
+        "key": "optimize_drives",
+        "label": "Optimize Drives",
+        "kind": "launch",
+        "tool": "dfrgui",
+        "description": (
+            "Windows' own Optimize Drives — retrims SSDs and defragments hard "
+            "drives. It asks for administrator rights itself."
+        ),
+    },
+    {
+        "key": "sfc",
+        "label": "Repair system files (SFC)",
+        "kind": "command",
+        "cli": "sfc /scannow",
+        "description": (
+            "Scans protected system files and repairs corrupted ones. Run in an ADMIN terminal — takes 5-15 minutes."
+        ),
+    },
+    {
+        "key": "dism",
+        "label": "Repair the component store (DISM)",
+        "kind": "command",
+        "cli": "DISM /Online /Cleanup-Image /RestoreHealth",
+        "description": (
+            "Repairs the Windows image that SFC restores from. Run this FIRST if "
+            "SFC cannot fix everything. Admin terminal, 10-30 minutes."
+        ),
+    },
+)
+
+
+def system_status() -> dict:
+    """Read-only system-maintenance status. Fast (no elevation, no disk walk)."""
+    return {
+        "ok": True,
+        "trim": _trim_status(),
+        "optimize": _summarize_optimize(_defrag_tasks()),
+        "reboot": _pending_reboot(),
+        "tools": [dict(t) for t in _SYSTEM_TOOLS],
+    }
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 
@@ -838,3 +1117,12 @@ def maintenance_duplicates_route():
     force = request.args.get("refresh") in ("1", "true", "yes")
     key = f"duplicates:{_cache_root(cleaned)}:{min_bytes}"
     return jsonify(start_or_get(key, lambda: find_duplicates(cleaned, min_bytes), force=force))
+
+
+@maintenance_bp.route("/api/maintenance/system/status")
+def maintenance_system_status_route():
+    """Read-only system-maintenance status: TRIM, drive-optimization schedule,
+    pending-reboot markers, and the Windows tools that own the actual repairs.
+
+    Fast and unelevated — nothing here runs a repair."""
+    return jsonify(system_status())

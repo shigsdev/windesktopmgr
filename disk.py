@@ -994,6 +994,14 @@ _CLEANUP_TOOLS: dict[str, dict] = {
         "argv": ["SystemPropertiesAdvanced.exe"],
         "description": "Opens Advanced System Properties (for pagefile config).",
     },
+    "dfrgui": {
+        "label": "Optimize Drives",
+        "argv": ["dfrgui.exe"],
+        "description": (
+            "Opens Windows' Optimize Drives (retrim SSDs / defragment hard "
+            "drives). It elevates itself, so the app never runs it as admin."
+        ),
+    },
     "storage_settings": {
         "label": "Storage Settings",
         "argv": ["explorer.exe", "ms-settings:storagesense"],

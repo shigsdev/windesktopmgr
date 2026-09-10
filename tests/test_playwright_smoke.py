@@ -2326,6 +2326,94 @@ class TestStorageTabSlotsAndSpaces:
         assert visible == (configured > 0), f"nas section visible={visible} but configured={configured}"
 
 
+class TestMaintenanceTabSystemMaintenance:
+    """Cleanup tab Tier 3 (system maintenance): the read-only status panel
+    renders against the live tray, and the repairs are hand-offs only.
+
+    Read-only by construction — the test never clicks Open (which would launch
+    dfrgui) and never runs a repair."""
+
+    def test_system_panel_renders_status(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("switchTab('maintenance')")
+        page.wait_for_function(
+            """
+            () => {
+                const el = document.getElementById('mnt-system');
+                if (!el) return false;
+                const t = el.textContent || '';
+                return t.includes('SSD TRIM') && !t.includes('Reading system status');
+            }
+            """,
+            timeout=30_000,
+        )
+        text = page.evaluate("document.getElementById('mnt-system').textContent")
+        assert "SSD TRIM" in text
+        assert "Drive optimization" in text
+        assert "Pending reboot" in text
+        assert "System status error" not in text
+
+    def test_repairs_are_handoffs_not_buttons_that_repair(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("switchTab('maintenance')")
+        page.wait_for_function(
+            "() => (document.getElementById('mnt-system').textContent || '').includes('SSD TRIM')",
+            timeout=30_000,
+        )
+        text = page.evaluate("document.getElementById('mnt-system').textContent")
+        # The elevated repairs are shown as commands to paste, never executed.
+        assert "sfc /scannow" in text
+        assert "DISM /Online /Cleanup-Image /RestoreHealth" in text
+        assert "administrator rights" in text.lower()
+
+    def test_drive_optimization_is_actually_read_on_the_live_tray(self, loaded_page):
+        """End-to-end guard for the COM-apartment bug class.
+
+        The status route runs on a real Flask worker thread here. Without
+        pythoncom.CoInitialize() the Task Scheduler read raises and degrades to
+        Unknown on every request — while every mocked unit test still passes,
+        because mocking Dispatch bypasses the apartment requirement entirely.
+        Only a live-tray assertion catches it."""
+        page, _ = loaded_page
+        d = page.evaluate("async () => await fetch('/api/maintenance/system/status').then(r => r.json())")
+        assert d["ok"] is True
+        assert d["trim"]["known"] is True, "fsutil TRIM read failed on the live tray"
+        assert d["optimize"]["known"] is True, (
+            "drive-optimization read returned Unknown on the live tray — "
+            "COM apartment not initialised on the Flask worker thread"
+        )
+
+    def test_remediation_crosslink_present(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("switchTab('maintenance')")
+        text = page.evaluate("document.getElementById('page-maintenance').textContent")
+        assert "Remediation" in text
+
+    def test_soft_reboot_signal_is_not_alarming(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("switchTab('maintenance')")
+        page.wait_for_function(
+            "() => (document.getElementById('mnt-system').textContent || '').includes('Pending reboot')",
+            timeout=30_000,
+        )
+        # When only the noisy PendingFileRenameOperations marker is set, the row
+        # must read "Not required" — claiming a restart is needed on a signal
+        # that is set on plenty of healthy machines would train the user to
+        # ignore the panel.
+        state = page.evaluate(
+            """
+            async () => {
+                const d = await fetch('/api/maintenance/system/status').then(r => r.json());
+                return {required: d.reboot.required, soft: d.reboot.soft_only};
+            }
+            """
+        )
+        text = page.evaluate("document.getElementById('mnt-system').textContent")
+        if state["soft"] and not state["required"]:
+            assert "Restart needed" not in text
+            assert "Not required" in text
+
+
 class TestMaintenancePollMessaging:
     """A scan we stopped waiting for has NOT failed.
 

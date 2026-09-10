@@ -2313,6 +2313,18 @@
           <div id="mnt-dupes"><div style="color:var(--muted);font-size:12px;padding:12px">Click <b>Find duplicates</b> to find byte-identical copies (confirmed by hash, not just size).</div></div>
         </div>
       </div>
+      <!-- Tier 3: system maintenance — read-only status + hand-offs to Windows -->
+      <div style="margin-top:24px">
+        <h3 style="margin:0;font-family:var(--font-head);font-size:16px">System maintenance</h3>
+        <div style="font-size:11px;color:var(--muted);margin-top:3px">Health checks the app can read without administrator rights &mdash; the repairs themselves are handed to Windows.</div>
+        <div id="mnt-system" style="margin-top:12px;background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden">
+          <div style="color:var(--muted);font-size:12px;padding:12px">Reading system status&hellip;</div>
+        </div>
+        <div style="margin-top:12px;padding:12px 14px;background:var(--card);border:1px solid var(--border);border-radius:10px">
+          <div style="font-size:12px;color:var(--muted)">Want these run for you instead of copying commands? The <b>Remediation</b> tab has one-click <b>Repair Windows Image (DISM + SFC)</b> and <b>Clear Windows Update Cache</b> actions.</div>
+        </div>
+      </div>
+
       <div style="margin-top:14px;padding:12px 14px;background:var(--card);border:1px solid var(--border);border-radius:10px">
         <div style="font-size:12px;color:var(--muted)">Looking for <b>which folders</b> are biggest, or the <b>Windows component store</b> (WinSxS)? Those live on the <b>Disk</b> tab — use <b>🔍 Analyze Space</b> on a drive to drill down folder by folder, and <b>Quick wins</b> for WinSxS and other known bloat.</div>
       </div>
