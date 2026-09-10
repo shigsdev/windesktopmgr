@@ -232,11 +232,13 @@ class TestRemActionFunctions:
         assert r["ok"] is False
 
     def test_repair_image_ok(self, mocker):
+        mocker.patch("remediation._is_admin", return_value=True)
         _mock_ps(mocker, stdout="", returncode=0)
         r = remediation._rem_repair_image()
         assert r["ok"] is True
 
     def test_repair_image_warnings(self, mocker):
+        mocker.patch("remediation._is_admin", return_value=True)
         m = _mock_ps(mocker)
         m.side_effect = [
             type("R", (), {"stdout": "", "returncode": 1, "stderr": "DISM issue"})(),
@@ -305,6 +307,9 @@ class TestRemActionFunctions:
 
     def test_all_actions_handle_exception(self, mocker):
         """Every remediation action returns ok=False when its external call fails."""
+        # Elevated, so the admin gate does not short-circuit the failure paths
+        # this test is actually about.
+        mocker.patch("remediation._is_admin", return_value=True)
         mocker.patch("remediation.subprocess.run", side_effect=TimeoutError("timed out"))
         # pywin32-based actions need their own error mocks
         mocker.patch(
@@ -418,3 +423,88 @@ class TestRemediationNlq:
         monkeypatch.setattr(remediation, "REMEDIATION_HISTORY_FILE", str(tmp_path / "h.json"))
         result = remediation._nlq_run_remediation({"action_id": "not_real"})
         assert result["ok"] is False
+
+
+class TestRemediationElevationHonesty:
+    """The tray runs unelevated, so these fixes cannot actually work.
+
+    The bug these guard: _rem_clear_wu_cache swallowed every per-item
+    PermissionError and then unconditionally returned
+    {"ok": True, "message": "Windows Update cache cleared."} — reporting a
+    successful fix that deleted nothing. An honest failure is worth far more
+    than a comfortable lie, because the user otherwise believes the problem
+    was addressed."""
+
+    def _svc(self, mocker):
+        mocker.patch("remediation.win32serviceutil.StopService")
+        mocker.patch("remediation.win32serviceutil.StartService")
+
+    def test_wu_cache_reports_failure_when_nothing_could_be_deleted(self, mocker):
+        self._svc(mocker)
+        mocker.patch("remediation._is_admin", return_value=False)
+        mocker.patch("remediation.os.path.isdir", side_effect=[True, False, False])
+        mocker.patch("remediation.os.listdir", return_value=["a.esd", "b.cab"])
+        mocker.patch("remediation.os.remove", side_effect=PermissionError("denied"))
+        mocker.patch("remediation.os.path.exists", return_value=True)  # still there
+        r = remediation._rem_clear_wu_cache()
+        assert r["ok"] is False
+        assert "administrator" in r["message"].lower()
+        assert "cleared" not in r["message"].lower().split("could not")[0]
+
+    def test_wu_cache_reports_partial_success_honestly(self, mocker):
+        self._svc(mocker)
+        mocker.patch("remediation.os.path.isdir", side_effect=[True, False, False])
+        mocker.patch("remediation.os.listdir", return_value=["gone.esd", "stuck.cab"])
+        mocker.patch("remediation.os.remove")
+        # First item really went; second is still on disk.
+        mocker.patch("remediation.os.path.exists", side_effect=[False, True])
+        r = remediation._rem_clear_wu_cache()
+        assert r["ok"] is True
+        assert "1" in r["message"]
+        assert "could not be removed" in r["message"]
+
+    def test_wu_cache_full_success_counts_items(self, mocker):
+        self._svc(mocker)
+        mocker.patch("remediation.os.path.isdir", side_effect=[True, False, False])
+        mocker.patch("remediation.os.listdir", return_value=["a.esd", "b.cab"])
+        mocker.patch("remediation.os.remove")
+        mocker.patch("remediation.os.path.exists", return_value=False)
+        r = remediation._rem_clear_wu_cache()
+        assert r["ok"] is True
+        assert "2" in r["message"]
+
+    def test_wu_cache_rmtree_that_silently_failed_is_counted(self, mocker):
+        # shutil.rmtree(ignore_errors=True) NEVER raises, so counting exceptions
+        # alone reported a clean sweep after deleting nothing. The outcome check
+        # is what catches this.
+        self._svc(mocker)
+        mocker.patch("remediation._is_admin", return_value=False)
+        mocker.patch("remediation.os.path.isdir", side_effect=[True, True])
+        mocker.patch("remediation.os.listdir", return_value=["pkgdir"])
+        rmtree = mocker.patch("remediation.shutil.rmtree")  # succeeds silently
+        mocker.patch("remediation.os.path.exists", return_value=True)  # but it is still there
+        r = remediation._rem_clear_wu_cache()
+        rmtree.assert_called_once()
+        assert r["ok"] is False
+
+    def test_repair_image_refuses_immediately_when_not_elevated(self, mocker):
+        mocker.patch("remediation._is_admin", return_value=False)
+        run = mocker.patch("remediation.subprocess.run")
+        r = remediation._rem_repair_image()
+        assert r["ok"] is False
+        assert "administrator" in r["message"].lower()
+        # The point: do not burn 30 minutes on a run that cannot succeed.
+        run.assert_not_called()
+
+    def test_repair_image_runs_when_elevated(self, mocker):
+        mocker.patch("remediation._is_admin", return_value=True)
+        run = mocker.patch("remediation.subprocess.run")
+        run.return_value.returncode = 0
+        run.return_value.stdout = ""
+        run.return_value.stderr = ""
+        assert remediation._rem_repair_image()["ok"] is True
+        assert run.call_count == 2
+
+    def test_is_admin_degrades_to_false(self, mocker):
+        mocker.patch("remediation.ctypes.windll.shell32.IsUserAnAdmin", side_effect=OSError("nope"))
+        assert remediation._is_admin() is False
