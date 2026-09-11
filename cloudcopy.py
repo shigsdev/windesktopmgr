@@ -541,6 +541,16 @@ _active_session_id: str | None = None
 _active_session_lock = threading.Lock()
 _cancel_flag = threading.Event()
 
+# Set whenever no copy worker is running. Cleared under the lock the instant
+# a session is claimed, and set again in the worker's finally -- AFTER the
+# history row is written and the active id cleared. So a waiter that sees
+# "idle" is guaranteed to also see the finished session's history row.
+# Callers wait on this (wait_for_idle) instead of sleep-polling
+# get_active_session_id(), which is both slower and, under a loaded box,
+# prone to giving up before the worker has actually finished.
+_session_idle = threading.Event()
+_session_idle.set()
+
 # Soft session bytes cap (default 50 GB). Hard-coded for V1; PR-3 may
 # move to rules.
 SESSION_BYTES_CAP = 50 * 1024 * 1024 * 1024
@@ -840,6 +850,29 @@ def _run_copy_inner(
     return entry
 
 
+def _start_worker_or_release(t: threading.Thread, session_id: str) -> bool:
+    """Start the worker thread, releasing the claimed session if the OS
+    refuses to create it.
+
+    Without this, a failed ``Thread.start()`` leaves the session claimed
+    with no worker to ever release it: every later start is refused with
+    "another session is active" for the life of the process, and
+    wait_for_idle can never return True.
+    """
+    global _active_session_id
+    try:
+        t.start()
+        return True
+    except RuntimeError as e:
+        _log.error("cloudcopy worker thread creation failed: %s", e)
+        with _active_session_lock:
+            if _active_session_id == session_id:
+                _active_session_id = None
+                _session_idle.set()
+            _cancel_flag.clear()
+        return False
+
+
 def start_copy_session(rules: dict | None = None) -> dict:
     """Spawn a worker thread to run a new copy session. Returns
     ``{ok, session_id, error}``. Refuses if another session is already
@@ -860,6 +893,7 @@ def start_copy_session(rules: dict | None = None) -> dict:
         session_id = uuid.uuid4().hex[:12]
         _active_session_id = session_id
         _cancel_flag.clear()
+        _session_idle.clear()
 
     def _worker():
         global _active_session_id
@@ -880,10 +914,15 @@ def start_copy_session(rules: dict | None = None) -> dict:
             with _active_session_lock:
                 if _active_session_id == session_id:
                     _active_session_id = None
+                    # Signal idle only when WE are still the active session;
+                    # if the id no longer matches, a newer session owns the
+                    # flag and must not be reported as finished.
+                    _session_idle.set()
                 _cancel_flag.clear()
 
     t = threading.Thread(target=_worker, daemon=True, name=f"cloudcopy-{session_id}")
-    t.start()
+    if not _start_worker_or_release(t, session_id):
+        return {"ok": False, "error": "could not start copy worker thread"}
     return {"ok": True, "session_id": session_id}
 
 
@@ -956,6 +995,7 @@ def resume_crashed_session() -> dict:
         session_id = state.get("session_id") or uuid.uuid4().hex[:12]
         _active_session_id = session_id
         _cancel_flag.clear()
+        _session_idle.clear()
 
     def _worker():
         global _active_session_id
@@ -967,10 +1007,15 @@ def resume_crashed_session() -> dict:
             with _active_session_lock:
                 if _active_session_id == session_id:
                     _active_session_id = None
+                    # Signal idle only when WE are still the active session;
+                    # if the id no longer matches, a newer session owns the
+                    # flag and must not be reported as finished.
+                    _session_idle.set()
                 _cancel_flag.clear()
 
     t = threading.Thread(target=_worker, daemon=True, name=f"cloudcopy-resume-{session_id}")
-    t.start()
+    if not _start_worker_or_release(t, session_id):
+        return {"ok": False, "error": "could not start copy worker thread"}
     return {"ok": True, "session_id": session_id, "resumed": True}
 
 
@@ -1002,9 +1047,21 @@ def get_active_session_id() -> str | None:
         return _active_session_id
 
 
+def wait_for_idle(timeout_s: float = 60.0) -> bool:
+    """Block until no copy worker is running, or ``timeout_s`` elapses.
+
+    Returns True if the module is idle (no session running), False on
+    timeout. When it returns True the finished session's history row has
+    already been written, so callers can read history without racing the
+    worker.
+    """
+    return _session_idle.wait(timeout=timeout_s)
+
+
 def _reset_module_state_for_tests() -> None:
     """Test-only: clear the module's active-session + cancel state."""
     global _active_session_id
     with _active_session_lock:
         _active_session_id = None
         _cancel_flag.clear()
+        _session_idle.set()

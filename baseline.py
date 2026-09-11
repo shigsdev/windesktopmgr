@@ -138,16 +138,28 @@ _WMI_ENRICH_CACHE_TTL = 45.0  # seconds
 # "inflight" guards against spawning a second abandonable worker while one is
 # already stuck on a wedged WMI -- bounds the COM-thread leak to one and keeps
 # repeated snapshots fast (they serve the cache instead of waiting again).
-_wmi_enrich_cache: dict = {"data": None, "ts": 0.0, "inflight": False}
+# "gen" is a generation counter bumped by every reset. A worker records the
+# generation it started under and refuses to publish into a newer one -- an
+# ABANDONED worker (timed out, still stuck in WMI) would otherwise land its
+# result in the cache long after a reset, resurrecting state the reset meant
+# to drop. That is a real cross-test bleed: an abandoned worker from one test
+# published into the next test's freshly-reset cache under xdist load.
+_wmi_enrich_cache: dict = {"data": None, "ts": 0.0, "inflight": False, "gen": 0}
 _wmi_enrich_cache_lock = threading.Lock()
 
 
 def _reset_wmi_enrich_cache() -> None:
-    """Test hook: drop the cache so enrichment state can't bleed across tests."""
+    """Test hook: drop the cache so enrichment state can't bleed across tests.
+
+    Bumps the generation counter so any worker still in flight from the
+    previous generation is permanently barred from publishing -- without
+    that, the reset only wins the race it happens to get scheduled first in.
+    """
     with _wmi_enrich_cache_lock:
         _wmi_enrich_cache["data"] = None
         _wmi_enrich_cache["ts"] = 0.0
         _wmi_enrich_cache["inflight"] = False
+        _wmi_enrich_cache["gen"] += 1
 
 
 def _wmi_service_enrichment_query() -> dict:
@@ -224,6 +236,7 @@ def _collect_services_wmi_enrichment(timeout_s: float = _WMI_ENRICH_TIMEOUT_S) -
         if _wmi_enrich_cache["inflight"]:
             return cached if cached is not None else {}
         _wmi_enrich_cache["inflight"] = True
+        my_gen = _wmi_enrich_cache["gen"]
 
     done = threading.Event()
 
@@ -254,10 +267,15 @@ def _collect_services_wmi_enrichment(timeout_s: float = _WMI_ENRICH_TIMEOUT_S) -
             # abandoned us -- the NEXT call then gets a warm cache -- and clear
             # the in-flight flag so a future call may refresh again.
             with _wmi_enrich_cache_lock:
-                if res:  # cache only a successful, non-empty enumeration
-                    _wmi_enrich_cache["data"] = res
-                    _wmi_enrich_cache["ts"] = time.monotonic()
-                _wmi_enrich_cache["inflight"] = False
+                # Only publish into the generation we started under. A reset
+                # since then means this result is superseded -- and the
+                # in-flight flag now belongs to that newer generation, so
+                # don't clear it either.
+                if _wmi_enrich_cache["gen"] == my_gen:
+                    if res:  # cache only a successful, non-empty enumeration
+                        _wmi_enrich_cache["data"] = res
+                        _wmi_enrich_cache["ts"] = time.monotonic()
+                    _wmi_enrich_cache["inflight"] = False
             done.set()
 
     try:
