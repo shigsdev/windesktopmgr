@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import os
-import time
+import threading
 from datetime import datetime
 
 import pytest
@@ -554,6 +554,14 @@ class TestScheduleSchema:
 # ══════════════════════════════════════════════════════════════════════
 
 
+# Budget for a background copy worker to finish in tests. Generous on
+# purpose: wait_for_idle returns the moment the worker is done, so a large
+# value costs nothing on a fast box but keeps the suite green under the CPU
+# contention of `pytest -n auto` (the old 5 s sleep-poll budget did not, and
+# worse, fell through silently into a confusing downstream assertion).
+WORKER_TIMEOUT_S = 60.0
+
+
 @pytest.fixture
 def reset_active_session():
     """Always reset the module-level active-session state before AND
@@ -728,13 +736,92 @@ class TestSessionLifecycle:
         assert result["ok"] is True
         session_id = result["session_id"]
         # Wait briefly for worker (5 files, ~instant on tmp).
-        for _ in range(100):
-            time.sleep(0.05)
-            if cloudcopy.get_active_session_id() is None:
-                break
+        assert cloudcopy.wait_for_idle(WORKER_TIMEOUT_S), "copy worker did not finish in time"
         status = cloudcopy.get_status(session_id)
         assert status["state"] == "finished"
         assert status["history"]["status"] == "completed"
+
+    def test_wait_for_idle_true_when_no_session_running(self, cc_tmp, reset_active_session):
+        """Idle is the resting state -- waiting when nothing runs returns
+        immediately rather than burning the whole timeout."""
+        assert cloudcopy.wait_for_idle(0.05) is True
+
+    def test_wait_for_idle_false_while_worker_runs(
+        self, cc_tmp, synthetic_source, tmp_path, reset_active_session, monkeypatch
+    ):
+        """start_copy_session must clear the idle flag BEFORE returning, so a
+        caller can never observe a stale 'idle' for a session it just
+        started -- the race that would make wait_for_idle useless."""
+        monkeypatch.setattr(cloudcopy, "DEFAULT_SOURCE_ROOT", str(synthetic_source))
+        monkeypatch.setattr(cloudcopy, "DEFAULT_DESTINATION_ROOT", str(tmp_path / "dest"))
+        release = threading.Event()
+        real_copy = cloudcopy._run_copy_inner
+
+        def _slow(*a, **kw):
+            release.wait(timeout=WORKER_TIMEOUT_S)
+            return real_copy(*a, **kw)
+
+        monkeypatch.setattr(cloudcopy, "_run_copy_inner", _slow)
+        assert cloudcopy.start_copy_session()["ok"] is True
+        assert cloudcopy.wait_for_idle(0.05) is False, "idle must be cleared while a worker runs"
+        release.set()
+        assert cloudcopy.wait_for_idle(WORKER_TIMEOUT_S), "copy worker did not finish in time"
+
+    def test_wait_for_idle_implies_history_row_written(
+        self, cc_tmp, synthetic_source, tmp_path, reset_active_session, monkeypatch
+    ):
+        """Idle is signalled only after the history row lands, so callers
+        can read history without racing the worker."""
+        monkeypatch.setattr(cloudcopy, "DEFAULT_SOURCE_ROOT", str(synthetic_source))
+        monkeypatch.setattr(cloudcopy, "DEFAULT_DESTINATION_ROOT", str(tmp_path / "dest"))
+        session_id = cloudcopy.start_copy_session()["session_id"]
+        assert cloudcopy.wait_for_idle(WORKER_TIMEOUT_S)
+        assert any(h.get("session_id") == session_id for h in cloudcopy.load_history())
+
+    def test_thread_start_failure_releases_the_session_claim(
+        self, cc_tmp, synthetic_source, tmp_path, reset_active_session, monkeypatch, mocker
+    ):
+        """If the OS refuses a worker thread, the claimed session must be
+        released -- otherwise every later run is refused forever with
+        'another session is active' and wait_for_idle never returns True."""
+        monkeypatch.setattr(cloudcopy, "DEFAULT_SOURCE_ROOT", str(synthetic_source))
+        monkeypatch.setattr(cloudcopy, "DEFAULT_DESTINATION_ROOT", str(tmp_path / "dest"))
+        mocker.patch.object(threading.Thread, "start", side_effect=RuntimeError("can't start new thread"))
+
+        result = cloudcopy.start_copy_session()
+        assert not result["ok"]
+        assert "worker thread" in result["error"]
+        assert cloudcopy.get_active_session_id() is None, "a failed start must not leave the session claimed"
+        assert cloudcopy.wait_for_idle(0.05) is True
+
+    def test_resume_thread_start_failure_releases_the_session_claim(
+        self, cc_tmp, synthetic_source, tmp_path, reset_active_session, mocker
+    ):
+        """Same release contract on the resume path."""
+        rules = dict(cloudcopy.DEFAULT_RULES)
+        plan = cloudcopy._build_plan(str(synthetic_source), rules)
+        (tmp_path / "dest").mkdir(exist_ok=True)
+        cloudcopy._save_state(
+            {
+                "session_id": "orphan-session",
+                "started_at": datetime.now().isoformat(timespec="seconds"),
+                "rules_hash": cloudcopy._rules_hash(rules),
+                "source_root": str(synthetic_source),
+                "dest_root": str(tmp_path / "dest"),
+                "plan": plan,
+                "cursor": 1,
+                "bytes_copied": 0,
+                "files_completed": [],
+                "files_skipped": [],
+                "files_failed": [],
+            }
+        )
+        mocker.patch.object(threading.Thread, "start", side_effect=RuntimeError("can't start new thread"))
+
+        result = cloudcopy.resume_crashed_session()
+        assert not result["ok"]
+        assert cloudcopy.get_active_session_id() is None
+        assert cloudcopy.wait_for_idle(0.05) is True
 
     def test_start_refuses_missing_source_root(self, cc_tmp, tmp_path, reset_active_session, monkeypatch):
         monkeypatch.setattr(cloudcopy, "DEFAULT_SOURCE_ROOT", str(tmp_path / "does-not-exist"))
@@ -779,10 +866,7 @@ class TestResumeFlow:
         self._make_orphan_state(cc_tmp, synthetic_source, tmp_path, cursor=3)
         result = cloudcopy.resume_crashed_session()
         assert result["ok"], f"resume refused: {result}"
-        for _ in range(100):
-            time.sleep(0.05)
-            if cloudcopy.get_active_session_id() is None:
-                break
+        assert cloudcopy.wait_for_idle(WORKER_TIMEOUT_S), "copy worker did not finish in time"
         history = cloudcopy.load_history()
         completed = [h for h in history if h.get("session_id") == "orphan-session"]
         assert completed, "no completion row for the resumed session"
@@ -856,10 +940,7 @@ class TestCloudCopyPR2Routes:
         data = r.get_json()
         assert data["ok"]
         assert data["session_id"]
-        for _ in range(100):
-            time.sleep(0.05)
-            if cloudcopy.get_active_session_id() is None:
-                break
+        assert cloudcopy.wait_for_idle(WORKER_TIMEOUT_S), "copy worker did not finish in time"
 
     def test_run_409_when_session_already_active(self, client, cc_tmp, reset_active_session, mocker):
         mocker.patch.object(

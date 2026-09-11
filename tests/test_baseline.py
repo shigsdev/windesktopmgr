@@ -26,6 +26,31 @@ import pytest
 
 import baseline
 
+# ── Helpers ────────────────────────────────────────────────────────
+
+
+def _drain_enrich_worker(timeout_s: float = 10.0) -> bool:
+    """Wait for an abandoned WMI-enrichment worker to finish publishing.
+
+    Tests that deliberately time a worker out leave it running. If the
+    test ends while it is still in flight, the worker's cache write lands
+    whenever the OS next schedules it -- possibly AFTER the next test's
+    ``reset_globals`` has cleared the cache, poisoning that test (this is
+    exactly what made the in-flight-guard test fail under ``-n auto``).
+    baseline's generation counter now makes such a late write a no-op, and
+    draining here makes the hand-off deterministic besides.
+
+    Returns True once no worker is in flight.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        with baseline._wmi_enrich_cache_lock:
+            if not baseline._wmi_enrich_cache["inflight"]:
+                return True
+        time.sleep(0.01)
+    return False
+
+
 # ── Fixtures ───────────────────────────────────────────────────────
 
 
@@ -314,6 +339,7 @@ class TestCollectors:
         mocker.patch("baseline._wmi_service_enrichment_query", side_effect=_hang)
         got = baseline._collect_services_wmi_enrichment(timeout_s=0.2)
         release.set()
+        assert _drain_enrich_worker(), "abandoned enrichment worker never finished"
         assert got == good, "a timeout with a populated cache must serve the stale enrichment"
 
     def test_wmi_enrichment_inflight_guard_bounds_workers(self, mocker):
@@ -344,7 +370,40 @@ class TestCollectors:
         # spawning a second worker -- the query is not invoked again.
         assert baseline._collect_services_wmi_enrichment(timeout_s=0.2) == seed
         release.set()
+        assert _drain_enrich_worker(), "abandoned enrichment worker never finished"
         assert calls["n"] == 1, "in-flight guard must prevent a second concurrent WMI worker"
+
+    def test_wmi_enrichment_reset_bars_abandoned_worker_from_publishing(self, mocker):
+        """A worker abandoned on timeout must NOT publish into a cache that
+        was reset after it started. Without the generation guard its late
+        write lands in whatever test runs next -- the cross-test bleed that
+        made this class flaky under ``pytest -n auto``."""
+        release = threading.Event()
+
+        def _hang():
+            release.wait(timeout=5)
+            return {"LATE": {"started": True}}
+
+        mocker.patch("baseline._wmi_service_enrichment_query", side_effect=_hang)
+        # Times out and abandons the worker, which is still blocked in _hang.
+        assert baseline._collect_services_wmi_enrichment(timeout_s=0.2) == {}
+
+        # Simulate the next test's reset landing before the worker wakes up.
+        baseline._reset_wmi_enrich_cache()
+        release.set()
+
+        # Give the abandoned worker every chance to (wrongly) publish.
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            with baseline._wmi_enrich_cache_lock:
+                if baseline._wmi_enrich_cache["data"] is not None:
+                    break
+            time.sleep(0.01)
+        with baseline._wmi_enrich_cache_lock:
+            assert baseline._wmi_enrich_cache["data"] is None, (
+                "a worker from a superseded generation must not repopulate the cache"
+            )
+            assert baseline._wmi_enrich_cache["inflight"] is False
 
     def test_desktop_interact_flip_is_critical(self):
         """Flipping desktop_interact False->True is a classic red flag."""
