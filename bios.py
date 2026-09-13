@@ -97,7 +97,7 @@ def get_current_bios() -> dict:
 # logic is discarded instead of serving its now-known-wrong verdict for the rest
 # of its 24h TTL. Without this, fixing the 0.2.24.0 false positive would not have
 # reached the user until the cache aged out.
-_BIOS_LOGIC_VERSION = 2
+_BIOS_LOGIC_VERSION = 3
 
 # Intel shipped the Raptor Lake microcode mitigation in this Dell BIOS.
 _RAPTOR_MICROCODE_BIOS = "2.22.0"
@@ -139,14 +139,21 @@ def _ver_gt(latest, current) -> bool:
     exists without coming through here: Windows Update keeps offering a firmware
     package that is already installed, so "WU listed it" is not evidence of a
     newer version.
+
+    Fails SAFE. If either side has no parseable version, this returns False
+    rather than guessing. It used to fall back to ``latest != current``, which
+    re-created the very bug it was meant to fix: on a request where WMI briefly
+    returned no BIOSVersion, current was "" and any advertised version counted
+    as "newer", so the tab announced an update again. Different is not newer.
     """
-    try:
-        left, right = _align_versions(_ver_parts(latest), _ver_parts(current))
-        if not left or not right:
-            raise ValueError("unparseable version")
-        return left > right
-    except Exception:  # noqa: BLE001 -- fall back to a literal comparison
-        return str(latest).strip() != str(current).strip()
+    # Check for parseability BEFORE aligning: _align_versions zero-pads, so an
+    # empty side becomes [0, 0, ...] and would then compare as "older than
+    # everything" - turning an unreadable BIOS version into a phantom update.
+    latest_parts, current_parts = _ver_parts(latest), _ver_parts(current)
+    if not latest_parts or not current_parts:
+        return False
+    left, right = _align_versions(latest_parts, current_parts)
+    return left > right
 
 
 def check_dell_bios_update(board_product: str, current_version: str) -> dict:
@@ -406,6 +413,14 @@ def check_dell_bios_update(board_product: str, current_version: str) -> dict:
             pass
 
     # ── Save cache ────────────────────────────────────────────────────────────
+    # Only cache a verdict we could actually compute. If WMI gave us no current
+    # BIOS version (it briefly does not, right after a restart), the comparison
+    # had nothing to compare against - caching that would pin a meaningless
+    # answer in place for 24h, which is exactly how a wrong "update available"
+    # survived on this machine.
+    if not str(current_version).strip():
+        result["error"] = (result.get("error") or "") + " | current BIOS version unavailable; not cached"
+        return result
     try:
         with open(BIOS_CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2)

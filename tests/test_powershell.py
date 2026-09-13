@@ -3447,6 +3447,24 @@ class TestCheckDellBiosUpdate:
         saved = json.loads(cache.read_text(encoding="utf-8"))
         assert saved["logic_version"] == bios._BIOS_LOGIC_VERSION
 
+    def test_empty_current_version_is_not_cached(self, mocker, tmp_path):
+        """Right after a restart WMI can briefly report no BIOSVersion.
+
+        A verdict computed against "" is meaningless, and caching it pinned a
+        wrong "update available" in place for 24h on the live machine."""
+        cache = tmp_path / "bios_cache.json"
+        mocker.patch("bios.BIOS_CACHE_FILE", str(cache))
+        mocker.patch("bios._get_service_tag", return_value="ABC1234")
+        mocker.patch("windesktopmgr.subprocess.run")
+        mocker.patch("urllib.request.urlopen", side_effect=OSError("network disabled in tests"))
+        mocker.patch(
+            "windesktopmgr.get_windows_update_drivers",
+            return_value={"1": {"Title": "Dell Inc. Firmware Driver Update (0.2.24.0)"}},
+        )
+        result = wdm.check_dell_bios_update("XPS8960", "")
+        assert result["update_available"] is False, "unknown current version must not imply an update"
+        assert not cache.exists(), "an uncomputable verdict was cached"
+
     def test_subprocess_timeout_handled(self, mocker, tmp_path):
         """The catalog HTTP download fails (URLError) and the WU check finds
         nothing — returns unknown without crashing. After the backlog #28
@@ -4323,9 +4341,20 @@ class TestBiosVersionComparison:
     def test_ver_gt(self, latest, current, expected, why):
         assert bios._ver_gt(latest, current) is expected, why
 
-    def test_unparseable_falls_back_to_literal_difference(self):
-        assert bios._ver_gt("A11", "A10") is True
-        assert bios._ver_gt("A10", "A10") is False
+    def test_unparseable_versions_fail_safe(self):
+        """Different is not newer.
+
+        This used to fall back to `latest != current`, which re-created the bug
+        it was meant to fix: on a request where WMI briefly returned no
+        BIOSVersion, current was "" and every advertised version counted as
+        newer, so the tab announced an update again. Caught on the live tray
+        AFTER the first fix shipped. Missing a legacy alphanumeric bump is the
+        acceptable direction; inventing an update is not."""
+        assert bios._ver_gt("0.2.24.0", "") is False
+        assert bios._ver_gt("0.2.24.0", None) is False
+        assert bios._ver_gt("", "2.24.0") is False
+        assert bios._ver_gt("abc", "def") is False
+        assert bios._ver_gt("A11", "A10") is False
 
     def test_align_only_drops_a_leading_zero_component(self):
         # One extra leading component, and it is 0 -> dropped.
