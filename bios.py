@@ -93,6 +93,62 @@ def get_current_bios() -> dict:
     return bounded_wmi_query(_work, timeout_s=8.0, fallback={}, label="current BIOS")
 
 
+# Bump when the update-detection LOGIC changes, so a cache written by the old
+# logic is discarded instead of serving its now-known-wrong verdict for the rest
+# of its 24h TTL. Without this, fixing the 0.2.24.0 false positive would not have
+# reached the user until the cache aged out.
+_BIOS_LOGIC_VERSION = 2
+
+# Intel shipped the Raptor Lake microcode mitigation in this Dell BIOS.
+_RAPTOR_MICROCODE_BIOS = "2.22.0"
+
+
+def _ver_parts(value) -> list[int]:
+    """Split a version string into its numeric components."""
+    return [int(x) for x in re.split(r"[.\-]", str(value)) if x.isdigit()]
+
+
+def _align_versions(a: list[int], b: list[int]) -> tuple[list[int], list[int]]:
+    """Make two version component lists comparable.
+
+    Windows Update publishes Dell firmware as ``0.MAJOR.MINOR.PATCH`` while the
+    BIOS itself reports ``MAJOR.MINOR.PATCH`` — so WU's ``0.2.24.0`` and an
+    installed ``2.24.0`` are the SAME BIOS. That packaging zero is dropped here
+    so the two can be compared.
+
+    The drop is deliberately narrow: only when one side has exactly one extra
+    leading component AND that component is 0. Stripping leading zeros in
+    general would be wrong — ``0.9.1`` vs ``1.0.0`` are both 3 components, and
+    blanket-stripping would rank 0.9.1 as the newer of the two.
+
+    Remaining length differences are zero-padded, so ``2.24.0.0`` and ``2.24.0``
+    compare equal rather than the longer one winning on length alone.
+    """
+    if len(a) == len(b) + 1 and a and a[0] == 0:
+        a = a[1:]
+    elif len(b) == len(a) + 1 and b and b[0] == 0:
+        b = b[1:]
+    width = max(len(a), len(b))
+    return a + [0] * (width - len(a)), b + [0] * (width - len(b))
+
+
+def _ver_gt(latest, current) -> bool:
+    """True if ``latest`` is a newer version than ``current``.
+
+    Used by every BIOS-update source. A source must never assert that an update
+    exists without coming through here: Windows Update keeps offering a firmware
+    package that is already installed, so "WU listed it" is not evidence of a
+    newer version.
+    """
+    try:
+        left, right = _align_versions(_ver_parts(latest), _ver_parts(current))
+        if not left or not right:
+            raise ValueError("unparseable version")
+        return left > right
+    except Exception:  # noqa: BLE001 -- fall back to a literal comparison
+        return str(latest).strip() != str(current).strip()
+
+
 def check_dell_bios_update(board_product: str, current_version: str) -> dict:
     """
     Check for Dell XPS 8960 BIOS updates via PowerShell on the local machine.
@@ -114,7 +170,7 @@ def check_dell_bios_update(board_product: str, current_version: str) -> dict:
             with open(BIOS_CACHE_FILE, encoding="utf-8") as f:
                 cached = json.load(f)
             age = (datetime.now(timezone.utc) - _parse_ts(cached.get("checked_at", ""))).total_seconds() / 3600
-            if age < 24:
+            if age < 24 and cached.get("logic_version") == _BIOS_LOGIC_VERSION:
                 return cached
     except Exception:
         pass
@@ -127,6 +183,7 @@ def check_dell_bios_update(board_product: str, current_version: str) -> dict:
 
     result = {
         "checked_at": datetime.now(timezone.utc).isoformat(),
+        "logic_version": _BIOS_LOGIC_VERSION,
         "current_version": current_version,
         "latest_version": None,
         "latest_date": None,
@@ -141,15 +198,6 @@ def check_dell_bios_update(board_product: str, current_version: str) -> dict:
         "source": "unknown",
         "error": None,
     }
-
-    def _ver_gt(latest: str, current: str) -> bool:
-        def _v(s):
-            return [int(x) for x in re.split(r"[.\-]", str(s)) if x.isdigit()]
-
-        try:
-            return _v(latest) > _v(current)
-        except Exception:
-            return latest.strip() != current.strip()
 
     # ── Method 1: Dell Command Update CLI ─────────────────────────────────────
     # DCU is pre-installed on Dell XPS systems at a predictable path
@@ -331,7 +379,13 @@ def check_dell_bios_update(board_product: str, current_version: str) -> dict:
                     result["latest_version"] = ver3
                     result["release_notes"] = title[:200]
                     result["source"] = "windows_update"
-                    result["update_available"] = True  # WU only shows pending updates
+                    # Was hardcoded True on the assumption that "WU only
+                    # shows pending updates". It does not: WU kept offering
+                    # Dell firmware 0.2.24.0 on a machine already running
+                    # BIOS 2.24.0 - the same version, just packaged by WU as
+                    # 0.MAJOR.MINOR.PATCH - so the tab reported a critical
+                    # update that did not exist.
+                    result["update_available"] = _ver_gt(ver3, current_version)
                     result["error"] = None
                     print(f"[BIOS] Windows Update found BIOS update: {title}")
         except Exception:  # noqa: BLE001
@@ -428,19 +482,37 @@ def summarize_bios(data: dict) -> dict:
                 f"Check your personalised Dell page at: {tag_url}",
             )
         )
-    # Special note for i9-14900K HYPERVISOR_ERROR
-    # Only show the Raptor Lake note — framed correctly given BIOS is current
+    # Raptor Lake / HYPERVISOR_ERROR note.
+    #
+    # Whether the microcode fix is present is a FACT about the installed
+    # version, so it is derived here rather than asserted in prose. This line
+    # used to hardcode "your BIOS is current, no update needed", which meant it
+    # flatly contradicted the critical "BIOS update available" insight directly
+    # above it whenever the update check fired.
+    on_fixed_bios = not _ver_gt(_RAPTOR_MICROCODE_BIOS, version)
+    if on_fixed_bios:
+        microcode_note = (
+            f"BIOS {_RAPTOR_MICROCODE_BIOS} added Intel's microcode patches and you are on {version}, "
+            "so that fix is already applied."
+        )
+    else:
+        microcode_note = (
+            f"Intel's microcode patches arrived in BIOS {_RAPTOR_MICROCODE_BIOS} and you are on {version} — "
+            "updating the BIOS is the first thing to do."
+        )
     insights.append(
         _insight(
             "info",
-            "Your i9-14900K is affected by Intel Raptor Lake instability (intelppm.sys / HYPERVISOR_ERROR). "
-            "BIOS 2.22.0 includes Intel microcode patches for this issue — your BIOS is current, no update needed. "
+            "Intel Raptor Lake desktop CPUs (13th/14th gen, e.g. i9-14900K) are affected by an instability "
+            "that surfaces as intelppm.sys / HYPERVISOR_ERROR. "
+            f"{microcode_note} "
             "If HYPERVISOR_ERROR crashes continue, the remaining mitigations are: "
             "disable C-States in BIOS, and disable Memory Integrity in Windows Security > Core Isolation.",
             "To access BIOS settings: restart and press F2 at the Dell splash screen. "
             "Or from PowerShell (Admin): shutdown /r /fw /t 0",
         )
     )
+
     status = "critical" if update.get("update_available") else "warning" if not update.get("latest_version") else "ok"
     headline = (
         f"BIOS update available: {update.get('latest_version', '')}"

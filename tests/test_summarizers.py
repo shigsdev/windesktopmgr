@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import bios
 import bsod
 import processes
 import sysinfo
@@ -2129,3 +2130,64 @@ class TestSummarizeUpgrades:
         assert pcie_ops, "expected a PCIe opportunity for SLOT2"
         # 3 general slots (SLOT1/2/3), 1 truly free (SLOT2), so "1 of 3"
         assert "1 of 3 general PCIe slot" in pcie_ops[0]["headline"]
+
+
+class TestSummarizeBios:
+    """summarize_bios had no tests at all, which is how it shipped a page that
+    said "BIOS update available ... Update immediately" and "your BIOS is
+    current, no update needed" at the same time: the Raptor Lake note hardcoded
+    the second claim instead of deriving it."""
+
+    def _data(self, version="2.24.0", latest=None, update_available=False, source="windows_update"):
+        return {
+            "current": {
+                "BIOSVersion": version,
+                "BIOSDateFormatted": "July 07, 2026",
+                "Manufacturer": "Dell Inc.",
+            },
+            "update": {
+                "latest_version": latest,
+                "update_available": update_available,
+                "source": source,
+                "service_tag": "ABC1234",
+            },
+        }
+
+    def _texts(self, summary):
+        return " ".join(i["text"] for i in summary["insights"])
+
+    def test_up_to_date_is_not_critical(self):
+        s = bios.summarize_bios(self._data(latest="0.2.24.0", update_available=False))
+        assert s["status"] == "ok"
+        assert "update available" not in self._texts(s).lower()
+
+    def test_never_claims_current_and_update_available_at_once(self):
+        # The contradiction the user actually saw on screen.
+        s = bios.summarize_bios(self._data(latest="0.2.25.0", update_available=True))
+        text = self._texts(s).lower()
+        assert "update available" in text
+        assert "no update needed" not in text
+
+    def test_microcode_note_is_derived_from_the_installed_version(self):
+        on_fixed = self._texts(bios.summarize_bios(self._data(version="2.24.0"))).lower()
+        assert "already applied" in on_fixed
+
+        pre_fix = self._texts(bios.summarize_bios(self._data(version="2.20.0"))).lower()
+        assert "already applied" not in pre_fix
+        assert "first thing to do" in pre_fix
+
+    def test_microcode_note_at_the_exact_fix_version(self):
+        text = self._texts(bios.summarize_bios(self._data(version=bios._RAPTOR_MICROCODE_BIOS))).lower()
+        assert "already applied" in text
+
+    def test_raptor_note_does_not_assert_a_specific_cpu_as_fact(self):
+        # It is appended regardless of CPU (summarize_bios has no CPU data), so
+        # it must read as "Raptor Lake CPUs are affected", not "YOUR CPU is".
+        text = self._texts(bios.summarize_bios(self._data()))
+        assert "Raptor Lake" in text
+        assert "Your i9-14900K is affected" not in text
+
+    def test_unknown_latest_version_is_not_a_critical(self):
+        s = bios.summarize_bios(self._data(latest=None, update_available=False))
+        assert s["status"] != "critical"
+        assert "Could not auto-detect" in self._texts(s)

@@ -132,12 +132,24 @@ def categorize(name: str, device_class: str) -> str:
 
 
 def version_newer(installed: str, latest: str) -> bool:
+    """True if ``latest`` is a newer driver version than ``installed``.
+
+    Components are zero-padded to equal length first. WMI and Windows Update do
+    not always report the same number of components, and without padding
+    ``31.0.15.5222`` vs ``31.0.15.5222.0`` -- the SAME driver -- compares as an
+    available update, because a longer list wins on length alone. Same defect
+    class as the BIOS "update available: 0.2.24.0 (you have 2.24.0)" report.
+    """
     try:
 
         def parse(v):
             return [int(x) for x in re.split(r"[.\-]", str(v)) if x.isdigit()]
 
-        return parse(latest) > parse(installed)
+        newer, current = parse(latest), parse(installed)
+        width = max(len(newer), len(current))
+        newer += [0] * (width - len(newer))
+        current += [0] * (width - len(current))
+        return newer > current
     except Exception:
         return False
 
