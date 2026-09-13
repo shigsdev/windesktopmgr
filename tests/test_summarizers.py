@@ -2191,3 +2191,18 @@ class TestSummarizeBios:
         s = bios.summarize_bios(self._data(latest=None, update_available=False))
         assert s["status"] != "critical"
         assert "Could not auto-detect" in self._texts(s)
+
+    def test_missing_latest_date_is_not_rendered_as_none(self):
+        # .get(key, "") returns None when the key exists with a None value, so
+        # the tab literally read "Latest: 0.2.24.0 (None)".
+        d = self._data(latest="0.2.24.0", update_available=False)
+        d["update"]["latest_date"] = None
+        text = self._texts(bios.summarize_bios(d))
+        assert "None" not in text
+        assert "()" not in text
+        assert "Latest reported: 0.2.24.0" in text
+
+    def test_latest_date_is_shown_when_present(self):
+        d = self._data(latest="2.25.0", update_available=False)
+        d["update"]["latest_date"] = "Aug 2026"
+        assert "Latest reported: 2.25.0 (Aug 2026)" in self._texts(bios.summarize_bios(d))
