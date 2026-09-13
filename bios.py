@@ -480,11 +480,15 @@ def summarize_bios(data: dict) -> dict:
     elif update.get("latest_version"):
         src = update.get("source", "")
         src_note = " (confirmed by Dell)" if src == "confirmed_current" else f" (source: {src})"
+        # .get(key, "") returns None when the key EXISTS with a None value, which
+        # rendered a literal "Latest: 0.2.24.0 (None)" on the tab.
+        latest_date = update.get("latest_date") or ""
+        date_note = f" ({latest_date})" if latest_date else ""
         insights.append(
             _insight(
                 "ok",
                 f"BIOS {version} is current — no update needed{src_note}. "
-                f"Latest: {update['latest_version']} ({update.get('latest_date', '')}).",
+                f"Latest reported: {update['latest_version']}{date_note}.",
             )
         )
         if update.get("release_notes"):
