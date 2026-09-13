@@ -32,12 +32,14 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import bios
 import bsod
 import disk
 import events
 import processes
 import remediation
 import windesktopmgr as wdm
+import windowsdrivermgr
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -3386,6 +3388,7 @@ class TestCheckDellBiosUpdate:
         cache_file = tmp_path / "bios.json"
         cached = {
             "checked_at": wdm.datetime.now(wdm.timezone.utc).isoformat(),
+            "logic_version": bios._BIOS_LOGIC_VERSION,
             "current_version": "2.22.0",
             "latest_version": "2.22.0",
             "update_available": False,
@@ -3402,6 +3405,47 @@ class TestCheckDellBiosUpdate:
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         m.assert_not_called()
         assert result["source"] == "dell_catalog"
+
+    def test_cache_from_older_logic_is_discarded(self, mocker, tmp_path):
+        """A cached verdict written by the buggy logic must not survive the fix.
+
+        The wrong answer was cached for 24h, so without a logic stamp the
+        corrected code would keep serving "update available" until it aged out
+        — the user would deploy the fix and still see the bug."""
+        cache = tmp_path / "bios_cache.json"
+        cache.write_text(
+            json.dumps(
+                {
+                    "checked_at": wdm.datetime.now(wdm.timezone.utc).isoformat(),
+                    "current_version": "2.24.0",
+                    "latest_version": "0.2.24.0",
+                    "update_available": True,
+                    "source": "windows_update",
+                }
+            ),
+            encoding="utf-8",
+        )
+        mocker.patch("bios.BIOS_CACHE_FILE", str(cache))
+        mocker.patch("bios._get_service_tag", return_value="ABC1234")
+        mocker.patch("windesktopmgr.get_windows_update_drivers", return_value={})
+        mocker.patch("windesktopmgr.subprocess.run")
+        # Keep Method 2 off the network — see the WU tests above.
+        mocker.patch("urllib.request.urlopen", side_effect=OSError("network disabled in tests"))
+        result = wdm.check_dell_bios_update("XPS8960", "2.24.0")
+        assert result["update_available"] is False, "stale pre-fix verdict was served"
+        assert result["logic_version"] == bios._BIOS_LOGIC_VERSION
+
+    def test_cache_written_with_the_current_logic_version(self, mocker, tmp_path):
+        cache = tmp_path / "bios_cache.json"
+        mocker.patch("bios.BIOS_CACHE_FILE", str(cache))
+        mocker.patch("bios._get_service_tag", return_value="ABC1234")
+        mocker.patch("windesktopmgr.get_windows_update_drivers", return_value={})
+        mocker.patch("windesktopmgr.subprocess.run")
+        # Keep Method 2 off the network — see the WU tests above.
+        mocker.patch("urllib.request.urlopen", side_effect=OSError("network disabled in tests"))
+        wdm.check_dell_bios_update("XPS8960", "2.24.0")
+        saved = json.loads(cache.read_text(encoding="utf-8"))
+        assert saved["logic_version"] == bios._BIOS_LOGIC_VERSION
 
     def test_subprocess_timeout_handled(self, mocker, tmp_path):
         """The catalog HTTP download fails (URLError) and the WU check finds
@@ -4245,3 +4289,116 @@ class TestWarrantyDataCommands:
         assert w["BSODs30Days"] == 2
         assert w["WHEAErrors"] == 0
         assert w["UnexpectedShutdowns"] == 1
+
+
+class TestBiosVersionComparison:
+    """Regression: the Firmware tab reported "BIOS update available: 0.2.24.0
+    (you have 2.24.0)" on a machine that was already fully up to date.
+
+    Windows Update publishes Dell firmware as 0.MAJOR.MINOR.PATCH while the BIOS
+    reports MAJOR.MINOR.PATCH, so WU's 0.2.24.0 IS the installed 2.24.0. The WU
+    code path also asserted update_available=True outright, on the belief that
+    "WU only shows pending updates" — it does not."""
+
+    @pytest.mark.parametrize(
+        "latest,current,expected,why",
+        [
+            ("0.2.24.0", "2.24.0", False, "WU packaging zero — same BIOS (the reported bug)"),
+            ("0.2.25.0", "2.24.0", True, "WU packaging zero — a genuinely newer BIOS"),
+            ("0.2.23.0", "2.24.0", False, "WU packaging zero — an older BIOS"),
+            ("2.24.0", "2.24.0", False, "identical"),
+            ("2.25.0", "2.24.0", True, "plainly newer"),
+            ("2.23.0", "2.24.0", False, "plainly older"),
+            ("2.24.1", "2.24.0", True, "patch bump"),
+            ("2.24.0.0", "2.24.0", False, "trailing zero padding is not a new version"),
+            ("2.24", "2.24.0", False, "short form equals padded form"),
+            ("0.9.1", "1.0.0", False, "a genuine 0.x version must NOT be zero-stripped"),
+            ("1.0.0", "0.9.1", True, "a genuine 0.x version must NOT be zero-stripped (reverse)"),
+            # Under the WU scheme 0.0.2.0 denotes BIOS 0.2.0, which really is newer
+            # than 0.1.0. Documented because the heuristic is an interpretation: if a
+            # vendor ever ships a true four-component 0.0.x.y this would read it as 0.x.y.
+            ("0.0.2.0", "0.1.0", True, "WU form 0.0.2.0 means BIOS 0.2.0, newer than 0.1.0"),
+        ],
+    )
+    def test_ver_gt(self, latest, current, expected, why):
+        assert bios._ver_gt(latest, current) is expected, why
+
+    def test_unparseable_falls_back_to_literal_difference(self):
+        assert bios._ver_gt("A11", "A10") is True
+        assert bios._ver_gt("A10", "A10") is False
+
+    def test_align_only_drops_a_leading_zero_component(self):
+        # One extra leading component, and it is 0 -> dropped.
+        assert bios._align_versions([0, 2, 24, 0], [2, 24, 0]) == ([2, 24, 0], [2, 24, 0])
+        # One extra leading component, but it is NOT 0 -> kept and padded.
+        left, right = bios._align_versions([1, 2, 24, 0], [2, 24, 0])
+        assert left == [1, 2, 24, 0]
+        assert len(right) == 4
+        # Same length -> untouched apart from padding.
+        assert bios._align_versions([0, 9, 1], [1, 0, 0]) == ([0, 9, 1], [1, 0, 0])
+
+    def test_windows_update_path_compares_instead_of_asserting(self, mocker, tmp_path):
+        """The actual defect: the WU branch hardcoded update_available = True."""
+        mocker.patch.object(bios, "BIOS_CACHE_FILE", str(tmp_path / "bios_cache.json"))
+        mocker.patch.object(bios.os.path, "exists", return_value=False)
+        mocker.patch.object(bios, "_get_service_tag", return_value="ABC1234")
+        # Method 2 (Dell catalog) sits between DCU and Windows Update. Without
+        # this it makes a REAL request to downloads.dell.com and runs expand.exe
+        # — slow, network-dependent, and it would flip this test's result on any
+        # machine where the catalog actually parses for this board.
+        mocker.patch("urllib.request.urlopen", side_effect=OSError("network disabled in tests"))
+        mocker.patch(
+            "windesktopmgr.get_windows_update_drivers",
+            return_value={"1": {"Title": "Dell Inc. Firmware Driver Update (0.2.24.0)"}},
+        )
+        result = bios.check_dell_bios_update("XPS8960", "2.24.0")
+        assert result["source"] == "windows_update"
+        assert result["latest_version"] == "0.2.24.0"
+        assert result["update_available"] is False, "WU offered the version already installed"
+
+    def test_windows_update_path_still_reports_a_real_update(self, mocker, tmp_path):
+        mocker.patch.object(bios, "BIOS_CACHE_FILE", str(tmp_path / "bios_cache.json"))
+        mocker.patch.object(bios.os.path, "exists", return_value=False)
+        mocker.patch.object(bios, "_get_service_tag", return_value="ABC1234")
+        # Method 2 (Dell catalog) sits between DCU and Windows Update. Without
+        # this it makes a REAL request to downloads.dell.com and runs expand.exe
+        # — slow, network-dependent, and it would flip this test's result on any
+        # machine where the catalog actually parses for this board.
+        mocker.patch("urllib.request.urlopen", side_effect=OSError("network disabled in tests"))
+        mocker.patch(
+            "windesktopmgr.get_windows_update_drivers",
+            return_value={"1": {"Title": "Dell Inc. Firmware Driver Update (0.2.25.0)"}},
+        )
+        result = bios.check_dell_bios_update("XPS8960", "2.24.0")
+        assert result["update_available"] is True
+
+
+class TestDriverVersionNewer:
+    """Same defect class as the BIOS false positive, on the Drivers tab.
+
+    WMI and Windows Update do not always report the same number of version
+    components, and the comparison used a raw list compare -- so 31.0.15.5222
+    vs 31.0.15.5222.0, the SAME driver, ranked as an available update because a
+    longer list wins on length alone."""
+
+    @pytest.mark.parametrize(
+        "installed,latest,expected",
+        [
+            ("31.0.15.5222", "31.0.15.5222.0", False),
+            ("1.2.3", "1.2.3.0", False),
+            ("1.2.3.0", "1.2.3", False),
+            ("1.2.3", "1.2.4", True),
+            ("1.2.4", "1.2.3", False),
+            ("10.0.19041.1", "10.0.19041.2", True),
+            ("10.0.19041.2", "10.0.19041.1", False),
+            ("1.0", "1.0.0.1", True),
+        ],
+    )
+    def test_version_newer(self, installed, latest, expected):
+        assert windowsdrivermgr.version_newer(installed, latest) is expected
+
+    def test_unparseable_never_claims_an_update(self):
+        # Fail safe: an unreadable version must not produce a phantom update.
+        assert windowsdrivermgr.version_newer("abc", "def") is False
+        assert windowsdrivermgr.version_newer("", "") is False
+        assert windowsdrivermgr.version_newer(None, None) is False
