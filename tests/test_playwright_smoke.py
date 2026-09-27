@@ -66,6 +66,7 @@ TAB_IDS = [
     "backup",
     "utilities",
     "maintenance",
+    "docs",
 ]
 
 
@@ -2324,6 +2325,233 @@ class TestStorageTabSlotsAndSpaces:
             if visible == (configured > 0):
                 break
         assert visible == (configured > 0), f"nas section visible={visible} but configured={configured}"
+
+
+class TestDocsTab:
+    """Documentation tab: the SSD-replacement procedure.
+
+    The point of this tab is that a swap guide must not go stale — the
+    'which drive failed' answer is read live, not baked in. These assert the
+    procedure is present, the diagram is the LIVE one, and the export path
+    exists."""
+
+    def test_procedure_sections_are_present(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("document.querySelector('[data-page=\"docs\"]').click()")
+        text = page.evaluate("document.getElementById('page-docs').textContent")
+        assert "Replacing a failed SSD" in text
+        for heading in ("Step 1", "Step 2", "Step 3"):
+            assert heading in text, heading
+        assert "Ordering trap" in text
+
+    def test_script_commands_are_shown_with_copy_buttons(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("document.querySelector('[data-page=\"docs\"]').click()")
+        page.wait_for_function("() => document.querySelectorAll('#doc-cmds button').length > 0", timeout=15_000)
+        text = page.evaluate("document.getElementById('doc-cmds').textContent")
+        # The exact script path and both invocations must be copyable.
+        assert "repair_storage_pool.ps1" in text
+        assert "-Preview" in text
+        buttons = page.evaluate("[...document.querySelectorAll('#doc-cmds button')].map(b => b.textContent)")
+        assert buttons == ["Copy", "Copy"], buttons
+
+    def test_card_diagram_never_claims_no_card_while_still_loading(self, loaded_page):
+        """Regression: the placeholder read 'No add-in card detected' during the
+        PCIe walk, which takes up to a minute. That is a factual claim about the
+        hardware, and showing it mid-swap would tell someone the card they are
+        holding does not exist."""
+        page, _ = loaded_page
+        page.evaluate("document.querySelector('[data-page=\"docs\"]').click()")
+        # Sampled immediately. With a warm topology cache the diagram can render
+        # before we look, so accept either state - what must NEVER appear is the
+        # "no card" claim while the answer is still unknown.
+        state = page.evaluate(
+            """
+            () => ({
+                text: document.getElementById('doc-card-empty').textContent,
+                rendered: !!document.querySelector('#doc-card svg'),
+            })
+            """
+        )
+        assert "No add-in card detected" not in state["text"], state
+        if not state["rendered"]:
+            assert "Reading the card layout" in state["text"], state
+
+    def test_diagram_is_the_live_one_not_a_screenshot(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("document.querySelector('[data-page=\"docs\"]').click()")
+        # The PCIe topology walk is slow; give it room.
+        page.wait_for_function(
+            """
+            () => {
+                const sec = document.getElementById('doc-card-section');
+                const empty = document.getElementById('doc-card-empty');
+                if (!sec || !empty) return false;
+                return sec.style.display !== 'none'
+                    || !empty.textContent.includes('Reading the card layout');
+            }
+            """,
+            timeout=120_000,
+        )
+        # An <img> would mean someone replaced the live render with a picture.
+        assert page.evaluate("!document.querySelector('#doc-card img')")
+        sec_shown = page.evaluate("document.getElementById('doc-card-section').style.display !== 'none'")
+        if sec_shown:
+            assert page.evaluate("!!document.querySelector('#doc-card svg')")
+
+    def test_export_pdf_control_exists(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("document.querySelector('[data-page=\"docs\"]').click()")
+        assert page.evaluate("!!document.getElementById('doc-pdf-btn')")
+        assert page.evaluate("typeof doc_exportPdf === 'function'")
+
+    def test_export_builds_a_populated_standalone_document(self, loaded_page):
+        """Regression: the export came out BLANK.
+
+        It used to print the app page itself via @media print, and the shell's
+        layout (fixed rail, scroll container, per-tab display toggling) fought
+        the print rules. It now clones the page into an isolated iframe with its
+        own stylesheet, so there is no shell to fight.
+
+        The iframe is inspected and detached BEFORE the deferred print() fires —
+        a real print dialog blocks the browser indefinitely under automation."""
+        page, _ = loaded_page
+        page.evaluate("document.querySelector('[data-page=\"docs\"]').click()")
+        page.wait_for_function("() => document.querySelectorAll('#doc-cmds button').length > 0", timeout=15_000)
+        result = page.evaluate(
+            """
+            async () => {
+                document.querySelectorAll('iframe').forEach(f => f.remove());
+                doc_exportPdf(null);
+                // doc_exportPdf returns synchronously after scheduling print(),
+                // so the stub lands before the timer fires. Racing the timer by
+                // detaching in time is not deterministic, and a real print
+                // dialog blocks the browser indefinitely under automation.
+                const f = [...document.querySelectorAll('iframe')].pop();
+                if (!f) return {built: false};
+                let printed = false;
+                f.contentWindow.print = () => { printed = true; };
+                await new Promise(r => setTimeout(r, 400));
+                const d = f.contentDocument;
+                const out = {
+                    built: true,
+                    title: d.title,
+                    hasStyle: !!d.querySelector('style'),
+                    textLen: d.body.textContent.replace(/\\s+/g, ' ').trim().length,
+                    hasCommands: d.body.textContent.includes('repair_storage_pool.ps1'),
+                    buttons: d.querySelectorAll('button').length,
+                    cloneDisplay: d.getElementById('page-docs')
+                        ? getComputedStyle(d.getElementById('page-docs')).display : null,
+                    printed,
+                };
+                f.remove();
+                return out;
+            }
+            """
+        )
+        assert result["built"] is True, "no export iframe was created"
+        # The whole bug was an empty page — assert there is real content.
+        assert result["textLen"] > 1000, f"export looks blank ({result['textLen']} chars)"
+        assert result["cloneDisplay"] == "block", "the cloned page was not visible"
+        assert result["hasCommands"] is True, "the repair commands are missing from the export"
+        assert result["hasStyle"] is True, "the export carried no stylesheet"
+        # Interactive chrome is not content.
+        assert result["buttons"] == 0, "buttons were exported"
+        # Chrome uses document.title as the default PDF filename.
+        assert "SSD replacement" in result["title"], result["title"]
+        assert result["printed"] is True, "the export never reached the print step"
+
+    def test_export_cleans_up_after_itself(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("document.querySelector('[data-page=\"docs\"]').click()")
+        left_behind = page.evaluate(
+            """
+            async () => {
+                document.querySelectorAll('iframe').forEach(f => f.remove());
+                doc_exportPdf(null);
+                const f = [...document.querySelectorAll('iframe')].pop();
+                if (f) f.contentWindow.print = () => {};
+                await new Promise(r => setTimeout(r, 400));
+                if (f) { f.contentWindow.dispatchEvent(new Event('afterprint')); }
+                await new Promise(r => setTimeout(r, 50));
+                const remaining = document.querySelectorAll('iframe').length;
+                document.querySelectorAll('iframe').forEach(x => x.remove());
+                return remaining;
+            }
+            """
+        )
+        assert left_behind == 0, "the export iframe was left in the page"
+
+    def test_export_waits_for_live_data_before_cloning(self, loaded_page):
+        """Regression: the export could capture the loading placeholder.
+
+        The page already refused to claim "no add-in card" while still reading,
+        but the EXPORT path had no such gate — clicking Export right after
+        opening the tab baked "Reading the card layout…" into the PDF in place
+        of the failed drive's socket and serial. Carrying that to the machine is
+        the whole point of the export."""
+        page, _ = loaded_page
+        # Click the tab and export immediately, without waiting for the reads.
+        result = page.evaluate(
+            """
+            async () => {
+                document.querySelectorAll('iframe').forEach(f => f.remove());
+                document.querySelector('[data-page="docs"]').click();
+                const p = doc_exportPdf(null);      // no await on doc_load first
+                await new Promise(r => setTimeout(r, 50));
+                const early = [...document.querySelectorAll('iframe')].pop();
+                if (early) early.contentWindow.print = () => {};
+                await p;
+                const f = [...document.querySelectorAll('iframe')].pop();
+                if (f) f.contentWindow.print = () => {};
+                await new Promise(r => setTimeout(r, 400));
+                const text = f ? f.contentDocument.body.textContent : '';
+                if (f) f.remove();
+                return {text: text.replace(/\\s+/g, ' ')};
+            }
+            """
+        )
+        assert "Reading the card layout" not in result["text"], "the export captured the loading placeholder"
+        assert "Reading pool state" not in result["text"], "the export captured the pool-state placeholder"
+
+    def test_tab_reloads_on_every_visit(self, loaded_page):
+        """The page promises live values. The documented workflow is: open this
+        tab, shut down, swap the drive, boot, come back here — a one-shot load
+        would still flag the replaced drive as "REMOVE THIS ONE"."""
+        page, _ = loaded_page
+        calls = page.evaluate(
+            """
+            async () => {
+                let n = 0;
+                const real = window.doc_load;
+                window.doc_load = function () { n++; return real.apply(this, arguments); };
+                document.querySelector('[data-page="docs"]').click();
+                await new Promise(r => setTimeout(r, 200));
+                document.querySelector('[data-page="dashboard"]').click();
+                await new Promise(r => setTimeout(r, 200));
+                document.querySelector('[data-page="docs"]').click();
+                await new Promise(r => setTimeout(r, 200));
+                window.doc_load = real;
+                return n;
+            }
+            """
+        )
+        assert calls >= 2, f"doc_load ran {calls}x across two visits — stale after the first"
+
+    def test_manual_refresh_control_exists(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("document.querySelector('[data-page=\"docs\"]').click()")
+        assert page.evaluate("!!document.getElementById('doc-refresh-btn')")
+
+    def test_export_does_not_depend_on_app_print_styles(self, loaded_page):
+        """The export must stand alone. If it ever goes back to relying on the
+        app's @media print rules, it is one layout change away from blank
+        again."""
+        page, _ = loaded_page
+        css = page.evaluate("async () => await fetch('/static/css/app.css').then(r => r.text())")
+        assert "printing-docs" not in css, "dead print-class rules are back"
+        src = page.evaluate("doc_exportPdf.toString()")
+        assert "iframe" in src.lower(), "export no longer builds an isolated document"
 
 
 class TestMaintenanceTabRegistryReport:

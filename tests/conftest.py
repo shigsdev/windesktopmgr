@@ -148,6 +148,10 @@ def reset_globals():
     # Lives in the `disk` blueprint module after the backlog-#22 extraction.
     disk._winsxs_cache["ts"] = 0.0
     disk._winsxs_cache["data"] = None
+    # PCIe card topology (10 min TTL). Without this reset a warm cache from an
+    # earlier test serves real hardware data straight past a test's mocks.
+    disk._topology_cache["ts"] = 0.0
+    disk._topology_cache["data"] = None
 
     # Throughput / CPU-percent delta accumulators. These persist a "previous
     # sample" keyed by adapter/PID across calls; a prior test's baseline would

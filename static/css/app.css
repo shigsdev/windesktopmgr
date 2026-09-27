@@ -1004,3 +1004,21 @@
     .th-core-bar, .th-sensor-fill { transition: none; }
     .th-core.tband-crit, .th-sensor.tband-crit { animation: none; }
   }
+
+/* ── Print ──────────────────────────────────────────────────────────────────
+   The Docs tab's "Export PDF" button does NOT rely on these rules: it clones
+   the page into an isolated iframe and prints that, because printing the app
+   shell came out blank. These only tidy up a plain Ctrl+P of the live app. */
+@media print {
+  @page { margin: 14mm; }
+  header,
+  aside.rail,
+  .rail,
+  .no-print {
+    display: none !important;
+  }
+  html, body {
+    background: #ffffff !important;
+    color: #111111 !important;
+  }
+}
