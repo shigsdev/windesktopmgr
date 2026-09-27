@@ -21,6 +21,7 @@ import re
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from ctypes import wintypes
 from datetime import datetime, timedelta
 
@@ -1636,24 +1637,100 @@ def storage_nas_route():
     return jsonify(nas.get_nas_storage(wait=True))
 
 
-@disk_bp.route("/api/storage/pcie-topology")
-def storage_pcie_topology_route():
-    """Physical layout for a drive swap: add-in-card sockets vs onboard M.2,
-    with the failed/retired drive flagged. Correlates Get-PhysicalDisk health
-    with Storage Spaces Usage so a pool-retired disk is caught even when SMART
-    still reads Healthy. Powers the Storage tab's physical card diagram."""
-    health = get_disk_health()
-    spaces = get_storage_spaces()
+# The physical card layout is assembled from three PowerShell calls
+# (Get-PhysicalDisk ~18s, Storage Spaces ~9s, PnP switch lookup ~7s) — about
+# 33s sequentially. That is slow enough that the Docs tab's diagram looked
+# simply missing rather than loading. Two fixes: run the two independent reads
+# concurrently, and cache the assembled result. Physical topology only changes
+# when someone opens the case, and a drive swap means a power cycle, which
+# clears this cache anyway.
+_TOPOLOGY_CACHE_TTL_SEC = 600
+_topology_cache: dict = {"ts": 0.0, "data": None}
+_topology_lock = threading.Lock()
+# Separate lock held for the duration of the COMPUTE, so concurrent cold callers
+# do not each spawn their own set of PowerShell reads. The Docs tab alone asks
+# twice on open (diagram + drive-state line); without this the two overlap and
+# saturate the Flask worker pool, which showed up as unrelated page loads
+# timing out.
+_topology_compute_lock = threading.Lock()
+
+
+def get_pcie_topology(force: bool = False) -> dict:
+    """Assembled PCIe card topology, cached.
+
+    ``force`` bypasses the cache — used by the Storage tab's explicit refresh so
+    a just-swapped drive shows up without waiting out the TTL."""
+
+    def _fresh():
+        cached = _topology_cache["data"]
+        if cached is not None and (time.time() - _topology_cache["ts"]) < _TOPOLOGY_CACHE_TTL_SEC:
+            return cached
+        return None
+
+    if not force:
+        with _topology_lock:
+            hit = _fresh()
+        if hit is not None:
+            return {**hit, "cached": True}
+
+    with _topology_compute_lock:
+        # Re-check under the compute lock: while we waited, the thread ahead of
+        # us may have just populated the cache, and redoing ~13s of PowerShell
+        # for an answer we now have is the stampede this guards against.
+        if not force:
+            with _topology_lock:
+                hit = _fresh()
+            if hit is not None:
+                return {**hit, "cached": True}
+        return _build_pcie_topology()
+
+
+def _build_pcie_topology() -> dict:
+    """Do the actual reads. Callers hold _topology_compute_lock."""
+    # get_disk_health and get_storage_spaces are independent; overlapping them
+    # takes the cold path from ~27s to roughly the slower of the two.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        health_f = pool.submit(get_disk_health)
+        spaces_f = pool.submit(get_storage_spaces)
+        try:
+            health = health_f.result(timeout=120)
+        except Exception:  # noqa: BLE001 -- a failed read degrades the diagram, never 500s
+            health = {}
+        try:
+            spaces = spaces_f.result(timeout=120)
+        except Exception:  # noqa: BLE001
+            spaces = {}
+
     topo = build_pcie_card_topology(health.get("physical", []), spaces.get("members", []))
     # Name the card by its switch chip (e.g. "ASMedia ASM2812") when it's a
     # switch-based card — only bother if we found an add-in card, and correlate
     # by the card drives' PCIe buses so onboard M.2 can't be attributed to it.
     if topo.get("has_card"):
         card_buses = [d.get("bus") for d in topo.get("card_drives", [])]
-        topo["card_switch"] = detect_pcie_switch(card_buses).get("switch", "")
+        try:
+            topo["card_switch"] = detect_pcie_switch(card_buses).get("switch", "")
+        except Exception:  # noqa: BLE001 -- the chip name is cosmetic
+            topo["card_switch"] = ""
     else:
         topo["card_switch"] = ""
-    return jsonify({"ok": True, **topo})
+
+    with _topology_lock:
+        _topology_cache["data"] = topo
+        _topology_cache["ts"] = time.time()
+    return {**topo, "cached": False}
+
+
+@disk_bp.route("/api/storage/pcie-topology")
+def storage_pcie_topology_route():
+    """Physical layout for a drive swap: add-in-card sockets vs onboard M.2,
+    with the failed/retired drive flagged. Correlates Get-PhysicalDisk health
+    with Storage Spaces Usage so a pool-retired disk is caught even when SMART
+    still reads Healthy. Powers the Storage tab's physical card diagram and the
+    Docs tab's swap procedure.
+
+    Cached for 10 minutes (``?refresh=1`` to bypass) — see get_pcie_topology."""
+    force = request.args.get("refresh") in ("1", "true", "yes")
+    return jsonify({"ok": True, **get_pcie_topology(force=force)})
 
 
 def _invalidate_dashboard_cache() -> None:

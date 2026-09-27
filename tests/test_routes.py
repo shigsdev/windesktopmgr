@@ -8,11 +8,14 @@ Coverage: ALL 38 Flask routes defined in windesktopmgr.py
 
 import json
 import os
+import threading
+import time
 import types
 
 import pytest
 
 import bsod
+import disk
 import events
 import processes
 import windesktopmgr as wdm
@@ -3156,6 +3159,54 @@ class TestStoragePcieTopologyRoute:
         d = r.get_json()
         assert d["ok"] is True
         assert d["has_card"] is False
+
+    def test_result_is_cached_between_calls(self, client, mocker):
+        """The assembled topology is ~3 PowerShell calls (~33s cold). Without a
+        cache the Docs tab's diagram looked simply missing rather than loading."""
+        health = mocker.patch("disk.get_disk_health", return_value={"physical": []})
+        mocker.patch("disk.get_storage_spaces", return_value={"members": []})
+        first = client.get("/api/storage/pcie-topology").get_json()
+        second = client.get("/api/storage/pcie-topology").get_json()
+        assert first["cached"] is False
+        assert second["cached"] is True
+        assert health.call_count == 1, "the cache was bypassed"
+
+    def test_refresh_bypasses_the_cache(self, client, mocker):
+        health = mocker.patch("disk.get_disk_health", return_value={"physical": []})
+        mocker.patch("disk.get_storage_spaces", return_value={"members": []})
+        client.get("/api/storage/pcie-topology")
+        forced = client.get("/api/storage/pcie-topology?refresh=1").get_json()
+        assert forced["cached"] is False
+        assert health.call_count == 2, "refresh=1 did not re-read the hardware"
+
+    def test_a_failing_read_degrades_instead_of_500(self, client, mocker):
+        mocker.patch("disk.get_disk_health", side_effect=OSError("wmi down"))
+        mocker.patch("disk.get_storage_spaces", return_value={"members": []})
+        r = client.get("/api/storage/pcie-topology")
+        assert r.status_code == 200
+        assert r.get_json()["ok"] is True
+
+    def test_concurrent_cold_callers_read_the_hardware_once(self, mocker):
+        """Single-flight. The Docs tab asks twice on open (diagram + drive-state
+        line); without this the two cold reads overlap, each spawning its own
+        PowerShell set, and the saturated worker pool showed up as unrelated
+        page loads timing out."""
+        disk._topology_cache.update(ts=0.0, data=None)
+        calls = {"n": 0}
+
+        def slow_health():
+            calls["n"] += 1
+            time.sleep(0.3)
+            return {"physical": []}
+
+        mocker.patch("disk.get_disk_health", side_effect=slow_health)
+        mocker.patch("disk.get_storage_spaces", return_value={"members": []})
+        threads = [threading.Thread(target=disk.get_pcie_topology) for _ in range(5)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join(timeout=30)
+        assert calls["n"] == 1, f"hardware was read {calls['n']}x for 5 concurrent callers"
 
 
 class TestDiskSnoozeRoute:

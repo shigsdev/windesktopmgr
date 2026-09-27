@@ -75,6 +75,7 @@
       <button class="page-tab" data-page="utilities">🛠 Utilities</button>
       <button class="page-tab" data-page="maintenance">🧹 Cleanup</button>
       <button class="page-tab" data-page="logs">📜 Logs</button>
+      <button class="page-tab" data-page="docs">📖 Docs</button>
       <button class="page-tab" data-page="architecture">🏗 Architecture</button>
     </nav>
     <div class="rail-foot"><span class="rf-on">● ONLINE</span> · :5000</div>
@@ -2341,6 +2342,113 @@
 
       <div style="margin-top:14px;padding:12px 14px;background:var(--card);border:1px solid var(--border);border-radius:10px">
         <div style="font-size:12px;color:var(--muted)">Looking for <b>which folders</b> are biggest, or the <b>Windows component store</b> (WinSxS)? Those live on the <b>Disk</b> tab — use <b>🔍 Analyze Space</b> on a drive to drill down folder by folder, and <b>Quick wins</b> for WinSxS and other known bloat.</div>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- ══════════════════════════════════════════
+       PAGE: DOCUMENTATION
+  ══════════════════════════════════════════ -->
+  <div id="page-docs" style="display:none">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:20px 0 20px">
+      <div>
+        <h2 style="margin:0;font-family:var(--font-head);font-size:20px">Documentation</h2>
+        <div style="font-size:11px;color:var(--muted);margin-top:3px">Hardware and recovery procedures for this machine. Live values below come from the running system, so they reflect the state right now &mdash; not when the page was written.</div>
+      </div>
+      <button id="doc-refresh-btn" type="button" onclick="doc_load()" class="no-print" style="padding:6px 14px;font-size:12px;border-radius:6px;background:transparent;color:var(--muted);border:1px solid var(--border);cursor:pointer;white-space:nowrap;margin-right:8px">&#8634; Refresh</button>
+      <button id="doc-pdf-btn" type="button" onclick="doc_exportPdf(this)" class="no-print" style="padding:6px 16px;font-size:12px;border-radius:6px;background:transparent;color:var(--cyan);border:1px solid var(--cyan);cursor:pointer;white-space:nowrap">&#8595; Export PDF</button>
+    </div>
+
+    <div id="doc-toc" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px"></div>
+
+    <!-- ── Procedure: replace a failed SSD in the Storage Spaces pool ── -->
+    <div id="doc-ssd" style="background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden">
+      <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+        <h3 style="margin:0;font-family:var(--font-head);font-size:16px">Replacing a failed SSD in the E: storage pool</h3>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">4 &times; 2&nbsp;TB NVMe on a SABRENT EC-P3X4 add-in card, Windows Storage Spaces parity pool (single redundancy).</div>
+      </div>
+
+      <!-- Live pool state -->
+      <div id="doc-pool-state" style="padding:12px 16px;border-bottom:1px solid var(--border)">
+        <div style="font-size:12px;color:var(--muted)">Reading pool state&hellip;</div>
+      </div>
+
+      <!-- Why this needs doing by hand -->
+      <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+        <div style="font-weight:700;font-size:13px;margin-bottom:6px">Why the pool does not fix itself</div>
+        <div style="font-size:12px;color:var(--muted);line-height:1.6">
+          Parity survived the drive failure &mdash; what failed was <b>auto-repair</b>. Storage Spaces rebuilds onto <b>free space on the surviving drives</b>; there is no hot-spare concept. This pool was ~96% full, and the free space that remained lived on the drive that died, so the rebuild had nowhere to go and looped forever. That loop was the disk thrashing that slowed the whole machine.
+          <br><br>
+          So a <b>new blank 2&nbsp;TB drive is required</b> &mdash; it supplies the free space the rebuild needs. Fitting it is not enough on its own: the pool never adopts a new disk automatically, and the repair job sits <b>Suspended</b> until something adds the disk and kicks the rebuild. That is what the script does.
+        </div>
+      </div>
+
+      <!-- Step 1: identify -->
+      <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+        <div style="font-weight:700;font-size:13px;margin-bottom:4px">Step 1 &mdash; Identify the failed drive</div>
+        <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:10px">
+          The card has four M.2 sockets. The diagram below is drawn in <b>PCIe bus order</b>, which is the physical top-to-bottom order of the sockets on the card, so the highlighted row is the socket to open.
+          <b style="color:var(--amber)">Confirm by the serial printed on the drive label before you pull anything</b> &mdash; socket order is inferred from the bus topology, and the label is ground truth.
+        </div>
+        <div id="doc-card-section" style="display:none">
+          <div id="doc-card"></div>
+        </div>
+        <div id="doc-card-empty" style="font-size:12px;color:var(--muted)">No add-in card detected on this machine.</div>
+      </div>
+
+      <!-- Step 2: swap -->
+      <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+        <div style="font-weight:700;font-size:13px;margin-bottom:6px">Step 2 &mdash; Swap the hardware</div>
+        <ol style="font-size:12px;color:var(--muted);line-height:1.8;margin:0;padding-left:20px">
+          <li>Shut down fully (not sleep) and unplug the power cable.</li>
+          <li>Open the case and locate the SABRENT EC-P3X4 card in the PCIe slot.</li>
+          <li><b>Pull the failed drive first.</b> All four card sockets and both onboard M.2 slots are occupied, so there is nowhere to put the replacement until the dead one is out.</li>
+          <li>Fit the new blank 2&nbsp;TB NVMe drive in the socket you just emptied and secure the standoff screw.</li>
+          <li>Close up, reconnect power, and boot.</li>
+        </ol>
+        <div style="font-size:11px;color:var(--muted);margin-top:10px;padding:8px 10px;border-left:2px solid var(--border)">
+          The pool runs with <b>no redundancy</b> from the moment the drive dies until the rebuild finishes. On this machine the data is backup storage and File History only &mdash; disposable &mdash; so that risk was accepted deliberately.
+        </div>
+      </div>
+
+      <!-- Step 3: run the script -->
+      <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+        <div style="font-weight:700;font-size:13px;margin-bottom:6px">Step 3 &mdash; Run the repair script (elevated)</div>
+        <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:10px">
+          Storage Spaces cmdlets do not work without administrator rights, and this app deliberately never runs an elevated disk operation of its own. Open <b>PowerShell as Administrator</b> and run the preview first &mdash; it shows exactly which disk it would add and which pool entry it would remove, and changes nothing.
+        </div>
+        <div id="doc-cmds"></div>
+        <div style="font-size:11px;color:var(--muted);margin-top:10px;line-height:1.6">
+          Leave the window open. The parity rebuild can run for <b>hours</b>. The script is safe to re-run: if an earlier attempt already added the disk, it detects that and resumes at the rebuild rather than demanding a drive you have already fitted.
+        </div>
+      </div>
+
+      <!-- What the script does + the trap -->
+      <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+        <div style="font-weight:700;font-size:13px;margin-bottom:6px">What the script does, in order</div>
+        <div style="font-size:12px;color:var(--muted);line-height:1.8">
+          <b>validate</b> &rarr; <b>add</b> the new disk &rarr; <b>repair</b> (parity rebuild) &rarr; <b>wait</b> for the storage jobs &rarr; <b>verify</b> the space is Healthy/OK &rarr; only then <b>remove</b> the old disk's pool entry.
+        </div>
+        <div style="margin-top:12px;padding:10px 12px;border:1px solid var(--amber);border-radius:8px">
+          <div style="font-weight:700;font-size:12px;color:var(--amber);margin-bottom:4px">&#9888; Ordering trap</div>
+          <div style="font-size:12px;color:var(--muted);line-height:1.6">
+            Never remove the dead disk's pool entry <i>before</i> the rebuild finishes. With <code>PhysicalDiskRedundancy = 1</code> that can lose the volume. The removal in the script is <b>hard-gated</b> on the verification passing &mdash; any failure, suspension or timeout stops before it and leaves the pool recoverable.
+            <br><br>
+            Note that &ldquo;remove&rdquo; here means deleting the <b>stale pool entry</b>, not ejecting hardware. A pulled drive still shows as a pool member until it is removed.
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:10px;line-height:1.6">
+          The script refuses to run when anything is ambiguous &mdash; more than one storage space in the pool, more than one retired disk, more than one poolable replacement, a USB candidate, or an undersized replacement &mdash; rather than guessing which disk you meant.
+        </div>
+      </div>
+
+      <!-- If it goes wrong -->
+      <div style="padding:14px 16px">
+        <div style="font-weight:700;font-size:13px;margin-bottom:6px">If the rebuild will not complete</div>
+        <div style="font-size:12px;color:var(--muted);line-height:1.6">
+          Recovery is <b>not</b> guaranteed once the space reports &ldquo;Incomplete&rdquo;. Because the data here is disposable, the guaranteed reset is a full teardown and rebuild of the pool (<code>Remove-VirtualDisk</code> then <code>Remove-StoragePool</code>, then create it fresh). That destroys everything on E:, so it is a last resort &mdash; and one to run deliberately, by hand, not from this app.
+        </div>
       </div>
     </div>
   </div>

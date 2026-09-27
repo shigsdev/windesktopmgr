@@ -340,6 +340,13 @@ document.querySelectorAll(".page-tab").forEach(btn => {
       util_load();
     } else if (page === "maintenance") {
       if (!_tabLoaded["maintenance"]) { _tabLoaded["maintenance"] = true; mnt_scan(); mnt_system(); }
+    } else if (page === "docs") {
+      // Reload on EVERY visit, like baseline/backup/utilities. The page
+      // promises live values, and the documented workflow is: open this tab ->
+      // shut down -> swap the drive -> boot -> come back here to run the
+      // script. A one-shot load would still flag the replaced drive as
+      // "REMOVE THIS ONE". Cheap now that the topology is cached server-side.
+      doc_load();
     } else if (page === "logs") {
       if (!_tabLoaded["logs"])           { _tabLoaded["logs"]           = true; logLoad(); }
     } else if (page === "architecture") {
@@ -1106,14 +1113,21 @@ async function dkLoadSpaces() {
 // as "do not touch". Built with DOM APIs + textContent (no innerHTML) so the
 // live drive model/serial strings can't inject markup. Shown only when the
 // machine actually has an add-in card (has_card).
-async function dkLoadTopology() {
+// sectionId/hostId are parameters so the Docs tab can render the SAME live
+// diagram instead of shipping a screenshot that goes stale the moment a drive
+// is swapped -- which is exactly the drive swap this diagram exists to guide.
+async function dkLoadTopology(sectionId, hostId, prefetched) {
   const SVGNS = 'http://www.w3.org/2000/svg';
-  const sec = document.getElementById('dk-card-section');
-  const host = document.getElementById('dk-card');
+  const sec = document.getElementById(sectionId || 'dk-card-section');
+  const host = document.getElementById(hostId || 'dk-card');
   if (!sec || !host) return;
   try {
-    const r = await fetch('/api/storage/pcie-topology');
-    const t = await r.json();
+    // prefetched lets a caller that already has the payload skip a second
+    // request. The Docs tab needs the same data twice (diagram + drive-state
+    // line), and the browser caps concurrent connections per host, so the
+    // duplicate fetch queued behind the dashboard's own polling and the
+    // diagram sat blank for a minute while the state line rendered instantly.
+    const t = prefetched || await fetch('/api/storage/pcie-topology').then(r => r.json());
     if (!t || !t.ok || !t.has_card) { sec.style.display = 'none'; return; }
     while (host.firstChild) host.removeChild(host.firstChild);
 
@@ -9791,6 +9805,266 @@ async function mnt_dupes(force) {
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = "Find duplicates"; }
   }
+}
+
+
+// ── Documentation tab (doc) ─────────────────────────────────────────────────
+// Procedures for this machine. Everything factual is read live rather than
+// written into the page: a swap guide whose "which drive failed" is a
+// screenshot is wrong the moment you act on it.
+
+function doc_el(tag, css, text) {
+  const e = document.createElement(tag);
+  if (css) e.style.cssText = css;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function doc_copy(text, btn) {
+  navigator.clipboard.writeText(text).then(() => {
+    const was = btn.textContent;
+    btn.textContent = "Copied";
+    setTimeout(() => { btn.textContent = was; }, 1200);
+  }).catch(() => alert("Copy failed. The command is:\n\n" + text));
+}
+
+function doc_cmdRow(label, cmd) {
+  const wrap = doc_el("div", "margin-bottom:10px");
+  wrap.appendChild(doc_el("div", "font-size:11px;color:var(--muted);margin-bottom:4px", label));
+  const row = doc_el("div", "display:flex;align-items:center;gap:8px;flex-wrap:wrap");
+  const code = doc_el("code",
+    "flex:1;min-width:260px;font-size:11px;color:var(--cyan);background:var(--bg);padding:6px 9px;border-radius:5px;word-break:break-all", cmd);
+  row.appendChild(code);
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.textContent = "Copy";
+  btn.style.cssText = "padding:4px 12px;font-size:11px;border-radius:5px;background:transparent;color:var(--cyan);border:1px solid var(--cyan);cursor:pointer;white-space:nowrap";
+  btn.onclick = () => doc_copy(cmd, btn);
+  row.appendChild(btn);
+  wrap.appendChild(row);
+  return wrap;
+}
+
+// The exact commands from scripts/repair_storage_pool.ps1's own header, so the
+// page and the script cannot drift apart.
+const DOC_REPAIR_CMDS = [
+  ["1. Preview — shows the plan, changes nothing",
+   "powershell -ExecutionPolicy Bypass -File C:\\shigsapps\\windesktopmgr\\scripts\\repair_storage_pool.ps1 -Preview"],
+  ["2. Run it for real — leave the window open, this takes hours",
+   "powershell -ExecutionPolicy Bypass -File C:\\shigsapps\\windesktopmgr\\scripts\\repair_storage_pool.ps1"],
+];
+
+function doc_renderCommands() {
+  const host = document.getElementById("doc-cmds");
+  if (!host) return;
+  while (host.firstChild) host.removeChild(host.firstChild);
+  DOC_REPAIR_CMDS.forEach(([label, cmd]) => host.appendChild(doc_cmdRow(label, cmd)));
+}
+
+// Drive state for the procedure header.
+//
+// Reads the PCIe topology rather than /api/storage/spaces: the topology
+// endpoint is cached (~0.3s warm) while the spaces call is an uncached
+// PowerShell round-trip that took 8-70s, which left this line stuck on
+// "Reading pool state…" long after the diagram had rendered. The topology
+// response already carries the retired flag, serial and socket, so the second
+// call bought nothing.
+async function doc_loadPoolState(prefetched) {
+  const host = document.getElementById("doc-pool-state");
+  if (!host) return;
+  try {
+    const t = prefetched || await fetch("/api/storage/pcie-topology").then(r => r.json());
+    while (host.firstChild) host.removeChild(host.firstChild);
+    if (!t || !t.ok) {
+      host.appendChild(doc_el("div", "font-size:12px;color:var(--muted)", "Could not read drive state."));
+      return;
+    }
+    const drives = t.card_drives || [];
+    const retired = drives.filter(d => d.retired || d.flag === "retired");
+    const unhealthy = drives.filter(d => !d.retired && d.flag === "unhealthy");
+
+    const line = doc_el("div", "display:flex;align-items:center;gap:10px;flex-wrap:wrap");
+    line.appendChild(doc_el("span", "font-size:12px;font-weight:700", "Current drive state:"));
+    if (retired.length) {
+      line.appendChild(doc_el("span", "font-size:12px;font-weight:700;color:var(--amber)",
+        `${retired.length} drive${retired.length === 1 ? "" : "s"} retired — this procedure applies`));
+    } else if (unhealthy.length) {
+      line.appendChild(doc_el("span", "font-size:12px;font-weight:700;color:var(--amber)",
+        `${unhealthy.length} drive${unhealthy.length === 1 ? "" : "s"} reporting a warning`));
+    } else if (drives.length) {
+      line.appendChild(doc_el("span", "font-size:12px;font-weight:700;color:var(--green)",
+        `All ${drives.length} card drives healthy — reference only, nothing to do`));
+    } else {
+      line.appendChild(doc_el("span", "font-size:12px;color:var(--muted)", "no add-in card drives reported"));
+    }
+    host.appendChild(line);
+
+    retired.concat(unhealthy).forEach(d => {
+      const where = d.socket ? `Socket ${d.socket}` : "";
+      const slot = d.slot ? ` (${d.slot})` : "";
+      host.appendChild(doc_el("div", "font-size:11px;color:var(--amber);margin-top:6px",
+        `${where}${slot}: ${d.model || "unknown drive"} · serial ${d.serial || "unknown"} · ${d.usage || d.health || ""}`.trim()));
+    });
+    if (t.note) {
+      host.appendChild(doc_el("div", "font-size:11px;color:var(--muted);margin-top:6px", t.note));
+    }
+  } catch (e) {
+    while (host.firstChild) host.removeChild(host.firstChild);
+    host.appendChild(doc_el("div", "font-size:12px;color:var(--muted)",
+      "Could not read drive state: " + e.message));
+  }
+}
+
+// Stylesheet for the exported document. The export builds a STANDALONE page in
+// an isolated iframe rather than printing the app page, because printing the
+// app page came out blank: the shell's layout (fixed rail, scroll container,
+// per-tab display toggling) fights @media print, and every fix there is a
+// guess about the user's browser. A clean clone has no shell to fight.
+//
+// The page is built with inline styles referencing theme variables, so the
+// variables are re-pointed to a light print palette instead of restyling every
+// element. The card diagram keeps its own colours -- the red retired socket is
+// the entire point of the diagram.
+const DOC_EXPORT_CSS = `
+  :root {
+    --bg:#ffffff; --card:#ffffff; --border:#cccccc; --text:#111111;
+    --fg:#111111; --muted:#444444; --cyan:#0b5fa5; --green:#1a7f37;
+    --amber:#8a6100; --red:#b3261e;
+    --font-head: 'Chakra Petch', system-ui, sans-serif;
+  }
+  @page { margin: 14mm; }
+  html, body { background:#fff; color:#111; margin:0; }
+  body {
+    font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+    font-size: 12px; line-height: 1.5;
+  }
+  #page-docs { display:block !important; max-width:100%; }
+  code {
+    background:#f2f2f2 !important; color:#0b5fa5 !important;
+    border:1px solid #ddd; border-radius:4px; padding:2px 5px;
+    font-family: ui-monospace, 'JetBrains Mono', monospace;
+    word-break: break-all;
+  }
+  svg { max-width:100% !important; height:auto !important; }
+  /* Keep the diagram's own fills so the retired-socket highlight survives. */
+  svg, svg * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+  /* Do not split a step across pages if it can be helped. */
+  #page-docs > div > div { break-inside: avoid; page-break-inside: avoid; }
+  h2 { font-size: 20px; margin: 0 0 4px; }
+  h3 { font-size: 15px; }
+`;
+
+async function doc_exportPdf(btn) {
+  const src = document.getElementById("page-docs");
+  if (!src) return;
+  if (btn) { btn.disabled = true; btn.textContent = "Preparing…"; }
+  // Wait for the live reads before cloning. Exporting mid-load would bake
+  // "Reading the card layout…" into the PDF in place of the failed drive's
+  // socket and serial — and carrying that to the machine is the whole point
+  // of the export. Same mistake the on-screen placeholder already avoids.
+  try {
+    await _docReady;
+  } catch (e) {
+    console.error("doc: load failed before export", e);
+  }
+
+  const frame = document.createElement("iframe");
+  frame.setAttribute("aria-hidden", "true");
+  frame.setAttribute("title", "Print preview");
+  frame.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0";
+  document.body.appendChild(frame);
+
+  const cleanup = () => {
+    if (frame.parentNode) frame.parentNode.removeChild(frame);
+    if (btn) { btn.disabled = false; btn.textContent = "↓ Export PDF"; }
+  };
+
+  try {
+    const d = frame.contentDocument;
+    // Assembled with createElement / appendChild only, so a live drive model or
+    // serial string can never inject markup into the export.
+    d.title = "WinDesktopMgr — SSD replacement procedure";
+    const style = d.createElement("style");
+    style.textContent = DOC_EXPORT_CSS;
+    d.head.appendChild(style);
+
+    const clone = d.importNode(src, true);
+    clone.style.display = "block";
+    // Buttons and anything marked no-print are interactive chrome, not content.
+    clone.querySelectorAll("button, .no-print").forEach(n => n.remove());
+    // A placeholder that is hidden on screen (e.g. the "no add-in card" note
+    // once the diagram rendered) would otherwise print as a blank gap.
+    clone.querySelectorAll("[style*='display:none'], [style*='display: none']").forEach(n => {
+      if (!n.querySelector("svg")) n.remove();
+    });
+    d.body.appendChild(clone);
+
+    const w = frame.contentWindow;
+    w.addEventListener("afterprint", cleanup, {once: true});
+    // Give the cloned SVG and fonts a beat to lay out before printing.
+    setTimeout(() => {
+      try {
+        w.focus();
+        w.print();
+      } catch (e) {
+        cleanup();
+        alert("Could not open the print dialog: " + e.message);
+      }
+    }, 250);
+    // Safety net: some browsers never fire afterprint.
+    setTimeout(cleanup, 120000);
+  } catch (e) {
+    cleanup();
+    alert("Could not build the export: " + e.message);
+  }
+}
+
+// Tracks the in-flight page load so the export can wait for real data instead
+// of capturing the "Reading the card layout…" placeholder.
+let _docReady = null;
+
+function doc_load() {
+  _docReady = _doc_loadInner();
+  return _docReady;
+}
+
+async function _doc_loadInner() {
+  doc_renderCommands();
+  // ONE request, shared by the diagram and the drive-state line.
+  let topo = null;
+  try {
+    topo = await fetch("/api/storage/pcie-topology").then(r => r.json());
+  } catch (e) {
+    console.error("doc: topology fetch failed", e);
+  }
+  const poolDone = doc_loadPoolState(topo);
+  // Reuse the Storage tab's live card diagram rather than a screenshot.
+  const empty = document.getElementById("doc-card-empty");
+  // Reading the PCIe topology walks the PnP tree and can take up to a minute.
+  // Until it returns we must NOT show "no add-in card detected" -- that is a
+  // factual claim about the hardware, and showing it while still looking would
+  // tell someone mid-swap that the card they are holding does not exist.
+  if (empty) {
+    empty.textContent = "Reading the card layout from the PCIe bus… this can take up to a minute.";
+    empty.style.display = "";
+  }
+  try {
+    await dkLoadTopology("doc-card-section", "doc-card", topo);
+    const sec = document.getElementById("doc-card-section");
+    const shown = sec && sec.style.display !== "none";
+    if (empty) {
+      if (shown) {
+        empty.style.display = "none";
+      } else {
+        empty.textContent = "No add-in card detected on this machine.";
+        empty.style.display = "";
+      }
+    }
+  } catch (e) {
+    console.error("doc: card diagram failed", e);
+    if (empty) empty.textContent = "Could not read the card layout: " + e.message;
+  }
+  await poolDone;
 }
 
 async function logLoad() {
