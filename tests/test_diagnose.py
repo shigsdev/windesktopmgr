@@ -1054,11 +1054,13 @@ class TestCallModel:
         diagnose._call_model("the payload text", "network_dns")
         kw = fake.calls[0]
         if "DIAGNOSE_MODEL" not in os.environ:
-            assert diagnose.DIAGNOSE_MODEL == "claude-sonnet-5-5"
+            assert diagnose.DIAGNOSE_MODEL == "claude-opus-5-5"
         assert kw["model"] == diagnose.DIAGNOSE_MODEL
         assert kw["messages"][0]["content"] == "the payload text"
         assert kw["system"] == diagnose._SYSTEM_PROMPT
         assert kw["max_tokens"] == 16000
+        # Opus 5.5 defaults to medium effort; a diagnosis is reasoning work.
+        assert kw["output_config"]["effort"] == "high"
         assert kw["output_config"]["format"]["type"] == "json_schema"
         assert kw["output_config"]["format"]["schema"] == diagnose.reply_schema("network_dns")
         assert "server-side-fallback-2026-07-01" in kw["betas"]

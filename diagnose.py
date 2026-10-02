@@ -793,8 +793,11 @@ def build_payload(session: dict) -> str:
 # ---------------------------------------------------------------------------
 
 # Overridable via env so the model can track availability without a code change.
-DIAGNOSE_MODEL = os.environ.get("DIAGNOSE_MODEL", "claude-sonnet-5-5")
-DIAGNOSE_TIMEOUT_S = 90.0
+DIAGNOSE_MODEL = os.environ.get("DIAGNOSE_MODEL", "claude-opus-5-5")
+# Opus 5.5 defaults to "medium" effort; reading a probe bundle is reasoning work.
+DIAGNOSE_EFFORT = "high"
+# High effort answers take longer than the old 90 s budget allowed for.
+DIAGNOSE_TIMEOUT_S = 180.0
 # Safety ceiling on model calls per process lifetime (one diagnosis makes at most ~6).
 MAX_DIAGNOSE_CALLS = 60
 _STATUSES = ("confident", "likely", "inconclusive")
@@ -905,7 +908,10 @@ def _call_model(payload_text: str, class_key: str) -> dict | None:
             max_tokens=16000,
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": payload_text}],
-            output_config={"format": {"type": "json_schema", "schema": reply_schema(class_key)}},
+            output_config={
+                "effort": DIAGNOSE_EFFORT,
+                "format": {"type": "json_schema", "schema": reply_schema(class_key)},
+            },
             betas=["server-side-fallback-2026-07-01"],
             extra_body={"fallbacks": "default"},
         )
