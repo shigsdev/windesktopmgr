@@ -479,20 +479,44 @@ def _env_proxy(name: str) -> str | None:
     return value if value is not None else os.environ.get(name.lower())
 
 
+_USERINFO_RE = re.compile(r"[^\s/@;=]+@")
+
+
+def _scrub_userinfo(value):
+    """Replace URL userinfo (``user:pass@`` / ``user@``) with ``<credentials>@``.
+
+    Proxy settings can embed credentials and this data leaves the machine, so
+    they are scrubbed at collection time. Non-strings and hosts without an
+    ``@`` pass through unchanged.
+    """
+    if not isinstance(value, str):
+        return value
+    return _USERINFO_RE.sub("<credentials>@", value)
+
+
 def _p_proxy_config(slots: dict) -> dict:
-    """WinINET (per-user), WinHTTP (machine) and environment proxy settings."""
+    """WinINET (per-user), WinHTTP (machine) and environment proxy settings.
+
+    Credentials embedded in any proxy string are scrubbed (``_scrub_userinfo``).
+    """
     inet = _reg_values(winreg.HKEY_CURRENT_USER, _INET_SETTINGS)
     blob = _reg_values(winreg.HKEY_LOCAL_MACHINE, _INET_CONNECTIONS).get("WinHttpSettings")
+    winhttp = _parse_winhttp_blob(blob) if isinstance(blob, bytes) else {}
+    if "proxy_server" in winhttp:
+        winhttp["proxy_server"] = _scrub_userinfo(winhttp["proxy_server"])
+    env = {name: _env_proxy(name) for name in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")}
+    for name in ("HTTP_PROXY", "HTTPS_PROXY"):
+        env[name] = _scrub_userinfo(env[name])
     return {
         "wininet": {
             "proxy_enable": inet.get("ProxyEnable"),
-            "proxy_server": inet.get("ProxyServer"),
+            "proxy_server": _scrub_userinfo(inet.get("ProxyServer")),
             "proxy_override": inet.get("ProxyOverride"),
-            "auto_config_url": inet.get("AutoConfigURL"),
+            "auto_config_url": _scrub_userinfo(inet.get("AutoConfigURL")),
             "auto_detect": inet.get("AutoDetect"),
         },
-        "winhttp": _parse_winhttp_blob(blob) if isinstance(blob, bytes) else {},
-        "env": {name: _env_proxy(name) for name in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")},
+        "winhttp": winhttp,
+        "env": env,
     }
 
 

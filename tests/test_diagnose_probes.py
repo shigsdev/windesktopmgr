@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import socket
@@ -832,6 +833,53 @@ class TestProxyConfig:
         _patch_registry(mocker)
         mocker.patch.object(dp.os, "environ", {"HTTP_PROXY": "http://upper:1", "http_proxy": "http://lower:2"})
         assert dp._p_proxy_config({})["env"]["HTTP_PROXY"] == "http://upper:1"
+
+
+class TestScrubUserinfo:
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("http://alice:s3cret@proxy:8080", "http://<credentials>@proxy:8080"),
+            ("alice:s3cret@proxy:8080", "<credentials>@proxy:8080"),
+            ("http=bob:pw@a:1;https=b:2", "http=<credentials>@a:1;https=b:2"),
+            ("http://alice@proxy:8080", "http://<credentials>@proxy:8080"),
+            ("proxy:8080", "proxy:8080"),
+            ("http://wpad/wpad.dat", "http://wpad/wpad.dat"),
+            (None, None),
+        ],
+    )
+    def test_scrub(self, raw, expected):
+        assert dp._scrub_userinfo(raw) == expected
+
+    def test_password_containing_at_sign_does_not_leak(self):
+        assert "s3cret" not in dp._scrub_userinfo("http://alice:p@s3cret@proxy:8080")
+
+    def test_non_string_passes_through(self):
+        assert dp._scrub_userinfo(1) == 1
+
+
+class TestProxyConfigCredentials:
+    def test_no_secret_anywhere_in_the_payload(self, mocker):
+        _patch_registry(
+            mocker,
+            values={
+                (winreg.HKEY_CURRENT_USER, _INET): {
+                    "ProxyServer": "http=bob:s3cret@a:1;https=b:2",
+                    "AutoConfigURL": "http://carol:s3cret@wpad/wpad.dat",
+                },
+                (winreg.HKEY_LOCAL_MACHINE, _CONNS): {"WinHttpSettings": _winhttp_blob(3, "dave:s3cret@proxy:8080")},
+            },
+        )
+        mocker.patch.object(
+            dp.os, "environ", {"HTTP_PROXY": "http://erin:s3cret@e:1", "https_proxy": "http://frank:s3cret@f:2"}
+        )
+        d = dp._p_proxy_config({})
+        assert "s3cret" not in json.dumps(d)
+        assert d["wininet"]["proxy_server"] == "http=<credentials>@a:1;https=b:2"
+        assert d["wininet"]["auto_config_url"] == "http://<credentials>@wpad/wpad.dat"
+        assert d["winhttp"]["proxy_server"] == "<credentials>@proxy:8080"
+        assert d["env"]["HTTP_PROXY"] == "http://<credentials>@e:1"
+        assert d["env"]["HTTPS_PROXY"] == "http://<credentials>@f:2"
 
 
 class TestRegHelpers:
