@@ -1,0 +1,111 @@
+{
+  "symptom": "no website will load, ERR_INTERNET_DISCONNECTED on example.com",
+  "evidence": {
+    "dns.resolve_cached": {
+      "ok": true,
+      "data": {
+        "resolved": false,
+        "addresses": [],
+        "error": "[Errno 11001] getaddrinfo failed"
+      }
+    },
+    "dns.resolve_direct": {
+      "ok": true,
+      "data": {
+        "dnspython": true,
+        "resolvers": [
+          {
+            "name": "system",
+            "server": "192.168.1.1",
+            "rcode": "TIMEOUT",
+            "nodata": false,
+            "answers": []
+          },
+          {
+            "name": "cloudflare",
+            "server": "1.1.1.1",
+            "rcode": "TIMEOUT",
+            "nodata": false,
+            "answers": []
+          },
+          {
+            "name": "google",
+            "server": "8.8.8.8",
+            "rcode": "TIMEOUT",
+            "nodata": false,
+            "answers": []
+          }
+        ]
+      }
+    },
+    "dns.authoritative": {
+      "ok": true,
+      "data": {
+        "zone": "example.com",
+        "nameservers": [
+          {
+            "name": "ns1.example-dns.net",
+            "ip": "198.51.100.53",
+            "rcode": "TIMEOUT",
+            "nodata": false,
+            "aa": false,
+            "answers": []
+          }
+        ]
+      }
+    },
+    "dns.record_sweep": {
+      "ok": true,
+      "data": {
+        "rcode": "TIMEOUT",
+        "records": {
+          "A": [],
+          "AAAA": [],
+          "CNAME": [],
+          "MX": [],
+          "TXT": [],
+          "SOA": [],
+          "NS": []
+        }
+      }
+    },
+    "dns.hosts_file": {
+      "ok": true,
+      "data": {
+        "path": "C:\\Windows\\System32\\drivers\\etc\\hosts",
+        "readable": true,
+        "matches": []
+      }
+    },
+    "net.control_domain": {
+      "ok": true,
+      "data": {
+        "host": "www.microsoft.com",
+        "resolved": false,
+        "connected": false,
+        "connect_ms": null,
+        "error": "[Errno 11001] getaddrinfo failed"
+      }
+    },
+    "net.gateway": {
+      "ok": true,
+      "data": {
+        "gateways": [
+          "192.168.1.1"
+        ],
+        "reachable": false,
+        "rtt_ms": null
+      }
+    }
+  },
+  "expect": {
+    "target_host": "example.com",
+    "locus": "local",
+    "must_include": [
+      "reset_network_adapter"
+    ],
+    "must_exclude": [
+      "flush_dns"
+    ]
+  }
+}

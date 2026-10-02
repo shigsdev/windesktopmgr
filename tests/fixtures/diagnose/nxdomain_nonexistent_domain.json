@@ -1,0 +1,109 @@
+{
+  "symptom": "This site can’t be reached\nno-such-name-zq7.ai’s server IP address could not be found.\nTry:\nChecking the connection\nChecking the proxy, firewall, and DNS configuration\nRunning Windows Network Diagnostics\nERR_NAME_NOT_RESOLVED",
+  "evidence": {
+    "dns.resolve_cached": {
+      "ok": true,
+      "data": {
+        "resolved": false,
+        "addresses": [],
+        "error": "[Errno 11001] getaddrinfo failed"
+      }
+    },
+    "dns.resolve_direct": {
+      "ok": true,
+      "data": {
+        "dnspython": true,
+        "resolvers": [
+          {
+            "name": "system",
+            "server": "192.168.1.1",
+            "rcode": "NXDOMAIN",
+            "nodata": false,
+            "answers": []
+          },
+          {
+            "name": "cloudflare",
+            "server": "1.1.1.1",
+            "rcode": "NXDOMAIN",
+            "nodata": false,
+            "answers": []
+          },
+          {
+            "name": "google",
+            "server": "8.8.8.8",
+            "rcode": "NXDOMAIN",
+            "nodata": false,
+            "answers": []
+          }
+        ]
+      }
+    },
+    "dns.authoritative": {
+      "ok": true,
+      "data": {
+        "zone": "ai",
+        "nameservers": [
+          {
+            "name": "a.nic.ai",
+            "ip": "198.51.100.10",
+            "rcode": "NXDOMAIN",
+            "nodata": false,
+            "aa": true,
+            "answers": []
+          }
+        ]
+      }
+    },
+    "dns.record_sweep": {
+      "ok": true,
+      "data": {
+        "rcode": "NXDOMAIN",
+        "records": {
+          "A": [],
+          "AAAA": [],
+          "CNAME": [],
+          "MX": [],
+          "TXT": [],
+          "SOA": [],
+          "NS": []
+        }
+      }
+    },
+    "dns.hosts_file": {
+      "ok": true,
+      "data": {
+        "path": "C:\\Windows\\System32\\drivers\\etc\\hosts",
+        "readable": true,
+        "matches": []
+      }
+    },
+    "net.control_domain": {
+      "ok": true,
+      "data": {
+        "host": "www.microsoft.com",
+        "resolved": true,
+        "connected": true,
+        "connect_ms": 18.2,
+        "error": null
+      }
+    },
+    "net.gateway": {
+      "ok": true,
+      "data": {
+        "gateways": [
+          "192.168.1.1"
+        ],
+        "reachable": true,
+        "rtt_ms": 0.5
+      }
+    }
+  },
+  "expect": {
+    "target_host": "no-such-name-zq7.ai",
+    "locus": "external_cause",
+    "must_include": [],
+    "must_exclude": [
+      "flush_dns"
+    ]
+  }
+}

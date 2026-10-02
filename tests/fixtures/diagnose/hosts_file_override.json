@@ -1,0 +1,139 @@
+{
+  "symptom": "hynote.ai just shows a blank page or refuses to connect on this PC",
+  "evidence": {
+    "dns.resolve_cached": {
+      "ok": true,
+      "data": {
+        "resolved": true,
+        "addresses": [
+          "0.0.0.0"
+        ],
+        "error": null
+      }
+    },
+    "dns.resolve_direct": {
+      "ok": true,
+      "data": {
+        "dnspython": true,
+        "resolvers": [
+          {
+            "name": "system",
+            "server": "192.168.1.1",
+            "rcode": "NOERROR",
+            "nodata": false,
+            "answers": [
+              "104.21.0.1"
+            ]
+          },
+          {
+            "name": "cloudflare",
+            "server": "1.1.1.1",
+            "rcode": "NOERROR",
+            "nodata": false,
+            "answers": [
+              "104.21.0.1"
+            ]
+          },
+          {
+            "name": "google",
+            "server": "8.8.8.8",
+            "rcode": "NOERROR",
+            "nodata": false,
+            "answers": [
+              "104.21.0.1"
+            ]
+          }
+        ]
+      }
+    },
+    "dns.authoritative": {
+      "ok": true,
+      "data": {
+        "zone": "hynote.ai",
+        "nameservers": [
+          {
+            "name": "ns1.example-dns.net",
+            "ip": "198.51.100.53",
+            "rcode": "NOERROR",
+            "nodata": false,
+            "aa": true,
+            "answers": [
+              "104.21.0.1"
+            ]
+          }
+        ]
+      }
+    },
+    "dns.record_sweep": {
+      "ok": true,
+      "data": {
+        "rcode": "NOERROR",
+        "records": {
+          "A": [
+            "104.21.0.1"
+          ],
+          "AAAA": [],
+          "CNAME": [],
+          "MX": [
+            "1 smtp.google.com."
+          ],
+          "TXT": [
+            "\"v=spf1 include:_spf.google.com include:sendgrid.net ~all\"",
+            "\"google-site-verification=aaa\"",
+            "\"google-site-verification=bbb\""
+          ],
+          "SOA": [
+            "ns1.example-dns.net. hostmaster.hynote.ai. 2026100101 7200 3600 1209600 3600"
+          ],
+          "NS": [
+            "ns1.example-dns.net."
+          ]
+        }
+      }
+    },
+    "dns.hosts_file": {
+      "ok": true,
+      "data": {
+        "path": "C:\\Windows\\System32\\drivers\\etc\\hosts",
+        "readable": true,
+        "matches": [
+          {
+            "line_no": 22,
+            "ip": "0.0.0.0",
+            "names": [
+              "hynote.ai"
+            ]
+          }
+        ]
+      }
+    },
+    "net.control_domain": {
+      "ok": true,
+      "data": {
+        "host": "www.microsoft.com",
+        "resolved": true,
+        "connected": true,
+        "connect_ms": 18.2,
+        "error": null
+      }
+    },
+    "net.gateway": {
+      "ok": true,
+      "data": {
+        "gateways": [
+          "192.168.1.1"
+        ],
+        "reachable": true,
+        "rtt_ms": 0.5
+      }
+    }
+  },
+  "expect": {
+    "target_host": "hynote.ai",
+    "locus": "local",
+    "must_include": [],
+    "must_exclude": [
+      "flush_dns"
+    ]
+  }
+}
