@@ -637,18 +637,36 @@ def _err_text(exc: BaseException) -> str:
     return str(exc) or type(exc).__name__
 
 
-def _resolve_stream(host: str, port: int) -> tuple:
-    """Resolve ``host`` once and return the first ``getaddrinfo`` entry (raises ``OSError``).
+# Connect budgets (R33). Each probe resolves once, then tries the first address
+# of each family (IPv4 first), so at most two connects per port. Name lookups
+# have no timeout of their own; every budget leaves >= 2 s of the probe's
+# timeout_s for one:
+#   net.control_domain (8 s):  2 x 2.5 s connects                  = 5 s
+#   net.tcp_connect   (10 s):  2 ports x 2 families x 2 s          = 8 s
+#   net.tls_handshake (12 s):  2 x 2.5 s connects + 5 s handshake  = 10 s
+_CONTROL_CONNECT_TIMEOUT_S = 2.5
+_TCP_CONNECT_TIMEOUT_S = 2.0
+_TLS_CONNECT_TIMEOUT_S = 2.5
+_TLS_HANDSHAKE_TIMEOUT_S = 5.0
 
-    Probes connect to this one address only: ``socket.create_connection`` re-resolves
-    and applies its timeout per address, and name lookups have no timeout of their
-    own, so a probe built on it can outlive its runner budget exactly when DNS is
-    broken.
+_FAMILY_NAMES = {socket.AF_INET: "ipv4", socket.AF_INET6: "ipv6"}
+
+
+def _resolve_per_family(host: str, port: int) -> list[tuple]:
+    """Resolve ``host`` once; return the first ``getaddrinfo`` entry of each family, IPv4 first.
+
+    Raises ``OSError`` when nothing resolves. Probes connect to these entries
+    only: ``socket.create_connection`` re-resolves and applies its timeout per
+    address, and name lookups have no timeout of their own, so a probe built on
+    it can outlive its runner budget exactly when DNS is broken. Trying one
+    address per family still catches a site whose IPv4 or IPv6 path alone is broken.
     """
     infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     if not infos:
         raise OSError("no addresses returned")
-    return infos[0]
+    picked = [next((i for i in infos if i[0] == fam), None) for fam in (socket.AF_INET, socket.AF_INET6)]
+    picked = [i for i in picked if i is not None]
+    return picked or [infos[0]]
 
 
 def _open_socket(info: tuple, timeout: float) -> socket.socket:
@@ -664,22 +682,33 @@ def _open_socket(info: tuple, timeout: float) -> socket.socket:
     return sock
 
 
-def _connect_ms(info: tuple, timeout: float) -> tuple[float | None, str | None]:
-    """Open and close a TCP connection; return ``(connect_ms, None)`` or ``(None, error)``."""
-    t0 = time.perf_counter()
-    try:
-        sock = _open_socket(info, timeout)
-    except OSError as exc:
-        return None, _err_text(exc)
-    ms = _elapsed_ms(t0)
-    sock.close()
-    return ms, None
+def _connect_first(infos: list[tuple], timeout: float, port: int | None = None):
+    """Try ``infos`` in order until one connects.
+
+    Returns ``(open socket or None, attempts)``; each attempt is ``{address,
+    family, connected, ms, error}``. ``port`` replaces the port in each sockaddr
+    (keeping an IPv6 flow info and scope id). The caller closes the socket.
+    """
+    attempts: list[dict] = []
+    for family, socktype, proto, canon, sockaddr in infos:
+        if port is not None:
+            sockaddr = (sockaddr[0], port, *sockaddr[2:])
+        t0 = time.perf_counter()
+        attempt = {"address": sockaddr[0], "family": _FAMILY_NAMES.get(family, str(family))}
+        try:
+            sock = _open_socket((family, socktype, proto, canon, sockaddr), timeout)
+        except OSError as exc:
+            attempts.append({**attempt, "connected": False, "ms": None, "error": _err_text(exc)})
+            continue
+        attempts.append({**attempt, "connected": True, "ms": _elapsed_ms(t0), "error": None})
+        return sock, attempts
+    return None, attempts
 
 
 def _p_control_domain(slots: dict) -> dict:
     """Can this PC resolve and reach a known-good site? Separates 'we are offline' from 'the target is down'."""
     try:
-        info = _resolve_stream(CONTROL_DOMAIN, 443)
+        infos = _resolve_per_family(CONTROL_DOMAIN, 443)
     except OSError as exc:  # socket.gaierror is an OSError
         return {
             "host": CONTROL_DOMAIN,
@@ -688,15 +717,21 @@ def _p_control_domain(slots: dict) -> dict:
             "connected": False,
             "connect_ms": None,
             "error": _err_text(exc),
+            "attempts": [],
         }
-    ms, error = _connect_ms(info, timeout=3)
+    sock, attempts = _connect_first(infos, _CONTROL_CONNECT_TIMEOUT_S)
+    if sock is not None:
+        sock.close()
+    # The address that connected, else the first one tried.
+    shown = attempts[-1] if sock is not None else attempts[0]
     return {
         "host": CONTROL_DOMAIN,
         "resolved": True,
-        "address": info[4][0],
-        "connected": ms is not None,
-        "connect_ms": ms,
-        "error": error,
+        "address": shown["address"],
+        "connected": sock is not None,
+        "connect_ms": shown["ms"],
+        "error": shown["error"],
+        "attempts": attempts,
     }
 
 
@@ -724,48 +759,100 @@ def _default_gateways() -> list[str]:
     return gateways
 
 
+# net.gateway pings at most _MAX_GATEWAYS gateways one after another. A ping
+# normally returns within ~1 s (-w 1000); the 5 s subprocess timeout only
+# guards a hung ping.exe. The shared budget keeps the worst case under the
+# probe's 8 s timeout: a ping is skipped (left untested) once less than
+# _PING_MIN_S remains, and each subprocess timeout is clamped to what is left.
+_MAX_GATEWAYS = 3
+_GATEWAY_BUDGET_S = 7.0
+_PING_MIN_S = 1.5
+
+
 def _p_gateway(slots: dict) -> dict:
-    """Ping the first configured default gateway once."""
+    """Ping up to the first three default gateways once each.
+
+    ``reachable`` is True when any answered, False only when every one of them
+    was tested and none answered, and None when none (or not all) could be tested.
+    """
     gateways = _default_gateways()
-    if not gateways:
-        return {"gateways": [], "reachable": None, "rtt_ms": None}
-    try:
-        proc = subprocess.run(  # noqa: S603 -- list args, no shell; target is an ipaddress-validated literal
-            ["ping", "-n", "1", "-w", "1000", gateways[0]],  # noqa: S607 -- ping.exe resolved via PATH
-            capture_output=True,
-            text=True,
-            timeout=5,
-            creationflags=_NO_WINDOW,
-        )
-    except subprocess.TimeoutExpired:
-        return {"gateways": gateways, "reachable": False, "rtt_ms": None}
-    except OSError as exc:  # ping could not be launched: we could not test, which is not "unreachable"
-        return {"gateways": gateways, "reachable": None, "rtt_ms": None, "error": _err_text(exc)}
-    stdout = proc.stdout or ""
-    # Some "Destination host unreachable" replies exit 0; only a real echo reply carries a TTL.
-    reachable = proc.returncode == 0 and "TTL=" in stdout
-    rtt_ms = None
-    if reachable and (m := _PING_RTT_RE.search(stdout)):
-        rtt_ms = 0.5 if m.group(1) == "<" else float(m.group(2))
-    return {"gateways": gateways, "reachable": reachable, "rtt_ms": rtt_ms}
+    targets = gateways[:_MAX_GATEWAYS]
+    results: list[dict] = []
+    error = None
+    deadline = time.monotonic() + _GATEWAY_BUDGET_S
+    for gateway in targets:
+        remaining = deadline - time.monotonic()
+        if remaining < _PING_MIN_S:
+            break
+        try:
+            proc = subprocess.run(  # noqa: S603 -- list args, no shell; target is an ipaddress-validated literal
+                ["ping", "-n", "1", "-w", "1000", gateway],  # noqa: S607 -- ping.exe resolved via PATH
+                capture_output=True,
+                text=True,
+                timeout=min(5, remaining),
+                creationflags=_NO_WINDOW,
+            )
+        except subprocess.TimeoutExpired:
+            results.append({"gateway": gateway, "reachable": False, "rtt_ms": None})
+            continue
+        except OSError as exc:  # ping could not be launched: we could not test, which is not "unreachable"
+            results.append({"gateway": gateway, "reachable": None, "rtt_ms": None})
+            error = _err_text(exc)
+            break  # the next gateway cannot be pinged either
+        stdout = proc.stdout or ""
+        # Some "Destination host unreachable" replies exit 0; only a real echo reply carries a TTL.
+        reachable = proc.returncode == 0 and "TTL=" in stdout
+        rtt_ms = None
+        if reachable and (m := _PING_RTT_RE.search(stdout)):
+            rtt_ms = 0.5 if m.group(1) == "<" else float(m.group(2))
+        results.append({"gateway": gateway, "reachable": reachable, "rtt_ms": rtt_ms})
+    answered = [r for r in results if r["reachable"] is True]
+    if answered:
+        reachable = True
+    elif targets and len(results) == len(targets) and all(r["reachable"] is False for r in results):
+        reachable = False
+    else:
+        reachable = None
+    data = {
+        "gateways": gateways,
+        "reachable": reachable,
+        "rtt_ms": answered[0]["rtt_ms"] if answered else None,
+        "results": results,
+    }
+    if error is not None:
+        data["error"] = error
+    return data
 
 
 def _p_tcp_connect(slots: dict) -> dict:
-    """Try a TCP connection to ports 443 and 80 on the target."""
+    """Try a TCP connection to ports 443 and 80 on the target, IPv4 then IPv6."""
     ports = (443, 80)
     try:
-        info = _resolve_stream(slots["target_host"], ports[0])  # resolved once, reused for every port
+        infos = _resolve_per_family(slots["target_host"], ports[0])  # resolved once, reused for every port
     except OSError as exc:
         error = _err_text(exc)
         return {
-            "results": [{"port": p, "address": None, "connected": False, "ms": None, "error": error} for p in ports]
+            "results": [
+                {"port": p, "address": None, "connected": False, "ms": None, "error": error, "attempts": []}
+                for p in ports
+            ]
         }
-    family, socktype, proto, canon, sockaddr = info
-    address = sockaddr[0]
     results = []
     for port in ports:
-        ms, error = _connect_ms((family, socktype, proto, canon, (address, port, *sockaddr[2:])), timeout=3)
-        results.append({"port": port, "address": address, "connected": ms is not None, "ms": ms, "error": error})
+        sock, attempts = _connect_first(infos, _TCP_CONNECT_TIMEOUT_S, port=port)
+        if sock is not None:
+            sock.close()
+        last = attempts[-1]  # the address that connected, else the last one tried
+        results.append(
+            {
+                "port": port,
+                "address": last["address"],
+                "connected": last["connected"],
+                "ms": last["ms"],
+                "error": last["error"],
+                "attempts": attempts,
+            }
+        )
     return {"results": results}
 
 
@@ -778,15 +865,19 @@ def _cert_common_name(cert: dict) -> str | None:
 
 
 def _p_tls_handshake(slots: dict) -> dict:
-    """Complete a verified TLS handshake on port 443 and report the certificate."""
+    """Complete a verified TLS handshake on port 443 (IPv4 first, then IPv6) and report the certificate."""
     host = slots["target_host"]
     sock = tls = None
     address = None
+    attempts: list[dict] = []
     try:
         ctx = ssl.create_default_context()
-        info = _resolve_stream(host, 443)
-        address = info[4][0]
-        sock = _open_socket(info, timeout=5)  # the 5 s timeout also bounds the handshake on this socket
+        infos = _resolve_per_family(host, 443)
+        sock, attempts = _connect_first(infos, _TLS_CONNECT_TIMEOUT_S)
+        address = attempts[-1]["address"]  # the address that connected, else the last one tried
+        if sock is None:
+            raise OSError(attempts[-1]["error"])
+        sock.settimeout(_TLS_HANDSHAKE_TIMEOUT_S)  # bounds the whole handshake on this socket
         tls = ctx.wrap_socket(sock, server_hostname=host)
         cert = tls.getpeercert() or {}
         return {
@@ -796,6 +887,7 @@ def _p_tls_handshake(slots: dict) -> dict:
             "cert_cn": _cert_common_name(cert),
             "not_after": cert.get("notAfter"),
             "error": None,
+            "attempts": attempts,
         }
     except OSError as exc:  # ssl.SSLError (including certificate verification failures) is an OSError
         return {
@@ -805,6 +897,7 @@ def _p_tls_handshake(slots: dict) -> dict:
             "cert_cn": None,
             "not_after": None,
             "error": _err_text(exc),
+            "attempts": attempts,
         }
     finally:
         for s in (tls, sock):

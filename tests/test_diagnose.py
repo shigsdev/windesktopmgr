@@ -63,6 +63,21 @@ class TestClassify:
         assert r["candidates"] == []
         assert r["slots"] == {}
 
+    def test_driver_file_in_a_crash_report_is_not_a_host(self):
+        r = diagnose.classify("nvlddmkm.sys crashed with a BSOD")
+        assert r["candidates"] == []
+        assert r["symptom_class"] is None
+
+    def test_dump_file_is_not_a_host(self):
+        assert diagnose.classify("memory.dmp was written")["candidates"] == []
+
+    @pytest.mark.parametrize(
+        "ext",
+        ["sys", "dmp", "pdf", "zip", "gif", "jpeg", "docx", "xlsx", "msi", "dat", "tmp", "php", "asp", "aspx", "dll"],
+    )
+    def test_common_file_extensions_are_not_tlds(self, ext):
+        assert diagnose.classify(f"the site broke after report.{ext} opened")["candidates"] == []
+
     def test_file_like_token_next_to_a_real_host_is_ignored(self):
         r = diagnose.classify("hynote.ai won't load, see app.js")
         assert r["slots"] == {"target_host": "hynote.ai"}
@@ -210,6 +225,23 @@ class TestCacheAgrees:
 
     def test_noerror_without_answers_or_nodata_flag_is_not_definitive(self):
         assert diagnose.cache_agrees(_cache_ev(True, _res("NOERROR"), addresses=["1.1.1.1"])) is None
+
+    def test_only_ipv4_cached_addresses_are_compared(self):
+        ev = _cache_ev(True, _res("NOERROR", "104.21.0.1"), addresses=["2606:4700::1", "104.21.0.1"])
+        assert diagnose.cache_agrees(ev) is True
+
+    def test_ipv4_mismatch_next_to_an_ipv6_address_is_false(self):
+        ev = _cache_ev(True, _res("NOERROR", "104.21.0.1"), addresses=["2606:4700::1", "0.0.0.0"])
+        assert diagnose.cache_agrees(ev) is False
+
+    @pytest.mark.parametrize("direct", [_res("NOERROR", "104.21.0.1"), _res("NXDOMAIN")])
+    def test_ipv6_only_cache_is_not_comparable(self, direct):
+        # The direct probes ask for A records only, so an AAAA-only cache says nothing either way.
+        assert diagnose.cache_agrees(_cache_ev(True, direct, addresses=["2606:4700::1"])) is None
+
+    def test_non_address_strings_in_the_cache_are_ignored(self):
+        ev = _cache_ev(True, _res("NOERROR", "104.21.0.1"), addresses=["junk", 5, "104.21.0.1"])
+        assert diagnose.cache_agrees(ev) is True
 
     def test_intercepted_counts_only_tls_resolvers(self):
         # The UDP answer comes from the interceptor; only the encrypted lookup is a measurement.
@@ -406,6 +438,35 @@ class TestEvaluateRulesVerdicts:
         v = diagnose.evaluate_rules(ev, "no-such-name-zq7.ai")
         assert v["locus"] == "local"
         assert v["suggested_actions"] == ["flush_dns"]
+
+    def test_ipv6_only_cache_never_triggers_stale_cache(self):
+        ev = _cache_ev(True, _res("NOERROR", "104.21.0.1"), _res("NOERROR", "104.21.0.1"), addresses=["2606:4700::1"])
+        v = diagnose.evaluate_rules(ev, "hynote.ai")
+        assert "stale_cache" not in v["rule_hits"]
+        assert "flush_dns" not in v["suggested_actions"]
+
+    @pytest.mark.parametrize("rtype", ["A", "AAAA", "CNAME"])
+    def test_sweep_address_record_vetoes_stale_cache_external(self, rtype):
+        ev = _fixture_evidence("nxdomain_nonexistent_domain")
+        ev["dns.resolve_cached"]["data"] = {"resolved": True, "addresses": ["104.21.0.9"], "error": None}
+        ev["dns.record_sweep"]["data"]["records"][rtype] = ["104.21.0.9" if rtype == "A" else "x.example."]
+        v = diagnose.evaluate_rules(ev, "no-such-name-zq7.ai")
+        assert v["locus"] == "local"
+        assert v["rule_hits"] == ["stale_cache"]
+        assert v["suggested_actions"] == ["flush_dns"]
+
+    @pytest.mark.parametrize("rtype", ["MX", "TXT", "SOA", "NS"])
+    def test_nxdomain_with_other_records_in_the_sweep_says_exists_but_no_web_address(self, rtype):
+        ev = _fixture_evidence("nxdomain_nonexistent_domain")
+        ev["dns.record_sweep"]["data"]["records"][rtype] = ["something."]
+        v = diagnose.evaluate_rules(ev, "no-such-name-zq7.ai")
+        assert v["locus"] == "external_cause"
+        assert v["headline"] == "no-such-name-zq7.ai exists but publishes no web address"
+        assert "dns.record_sweep" in v["evidence_refs"]
+
+    def test_nxdomain_with_an_empty_sweep_still_says_does_not_exist(self):
+        v = diagnose.evaluate_rules(_fixture_evidence("nxdomain_nonexistent_domain"), "no-such-name-zq7.ai")
+        assert v["headline"] == "no-such-name-zq7.ai does not exist"
 
     def test_cached_and_live_addresses_that_differ_are_a_confident_local_flush(self):
         ev = _cache_ev(True, _res("NOERROR", "104.21.0.1"), _res("NOERROR", "104.21.0.1"), addresses=["0.0.0.0"])

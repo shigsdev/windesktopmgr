@@ -122,6 +122,20 @@ _FILE_EXTENSIONS = frozenset(
         "cfg",
         "ini",
         "xml",
+        "sys",
+        "dmp",
+        "pdf",
+        "zip",
+        "gif",
+        "jpeg",
+        "docx",
+        "xlsx",
+        "msi",
+        "dat",
+        "tmp",
+        "php",
+        "asp",
+        "aspx",
     }
 )
 
@@ -252,6 +266,12 @@ def _direct_view(evidence: dict) -> tuple[bool, set[str]]:
     return _definitive_view(_trusted_resolvers(evidence))
 
 
+def _sweep_records(evidence: dict) -> dict:
+    """The record sweep's ``{type: [values]}``, or ``{}`` when absent, failed or malformed."""
+    records = (_data(evidence, "dns.record_sweep") or {}).get("records")
+    return records if isinstance(records, dict) else {}
+
+
 def _system_resolver(evidence: dict) -> dict | None:
     return next((r for r in _resolvers(evidence) if r.get("name") == "system"), None)
 
@@ -286,17 +306,39 @@ def cache_agrees(evidence: dict[str, dict]) -> bool | None:
     return _cache_matches(cached, _trusted_resolvers(evidence))
 
 
+def _ipv4_addresses(addresses: Any) -> set[str]:
+    """The IPv4 literals in ``addresses``; anything else (IPv6, junk) is dropped."""
+    out: set[str] = set()
+    for a in addresses if isinstance(addresses, list) else []:
+        if not isinstance(a, str):
+            continue
+        try:
+            if ipaddress.ip_address(a).version == 4:
+                out.add(a)
+        except ValueError:
+            continue
+    return out
+
+
 def _cache_matches(cached: dict, resolvers: list[dict]) -> bool | None:
-    """``cache_agrees`` for an explicit resolver list (see there)."""
+    """``cache_agrees`` for an explicit resolver list (see there).
+
+    Only IPv4 cached addresses are compared, since the direct probes ask for A
+    records (R31): a cache holding only IPv6 addresses gives None.
+    """
     definitive, direct_addrs = _definitive_view(resolvers)
     if not definitive:
+        return None
+    cached_addrs = cached.get("addresses") or []
+    cached_v4 = _ipv4_addresses(cached_addrs)
+    if cached_addrs and not cached_v4:
         return None
     cached_resolved = cached.get("resolved") is True
     if cached_resolved != bool(direct_addrs):
         return False
     if not cached_resolved:
         return True
-    return bool(direct_addrs & set(cached.get("addresses") or []))
+    return bool(direct_addrs & cached_v4)
 
 
 def _verdict(status: str, locus: str, headline: str, reasoning: str, **extra) -> dict:
@@ -370,11 +412,23 @@ def _rule_external_no_address(evidence: dict, host: str) -> dict | None:
     if not answering or any_answers:
         return None
     sweep = _data(evidence, "dns.record_sweep")
-    records = (sweep or {}).get("records") or {}
+    records = _sweep_records(evidence)
     # external_cause hides every fix, so any contrary address evidence vetoes it.
     if any(records.get(t) for t in _ADDRESS_TYPES):
         return None
     refs = ["dns.resolve_cached", "dns.resolve_direct", "dns.authoritative"]
+    # Other record types prove the name exists, whatever rcode the A query got (R34).
+    if any(records.get(t) for t in _SWEEP_TYPES):
+        return _verdict(
+            "confident",
+            "external_cause",
+            f"{host} exists but publishes no web address",
+            f"This PC's lookup fails, public resolvers agree, and the domain's own nameservers answer for {host} "
+            "with no address record, although it publishes other records such as mail or text records.",
+            evidence_refs=[*refs, "dns.record_sweep"],
+            no_local_fix_reason=_NO_LOCAL_FIX_NODATA,
+            rule_hits=["external_no_address"],
+        )
     if any(ns.get("rcode") == "NXDOMAIN" for ns in answering):
         return _verdict(
             "confident",
@@ -388,17 +442,6 @@ def _rule_external_no_address(evidence: dict, host: str) -> dict | None:
         )
     if sweep is not None:
         refs.append("dns.record_sweep")
-    if any(records.get(t) for t in _SWEEP_TYPES):
-        return _verdict(
-            "confident",
-            "external_cause",
-            f"{host} exists but publishes no web address",
-            f"This PC's lookup fails, public resolvers agree, and the domain's own nameservers answer for {host} "
-            "with no address record, although it publishes other records such as mail or text records.",
-            evidence_refs=refs,
-            no_local_fix_reason=_NO_LOCAL_FIX_NODATA,
-            rule_hits=["external_no_address"],
-        )
     return _verdict(
         "confident",
         "external_cause",
@@ -448,9 +491,12 @@ def _rule_stale_cache(evidence: dict, host: str) -> dict | None:
             rule_hits=["stale_cache"],
         )
     # The cache resolves but live DNS definitively says there is no address.
-    # The authoritative answers are plain DNS: unusable when intercepted.
+    # The authoritative answers are plain DNS: unusable when intercepted. An
+    # address record in the sweep contradicts "no address" (R31), as in
+    # external_no_address, so it falls through to the local reading.
     none_answering, any_answers = _authoritative_view(evidence)
-    if none_answering and not any_answers and not intercepted:
+    sweep_has_address = any(_sweep_records(evidence).get(t) for t in _ADDRESS_TYPES)
+    if none_answering and not any_answers and not sweep_has_address and not intercepted:
         return _verdict(
             "likely",
             "external_cause",

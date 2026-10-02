@@ -10,6 +10,7 @@ import re
 import socket
 import struct
 import time
+import types
 import winreg
 
 import dns.exception
@@ -1095,6 +1096,21 @@ def _fake_net(mocker, *, infos=None, resolve_error=None, connect_error=None):
     return gai, factory
 
 
+_V4 = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("23.1.2.3", 443))
+_V4B = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("23.9.9.9", 443))
+_V6 = (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2600:1406::1", 443, 0, 0))
+
+
+def _refuse(*addresses):
+    """connect() side effect that refuses the given addresses and accepts every other."""
+
+    def connect(sockaddr):
+        if sockaddr[0] in addresses:
+            raise ConnectionRefusedError(10061, f"refused {sockaddr[0]}")
+
+    return connect
+
+
 class TestControlDomain:
     def test_constant(self):
         assert dp.CONTROL_DOMAIN == "www.microsoft.com"
@@ -1108,10 +1124,14 @@ class TestControlDomain:
         assert d["connected"] is True
         assert isinstance(d["connect_ms"], float)
         assert d["error"] is None
+        assert [(a["address"], a["family"], a["connected"], a["error"]) for a in d["attempts"]] == [
+            ("23.1.2.3", "ipv4", True, None)
+        ]
+        assert isinstance(d["attempts"][0]["ms"], float)
         gai.assert_called_once_with("www.microsoft.com", 443, type=socket.SOCK_STREAM)
         factory.assert_called_once_with(2, 1, 6)
         sock = factory.return_value
-        sock.settimeout.assert_called_once_with(3)
+        sock.settimeout.assert_called_once_with(dp._CONTROL_CONNECT_TIMEOUT_S)
         sock.connect.assert_called_once_with(("23.1.2.3", 443))
         sock.close.assert_called_once()
 
@@ -1122,6 +1142,7 @@ class TestControlDomain:
         assert d["address"] is None
         assert d["connected"] is False
         assert d["connect_ms"] is None
+        assert d["attempts"] == []
         assert "getaddrinfo failed" in d["error"]
         gai.assert_called_once()
         factory.assert_not_called()
@@ -1133,13 +1154,43 @@ class TestControlDomain:
         assert d["error"] == "no addresses returned"
         factory.assert_not_called()
 
-    def test_connects_to_first_address_only(self, mocker):
-        second = (2, 1, 6, "", ("23.9.9.9", 443))
-        gai, factory = _fake_net(mocker, infos=[_INFO, second], connect_error=TimeoutError())
+    def test_ipv4_connect_skips_ipv6(self, mocker):
+        _, factory = _fake_net(mocker, infos=[_V6, _V4])
+        d = dp._p_control_domain({})
+        assert d["address"] == "23.1.2.3"
+        factory.return_value.connect.assert_called_once_with(("23.1.2.3", 443))
+
+    def test_ipv4_failure_falls_back_to_ipv6(self, mocker):
+        gai, factory = _fake_net(mocker, infos=[_V6, _V4])
+        factory.return_value.connect.side_effect = _refuse("23.1.2.3")
+        d = dp._p_control_domain({})
+        assert d["connected"] is True
+        assert d["address"] == "2600:1406::1"
+        assert d["error"] is None
+        assert [(a["address"], a["family"], a["connected"]) for a in d["attempts"]] == [
+            ("23.1.2.3", "ipv4", False),
+            ("2600:1406::1", "ipv6", True),
+        ]
+        assert "refused" in d["attempts"][0]["error"]
+        assert d["connect_ms"] == d["attempts"][1]["ms"]
+        gai.assert_called_once()
+
+    def test_both_families_fail_reports_the_first_tried(self, mocker):
+        _, factory = _fake_net(mocker, infos=[_V4, _V6])
+        factory.return_value.connect.side_effect = _refuse("23.1.2.3", "2600:1406::1")
+        d = dp._p_control_domain({})
+        assert d["connected"] is False
+        assert d["address"] == "23.1.2.3"
+        assert d["connect_ms"] is None
+        assert "refused 23.1.2.3" in d["error"]
+        assert [a["connected"] for a in d["attempts"]] == [False, False]
+        assert factory.return_value.close.call_count == 2
+
+    def test_tries_only_the_first_address_of_each_family(self, mocker):
+        _, factory = _fake_net(mocker, infos=[_V4, _V4B], connect_error=TimeoutError())
         d = dp._p_control_domain({})
         assert d["address"] == "23.1.2.3"
         assert d["connected"] is False
-        gai.assert_called_once()
         factory.return_value.connect.assert_called_once_with(("23.1.2.3", 443))
 
     def test_connect_timeout_sets_error_and_closes_socket(self, mocker):
@@ -1150,6 +1201,9 @@ class TestControlDomain:
         assert d["connect_ms"] is None
         assert d["error"]  # a bare TimeoutError has an empty str(); the probe must still say something
         factory.return_value.close.assert_called_once()
+
+    def test_two_attempts_leave_room_for_the_lookup(self):
+        assert _REGISTERED["net.control_domain"].timeout_s - 2 * dp._CONTROL_CONNECT_TIMEOUT_S >= 2
 
 
 def _gateway_registry(mocker, ifaces: dict):
@@ -1194,13 +1248,18 @@ class TestGateway:
         run = _ping(mocker, _PING_OK)
         d = dp._p_gateway({})
         assert d["gateways"] == ["10.0.0.1", "10.0.0.2"]
-        assert run.call_args.args[0][-1] == "10.0.0.1"  # only the first gateway is pinged
+        assert [c.args[0][-1] for c in run.call_args_list] == ["10.0.0.1", "10.0.0.2"]
 
     def test_happy_path_parses_rtt(self, mocker):
         _gateway_registry(mocker, {"{G1}": {"DefaultGateway": ["192.168.1.1"]}})
         _ping(mocker, _PING_OK)
         d = dp._p_gateway({})
-        assert d == {"gateways": ["192.168.1.1"], "reachable": True, "rtt_ms": 3.0}
+        assert d == {
+            "gateways": ["192.168.1.1"],
+            "reachable": True,
+            "rtt_ms": 3.0,
+            "results": [{"gateway": "192.168.1.1", "reachable": True, "rtt_ms": 3.0}],
+        }
 
     def test_sub_millisecond_rtt(self, mocker):
         _gateway_registry(mocker, {"{G1}": {"DefaultGateway": ["192.168.1.1"]}})
@@ -1246,12 +1305,13 @@ class TestGateway:
         assert d["reachable"] is None
         assert d["rtt_ms"] is None
         assert "ping" in d["error"]
+        assert d["results"] == [{"gateway": "192.168.1.1", "reachable": None, "rtt_ms": None}]
 
     def test_no_gateway_means_unknown_and_no_subprocess(self, mocker):
         _gateway_registry(mocker, {"{G1}": {"DefaultGateway": [], "DhcpDefaultGateway": ""}})
         run = _ping(mocker)
         d = dp._p_gateway({})
-        assert d == {"gateways": [], "reachable": None, "rtt_ms": None}
+        assert d == {"gateways": [], "reachable": None, "rtt_ms": None, "results": []}
         run.assert_not_called()
 
     def test_command_content(self, mocker):
@@ -1281,6 +1341,107 @@ class TestGateway:
         assert dp._p_gateway({})["reachable"] is None
         run.assert_not_called()
 
+    @staticmethod
+    def _four_gateways(mocker):
+        _gateway_registry(mocker, {"{G1}": {"DefaultGateway": ["10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"]}})
+
+    @staticmethod
+    def _replies(by_gateway: dict):
+        """subprocess.run stand-in: ``by_gateway`` maps gateway -> stdout, or an exception to raise."""
+
+        def run(argv, **kw):
+            outcome = by_gateway.get(argv[-1], "Request timed out.")
+            if isinstance(outcome, BaseException):
+                raise outcome
+            reply = types.SimpleNamespace(stdout=outcome, stderr="", returncode=0 if "TTL=" in outcome else 1)
+            return reply
+
+        return run
+
+    def test_pings_at_most_three_gateways(self, mocker):
+        self._four_gateways(mocker)
+        run = _ping(mocker, side_effect=self._replies({}))
+        d = dp._p_gateway({})
+        assert d["gateways"] == ["10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"]
+        assert [c.args[0][-1] for c in run.call_args_list] == ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+        assert d["reachable"] is False
+        assert [r["gateway"] for r in d["results"]] == ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+        assert all(c.args[0][:5] == ["ping", "-n", "1", "-w", "1000"] for c in run.call_args_list)
+        assert all(c.kwargs["timeout"] == 5 for c in run.call_args_list)
+
+    def test_any_answering_gateway_is_reachable_with_its_rtt(self, mocker):
+        self._four_gateways(mocker)
+        _ping(mocker, side_effect=self._replies({"10.0.0.2": "Reply from 10.0.0.2: bytes=32 time=7ms TTL=64"}))
+        d = dp._p_gateway({})
+        assert d["reachable"] is True
+        assert d["rtt_ms"] == 7.0
+        assert d["results"] == [
+            {"gateway": "10.0.0.1", "reachable": False, "rtt_ms": None},
+            {"gateway": "10.0.0.2", "reachable": True, "rtt_ms": 7.0},
+            {"gateway": "10.0.0.3", "reachable": False, "rtt_ms": None},
+        ]
+
+    def test_rtt_is_the_first_reachable_gateways(self, mocker):
+        self._four_gateways(mocker)
+        _ping(
+            mocker,
+            side_effect=self._replies(
+                {
+                    "10.0.0.2": "Reply from 10.0.0.2: bytes=32 time=7ms TTL=64",
+                    "10.0.0.3": "Reply from 10.0.0.3: bytes=32 time=2ms TTL=64",
+                }
+            ),
+        )
+        assert dp._p_gateway({})["rtt_ms"] == 7.0
+
+    def test_a_hung_ping_counts_as_unreachable_and_the_next_is_tried(self, mocker):
+        self._four_gateways(mocker)
+        _ping(
+            mocker,
+            side_effect=self._replies(
+                {
+                    "10.0.0.1": dp.subprocess.TimeoutExpired(cmd="ping", timeout=5),
+                    "10.0.0.2": "Reply from 10.0.0.2: bytes=32 time<1ms TTL=64",
+                }
+            ),
+        )
+        d = dp._p_gateway({})
+        assert d["results"][0] == {"gateway": "10.0.0.1", "reachable": False, "rtt_ms": None}
+        assert d["reachable"] is True
+        assert d["rtt_ms"] == 0.5
+
+    def test_ping_that_cannot_launch_stops_and_is_untested(self, mocker):
+        self._four_gateways(mocker)
+        run = _ping(mocker, side_effect=FileNotFoundError("ping"))
+        d = dp._p_gateway({})
+        assert run.call_count == 1
+        assert d["reachable"] is None
+        assert d["results"] == [{"gateway": "10.0.0.1", "reachable": None, "rtt_ms": None}]
+
+    def test_out_of_budget_gateways_are_untested_not_unreachable(self, mocker):
+        self._four_gateways(mocker)
+        run = _ping(mocker, side_effect=self._replies({}))
+        # Clock: start, before ping 1, before ping 2 (budget nearly spent).
+        mocker.patch.object(
+            dp, "time", mocker.Mock(monotonic=mocker.Mock(side_effect=[0.0, 0.0, dp._GATEWAY_BUDGET_S - 0.5]))
+        )
+        d = dp._p_gateway({})
+        assert run.call_count == 1
+        assert d["results"] == [{"gateway": "10.0.0.1", "reachable": False, "rtt_ms": None}]
+        assert d["reachable"] is None  # not every gateway was tested, so this is not "dead"
+
+    def test_ping_timeout_is_clamped_to_the_remaining_budget(self, mocker):
+        self._four_gateways(mocker)
+        run = _ping(mocker, side_effect=self._replies({}))
+        mocker.patch.object(
+            dp, "time", mocker.Mock(monotonic=mocker.Mock(side_effect=[0.0, 0.0, 0.0, dp._GATEWAY_BUDGET_S - 2.0]))
+        )
+        dp._p_gateway({})
+        assert [c.kwargs["timeout"] for c in run.call_args_list] == [5, 5, 2.0]
+
+    def test_budget_fits_the_probe_timeout(self):
+        assert _REGISTERED["net.gateway"].timeout_s > dp._GATEWAY_BUDGET_S
+
     def test_ipv6_gateway_is_kept(self, mocker):
         _gateway_registry(mocker, {"{G1}": {"DefaultGateway": ["fe80::1"]}})
         _ping(mocker, "Reply from fe80::1: time<1ms")
@@ -1296,22 +1457,64 @@ class TestTcpConnect:
             r["connected"] is True and isinstance(r["ms"], float) and r["error"] is None and r["address"] == "23.1.2.3"
             for r in d["results"]
         )
+        assert all(len(r["attempts"]) == 1 for r in d["results"])
         gai.assert_called_once_with("hynote.ai", 443, type=socket.SOCK_STREAM)
         assert [c.args for c in factory.call_args_list] == [(2, 1, 6), (2, 1, 6)]
         sock = factory.return_value
-        assert [c.args for c in sock.settimeout.call_args_list] == [(3,), (3,)]
+        t = dp._TCP_CONNECT_TIMEOUT_S
+        assert [c.args for c in sock.settimeout.call_args_list] == [(t,), (t,)]
         assert [c.args for c in sock.connect.call_args_list] == [(("23.1.2.3", 443),), (("23.1.2.3", 80),)]
         assert sock.close.call_count == 2
 
     def test_ipv6_sockaddr_keeps_flow_and_scope(self, mocker):
-        v6 = (23, 1, 6, "", ("2606:4700::1", 443, 0, 0))
+        v6 = (socket.AF_INET6, 1, 6, "", ("2606:4700::1", 443, 0, 0))
         _, factory = _fake_net(mocker, infos=[v6])
         d = dp._p_tcp_connect(SLOTS)
         assert d["results"][0]["address"] == "2606:4700::1"
+        assert d["results"][0]["attempts"][0]["family"] == "ipv6"
         assert [c.args for c in factory.return_value.connect.call_args_list] == [
             (("2606:4700::1", 443, 0, 0),),
             (("2606:4700::1", 80, 0, 0),),
         ]
+
+    def test_ipv4_failure_falls_back_to_ipv6_per_port(self, mocker):
+        _, factory = _fake_net(mocker, infos=[_V4, _V6])
+        factory.return_value.connect.side_effect = _refuse("23.1.2.3")
+        d = dp._p_tcp_connect(SLOTS)
+        for r in d["results"]:
+            assert r["connected"] is True
+            assert r["address"] == "2600:1406::1"
+            assert r["error"] is None
+            assert [(a["family"], a["connected"]) for a in r["attempts"]] == [("ipv4", False), ("ipv6", True)]
+            assert r["ms"] == r["attempts"][1]["ms"]
+        assert [c.args[0][:2] for c in factory.return_value.connect.call_args_list] == [
+            ("23.1.2.3", 443),
+            ("2600:1406::1", 443),
+            ("23.1.2.3", 80),
+            ("2600:1406::1", 80),
+        ]
+
+    def test_ipv4_success_does_not_try_ipv6(self, mocker):
+        _, factory = _fake_net(mocker, infos=[_V6, _V4])
+        d = dp._p_tcp_connect(SLOTS)
+        assert [r["address"] for r in d["results"]] == ["23.1.2.3", "23.1.2.3"]
+        assert factory.return_value.connect.call_count == 2
+
+    def test_port_failing_on_both_families_reports_the_last_tried(self, mocker):
+        def refuse_443(sockaddr):
+            if sockaddr[1] == 443:
+                raise ConnectionRefusedError(10061, f"refused {sockaddr[0]}")
+
+        _, factory = _fake_net(mocker, infos=[_V4, _V6])
+        factory.return_value.connect.side_effect = refuse_443
+        by_port = {r["port"]: r for r in dp._p_tcp_connect(SLOTS)["results"]}
+        assert by_port[443]["connected"] is False
+        assert by_port[443]["address"] == "2600:1406::1"
+        assert "refused 2600:1406::1" in by_port[443]["error"]
+        assert by_port[443]["ms"] is None
+        assert len(by_port[443]["attempts"]) == 2
+        assert by_port[80]["connected"] is True
+        assert by_port[80]["address"] == "23.1.2.3"
 
     def test_per_port_results_when_one_fails(self, mocker):
         def refuse_443(sockaddr):
@@ -1337,13 +1540,16 @@ class TestTcpConnect:
     def test_resolution_failure_fails_both_ports_without_connecting(self, mocker):
         gai, factory = _fake_net(mocker, resolve_error=socket.gaierror(11001, "getaddrinfo failed"))
         d = dp._p_tcp_connect(SLOTS)
-        assert [(r["port"], r["connected"], r["address"], r["ms"]) for r in d["results"]] == [
-            (443, False, None, None),
-            (80, False, None, None),
+        assert [(r["port"], r["connected"], r["address"], r["ms"], r["attempts"]) for r in d["results"]] == [
+            (443, False, None, None, []),
+            (80, False, None, None, []),
         ]
         assert all("getaddrinfo failed" in r["error"] for r in d["results"])
         gai.assert_called_once()
         factory.assert_not_called()
+
+    def test_four_attempts_leave_room_for_the_lookup(self):
+        assert _REGISTERED["net.tcp_connect"].timeout_s - 4 * dp._TCP_CONNECT_TIMEOUT_S >= 2
 
 
 def _fake_tls(mocker, *, version="TLSv1.3", cert=None, wrap_error=None):
@@ -1367,6 +1573,7 @@ class TestTlsHandshake:
     def test_happy_path(self, mocker):
         ctx, raw, tls_sock = _fake_tls(mocker)
         d = dp._p_tls_handshake(SLOTS)
+        attempts = d.pop("attempts")
         assert d == {
             "handshake": True,
             "address": "23.1.2.3",
@@ -1375,9 +1582,13 @@ class TestTlsHandshake:
             "not_after": "Jan  1 00:00:00 2027 GMT",
             "error": None,
         }
+        assert [(a["address"], a["family"], a["connected"]) for a in attempts] == [("23.1.2.3", "ipv4", True)]
         dp.socket.getaddrinfo.assert_called_once_with("hynote.ai", 443, type=socket.SOCK_STREAM)
         dp.socket.socket.assert_called_once_with(2, 1, 6)
-        raw.settimeout.assert_called_once_with(5)
+        assert [c.args for c in raw.settimeout.call_args_list] == [
+            (dp._TLS_CONNECT_TIMEOUT_S,),
+            (dp._TLS_HANDSHAKE_TIMEOUT_S,),
+        ]
         raw.connect.assert_called_once_with(("23.1.2.3", 443))
         ctx.wrap_socket.assert_called_once_with(raw, server_hostname="hynote.ai")
         tls_sock.close.assert_called_once()
@@ -1400,6 +1611,7 @@ class TestTlsHandshake:
         d = dp._p_tls_handshake(SLOTS)
         assert d["handshake"] is False
         assert d["address"] is None
+        assert d["attempts"] == []
         assert "getaddrinfo failed" in d["error"]
         gai.assert_called_once()
         factory.assert_not_called()
@@ -1419,6 +1631,31 @@ class TestTlsHandshake:
         d = dp._p_tls_handshake(SLOTS)
         assert d["handshake"] is False
         assert d["error"]
+
+    def test_ipv4_connect_failure_falls_back_to_ipv6_then_handshakes(self, mocker):
+        ctx, raw, _ = _fake_tls(mocker)
+        dp.socket.getaddrinfo.return_value = [_V4, _V6]
+        raw.connect.side_effect = _refuse("23.1.2.3")
+        d = dp._p_tls_handshake(SLOTS)
+        assert d["handshake"] is True
+        assert d["address"] == "2600:1406::1"
+        assert [(a["family"], a["connected"]) for a in d["attempts"]] == [("ipv4", False), ("ipv6", True)]
+        ctx.wrap_socket.assert_called_once()
+
+    def test_no_family_connects_reports_the_last_tried_and_no_handshake(self, mocker):
+        ctx, raw, _ = _fake_tls(mocker)
+        dp.socket.getaddrinfo.return_value = [_V4, _V6]
+        raw.connect.side_effect = _refuse("23.1.2.3", "2600:1406::1")
+        d = dp._p_tls_handshake(SLOTS)
+        assert d["handshake"] is False
+        assert d["address"] == "2600:1406::1"
+        assert "refused 2600:1406::1" in d["error"]
+        assert len(d["attempts"]) == 2
+        ctx.wrap_socket.assert_not_called()
+
+    def test_connects_plus_handshake_fit_the_probe_timeout(self):
+        worst = 2 * dp._TLS_CONNECT_TIMEOUT_S + dp._TLS_HANDSHAKE_TIMEOUT_S
+        assert _REGISTERED["net.tls_handshake"].timeout_s - worst >= 2
 
     def test_cert_without_common_name(self, mocker):
         _fake_tls(mocker, cert={"subject": ((("organizationName", "Acme"),),), "notAfter": "Jan  1 00:00:00 2027 GMT"})
