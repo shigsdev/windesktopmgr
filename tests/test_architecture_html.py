@@ -81,6 +81,8 @@ TEST_FILES = [
     "test_homenet_topology.py",
     "test_nas.py",
     "test_maintenance.py",
+    "test_diagnose.py",
+    "test_diagnose_probes.py",
 ]
 
 

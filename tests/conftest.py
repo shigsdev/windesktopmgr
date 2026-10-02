@@ -25,6 +25,7 @@ if PROJECT_ROOT not in sys.path:
 import pytest
 
 import bsod
+import diagnose
 import disk
 import events
 import homenet
@@ -67,6 +68,26 @@ def _isolate_homenet_inventory_file(tmp_path_factory):
         yield str(test_inv)
     finally:
         homenet.HOMENET_INVENTORY_FILE = real
+
+
+# Same structural guard for the Diagnose audit trail, which holds the exact
+# payloads sent off-machine. A diagnosis worker thread writes history after
+# its session turns terminal, so a test that forgets to redirect the file (or
+# a worker that outlives a test's own monkeypatch) must land here, never in
+# the live tray's diagnose_history.json. test_diagnose.py additionally gives
+# each test its own file on top of this.
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _isolate_diagnose_history_file(tmp_path_factory):
+    """Redirect diagnose.DIAGNOSE_HISTORY_FILE to a per-session tmp path."""
+    test_file = tmp_path_factory.mktemp("diagnose_history_isolated") / "diagnose_history.json"
+    real = diagnose.DIAGNOSE_HISTORY_FILE
+    diagnose.DIAGNOSE_HISTORY_FILE = str(test_file)
+    try:
+        yield str(test_file)
+    finally:
+        diagnose.DIAGNOSE_HISTORY_FILE = real
 
 
 # ── Fixture loading helpers ───────────────────────────────────────────────────
@@ -190,6 +211,15 @@ def reset_globals():
 
     homenet._inventory_load_failed = False
     homenet._inventory_load_failure_reason = ""
+
+    # Diagnose engine (diagnose.py): session registry, per-process model-call
+    # cap and the lazily built SDK client. A prior test's sessions would count
+    # toward _MAX_ACTIVE ("busy"), and a spent call counter would make a later
+    # test see "call_cap" instead of its own mocks.
+    with diagnose._sessions_lock:
+        diagnose._sessions.clear()
+    diagnose._model_calls = 0
+    diagnose._client = None
 
     yield  # run the test
 

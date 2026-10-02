@@ -193,7 +193,7 @@
       <button type="button" onclick="exportPDF()" title="Open the browser print dialog — choose 'Save as PDF'" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--yellow);border:none;cursor:pointer;border-right:1px solid var(--border)">Export PDF</button>
       <button type="button" onclick="exportHTML()" title="Download a self-contained copy of this diagram" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--blue);border:none;cursor:pointer">Export HTML</button>
     </div>
-    <div class="badge" style="color:var(--green);border-color:#00e67633">3,360 tests · 87% coverage</div>
+    <div class="badge" style="color:var(--green);border-color:#00e67633">4,048 tests · 87% coverage</div>
     <div class="badge">
       <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
     </div>
@@ -238,7 +238,7 @@
       <div class="tab-chip" id="tab-remediation" style="border-color:#ff704344;background:#ff70430d"><span class="tab-icon">🔧</span>Remediation</div>
       <div class="tab-chip" id="tab-warranty" style="border-color:#ffd74044;background:#ffd7400d"><span class="tab-icon">🛡</span>Warranty</div>
       <div class="tab-chip" id="tab-homenet" style="border-color:#448aff44;background:#448aff0d"><span class="tab-icon">🏠</span>Home Network</div>
-      <div class="tab-chip" id="tab-maintenance" style="border-color:#00e5a044;background:#00e5a00d"><span class="tab-icon">🧹</span>Cleanup</div><div class="tab-chip" id="tab-docs" style="border-color:#00e5a044;background:#00e5a00d"><span class="tab-icon">📖</span>Docs</div>
+      <div class="tab-chip" id="tab-maintenance" style="border-color:#00e5a044;background:#00e5a00d"><span class="tab-icon">🧹</span>Cleanup</div><div class="tab-chip" id="tab-docs" style="border-color:#00e5a044;background:#00e5a00d"><span class="tab-icon">📖</span>Docs</div><div class="tab-chip" id="tab-diagnose" style="border-color:#00d4ff44;background:#00d4ff0d" title="Diagnose tab (JS prefix dx): symptom → probes → verdict"><span class="tab-icon">🔍</span>Diagnose</div>
     </div>
   </div>
 
@@ -283,12 +283,12 @@
       <span style="font-size:9px;color:var(--cyan);font-weight:700;letter-spacing:.08em">FETCH / POST</span>
       <svg width="12" height="20"><polygon points="1,6 6,0 11,6" fill="var(--purple)"/><line x1="6" y1="6" x2="6" y2="20" stroke="var(--purple)" stroke-width="2"/></svg>
     </div>
-    <span style="font-size:9px;color:var(--muted);margin-left:12px">HTTP JSON · 154 API endpoints · localhost:5000</span>
+    <span style="font-size:9px;color:var(--muted);margin-left:12px">HTTP JSON · 159 API endpoints · localhost:5000</span>
   </div>
 
   <!-- ── LAYER 2: FLASK BACKEND ───────────────────────────────── -->
   <div class="row row-flask" id="layer-flask">
-    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~5,284 lines + bsod.py · ~901 lines + events.py · ~656 lines + processes.py · ~1,907 lines + sysinfo.py · ~1,414 lines + dashboard.py · ~1,115 lines (+ _build_gauges hero-gauge readouts, redesign PR2) + credentials.py · ~706 lines + thermals.py · ~185 lines + lhm.py · ~271 lines (LibreHardwareMonitor in-app installer: pinned download + SHA256 verify + zip-slip-guarded extract + UAC elevated launch) + ai_identify.py · ~277 lines (GLOBAL AI identifier: when a local KB can't name an entity — process/service/startup/driver/MAC/BIOS — a bounded Claude call resolves it, cached; reuses the self-learning worker+cache pattern) + gpu.py · ~623 lines + network.py · ~540 lines + nas.py · ~508 lines (QNAP SNMP · cache-first non-blocking reads + persisted snapshot so a slow NAS never stalls the dashboard fan-out) + timeline.py · ~525 lines + bios.py · ~522 lines + homenet.py Blueprint · ~3,892 lines + disk.py Blueprint · ~1,832 lines (+ Storage Spaces pool/vdisk collector + physical-slot location parsing + PCIe card topology + switch-chip detection for drive swaps) + remediation.py Blueprint · ~445 lines + nlq.py Blueprint · ~416 lines + baseline.py · ~2,549 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · applogging.py RotatingFileHandler · dashboard summary cache (30s TTL + single-flight background refresh) · request-log flood suppressor · SAFE_PROCESSES kill guard + SYSTEM_PROCESSES_GLOSSARY · pynvml GPU metrics collector · psutil+socket network metrics collector + reachability/DNS health check · mac-vendor-lookup IEEE OUI (~36k vendors) + zeroconf mDNS for device name resolution · baseline.py drift detection (startup + services + tasks)</div>
+    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~5,424 lines + bsod.py · ~901 lines + events.py · ~656 lines + processes.py · ~1,907 lines + sysinfo.py · ~1,414 lines + dashboard.py · ~1,115 lines (+ _build_gauges hero-gauge readouts, redesign PR2) + credentials.py · ~706 lines + thermals.py · ~185 lines + lhm.py · ~271 lines (LibreHardwareMonitor in-app installer: pinned download + SHA256 verify + zip-slip-guarded extract + UAC elevated launch) + ai_identify.py · ~277 lines (GLOBAL AI identifier: when a local KB can't name an entity — process/service/startup/driver/MAC/BIOS — a bounded Claude call resolves it, cached; reuses the self-learning worker+cache pattern) + gpu.py · ~623 lines + network.py · ~540 lines + nas.py · ~508 lines (QNAP SNMP · cache-first non-blocking reads + persisted snapshot so a slow NAS never stalls the dashboard fan-out) + timeline.py · ~525 lines + bios.py · ~522 lines + homenet.py Blueprint · ~3,892 lines + disk.py Blueprint · ~1,832 lines (+ Storage Spaces pool/vdisk collector + physical-slot location parsing + PCIe card topology + switch-chip detection for drive swaps) + remediation.py Blueprint · ~445 lines + nlq.py Blueprint · ~416 lines + diagnose.py Blueprint · ~1,469 lines (Diagnose engine: symptom classifier · deterministic DNS rules · redaction + egress preview/consent gate · schema-constrained model call + server-side guards · session engine) + diagnose_probes.py · ~1,148 lines (closed read-only probe registry + bounded parallel runner · 15 network/DNS probes) + baseline.py · ~2,549 lines · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · applogging.py RotatingFileHandler · dashboard summary cache (30s TTL + single-flight background refresh) · request-log flood suppressor · SAFE_PROCESSES kill guard + SYSTEM_PROCESSES_GLOSSARY · pynvml GPU metrics collector · psutil+socket network metrics collector + reachability/DNS health check · mac-vendor-lookup IEEE OUI (~36k vendors) + zeroconf mDNS for device name resolution · baseline.py drift detection (startup + services + tasks) · dnspython resolver/authoritative DNS probes (rcode + AA flag) for Diagnose</div>
     <div style="margin-bottom:10px">
       <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes (73 endpoints)</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
@@ -376,6 +376,13 @@
         <div class="route-chip" id="rt-rem-actions" style="border-color:#ff704344;background:#ff70430d;color:var(--orange)"><span class="method">GET</span>/api/remediation/actions</div>
         <div class="route-chip" style="border-color:#ff704344;background:#ff70430d;color:var(--orange)"><span class="method">GET</span>/api/remediation/history</div>
         <div class="route-chip" style="border-color:#ff704344;background:#ff70430d;color:var(--orange)"><span class="method">POST</span>/api/remediation/run</div>
+        <!-- diagnose.py Blueprint (5 routes) -->
+        <div style="display:inline-flex;align-items:center;gap:4px;background:#00d4ff15;border:1px dashed #00d4ff44;border-radius:5px;padding:2px 8px;font-size:9px;color:var(--cyan);font-weight:700;letter-spacing:.06em;text-transform:uppercase" title="Served by diagnose.py Flask Blueprint">BLUEPRINT: diagnose.py</div>
+        <div class="route-chip" id="rt-dx-classes" style="border-color:#00d4ff44;background:#00d4ff0d;color:var(--cyan)"><span class="method">GET</span>/api/diagnose/classes</div>
+        <div class="route-chip" style="border-color:#00d4ff44;background:#00d4ff0d;color:var(--cyan)" title="Starts a diagnosis: classify symptom, spawn the per-diagnosis worker thread, return a session id"><span class="method">POST</span>/api/diagnose/start</div>
+        <div class="route-chip" style="border-color:#00d4ff44;background:#00d4ff0d;color:var(--cyan)" title="Polled by the dx tab: probe progress, parked egress preview, verdict + evidence"><span class="method">GET</span>/api/diagnose/status/&lt;session_id&gt;</div>
+        <div class="route-chip" style="border-color:#00d4ff44;background:#00d4ff0d;color:var(--cyan)" title="User answers the payload preview (send / don't send); nothing leaves the machine without it"><span class="method">POST</span>/api/diagnose/consent</div>
+        <div class="route-chip" style="border-color:#00d4ff44;background:#00d4ff0d;color:var(--cyan)" title="Audit trail: exactly what was sent off-machine (diagnose_history.json)"><span class="method">GET</span>/api/diagnose/history</div>
         <!-- disk.py Blueprint (5 routes) -->
         <div style="display:inline-flex;align-items:center;gap:4px;background:#ffd74015;border:1px dashed #ffd74044;border-radius:5px;padding:2px 8px;font-size:9px;color:var(--yellow);font-weight:700;letter-spacing:.06em;text-transform:uppercase" title="Served by disk.py Flask Blueprint">BLUEPRINT: disk.py</div>
         <div class="route-chip" id="rt-disk-analyze" style="border-color:#ffd74044;background:#ffd7400d;color:var(--yellow)"><span class="method">POST</span>/api/disk/analyze</div>
@@ -493,6 +500,13 @@
           <span class="worker-sub">QNAP SNMP sweep (single-flight) off the dashboard path</span>
         </div>
       </div>
+      <div class="worker-chip" id="wk-diagnose" style="border-color:#00d4ff44;background:#00d4ff0d">
+        <div class="worker-dot" style="background:#00d4ff;box-shadow:0 0 6px #00d4ff"></div>
+        <div>
+          <div>Diagnose-&lt;sid&gt; (per diagnosis)</div>
+          <span class="worker-sub">Probe run → parked egress preview → consent wait → model verdict; one daemon thread per session</span>
+        </div>
+      </div>
     </div>
     <div style="margin-top:12px">
       <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">Knowledge Cache Files (JSON · 24h stale refresh · unknown retry on startup)</div>
@@ -510,6 +524,7 @@
         <div class="cache-chip" id="ch-baseline-hist">baseline_history.json</div>
         <div class="cache-chip" id="ch-baseline-watermark">baseline_accept_watermark.json</div>
         <div class="cache-chip" id="ch-homenet" style="border-color:#448aff44;color:var(--blue)">homenet_inventory.json</div>
+        <div class="cache-chip" id="ch-diagnose-history" style="border-color:#00d4ff44;color:var(--cyan)" title="Audit trail of exactly what was sent to the model; gitignored, capped at 100 entries">diagnose_history.json</div>
       </div>
     </div>
   </div>
@@ -665,6 +680,16 @@
         <div class="ext-sub">api.anthropic.com · claude-sonnet-4-20250514<br>NLQ tool use loop · 20 data tools · natural language answers</div>
         <span class="ext-badge" style="background:#a855f722;color:var(--purple)">per-query</span>
       </div>
+      <div class="ext-chip" style="border-color:#00d4ff44;background:#00d4ff0d">
+        <div class="ext-title" style="color:var(--cyan)">Claude API (Anthropic) — Diagnose</div>
+        <div class="ext-sub">api.anthropic.com · claude-opus-5-5 (DIAGNOSE_MODEL, high effort) · optional anthropic SDK<br>Schema-constrained verdict · called ONLY after the user approves the redacted payload preview</div>
+        <span class="ext-badge" style="background:#00d4ff22;color:var(--cyan)">consent-gated</span>
+      </div>
+      <div class="ext-chip" style="border-color:#00d4ff44;background:#00d4ff0d">
+        <div class="ext-title" style="color:var(--cyan)">DNS resolvers (Diagnose probes)</div>
+        <div class="ext-sub">1.1.1.1 · 8.8.8.8 public resolvers over DNS-over-TLS (:853, UDP fallback) + the domain's authoritative nameservers · dnspython<br>Read-only queries: rcode, AA flag, delegation trace, DNSSEC · TEST-NET-1 (192.0.2.1) interception check</div>
+        <span class="ext-badge" style="background:#00d4ff22;color:var(--cyan)">read-only</span>
+      </div>
       <div class="ext-chip" style="border-color:#448aff44;background:#448aff0d">
         <div class="ext-title" style="color:var(--blue)">Verizon CR1000A Router</div>
         <div class="ext-sub">192.168.1.1 · ArcMD5 auth (SHA512)<br>Device list · DHCP leases · connected clients</div>
@@ -692,7 +717,7 @@
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <div class="fs-chip">
             <div class="fs-title">windesktopmgr.py</div>
-            <div class="fs-sub">Flask backend · ~5,573 lines</div>
+            <div class="fs-sub">Flask backend · ~5,424 lines</div>
           </div>
           <div class="fs-chip" style="border-color:#ff6ec733">
             <div class="fs-title" style="color:var(--pink)">bsod.py</div>
@@ -762,6 +787,14 @@
             <div class="fs-title" style="color:var(--purple)">nlq.py</div>
             <div class="fs-sub">Natural Language Query Blueprint · ~416 lines · Flask Blueprint · 19 Claude tools</div>
           </div>
+          <div class="fs-chip" style="border-color:#00d4ff33">
+            <div class="fs-title" style="color:var(--cyan)">diagnose.py</div>
+            <div class="fs-sub">Diagnose engine Blueprint · ~1,469 lines · symptom classifier · deterministic DNS rules · redaction + egress preview/consent gate · schema-constrained model call with server-side guards · session engine (per-diagnosis worker thread) · /api/diagnose/* routes (5) · audit trail in diagnose_history.json</div>
+          </div>
+          <div class="fs-chip" style="border-color:#00d4ff33">
+            <div class="fs-title" style="color:var(--cyan)">diagnose_probes.py</div>
+            <div class="fs-sub">Diagnose probes · ~1,148 lines · closed read-only probe registry + bounded parallel runner · 15 network/DNS probes (DNS interception check, cached resolve, direct resolve over DNS-over-TLS, authoritative, record sweep, hosts file, client/proxy config, control domain, gateway, TCP connect, TLS handshake, traceroute, delegation trace, DNSSEC) · dnspython</div>
+          </div>
           <div class="fs-chip">
             <div class="fs-title">bios_audit.py</div>
             <div class="fs-sub">BIOS &amp; firmware change tracking · ~310 lines · 15-min snapshot throttle · append-only JSON history</div>
@@ -804,15 +837,15 @@
           </div>
           <div class="fs-chip">
             <div class="fs-title">templates/index.html</div>
-            <div class="fs-sub">Single-page frontend · ~2,273 lines (HTML markup + modals) · CSS → static/css/app.css (#55 PR 1) · JS → static/js/app.js (#55 PR 2, under 5,000 target)</div>
+            <div class="fs-sub">Single-page frontend · ~2,569 lines (HTML markup + modals · Diagnose tab panel) · CSS → static/css/app.css (#55 PR 1) · JS → static/js/app.js (#55 PR 2, under 5,000 target)</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">static/css/app.css</div>
-            <div class="fs-sub">App stylesheet · ~958 lines · extracted from index.html (#55 PR 1) + "Instrument Cluster" reskin (PR1) + dashboard hero radial gauges (PR2) + fixed left instrument-rail nav (PR3: vertical grouped rail, body padding-left offset, .page-tab restyled in place so switchTab/JS unchanged) + Thermals data-driven redesign (PR4: .th-cores per-core grid, .th-fan cooling-device cards w/ reduced-motion blade spin, .th-cta LibreHardwareMonitor install panel, .th-sensor rows) + in-app LHM installer CTA buttons (.th-cta-btn/.th-cta-actions/.th-cta-status)</div>
+            <div class="fs-sub">App stylesheet · ~1,117 lines · extracted from index.html (#55 PR 1) + "Instrument Cluster" reskin (PR1) + dashboard hero radial gauges (PR2) + fixed left instrument-rail nav (PR3: vertical grouped rail, body padding-left offset, .page-tab restyled in place so switchTab/JS unchanged) + Thermals data-driven redesign (PR4: .th-cores per-core grid, .th-fan cooling-device cards w/ reduced-motion blade spin, .th-cta LibreHardwareMonitor install panel, .th-sensor rows) + in-app LHM installer CTA buttons (.th-cta-btn/.th-cta-actions/.th-cta-status)</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">static/js/app.js</div>
-            <div class="fs-sub">App frontend JS · ~9,007 lines · extracted verbatim from index.html (#55 PR 2) · lint-setinterval guard follows it here · renderGauges(el, gauges) generalised + Thermals instrument-cluster renderThermals (PR4: DOM-built hero gauges, per-core grid/LHM CTA branch, cooling-device cards, sensor list — no innerHTML) + in-app LHM installer (thRenderLhmActions/thInstallLhm/thLaunchLhm wired to /api/thermals/lhm/*)</div>
+            <div class="fs-sub">App frontend JS · ~10,938 lines (incl. Diagnose tab, dx prefix) · extracted verbatim from index.html (#55 PR 2) · lint-setinterval guard follows it here · renderGauges(el, gauges) generalised + Thermals instrument-cluster renderThermals (PR4: DOM-built hero gauges, per-core grid/LHM CTA branch, cooling-device cards, sensor list — no innerHTML) + in-app LHM installer (thRenderLhmActions/thInstallLhm/thLaunchLhm wired to /api/thermals/lhm/*)</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">tray.py</div>
@@ -886,7 +919,7 @@
 
   <!-- ── LAYER 7: TEST SUITE ──────────────────────────────────── -->
   <div class="row row-tests" id="layer-tests">
-    <div class="row-label">🧪 Test Suite — 3,360 tests · pytest · 87% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
+    <div class="row-label">🧪 Test Suite — 4,048 tests · pytest · 87% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
       <div class="test-chip">
         <div class="test-title">test_routes.py</div>
@@ -994,6 +1027,18 @@
         <div class="test-title">test_codehealth.py</div>
         <div class="test-sub">72 tests · state persistence · 4 scanners (coverage + staleness · ruff prefix-routing · secrets · tech-debt) · _worst_level rollup · background-run guards · maybe_run_on_boot · refresh-coverage pytest worker · 4 routes (/status, /run, /refresh-coverage, /reset-emitted) · backlog auto-append (findings_to_backlog_entries severity filter + ruff S→P0 / F→P1 / UP-skipped + secrets P0 + large-file P2 + stale-coverage suppressed) · append_findings_to_backlog (priority-key anchor insertion + sequential numbering + dedup + missing-file graceful + no-anchor fallback) · emitted-fingerprint persistence (load/save/reset + malformed-json tolerance) · integration test _run_and_save chains scan→state→backlog</div>
       </div>
+      <div class="test-chip" style="border-color:#00d4ff33">
+        <div class="test-title">test_diagnose.py</div>
+        <div class="test-sub">369 tests · symptom classifier · deterministic DNS rules · redaction + egress preview/consent gate · model call + server-side guards · session engine + worker threads · /api/diagnose/* routes · history audit trail · 8-scenario fixture replay (one parametrized test)</div>
+      </div>
+      <div class="test-chip" style="border-color:#00d4ff33">
+        <div class="test-title">test_diagnose_probes.py</div>
+        <div class="test-sub">318 tests · closed probe registry · bounded parallel runner · 15 DNS/network probes (dnspython + socket mocked) · host normalisation · timeouts + safe fallbacks</div>
+      </div>
+      <div class="test-chip" style="border-color:#00d4ff33">
+        <div class="test-title">tests/fixtures/diagnose/</div>
+        <div class="test-sub">8 scenario JSON files (dead_gateway · dns_filtered_by_network · healthy_name_resolves · hosts_file_override · hynote_zone_missing_a · network_intercepts_everything · nxdomain_nonexistent_domain · stale_cache_direct_resolves) · replayed by one parametrized test in test_diagnose.py</div>
+      </div>
     </div>
     <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">
       <div style="background:#ff80ab0d;border:1px solid #ff80ab22;border-radius:4px;padding:3px 8px;font-size:10px;color:var(--pink)">conftest.py — shared fixtures · Flask test client</div>
@@ -1077,7 +1122,7 @@
       <div style="flex-shrink:0;width:150px;background:#b388ff0a;border:1px solid #b388ff33;border-radius:8px;padding:14px 12px;text-align:center">
         <div style="font-size:18px;margin-bottom:6px">🐍</div>
         <div style="color:var(--purple);font-weight:700;font-size:11px;margin-bottom:4px">FLASK ROUTE</div>
-        <div style="color:var(--muted);font-size:10px;line-height:1.4">Matches one of 67 API endpoints</div>
+        <div style="color:var(--muted);font-size:10px;line-height:1.4">Matches one of 159 API endpoints</div>
       </div>
       <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 6px;flex-shrink:0">
         <div style="font-size:10px;color:var(--purple);font-weight:700;white-space:nowrap">subprocess</div>
@@ -1252,7 +1297,7 @@
           <div style="flex:0 0 auto;min-width:120px;background:#ff80ab0a;border:1px solid #ff80ab44;border-radius:8px;padding:10px 12px;text-align:center">
             <div style="font-size:16px;margin-bottom:4px">🧪</div>
             <div style="color:var(--pink);font-weight:700;font-size:10px">3. PYTEST</div>
-            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">3,360 tests · 87% cov · ~60s</div>
+            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">4,048 tests · 87% cov · ~60s</div>
           </div>
           <div style="display:flex;align-items:center;padding:0 4px;color:var(--pink);font-size:14px">→</div>
 
@@ -1400,8 +1445,8 @@
        this number by changing what it measures. Regenerate with:
          python -c "import pathlib;S={'.git','.claude','.pytest_cache','.ruff_cache','__pycache__'};print(sum(sum(1 for _ in p.open(encoding='utf-8',errors='replace')) for p in pathlib.Path('.').rglob('*.py') if p.is_file() and not set(p.parts)&S and 'tests' not in p.parts))"
   -->
-  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 3,360 tests · ~36,568 lines</span>
-  <span>github.com/shigsdev/windesktopmgr · Updated 2026-07-18</span>
+  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 4,048 tests · ~41,452 lines</span>
+  <span>github.com/shigsdev/windesktopmgr · Updated 2026-10-02</span>
 </div>
 
 

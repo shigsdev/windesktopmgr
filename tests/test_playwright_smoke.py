@@ -31,6 +31,7 @@ Running the suite::
 
 from __future__ import annotations
 
+import json
 import urllib.error
 import urllib.request
 
@@ -67,6 +68,7 @@ TAB_IDS = [
     "utilities",
     "maintenance",
     "docs",
+    "diagnose",
 ]
 
 
@@ -2854,3 +2856,317 @@ class TestMaintenanceTabSpaceAnalysis:
         text = page.evaluate("document.getElementById('page-maintenance').textContent")
         assert "Analyze Space" in text
         assert "WinSxS" in text
+
+
+# ── Diagnose tab ───────────────────────────────────────────────────
+
+
+class TestDiagnoseTab:
+    """Diagnose tab: symptom -> read-only probes -> payload preview -> verdict.
+
+    The invariants worth a browser: a missing host is asked for rather than
+    guessed, an inconclusive answer never renders as a diagnosis, an external
+    cause offers no fix button, and the smoke run never sends anything to the
+    model (it declines the preview).
+    """
+
+    # A registry entry the model could have suggested. The no-button tests pass it
+    # so they fail if the client-side gate (inconclusive / external_cause) is removed.
+    FLUSH_DNS = "{id:'flush_dns', label:'Flush DNS', description:'d', risk:'low', reboot:false, icon:'F'}"
+
+    @staticmethod
+    def _open(page):
+        page.evaluate("document.querySelector('[data-page=\"diagnose\"]').click()")
+
+    def test_tab_renders_input(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        assert page.is_visible("#dx-symptom")
+        assert page.is_visible("#dx-run")
+
+    def test_missing_host_asks_instead_of_guessing(self, loaded_page):
+        page, _ = loaded_page
+        status_requests: list[str] = []
+        page.on("request", lambda req: status_requests.append(req.url) if "/api/diagnose/status" in req.url else None)
+        self._open(page)
+        page.fill("#dx-symptom", "the internet is broken")
+        page.click("#dx-run")
+        page.wait_for_selector("#dx-host-row", state="visible", timeout=10_000)
+        page.wait_for_timeout(1500)
+        assert status_requests == [], f"polled a session that should not exist: {status_requests}"
+
+    def test_inconclusive_never_renders_as_verdict(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        page.evaluate(
+            "dx_renderResult({state:'done', verdict:{status:'inconclusive', locus:'unknown', headline:'h',"
+            " reasoning:'r', evidence_refs:[], suggested_actions:['flush_dns'], no_local_fix_reason:''},"
+            f" evidence:[], actions:[{self.FLUSH_DNS}]}})"
+        )
+        verdicts = page.evaluate("document.querySelectorAll('#dx-result .dx-verdict').length")
+        text = page.evaluate("document.getElementById('dx-result').textContent")
+        assert verdicts == 0
+        assert "Couldn't determine this" in text
+
+    def test_external_cause_shows_no_action_buttons(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        page.evaluate(
+            "dx_renderResult({state:'done', verdict:{status:'confident', locus:'external_cause', headline:'h',"
+            " reasoning:'r', evidence_refs:[], suggested_actions:['flush_dns'],"
+            " no_local_fix_reason:'zone has no A record'},"
+            f" evidence:[], actions:[{self.FLUSH_DNS}]}})"
+        )
+        buttons = page.evaluate("document.querySelectorAll('#dx-result button[data-action]').length")
+        text = page.evaluate("document.getElementById('dx-result').textContent")
+        assert buttons == 0
+        assert "zone has no A record" in text
+        assert "Nothing to fix on this PC" in text
+
+    def test_local_verdict_renders_escaped_action_buttons(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        page.evaluate(
+            "dx_renderResult({state:'done', verdict:{status:'likely', locus:'local', headline:'<b>x</b>',"
+            " reasoning:'r', evidence_refs:[], suggested_actions:['flush_dns'], no_local_fix_reason:''},"
+            " evidence:[], actions:[{id:'flush_dns', label:'Flush DNS', description:'d', risk:'low',"
+            " reboot:false, icon:'F'}]})"
+        )
+        assert page.evaluate("document.querySelectorAll('#dx-result button[data-action=\"flush_dns\"]').length") == 1
+        # The headline is data, not markup.
+        assert page.evaluate("document.querySelectorAll('#dx-result .dx-headline b').length") == 0
+        assert page.evaluate("document.getElementById('dx-result').dataset.locus") == "local"
+
+    # ── Egress gate, UI side (scripted /api/diagnose/* stubs: nothing real is
+    # created, nothing leaves the machine) ───────────────────────────────
+
+    STUB_PREVIEW = '{"target_host": "stub.example", "note": "STUB-PAYLOAD"}'
+
+    def _stub_diagnose(self, page):
+        """Route start/status/consent to scripted JSON. Status stays
+        awaiting_consent until a consent is recorded, then reports done.
+        Returns the list of consent request bodies."""
+        sid = "S" * 22
+        consents: list[dict] = []
+
+        def fulfill(route, body):
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+        def start(route):
+            fulfill(route, {"ok": True, "session_id": sid, "state": "probing_wave1"})
+
+        def status(route):
+            base = {"ok": True, "session_id": sid, "round": 0, "evidence": [], "actions": []}
+            if consents:
+                verdict = {
+                    "status": "likely",
+                    "locus": "local",
+                    "headline": "stub verdict",
+                    "reasoning": "r",
+                    "evidence_refs": [],
+                    "suggested_actions": [],
+                    "no_local_fix_reason": "",
+                    "source": "model",
+                }
+                fulfill(route, {**base, "state": "done", "verdict": verdict, "preview": None})
+            else:
+                fulfill(route, {**base, "state": "awaiting_consent", "preview": self.STUB_PREVIEW})
+
+        def consent(route):
+            consents.append(route.request.post_data_json)
+            fulfill(route, {"ok": True})
+
+        page.route("**/api/diagnose/start", start)
+        page.route("**/api/diagnose/status/*", status)
+        page.route("**/api/diagnose/consent", consent)
+        return consents
+
+    def _start_stubbed(self, page):
+        self._open(page)
+        page.fill("#dx-symptom", "stubbed symptom stub.example")
+        page.click("#dx-run")
+        page.wait_for_selector("#dx-preview", state="visible", timeout=10_000)
+
+    def test_preview_blocks_consent_until_send_is_clicked(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("sessionStorage.removeItem('dx_noask')")
+        consents = self._stub_diagnose(page)
+        self._start_stubbed(page)
+        assert "STUB-PAYLOAD" in page.inner_text("#dx-preview-text")
+        page.wait_for_timeout(2500)  # more than two poll cycles
+        assert consents == [], "consent was posted before the user clicked Send"
+        page.click("#dx-send")
+        page.wait_for_selector("#dx-result[data-state=done]", timeout=10_000)
+        assert len(consents) == 1, consents
+        assert consents[0]["approved"] is True
+        assert not consents[0].get("auto_followups")
+
+    def test_dont_ask_again_shows_preview_before_auto_consent(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("sessionStorage.setItem('dx_noask', '1')")
+        consents = self._stub_diagnose(page)
+        # In-page timeline: when the preview was rendered vs when consent was posted.
+        page.evaluate(
+            """
+            () => {
+                window.__dxEvents = [];
+                const render = window.dx_renderPreview;
+                window.dx_renderPreview = function (text) {
+                    render(text);
+                    const p = document.getElementById('dx-preview');
+                    window.__dxEvents.push({kind: 'preview', t: performance.now(),
+                        visible: p.style.display !== 'none', text: text});
+                };
+                const realFetch = window.fetch;
+                window.fetch = function (url, opts) {
+                    if (String(url).includes('/api/diagnose/consent')) {
+                        window.__dxEvents.push({kind: 'consent', t: performance.now()});
+                    }
+                    return realFetch.apply(this, arguments);
+                };
+            }
+            """
+        )
+        self._start_stubbed(page)
+        page.wait_for_selector("#dx-result[data-state=done]", timeout=10_000)
+        events = page.evaluate("window.__dxEvents")
+        assert [e["kind"] for e in events] == ["preview", "consent"], events
+        assert events[0]["visible"] is True
+        assert "STUB-PAYLOAD" in events[0]["text"]
+        assert events[1]["t"] - events[0]["t"] >= 500, "preview was not on screen for a poll cycle first"
+        assert len(consents) == 1
+        assert consents[0]["approved"] is True
+        assert consents[0]["auto_followups"] is True
+
+    def test_double_click_on_send_posts_consent_once(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("sessionStorage.removeItem('dx_noask')")
+        consents = self._stub_diagnose(page)
+        self._start_stubbed(page)
+        page.evaluate("() => { const b = document.getElementById('dx-send'); b.click(); b.click(); }")
+        page.wait_for_selector("#dx-result[data-state=done]", timeout=10_000)
+        page.wait_for_timeout(500)
+        assert len(consents) == 1, consents
+
+    def test_busy_start_keeps_the_parked_preview(self, loaded_page):
+        """A 429 on a second start must not strand the session whose preview
+        is waiting for an answer."""
+        page, _ = loaded_page
+        page.evaluate("sessionStorage.removeItem('dx_noask')")
+        consents = self._stub_diagnose(page)
+        self._start_stubbed(page)
+        page.route(
+            "**/api/diagnose/start",
+            lambda route: route.fulfill(
+                status=429, content_type="application/json", body='{"ok": false, "error": "busy"}'
+            ),
+        )
+        page.click("#dx-run")
+        page.wait_for_function("document.getElementById('dx-msg').textContent.includes('Two diagnoses')", timeout=5_000)
+        assert page.is_visible("#dx-preview")
+        assert page.evaluate("sessionStorage.getItem('dx_sid')")
+        page.click("#dx-send")  # the original session can still be answered
+        page.wait_for_selector("#dx-result[data-state=done]", timeout=10_000)
+        assert len(consents) == 1
+
+    def test_dismissed_confirm_makes_no_remediation_post(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        posts: list[dict] = []
+
+        def remediation(route):
+            posts.append(route.request.post_data_json)
+            route.fulfill(status=200, content_type="application/json", body='{"ok": true, "message": "stubbed"}')
+
+        page.route("**/api/remediation/run", remediation)
+        page.on("dialog", lambda d: d.dismiss())
+        page.evaluate(
+            "dx_renderResult({state:'done', verdict:{status:'likely', locus:'local', headline:'h',"
+            " reasoning:'r', evidence_refs:[], suggested_actions:['flush_dns'], no_local_fix_reason:''},"
+            f" evidence:[], actions:[{self.FLUSH_DNS}]}})"
+        )
+        page.click("#dx-result button[data-action='flush_dns']")
+        page.wait_for_timeout(800)
+        assert posts == [], "remediation ran although the confirm() was dismissed"
+
+    def test_confirmed_action_posts_once_to_remediation(self, loaded_page):
+        """Positive control for the dismissed-confirm test: accepting the
+        dialog is what produces the (stubbed, so harmless) POST."""
+        page, _ = loaded_page
+        self._open(page)
+        posts: list[dict] = []
+
+        def remediation(route):
+            posts.append(route.request.post_data_json)
+            route.fulfill(status=200, content_type="application/json", body='{"ok": true, "message": "stubbed"}')
+
+        page.route("**/api/remediation/run", remediation)
+        page.on("dialog", lambda d: d.accept())
+        page.evaluate(
+            "dx_renderResult({state:'done', verdict:{status:'likely', locus:'local', headline:'h',"
+            " reasoning:'r', evidence_refs:[], suggested_actions:['flush_dns'], no_local_fix_reason:''},"
+            f" evidence:[], actions:[{self.FLUSH_DNS}]}})"
+        )
+        page.click("#dx-result button[data-action='flush_dns']")
+        page.wait_for_function(
+            "document.getElementById('dx-action-msg').textContent.includes('stubbed')", timeout=5_000
+        )
+        assert posts == [{"action_id": "flush_dns"}]
+
+    def test_override_note_names_the_overridden_locus_escaped(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        page.evaluate(
+            "dx_renderResult({state:'done', verdict:{status:'confident', locus:'external_cause', headline:'h',"
+            " reasoning:'r', evidence_refs:[], suggested_actions:[], no_local_fix_reason:'x', source:'rules',"
+            " overridden_model_locus:'<i>local</i>'}, evidence:[], actions:[]})"
+        )
+        note = page.evaluate("document.querySelector('#dx-result .dx-note').textContent")
+        assert note.startswith("The AI suggested a different cause (<i>local</i>);"), note
+        assert page.evaluate("document.querySelectorAll('#dx-result .dx-note i').length") == 0
+
+    def test_evidence_opens_for_evidence_only_and_resets_for_a_new_diagnosis(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        ev = "[{key:'dns.interception', label:'l', ok:true, data:{intercepted:true}, elapsed_ms:3}]"
+        page.evaluate(
+            "dx_resetView(); dx_renderResult({state:'evidence_only', reason:'declined', rule_verdict:{status:"
+            "'inconclusive', locus:'unknown', headline:'h', reasoning:'r', evidence_refs:[], suggested_actions:[],"
+            f" no_local_fix_reason:''}}, evidence:{ev}, actions:[]}})"
+        )
+        assert page.evaluate("document.getElementById('dx-evidence').open") is True
+        page.evaluate("dx_resetView()")
+        assert page.evaluate("document.getElementById('dx-evidence').open") is False
+        page.evaluate(
+            "dx_renderResult({state:'done', verdict:{status:'likely', locus:'local', headline:'h', reasoning:'r',"
+            f" evidence_refs:[], suggested_actions:[], no_local_fix_reason:''}}, evidence:{ev}, actions:[]}})"
+        )
+        assert page.evaluate("document.getElementById('dx-evidence').open") is False
+
+    def test_submit_reaches_preview_or_evidence_only_and_sends_nothing(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        page.fill("#dx-symptom", "ERR_NAME_NOT_RESOLVED example.com")
+        page.click("#dx-run")
+        page.wait_for_function(
+            """
+            () => {
+                const p = document.getElementById('dx-preview');
+                const r = document.getElementById('dx-result');
+                return (p && p.style.display !== 'none') || (r && r.dataset.state === 'evidence_only');
+            }
+            """,
+            timeout=60_000,
+        )
+        if page.is_visible("#dx-preview"):
+            assert '"target_host": "example.com"' in page.inner_text("#dx-preview-text")
+            # Never click Send: the smoke test must not send data to Anthropic.
+            page.click("#dx-nosend")
+            page.wait_for_selector("#dx-result[data-state=evidence_only]", timeout=30_000)
+
+    def test_no_console_errors_on_tab(self, loaded_page):
+        page, errors = loaded_page
+        self._open(page)
+        page.wait_for_timeout(1000)
+        actionable = [e for e in errors if "favicon" not in e.lower()]
+        assert not actionable, f"console errors on the Diagnose tab: {actionable}"

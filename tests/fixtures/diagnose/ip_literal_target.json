@@ -1,0 +1,39 @@
+{
+  "symptom": "can't reach 192.168.1.50 from this PC",
+  "evidence": {
+    "dns.interception": {
+      "ok": true,
+      "data": {
+        "intercepted": false
+      }
+    },
+    "net.gateway": {
+      "ok": true,
+      "data": {
+        "gateways": [
+          "192.168.1.1"
+        ],
+        "reachable": true,
+        "rtt_ms": 1
+      }
+    },
+    "net.control_domain": {
+      "ok": true,
+      "data": {
+        "host": "www.microsoft.com",
+        "resolved": true,
+        "connected": true,
+        "connect_ms": 20,
+        "error": null
+      }
+    }
+  },
+  "expect": {
+    "target_host": "192.168.1.50",
+    "locus": "unknown",
+    "must_include": [],
+    "must_exclude": [
+      "flush_dns"
+    ]
+  }
+}

@@ -65,6 +65,23 @@ class TestIndexRoute:
         resp = client.get("/")
         assert resp.headers.get("Cache-Control") == "no-store, no-cache, must-revalidate"
 
+    def test_diagnose_tab_markup_is_served(self, client):
+        """The nav button and the page section ship in the template, and the
+        page starts hidden like every other tab."""
+        html = client.get("/").get_data(as_text=True)
+        assert 'data-page="diagnose"' in html
+        assert 'id="page-diagnose" style="display:none"' in html
+        for dom_id in (
+            "dx-symptom",
+            "dx-run",
+            "dx-host-row",
+            "dx-preview-text",
+            "dx-nosend",
+            "dx-evidence",
+            "dx-history",
+        ):
+            assert f'id="{dom_id}"' in html, dom_id
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GET  /api/scan/status

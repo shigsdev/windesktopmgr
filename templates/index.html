@@ -76,6 +76,7 @@
       <button class="page-tab" data-page="maintenance">🧹 Cleanup</button>
       <button class="page-tab" data-page="logs">📜 Logs</button>
       <button class="page-tab" data-page="docs">📖 Docs</button>
+      <button class="page-tab" data-page="diagnose">🔍 Diagnose</button>
       <button class="page-tab" data-page="architecture">🏗 Architecture</button>
     </nav>
     <div class="rail-foot"><span class="rf-on">● ONLINE</span> · :5000</div>
@@ -2450,6 +2451,62 @@
           Recovery is <b>not</b> guaranteed once the space reports &ldquo;Incomplete&rdquo;. Because the data here is disposable, the guaranteed reset is a full teardown and rebuild of the pool (<code>Remove-VirtualDisk</code> then <code>Remove-StoragePool</code>, then create it fresh). That destroys everything on E:, so it is a last resort &mdash; and one to run deliberately, by hand, not from this app.
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       PAGE: DIAGNOSE
+  ══════════════════════════════════════════ -->
+  <div id="page-diagnose" style="display:none">
+    <div class="dx-head">
+      <h2>Diagnose</h2>
+      <div class="dx-sub">Describe what is wrong. Read-only checks run on this PC first. Nothing leaves the machine unless you approve the exact text shown to you.</div>
+    </div>
+
+    <div class="dx-card">
+      <label class="dx-label" for="dx-symptom">What is going wrong?</label>
+      <textarea id="dx-symptom" rows="3" maxlength="4000" placeholder="e.g. ERR_NAME_NOT_RESOLVED when I open example.com"></textarea>
+
+      <div id="dx-ask" class="dx-ask" style="display:none"></div>
+
+      <div id="dx-class-row" class="dx-row" style="display:none">
+        <label class="dx-label" for="dx-class">What kind of problem is this?</label>
+        <select id="dx-class"></select>
+      </div>
+
+      <div id="dx-host-row" class="dx-row" style="display:none">
+        <label class="dx-label" for="dx-host">Which site or host is affected?</label>
+        <input id="dx-host" type="text" maxlength="253" placeholder="example.com" autocomplete="off" spellcheck="false">
+        <div id="dx-candidates" class="dx-chips"></div>
+      </div>
+
+      <button id="dx-run" type="button" class="btn-action" onclick="dx_start()">&#128269; Diagnose</button>
+      <div id="dx-msg" class="dx-msg" style="display:none"></div>
+    </div>
+
+    <div id="dx-progress" class="dx-progress" style="display:none"></div>
+
+    <div id="dx-preview" class="dx-preview" style="display:none">
+      <div class="dx-preview-title">Review what would be sent</div>
+      <div class="dx-sub">This exact text is what would go to the AI service for interpretation. Your username is masked. Nothing is sent until you press Send.</div>
+      <pre id="dx-preview-text"></pre>
+      <div class="dx-preview-buttons">
+        <button id="dx-send" type="button" class="btn-action" onclick="dx_consent(true)">Send</button>
+        <button id="dx-nosend" type="button" class="dx-btn-quiet" onclick="dx_consent(false)">Don&rsquo;t send</button>
+        <label class="dx-noask"><input id="dx-noask" type="checkbox" onchange="dx_setNoAsk(this.checked)"> Don&rsquo;t ask again this session</label>
+      </div>
+    </div>
+
+    <div id="dx-result" style="display:none"></div>
+
+    <details id="dx-evidence" class="dx-evidence" style="display:none">
+      <summary id="dx-evidence-summary">Evidence</summary>
+      <div id="dx-evidence-body"></div>
+    </details>
+
+    <div class="dx-history-wrap">
+      <h3 class="dx-h3">Recent diagnoses</h3>
+      <div id="dx-history"><div class="dx-sub">Loading&hellip;</div></div>
     </div>
   </div>
 

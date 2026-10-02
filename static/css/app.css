@@ -1022,3 +1022,96 @@
     color: #111111 !important;
   }
 }
+
+  /* ── Diagnose tab (dx-) ─────────────────────────────────────────────── */
+  .dx-head { margin: 20px 0 16px; }
+  .dx-head h2 { margin: 0; font-family: var(--font-head); font-size: 20px; }
+  .dx-sub { font-size: 11px; color: var(--text-dim); margin-top: 3px; line-height: 1.5; }
+  .dx-h3 { font-family: var(--font-head); font-size: 15px; margin: 22px 0 8px; }
+  .dx-card, .dx-preview, .dx-evidence, .dx-progress {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px; margin-bottom: 14px;
+  }
+  .dx-label { display: block; font-size: 12px; font-weight: 700; margin: 0 0 6px; color: var(--text-bright); }
+  .dx-row { margin-top: 12px; }
+  .dx-card textarea, .dx-card input[type=text], .dx-card select {
+    width: 100%; background: var(--surface); color: var(--text);
+    border: 1px solid var(--border-hi); border-radius: 6px;
+    padding: 8px 10px; font-family: var(--font-mono); font-size: 13px;
+  }
+  .dx-card textarea { resize: vertical; margin-bottom: 4px; }
+  .dx-card .btn-action { margin-top: 12px; }
+  .dx-ask { margin-top: 10px; padding: 8px 10px; font-size: 12px; border-radius: 6px;
+    background: var(--orange-dim); border: 1px solid var(--orange); color: var(--text-bright); }
+  .dx-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .dx-chip { background: var(--cyan-dim); color: var(--cyan); border: 1px solid var(--cyan);
+    border-radius: 999px; padding: 3px 12px; font-family: var(--font-mono); font-size: 12px; cursor: pointer; }
+  .dx-chip:hover { background: var(--glow-cyan); }
+  .dx-msg { margin-top: 10px; font-size: 12px; color: var(--orange-hi); }
+  .dx-progress { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text); }
+  .dx-spin { width: 12px; height: 12px; border-radius: 50%; flex: none;
+    border: 2px solid var(--border-hi); border-top-color: var(--cyan);
+    animation: dx-rot 0.9s linear infinite; }
+  @keyframes dx-rot { to { transform: rotate(360deg); } }
+  .dx-preview { border-color: var(--orange); }
+  .dx-preview-title { font-family: var(--font-head); font-size: 15px; color: var(--orange-hi); }
+  .dx-preview pre, .dx-evidence pre, .dx-hist-body pre {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px; margin: 8px 0; font-size: 11px; line-height: 1.5;
+    max-height: 340px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: var(--text);
+  }
+  .dx-preview-buttons { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .dx-btn-quiet, .dx-action {
+    background: transparent; color: var(--text); border: 1px solid var(--border-hi);
+    border-radius: 6px; padding: 8px 16px; font-family: var(--font-mono); font-size: 12px; cursor: pointer;
+  }
+  .dx-btn-quiet:hover, .dx-action:hover:not(:disabled) { border-color: var(--cyan); color: var(--cyan); }
+  .dx-action:disabled { opacity: 0.5; cursor: not-allowed; }
+  .dx-noask { font-size: 11px; color: var(--text-dim); display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  #dx-result { margin-bottom: 14px; }
+  .dx-verdict, .dx-inconclusive, .dx-error, .dx-evidence-only {
+    border: 1px solid var(--border-hi); border-radius: 10px; padding: 14px 16px; margin-bottom: 10px;
+    background: var(--card);
+  }
+  .dx-verdict { border-color: var(--green); }
+  .dx-verdict[data-locus="external_cause"] { border-color: var(--cyan); }
+  .dx-verdict[data-locus="unknown"] { border-color: var(--orange); }
+  .dx-inconclusive { border-color: var(--orange); }
+  .dx-error { border-color: var(--red); background: var(--red-dim); color: var(--text-bright); }
+  .dx-evidence-only { border-color: var(--purple); background: var(--purple-dim); font-size: 12px; color: var(--text-bright); }
+  .dx-verdict-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .dx-tag { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; padding: 2px 8px;
+    border-radius: 4px; border: 1px solid var(--border-hi); color: var(--text-dim); }
+  .dx-tag-confident { color: var(--green); border-color: var(--green); }
+  .dx-tag-likely { color: var(--orange-hi); border-color: var(--orange-hi); }
+  .dx-tag-locus { color: var(--cyan); border-color: var(--cyan); }
+  .dx-headline { font-family: var(--font-head); font-size: 17px; color: var(--text-bright); margin-bottom: 6px; }
+  .dx-reasoning { font-size: 12px; line-height: 1.6; color: var(--text); white-space: pre-wrap; }
+  .dx-note { margin-top: 10px; font-size: 11px; color: var(--text-dim); font-style: italic; }
+  .dx-nofix { margin-top: 12px; padding: 10px 12px; border-radius: 6px; font-size: 12px; line-height: 1.5;
+    background: var(--cyan-dim); border: 1px solid var(--cyan); }
+  .dx-nofix b { display: block; color: var(--cyan); margin-bottom: 4px; }
+  .dx-actions-title { margin-top: 14px; font-size: 11px; color: var(--text-dim); }
+  .dx-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .dx-risk { margin-left: 8px; font-size: 10px; text-transform: uppercase; color: var(--text-dim); }
+  .dx-risk-medium { color: var(--orange-hi); }
+  .dx-risk-high { color: var(--red); }
+  .dx-refs { margin-top: 12px; font-size: 11px; color: var(--text-dim); }
+  .dx-ref { display: inline-block; margin: 2px 4px 2px 0; padding: 1px 6px; border-radius: 4px;
+    background: var(--surface); border: 1px solid var(--border); color: var(--text-dim); }
+  .dx-evidence summary { cursor: pointer; font-weight: 700; font-size: 13px; }
+  .dx-ev { margin-top: 10px; }
+  .dx-ev-head { font-size: 12px; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .dx-ev-ok { color: var(--green); }
+  .dx-ev-bad { color: var(--red); }
+  .dx-ev-ms { color: var(--text-dim); font-size: 11px; }
+  .dx-ev-err { font-size: 11px; color: var(--red); margin-top: 4px; }
+  .dx-hist { border-bottom: 1px solid var(--border); }
+  .dx-hist-head { width: 100%; display: grid; grid-template-columns: 170px 150px 160px 1fr; gap: 10px;
+    text-align: left; background: transparent; border: 0; color: var(--text); cursor: pointer;
+    padding: 8px 4px; font-family: var(--font-mono); font-size: 11px; }
+  .dx-hist-head:hover { background: var(--cyan-dim); }
+  .dx-hist-when, .dx-hist-state { color: var(--text-dim); }
+  .dx-hist-host { color: var(--cyan); }
+  .dx-hist-headline { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dx-hist-body { padding: 4px 8px 12px; }

@@ -1,0 +1,143 @@
+{
+  "symptom": "example.com won't load",
+  "evidence": {
+    "dns.interception": {
+      "ok": true,
+      "data": {
+        "intercepted": true,
+        "probe_server": "192.0.2.1",
+        "answered_rcode": "NOERROR"
+      }
+    },
+    "dns.resolve_cached": {
+      "ok": true,
+      "data": {
+        "resolved": true,
+        "addresses": [
+          "2606:2800:21f:cb07:6820:80da:af6b:8b2c",
+          "93.184.216.34"
+        ],
+        "error": null
+      }
+    },
+    "dns.resolve_direct": {
+      "ok": true,
+      "data": {
+        "dnspython": true,
+        "resolvers": [
+          {
+            "name": "system",
+            "server": "192.168.1.1",
+            "transport": "udp",
+            "rcode": "NOERROR",
+            "nodata": false,
+            "answers": [
+              "93.184.216.34"
+            ]
+          },
+          {
+            "name": "cloudflare",
+            "server": "1.1.1.1",
+            "transport": "tls",
+            "rcode": "NOERROR",
+            "nodata": false,
+            "answers": [
+              "93.184.216.34"
+            ]
+          },
+          {
+            "name": "google",
+            "server": "8.8.8.8",
+            "transport": "tls",
+            "rcode": "NOERROR",
+            "nodata": false,
+            "answers": [
+              "93.184.216.34"
+            ]
+          }
+        ]
+      }
+    },
+    "dns.authoritative": {
+      "ok": true,
+      "data": {
+        "zone": "example.com",
+        "nameservers": [
+          {
+            "name": "a.iana-servers.net",
+            "ip": "199.43.135.53",
+            "rcode": "NOERROR",
+            "nodata": false,
+            "aa": false,
+            "answers": [
+              "93.184.216.34"
+            ]
+          }
+        ]
+      }
+    },
+    "dns.record_sweep": {
+      "ok": true,
+      "data": {
+        "rcode": "NOERROR",
+        "records": {
+          "A": [
+            "93.184.216.34"
+          ],
+          "AAAA": [
+            "2606:2800:21f:cb07:6820:80da:af6b:8b2c"
+          ],
+          "CNAME": [],
+          "MX": [],
+          "TXT": [
+            "\"v=spf1 -all\""
+          ],
+          "SOA": [
+            "ns.icann.org. noc.dns.icann.org. 2026100101 7200 3600 1209600 3600"
+          ],
+          "NS": [
+            "a.iana-servers.net.",
+            "b.iana-servers.net."
+          ]
+        }
+      }
+    },
+    "dns.hosts_file": {
+      "ok": true,
+      "data": {
+        "path": "C:\\Windows\\System32\\drivers\\etc\\hosts",
+        "readable": true,
+        "matches": []
+      }
+    },
+    "net.control_domain": {
+      "ok": true,
+      "data": {
+        "host": "www.microsoft.com",
+        "resolved": true,
+        "address": "23.1.2.3",
+        "connected": true,
+        "connect_ms": 18.2,
+        "error": null
+      }
+    },
+    "net.gateway": {
+      "ok": true,
+      "data": {
+        "gateways": [
+          "192.168.1.1"
+        ],
+        "reachable": true,
+        "rtt_ms": 0.5
+      }
+    }
+  },
+  "expect": {
+    "target_host": "example.com",
+    "locus": "unknown",
+    "must_include": [],
+    "must_exclude": [
+      "flush_dns"
+    ]
+  }
+}
