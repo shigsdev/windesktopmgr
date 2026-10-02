@@ -178,16 +178,29 @@ def _resolvers(evidence: dict) -> list[dict]:
 def cache_agrees(evidence: dict[str, dict]) -> bool | None:
     """Whether the Windows resolver cache and the live resolvers agree.
 
-    None when either probe is missing/failed (or the direct probe queried no
-    resolvers at all), so absence of evidence never reads as disagreement.
-    Otherwise True iff both sides agree on resolved-ness and, when both
-    resolved, their address sets intersect.
+    Only definitive direct answers count (R13): NOERROR with answers means
+    resolved; NXDOMAIN, or NOERROR with ``nodata``, means not resolved.
+    TIMEOUT/ERROR/SERVFAIL/REFUSED are ignored, so a blocked UDP/53 cannot
+    make a working cache look stale. None when the cached probe is
+    missing/failed or no resolver gave a definitive answer. Otherwise True iff
+    both sides agree on resolved-ness and, when both resolved, their address
+    sets intersect.
     """
     cached = _data(evidence, "dns.resolve_cached")
-    resolvers = _resolvers(evidence)
-    if cached is None or not resolvers:
+    if cached is None:
         return None
-    direct_addrs = {a for r in resolvers for a in r.get("answers") or []}
+    direct_addrs: set[str] = set()
+    definitive = False
+    for r in _resolvers(evidence):
+        answers = r.get("answers") or []
+        rcode = r.get("rcode")
+        if rcode == "NOERROR" and answers:
+            definitive = True
+            direct_addrs.update(answers)
+        elif rcode == "NXDOMAIN" or (rcode == "NOERROR" and r.get("nodata") is True):
+            definitive = True
+    if not definitive:
+        return None
     cached_resolved = cached.get("resolved") is True
     if cached_resolved != bool(direct_addrs):
         return False

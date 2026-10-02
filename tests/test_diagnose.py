@@ -128,54 +128,64 @@ def _ok(data):
     return {"ok": True, "data": data}
 
 
+def _res(rcode, *answers, nodata=False):
+    return {"name": "r", "server": "x", "rcode": rcode, "nodata": nodata, "answers": list(answers)}
+
+
+def _cache_ev(cached_resolved, *resolvers, addresses=()):
+    return {
+        "dns.resolve_cached": _ok({"resolved": cached_resolved, "addresses": list(addresses)}),
+        "dns.resolve_direct": _ok({"resolvers": list(resolvers)}),
+    }
+
+
 class TestCacheAgrees:
     def test_none_when_a_probe_is_missing(self):
         assert diagnose.cache_agrees({}) is None
         assert diagnose.cache_agrees({"dns.resolve_cached": _ok({"resolved": True, "addresses": ["1.1.1.1"]})}) is None
 
     def test_none_on_a_failed_probe(self):
-        ev = {
-            "dns.resolve_cached": {"ok": False, "error": "boom"},
-            "dns.resolve_direct": _ok({"resolvers": [{"name": "system", "answers": ["1.1.1.1"]}]}),
-        }
+        ev = _cache_ev(True, _res("NOERROR", "1.1.1.1"), addresses=["1.1.1.1"])
+        ev["dns.resolve_cached"] = {"ok": False, "error": "boom"}
         assert diagnose.cache_agrees(ev) is None
 
     def test_none_when_direct_has_no_resolvers(self):
-        ev = {
-            "dns.resolve_cached": _ok({"resolved": True, "addresses": ["1.1.1.1"]}),
-            "dns.resolve_direct": _ok({"dnspython": False, "resolvers": []}),
-        }
-        assert diagnose.cache_agrees(ev) is None
+        assert diagnose.cache_agrees(_cache_ev(True, addresses=["1.1.1.1"])) is None
 
     def test_false_on_disjoint_addresses(self):
-        ev = {
-            "dns.resolve_cached": _ok({"resolved": True, "addresses": ["0.0.0.0"]}),
-            "dns.resolve_direct": _ok({"resolvers": [{"name": "google", "answers": ["104.21.0.1"]}]}),
-        }
+        ev = _cache_ev(True, _res("NOERROR", "104.21.0.1"), addresses=["0.0.0.0"])
         assert diagnose.cache_agrees(ev) is False
 
     def test_false_when_only_the_cache_fails(self):
-        ev = {
-            "dns.resolve_cached": _ok({"resolved": False, "addresses": []}),
-            "dns.resolve_direct": _ok({"resolvers": [{"name": "google", "answers": ["104.21.0.1"]}]}),
-        }
-        assert diagnose.cache_agrees(ev) is False
+        assert diagnose.cache_agrees(_cache_ev(False, _res("NOERROR", "104.21.0.1"))) is False
+
+    def test_false_when_only_direct_fails(self):
+        assert diagnose.cache_agrees(_cache_ev(True, _res("NXDOMAIN"), addresses=["1.1.1.1"])) is False
 
     def test_true_when_addresses_intersect(self):
-        ev = {
-            "dns.resolve_cached": _ok({"resolved": True, "addresses": ["1.1.1.1", "2.2.2.2"]}),
-            "dns.resolve_direct": _ok(
-                {"resolvers": [{"name": "system", "answers": ["2.2.2.2"]}, {"name": "google", "answers": []}]}
-            ),
-        }
+        ev = _cache_ev(True, _res("NOERROR", "2.2.2.2"), _res("NOERROR", nodata=True), addresses=["1.1.1.1", "2.2.2.2"])
         assert diagnose.cache_agrees(ev) is True
 
     def test_true_when_both_fail(self):
-        ev = {
-            "dns.resolve_cached": _ok({"resolved": False, "addresses": []}),
-            "dns.resolve_direct": _ok({"resolvers": [{"name": "system", "rcode": "NOERROR", "answers": []}]}),
-        }
+        assert diagnose.cache_agrees(_cache_ev(False, _res("NOERROR", nodata=True))) is True
+
+    def test_none_when_cached_resolves_and_every_resolver_times_out(self):
+        ev = _cache_ev(True, _res("TIMEOUT"), _res("TIMEOUT"), addresses=["1.1.1.1"])
+        assert diagnose.cache_agrees(ev) is None
+
+    def test_none_when_cached_resolves_and_every_resolver_servfails(self):
+        ev = _cache_ev(True, _res("SERVFAIL"), _res("SERVFAIL"), addresses=["1.1.1.1"])
+        assert diagnose.cache_agrees(ev) is None
+
+    def test_timeout_is_ignored_next_to_a_matching_answer(self):
+        ev = _cache_ev(True, _res("TIMEOUT"), _res("NOERROR", "1.1.1.1"), addresses=["1.1.1.1"])
         assert diagnose.cache_agrees(ev) is True
+
+    def test_servfail_is_ignored_next_to_nxdomain(self):
+        assert diagnose.cache_agrees(_cache_ev(False, _res("SERVFAIL"), _res("NXDOMAIN"))) is True
+
+    def test_noerror_without_answers_or_nodata_flag_is_not_definitive(self):
+        assert diagnose.cache_agrees(_cache_ev(True, _res("NOERROR"), addresses=["1.1.1.1"])) is None
 
 
 class TestRuleFixtures:
@@ -277,7 +287,14 @@ class TestEvaluateRulesVerdicts:
         v = diagnose.evaluate_rules(_fixture_evidence("dead_gateway"), "example.com")
         assert v["status"] == "likely"
         assert v["suggested_actions"] == ["reset_network_adapter"]
-        assert v["rule_hits"] == ["dead_gateway", "cache_agrees"]
+        assert v["rule_hits"] == ["dead_gateway"]
+
+    def test_blocked_udp53_does_not_make_a_working_cache_stale(self):
+        ev = _cache_ev(True, _res("TIMEOUT"), _res("TIMEOUT"), _res("TIMEOUT"), addresses=["1.1.1.1"])
+        v = diagnose.evaluate_rules(ev, "example.com")
+        assert "stale_cache" not in v["rule_hits"]
+        assert "flush_dns" not in v["suggested_actions"]
+        assert v["status"] == "inconclusive"
 
     def test_untestable_gateway_is_not_a_dead_gateway(self):
         ev = _fixture_evidence("dead_gateway")
