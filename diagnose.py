@@ -80,6 +80,40 @@ SYMPTOM_CLASSES = {
     },
 }
 
+# Probes that describe the target NAME. An IP literal has no DNS records, so
+# these are neither run nor offered for IP targets (R38). ``dns.interception``
+# and ``dns.client_config`` describe this PC and network, so they stay.
+_DNS_ONLY_PROBES = frozenset(
+    {
+        "dns.resolve_cached",
+        "dns.resolve_direct",
+        "dns.authoritative",
+        "dns.record_sweep",
+        "dns.hosts_file",
+        "dns.trace_delegation",
+        "dns.dnssec_check",
+    }
+)
+
+
+def _is_ip_literal(host: Any) -> bool:
+    """True when ``host`` is an IPv4 or IPv6 address literal; never raises."""
+    if not isinstance(host, str):  # ip_address(42) would parse the integer as an address
+        return False
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def _probe_keys(keys: Iterable[str], host: Any) -> list[str]:
+    """``keys`` with the DNS-only probes removed when ``host`` is an IP literal."""
+    if _is_ip_literal(host):
+        return [k for k in keys if k not in _DNS_ONLY_PROBES]
+    return list(keys)
+
+
 # Matched case-insensitively as substrings of the raw symptom text.
 _NETWORK_KEYWORDS = (
     "err_name_not_resolved",
@@ -565,6 +599,9 @@ _RULES = (
     _rule_dns_intercepted,
 )
 
+# The only rule that still applies when the target is an IP literal.
+_IP_RULES = (_rule_dead_gateway,)
+
 
 def evaluate_rules(evidence: dict[str, dict], target_host: str) -> dict:
     """Evidence-only verdict for the network_dns class; always a full verdict.
@@ -572,10 +609,15 @@ def evaluate_rules(evidence: dict[str, dict], target_host: str) -> dict:
     Runs the rules in order and returns the first that fires. ``rule_hits``
     names that rule, plus ``"dns_intercepted"`` whenever the network intercepts
     plain DNS and ``"cache_agrees"`` whenever the cache and the live resolvers
-    agree, whichever rule fired.
+    agree, whichever rule fired. For an IP-literal target only ``dead_gateway``
+    can fire and neither extra hit is added.
     """
     host = target_host or "this host"
-    verdict = next((v for v in (rule(evidence, host) for rule in _RULES) if v is not None), None)
+    # An IP literal has no DNS: every DNS rule would misread the name probes, so
+    # only the path rule applies (R38).
+    ip_target = _is_ip_literal(target_host)
+    rules = _IP_RULES if ip_target else _RULES
+    verdict = next((v for v in (rule(evidence, host) for rule in rules) if v is not None), None)
     if verdict is None:
         verdict = _verdict(
             "inconclusive",
@@ -583,6 +625,8 @@ def evaluate_rules(evidence: dict[str, dict], target_host: str) -> dict:
             "No rule matched this evidence",
             "None of the built-in checks found a clear cause in the evidence collected.",
         )
+    if ip_target:
+        return verdict
     if _intercepted(evidence) and "dns_intercepted" not in verdict["rule_hits"]:
         verdict["rule_hits"].append("dns_intercepted")
     if cache_agrees(evidence) is True:
@@ -731,7 +775,9 @@ def build_payload(session: dict) -> str:
             "headline": scrub(verdict.get("headline")),
             "rule_hits": list(verdict.get("rule_hits") or []),
         },
-        "available_probes": [{"key": k, "label": dp.PROBES[k].label} for k in escalate if k not in seen],
+        "available_probes": [
+            {"key": k, "label": dp.PROBES[k].label} for k in _probe_keys(escalate, host) if k not in seen
+        ],
         "available_actions": [
             {"key": k, "label": v["label"], "description": v["description"]}
             for k, v in sorted(remediation.REMEDIATION_REGISTRY.items())
@@ -931,11 +977,12 @@ def parse_reply(obj: dict, class_key: str) -> tuple[str, Any] | None:
     }
 
 
-def apply_guards(verdict: dict, evidence: dict, rule_verdict: dict) -> dict:
+def apply_guards(verdict: dict, evidence: dict, rule_verdict: dict, target_host: str | None = None) -> dict:
     """The model's verdict with the server-side guards applied; inputs are not mutated.
 
     Order: unknown actions dropped; ``flush_dns`` dropped when the cache and
-    live DNS agree or the rules found the network's DNS filtering the name; a confident rule-based ``external_cause`` overrides the
+    live DNS agree, the rules found the network's DNS filtering the name, or the
+    target is an IP literal (no DNS to flush); a confident rule-based ``external_cause`` overrides the
     model's locus; actions survive only on a ``confident``/``likely`` verdict
     whose locus is ``local``/``unknown``.
 
@@ -954,7 +1001,11 @@ def apply_guards(verdict: dict, evidence: dict, rule_verdict: dict) -> dict:
     )
     # A flush cannot help when the cache already agrees with live DNS, nor when
     # this network's DNS itself withholds the address (it would refill the same answer).
-    if cache_agrees(evidence) is True or "dns_filtered" in (rule_verdict.get("rule_hits") or []):
+    if (
+        cache_agrees(evidence) is True
+        or "dns_filtered" in (rule_verdict.get("rule_hits") or [])
+        or _is_ip_literal(target_host)
+    ):
         out["suggested_actions"] = [a for a in out["suggested_actions"] if a != "flush_dns"]
     source = "model"
     if rule_verdict.get("status") == "confident" and rule_verdict.get("locus") == "external_cause":
@@ -1240,7 +1291,7 @@ def _drive(session: dict) -> None:
     spec = SYMPTOM_CLASSES[class_key]
     slots = dict(session["slots"])
     host = slots.get("target_host")
-    evidence = list(dp.run_probes(list(spec["wave1"]), slots))
+    evidence = list(dp.run_probes(_probe_keys(spec["wave1"], host), slots))
     _set(session, evidence=evidence, rule_verdict=evaluate_rules(_by_key(evidence), host))
 
     reason = model_unavailable_reason()
@@ -1278,7 +1329,7 @@ def _drive(session: dict) -> None:
         out_of_rounds = kind != "verdict" and session["round"] >= MAX_ROUNDS
         if kind == "verdict" or out_of_rounds:
             verdict = apply_guards(
-                _OUT_OF_ROUNDS if out_of_rounds else value, _by_key(evidence), session["rule_verdict"]
+                _OUT_OF_ROUNDS if out_of_rounds else value, _by_key(evidence), session["rule_verdict"], host
             )
             if out_of_rounds and verdict["source"] == "model":
                 verdict["source"] = "engine"  # not the model's words; "rules" when guard 3 took over
@@ -1287,7 +1338,7 @@ def _drive(session: dict) -> None:
         # parse_reply already filtered these; checked again so that only the
         # class's own escalation probes, each run at most once, can ever run.
         seen = {r.get("key") for r in evidence if isinstance(r, dict)}
-        wanted = dict.fromkeys(k for k in value if k in spec["escalate"])
+        wanted = dict.fromkeys(k for k in _probe_keys(value, host) if k in spec["escalate"])
         keys = [k for k in wanted if k not in seen][:MAX_PROBES_PER_ROUND]
         rnd = session["round"] + 1  # an empty request still uses up the round
         _set(session, round=rnd, state=f"probing_wave{rnd + 1}")

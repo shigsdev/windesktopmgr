@@ -1795,6 +1795,151 @@ class TestEscalation:
         assert engine.probes.slots == [{"target_host": "hynote.ai"}] * 2
 
 
+def _ip_literal_evidence(authoritative=True):
+    """Evidence for a ``192.168.1.50`` target as the DNS probes would misreport it (R38)."""
+    ev = {
+        "dns.interception": _ok({"intercepted": False}),
+        "dns.resolve_cached": _ok({"resolved": True, "addresses": ["192.168.1.50"], "error": None}),
+        "dns.resolve_direct": _ok(
+            {
+                "dnspython": True,
+                "resolvers": [
+                    _res("NXDOMAIN", name="cloudflare", transport="tls"),
+                    _res("NXDOMAIN", name="google", transport="tls"),
+                ],
+            }
+        ),
+        "dns.record_sweep": _ok(
+            {"rcode": "NXDOMAIN", "records": {k: [] for k in ("A", "AAAA", "CNAME", "MX", "TXT", "SOA", "NS")}}
+        ),
+        "net.gateway": _ok({"gateways": ["192.168.1.1"], "reachable": True}),
+        "net.control_domain": _ok({"connected": True, "resolved": True}),
+    }
+    if authoritative:
+        ev["dns.authoritative"] = _ok(
+            {
+                "zone": "",
+                "nameservers": [
+                    {
+                        "name": "a.root-servers.net",
+                        "ip": "198.41.0.4",
+                        "rcode": "NXDOMAIN",
+                        "nodata": False,
+                        "aa": True,
+                        "answers": [],
+                    }
+                ],
+            }
+        )
+    return ev
+
+
+class TestIpLiteralTarget:
+    """An IP literal has no DNS, so the name probes and DNS rules must stay out of it (R38)."""
+
+    @pytest.mark.parametrize("host", ["192.168.1.50", "10.0.0.1", "::1", "2001:db8::1"])
+    def test_is_ip_literal_true(self, host):
+        assert diagnose._is_ip_literal(host) is True
+
+    @pytest.mark.parametrize("host", ["example.com", "", None, 42, "192.168.1", "999.1.1.1", "not an ip"])
+    def test_is_ip_literal_false_never_raises(self, host):
+        assert diagnose._is_ip_literal(host) is False
+
+    def test_dns_only_set_covers_exactly_the_name_probes(self):
+        assert set(diagnose._DNS_ONLY_PROBES) == {
+            "dns.resolve_cached",
+            "dns.resolve_direct",
+            "dns.authoritative",
+            "dns.record_sweep",
+            "dns.hosts_file",
+            "dns.trace_delegation",
+            "dns.dnssec_check",
+        }
+        assert {"dns.interception", "dns.client_config"}.isdisjoint(diagnose._DNS_ONLY_PROBES)
+
+    @pytest.mark.parametrize("authoritative", [True, False])
+    def test_no_dns_rule_fires_for_an_ip(self, authoritative):
+        v = diagnose.evaluate_rules(_ip_literal_evidence(authoritative), "192.168.1.50")
+        assert v["locus"] != "external_cause"
+        assert (v["status"], v["locus"]) == ("inconclusive", "unknown")
+        assert "flush_dns" not in v["suggested_actions"]
+        assert v["suggested_actions"] == []
+        assert v["rule_hits"] == []
+
+    def test_same_evidence_for_a_name_still_fires_dns_rules(self):
+        v = diagnose.evaluate_rules(_ip_literal_evidence(), "example.com")
+        assert v["rule_hits"] != []
+
+    def test_interception_is_not_reported_for_an_ip(self):
+        ev = _ip_literal_evidence()
+        ev["dns.interception"] = _ok({"intercepted": True})
+        v = diagnose.evaluate_rules(ev, "192.168.1.50")
+        assert v["rule_hits"] == []
+
+    def test_dead_gateway_still_fires_for_an_ip(self):
+        ev = _ip_literal_evidence()
+        ev["net.gateway"] = _ok({"gateways": ["192.168.1.1"], "reachable": False})
+        ev["net.control_domain"] = _ok({"connected": False, "resolved": False})
+        v = diagnose.evaluate_rules(ev, "192.168.1.50")
+        assert v["rule_hits"] == ["dead_gateway"]
+        assert v["suggested_actions"] == ["reset_network_adapter"]
+        assert "192.168.1.50" in v["reasoning"]
+
+    def test_apply_guards_drops_flush_dns_for_an_ip_target(self):
+        out = diagnose.apply_guards(_model_verdict(), {}, {"rule_hits": []}, "192.168.1.50")
+        assert out["suggested_actions"] == []
+        out = diagnose.apply_guards(
+            _model_verdict(suggested_actions=["flush_dns", "reset_network_adapter"]), {}, {}, "192.168.1.50"
+        )
+        assert out["suggested_actions"] == ["reset_network_adapter"]
+
+    def test_apply_guards_keeps_flush_dns_for_a_name_target(self):
+        out = diagnose.apply_guards(_model_verdict(), {}, {}, "example.com")
+        assert out["suggested_actions"] == ["flush_dns"]
+        assert diagnose.apply_guards(_model_verdict(), {}, {})["suggested_actions"] == ["flush_dns"]
+
+    def test_build_payload_lists_no_dns_only_probes_for_an_ip(self):
+        session = _session(slots={"target_host": "192.168.1.50"}, symptom="can't reach 192.168.1.50")
+        keys = [p["key"] for p in json.loads(diagnose.build_payload(session))["available_probes"]]
+        assert keys == ["net.tcp_connect", "net.tls_handshake", "net.traceroute"]
+        assert set(keys).isdisjoint(diagnose._DNS_ONLY_PROBES)
+
+    def test_build_payload_still_lists_dns_probes_for_a_name(self):
+        keys = [p["key"] for p in json.loads(diagnose.build_payload(_session()))["available_probes"]]
+        assert "dns.trace_delegation" in keys
+        assert "dns.dnssec_check" in keys
+
+    def test_drive_runs_no_dns_only_probe_in_wave_one(self, engine):
+        engine.use_probes(FakeProbes("ip_literal_target"))
+        status = engine.run("can't reach 192.168.1.50 from this PC")
+        assert status["slots"] == {"target_host": "192.168.1.50"}
+        assert engine.probes.calls == [[k for k in _WAVE1 if k not in diagnose._DNS_ONLY_PROBES]]
+        assert "dns.interception" in engine.probes.calls[0]
+        assert "dns.client_config" in engine.probes.calls[0]
+        assert set(engine.probes.calls[0]).isdisjoint(diagnose._DNS_ONLY_PROBES)
+
+    def test_drive_final_verdict_has_no_flush_dns_for_an_ip(self, engine):
+        engine.use_probes(FakeProbes("ip_literal_target"))
+        status = engine.run("can't reach 192.168.1.50 from this PC")
+        assert status["state"] == "done"
+        assert "flush_dns" not in status["verdict"]["suggested_actions"]
+        assert status["actions"] == []
+
+    def test_model_dns_escalation_for_an_ip_runs_nothing_but_the_round_counts(self, engine):
+        engine.use_probes(FakeProbes("ip_literal_target"))
+        engine.use_model(_need("dns.trace_delegation", "dns.dnssec_check"), REPLY)
+        status = engine.run("can't reach 192.168.1.50 from this PC")
+        assert len(engine.probes.calls) == 1
+        assert status["round"] == 1
+        assert status["state"] == "done"
+
+    def test_non_dns_escalation_still_runs_for_an_ip(self, engine):
+        engine.use_probes(FakeProbes("ip_literal_target"))
+        engine.use_model(_need("dns.trace_delegation", "net.tcp_connect"), REPLY)
+        engine.run("can't reach 192.168.1.50 from this PC")
+        assert engine.probes.calls[1] == ["net.tcp_connect"]
+
+
 class TestModelFailures:
     @pytest.mark.parametrize("bad", [None, {"kind": "nonsense"}, {"kind": "verdict", "status": "maybe"}])
     def test_one_failure_then_success_is_done(self, engine, bad):
