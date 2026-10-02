@@ -810,12 +810,17 @@ def _p_traceroute(slots: dict) -> dict:
 # ── DNS escalation probes (run only when the model asks for more evidence) ───
 
 
+# Wall-clock budget for the whole walk, safely under the probe's 12s timeout.
+_TRACE_DEADLINE_S = 9.0
+
+
 def _p_trace_delegation(slots: dict) -> dict:
     """Ask for each zone's NS records from the TLD down to the full name.
 
     Shows where the delegation chain breaks (e.g. the domain does not exist
     at its parent). The walk stops after the first NXDOMAIN, since nothing
-    below a non-existent name can exist.
+    below a non-existent name can exist. The walk is bounded by ``_TRACE_DEADLINE_S``
+    so a slow resolver yields a partial chain instead of a runner timeout.
     """
     if not HAVE_DNSPYTHON:
         return {"chain": [], "error": "dnspython not installed"}
@@ -827,10 +832,14 @@ def _p_trace_delegation(slots: dict) -> dict:
     else:  # an IP literal has no delegation chain
         return {"chain": []}
     labels = host.split(".")
-    chain = []
+    chain: list[dict] = []
+    deadline = time.monotonic() + _TRACE_DEADLINE_S
     for i in range(len(labels) - 1, -1, -1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:  # keep the partial chain; the runner would discard it on a timeout
+            return {"chain": chain, "error": "deadline reached"}
         zone = ".".join(labels[i:]) + "."
-        r = _dns_query(PUBLIC_RESOLVERS[0][1], zone, "NS")
+        r = _dns_query(PUBLIC_RESOLVERS[0][1], zone, "NS", timeout=min(3.0, remaining))
         chain.append({"zone": zone.rstrip("."), "rcode": r["rcode"], "ns": [a.rstrip(".") for a in r["answers"]]})
         if r["rcode"] == "NXDOMAIN":
             break

@@ -1535,6 +1535,41 @@ class TestTraceDelegation:
         assert len(q.call_args_list) == 3
         assert d["chain"][0]["rcode"] == "SERVFAIL"
 
+    def test_deadline_stops_the_walk_and_keeps_the_partial_chain(self, mocker):
+        clock = {"now": 100.0}
+        mocker.patch.object(dp, "time", mocker.Mock(monotonic=lambda: clock["now"]))
+        seen_timeouts = []
+
+        def slow(server, name, rdtype, **kw):
+            seen_timeouts.append(kw["timeout"])
+            clock["now"] += 5.0  # each query "takes" 5s
+            return _fake_reply(server, answers=["ns.example."])
+
+        q = mocker.patch.object(dp, "_dns_query", side_effect=slow)
+        d = dp._p_trace_delegation({"target_host": "a.b.hynote.ai"})  # would be 4 zones
+        assert [c.args[1] for c in q.call_args_list] == ["ai.", "hynote.ai."]  # third not attempted: 10s > 9s budget
+        assert [e["zone"] for e in d["chain"]] == ["ai", "hynote.ai"]
+        assert d["error"] == "deadline reached"
+        assert seen_timeouts == [3.0, 3.0]
+
+    def test_query_timeout_is_clamped_to_the_remaining_budget(self, mocker):
+        clock = {"now": 0.0}
+        mocker.patch.object(dp, "time", mocker.Mock(monotonic=lambda: clock["now"]))
+        seen = []
+
+        def slow(server, name, rdtype, **kw):
+            seen.append(kw["timeout"])
+            clock["now"] += 7.0
+            return _fake_reply(server)
+
+        mocker.patch.object(dp, "_dns_query", side_effect=slow)
+        dp._p_trace_delegation({"target_host": "www.hynote.ai"})
+        assert seen == [3.0, 2.0]  # second query only has 9 - 7 = 2s left
+
+    def test_completed_walk_has_no_error_key(self, mocker):
+        mocker.patch.object(dp, "_dns_query", side_effect=self._fake({}))
+        assert "error" not in dp._p_trace_delegation({"target_host": "www.hynote.ai"})
+
     @pytest.mark.parametrize("literal", ["192.0.2.7", "2001:db8::1"])
     def test_ip_literal_has_no_chain_and_no_queries(self, mocker, literal):
         q = mocker.patch.object(dp, "_dns_query")
