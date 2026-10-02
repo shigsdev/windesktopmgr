@@ -2424,11 +2424,14 @@ class TestDocsTab:
             """
             async () => {
                 document.querySelectorAll('iframe').forEach(f => f.remove());
-                doc_exportPdf(null);
-                // doc_exportPdf returns synchronously after scheduling print(),
-                // so the stub lands before the timer fires. Racing the timer by
-                // detaching in time is not deterministic, and a real print
-                // dialog blocks the browser indefinitely under automation.
+                // doc_exportPdf is async: it waits for the live reads before it
+                // builds the iframe, so a call without await finds no iframe.
+                // Its promise settles right after print() is scheduled on a
+                // 250 ms timer, so the stub below lands before that fires.
+                // Racing the timer by detaching in time is not deterministic,
+                // and a real print dialog blocks the browser indefinitely
+                // under automation.
+                await doc_exportPdf(null);
                 const f = [...document.querySelectorAll('iframe')].pop();
                 if (!f) return {built: false};
                 let printed = false;
@@ -2773,6 +2776,9 @@ class TestMaintenanceTabCleanup:
         page.evaluate("switchTab('maintenance')")
         # mnt_scan() populates #mnt-junk with category rows (checkboxes) + the
         # Clean button; wait for it to move past the 'Scanning…' placeholder.
+        # The scan walks the real %TEMP%: ~13 s for 146k files on this machine
+        # and longer inside a busy tray. 15 s failed on that alone, while the tab
+        # itself (mnt_poll) waits minutes, so this budget matches the product.
         page.wait_for_function(
             """
             () => {
@@ -2781,7 +2787,7 @@ class TestMaintenanceTabCleanup:
                 return el.querySelectorAll('.mnt-cb').length > 0;
             }
             """,
-            timeout=15_000,
+            timeout=180_000,
         )
         rows = page.evaluate("document.querySelectorAll('.mnt-cb').length")
         assert rows >= 1, "expected at least one junk category row"
