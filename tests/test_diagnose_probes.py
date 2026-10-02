@@ -586,10 +586,21 @@ class TestResolveDirect:
 
 
 class TestInterception:
+    @pytest.fixture(autouse=True)
+    def _hops(self, mocker):
+        """The hop test sends real packets; every test here gets a canned result instead."""
+        self.hops = mocker.patch.object(dp, "_intercept_hops", return_value=[{"source": "s", "answering_hop": 1}])
+
     def test_any_reply_from_test_net_means_intercepted(self, mocker):
         q = mocker.patch.object(dp, "_dns_query", return_value=_fake_reply("192.0.2.1", answers=["23.1.2.3"]))
-        assert dp._p_interception({}) == {"intercepted": True, "probe_server": "192.0.2.1", "answered_rcode": "NOERROR"}
+        assert dp._p_interception({}) == {
+            "intercepted": True,
+            "probe_server": "192.0.2.1",
+            "answered_rcode": "NOERROR",
+            "paths": [{"source": "s", "answering_hop": 1}],
+        }
         q.assert_called_once_with("192.0.2.1", "www.microsoft.com", "A", timeout=2)
+        self.hops.assert_called_once_with()
 
     @pytest.mark.parametrize("rcode", ["NXDOMAIN", "SERVFAIL", "REFUSED"])
     def test_an_error_reply_is_still_a_reply(self, mocker, rcode):
@@ -602,6 +613,7 @@ class TestInterception:
     def test_no_reply_means_not_intercepted(self, mocker, rcode):
         mocker.patch.object(dp, "_dns_query", return_value=_fake_reply("192.0.2.1", rcode=rcode))
         assert dp._p_interception({}) == {"intercepted": False, "probe_server": "192.0.2.1", "answered_rcode": None}
+        self.hops.assert_not_called()  # no interception: no hop test, no extra seconds
 
     def test_probe_server_is_rfc5737_test_net_1(self):
         assert ipaddress.ip_address(dp.INTERCEPTION_PROBE_SERVER) in ipaddress.ip_network("192.0.2.0/24")
@@ -618,8 +630,121 @@ class TestInterception:
         assert p.category == "network"
         assert p.needs == ()
         assert p.redact == ("username",)
-        assert p.timeout_s == 4
+        # The first query (2 s) plus the hop test's worst case (3 s) must fit.
+        assert p.timeout_s == 7
+        assert p.timeout_s > 2 + len(dp._HOP_TTLS) * dp._HOP_TIMEOUT_S
         assert p.fn is dp._p_interception
+
+
+def _fake_udp_socket(mocker, *, recv=None, bind_error=None):
+    """Patch socket.socket for the hop test; returns the socket mock."""
+    sock = mocker.MagicMock()
+    sock.__enter__.return_value = sock
+    if bind_error is not None:
+        sock.bind.side_effect = bind_error
+    sock.recvfrom.side_effect = recv if recv is not None else [(b"reply", ("192.0.2.1", 53))]
+    mocker.patch.object(dp.socket, "socket", return_value=sock)
+    return sock
+
+
+class TestInterceptHops:
+    """The hop test: which hop answers a never-routed DNS query, per network connection."""
+
+    def test_ipv4_list_keeps_usable_v4_only(self):
+        raw = ["10.0.0.34", " 10.0.0.34", "0.0.0.0", "169.254.1.2", "fe80::1", "junk & calc", 7, "192.168.1.159"]
+        assert dp._ipv4_list(raw) == ["10.0.0.34", "192.168.1.159"]
+        assert dp._ipv4_list("192.168.1.1") == ["192.168.1.1"]
+        assert dp._ipv4_list(None) == []
+
+    def test_gateway_paths_pair_each_adapter_source_with_its_gateway(self, mocker):
+        hklm = winreg.HKEY_LOCAL_MACHINE
+        _patch_registry(
+            mocker,
+            subkeys=["{eth}", "{wifi}", "{nogw}", "{noip}"],
+            values={
+                (hklm, _IFACES + r"\{eth}"): {"DhcpIPAddress": "192.168.1.159", "DhcpDefaultGateway": ["192.168.1.1"]},
+                (hklm, _IFACES + r"\{wifi}"): {
+                    "IPAddress": ["10.0.0.34"],
+                    "DefaultGateway": ["10.0.0.1"],
+                    "DhcpIPAddress": "10.9.9.9",
+                    "DhcpDefaultGateway": ["10.9.9.1"],
+                },
+                (hklm, _IFACES + r"\{nogw}"): {"DhcpIPAddress": "172.16.0.5"},
+                (hklm, _IFACES + r"\{noip}"): {"DhcpDefaultGateway": ["172.16.0.1"], "DhcpIPAddress": "0.0.0.0"},
+            },
+        )
+        assert dp._gateway_paths() == [
+            {"source": "192.168.1.159", "gateway": "192.168.1.1"},
+            {"source": "10.0.0.34", "gateway": "10.0.0.1"},  # static settings win over DHCP leftovers
+        ]
+
+    def test_hop_answered_sends_the_query_from_source_with_the_hop_limit(self, mocker):
+        sock = _fake_udp_socket(mocker)
+        assert dp._hop_answered("10.0.0.34", 2) is True
+        sock.bind.assert_called_once_with(("10.0.0.34", 0))
+        sock.setsockopt.assert_called_once_with(socket.IPPROTO_IP, socket.IP_TTL, 2)
+        sock.settimeout.assert_called_once_with(dp._HOP_TIMEOUT_S)
+        wire, target = sock.sendto.call_args.args
+        assert target == ("192.0.2.1", 53)
+        assert dns.message.from_wire(wire).question[0].name.to_text() == "www.microsoft.com."
+
+    def test_hop_answered_timeout_is_no_answer(self, mocker):
+        _fake_udp_socket(mocker, recv=TimeoutError("timed out"))
+        assert dp._hop_answered("10.0.0.34", 1) is False
+
+    @pytest.mark.parametrize("err", [ConnectionResetError(10054, "reset"), OSError(10052, "net reset")])
+    def test_hop_answered_icmp_error_on_receive_is_no_answer_at_this_hop(self, mocker, err):
+        # Windows reports a router's ICMP "time exceeded" as a receive error; the next hop must still be tried.
+        _fake_udp_socket(mocker, recv=err)
+        assert dp._hop_answered("10.0.0.34", 1) is False
+
+    def test_hop_answered_send_failure_is_none(self, mocker):
+        sock = _fake_udp_socket(mocker)
+        sock.sendto.side_effect = OSError(10051, "network unreachable")
+        assert dp._hop_answered("10.0.0.34", 1) is None
+
+    def test_hop_answered_socket_creation_failure_is_none(self, mocker):
+        mocker.patch.object(dp.socket, "socket", side_effect=OSError("no sockets"))
+        assert dp._hop_answered("10.0.0.34", 1) is None
+
+    def test_hop_answered_unassigned_source_is_none(self, mocker):
+        _fake_udp_socket(mocker, bind_error=OSError(10049, "address not valid"))
+        assert dp._hop_answered("10.9.9.9", 1) is None
+
+    def test_path_hops_stops_at_the_first_answering_hop(self, mocker):
+        tried = []
+        mocker.patch.object(dp, "_hop_answered", side_effect=lambda src, ttl: tried.append(ttl) or ttl == 2)
+        out = dp._path_hops({"source": "10.0.0.34", "gateway": "10.0.0.1"})
+        assert out == {"source": "10.0.0.34", "gateway": "10.0.0.1", "answering_hop": 2, "error": None}
+        assert tried == [1, 2]
+
+    def test_path_hops_no_answer_within_three_hops(self, mocker):
+        mocker.patch.object(dp, "_hop_answered", return_value=False)
+        assert dp._path_hops({"source": "a", "gateway": "g"})["answering_hop"] is None
+
+    def test_path_hops_unsendable_source_is_an_error(self, mocker):
+        mocker.patch.object(dp, "_hop_answered", return_value=None)
+        out = dp._path_hops({"source": "a", "gateway": "g"})
+        assert out["answering_hop"] is None
+        assert out["error"] == "could not send from this address"
+
+    def test_intercept_hops_drops_unusable_paths_and_caps_the_count(self, mocker):
+        paths = [{"source": f"10.0.{i}.2", "gateway": f"10.0.{i}.1"} for i in range(5)]
+        mocker.patch.object(dp, "_gateway_paths", return_value=paths)
+        mocker.patch.object(
+            dp,
+            "_hop_answered",
+            side_effect=lambda src, ttl: None if src == "10.0.1.2" else ttl == 1,
+        )
+        out = dp._intercept_hops()
+        assert [p["source"] for p in out] == ["10.0.0.2", "10.0.2.2"]  # 3-path cap, unsendable one dropped
+        assert all(p["answering_hop"] == 1 for p in out)
+
+    def test_intercept_hops_without_paths_or_registry(self, mocker):
+        mocker.patch.object(dp, "_gateway_paths", return_value=[])
+        assert dp._intercept_hops() == []
+        mocker.patch.object(dp, "_gateway_paths", side_effect=OSError("no registry"))
+        assert dp._intercept_hops() == []
 
 
 class TestAuthoritative:

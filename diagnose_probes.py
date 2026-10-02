@@ -343,22 +343,126 @@ _DIRECT_UDP_TIMEOUT_S = 2.0
 
 
 def _p_interception(slots: dict) -> dict:
-    """Ask a never-routed address for a name: any reply means local DNS interception.
+    """Ask a never-routed address for a name: any reply means DNS interception.
 
     Some VPNs, routers and DNS filters answer every port-53 query themselves,
     whatever server it was addressed to. Then plain-DNS evidence (the system
     resolver, authoritative servers, record sweep, delegation trace, DNSSEC)
-    reflects the interceptor, not the servers it names.
+    reflects the interceptor, not the servers it names. When intercepted,
+    ``paths`` records how many hops away the interceptor sits on each network
+    connection (see ``_intercept_hops``).
     """
     if not HAVE_DNSPYTHON:
         return {"intercepted": None, "error": "dnspython not installed"}
     r = _dns_query(INTERCEPTION_PROBE_SERVER, CONTROL_DOMAIN, "A", timeout=2)
     answered = r["rcode"] not in ("TIMEOUT", "ERROR")
-    return {
+    data = {
         "intercepted": answered,
         "probe_server": INTERCEPTION_PROBE_SERVER,
         "answered_rcode": r["rcode"] if answered else None,
     }
+    if answered:
+        data["paths"] = _intercept_hops()
+    return data
+
+
+# The hop test: the same never-routed query with the IP hop limit (TTL) set to
+# 1, 2, 3. Software on this PC answers at any limit; a router only once the
+# limit lets the packet reach it. So an answer that needs 2+ hops rules this PC
+# out, and on a PC with two connections the shared upstream router shows up as
+# hop 1 on one and hop 2 on the other. Each try waits _HOP_TIMEOUT_S, paths run
+# side by side: worst case 3 s, inside the probe's budget after the first query.
+_HOP_TTLS = (1, 2, 3)
+_HOP_TIMEOUT_S = 1.0
+_MAX_HOP_PATHS = 3
+
+
+def _ipv4_list(raw: object) -> list[str]:
+    """The usable IPv4 literals in a registry string or multi-string value."""
+    out: list[str] = []
+    for item in raw if isinstance(raw, list) else [raw]:
+        if not isinstance(item, str):
+            continue
+        try:
+            ip = ipaddress.ip_address(item.strip())
+        except ValueError:
+            continue
+        if ip.version == 4 and not ip.is_unspecified and not ip.is_link_local and str(ip) not in out:
+            out.append(str(ip))
+    return out
+
+
+def _gateway_paths() -> list[dict]:
+    """``[{source, gateway}]``: each adapter's own IPv4 address paired with its default gateway.
+
+    Read from the same Tcpip interface keys as ``_default_gateways``. A stale
+    DHCP address left on a disconnected adapter is weeded out later, when
+    binding to it fails.
+    """
+    hklm = winreg.HKEY_LOCAL_MACHINE
+    paths: list[dict] = []
+    for guid in _reg_subkeys(hklm, _TCPIP_IFACES):
+        vals = _reg_values(hklm, f"{_TCPIP_IFACES}\\{guid}")
+        gateways = _ipv4_list(vals.get("DefaultGateway")) or _ipv4_list(vals.get("DhcpDefaultGateway"))
+        sources = _ipv4_list(vals.get("IPAddress")) or _ipv4_list(vals.get("DhcpIPAddress"))
+        if gateways and sources:
+            paths.append({"source": sources[0], "gateway": gateways[0]})
+    return paths
+
+
+def _hop_answered(source: str, ttl: int) -> bool | None:
+    """Whether the never-routed server "answers" a query sent from ``source`` with hop limit ``ttl``.
+
+    None when the query could not be sent from that address (not assigned to
+    any adapter right now, or the socket option is refused).
+    """
+    try:
+        wire = dns.message.make_query(CONTROL_DOMAIN, "A").to_wire()
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    except OSError:
+        return None
+    with s:
+        try:
+            s.bind((source, 0))
+            s.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, ttl)
+            s.settimeout(_HOP_TIMEOUT_S)
+            s.sendto(wire, (INTERCEPTION_PROBE_SERVER, 53))
+        except OSError:
+            return None
+        try:
+            s.recvfrom(4096)
+        except OSError:
+            # Timeout, or Windows surfacing an ICMP "time exceeded" from a router
+            # that did not intercept (WSAENETRESET / WSAECONNRESET): no answer at this hop.
+            return False
+    return True
+
+
+def _path_hops(path: dict) -> dict:
+    """One ``paths`` entry: the smallest hop limit that got an answer, or None."""
+    hop, error = None, None
+    for ttl in _HOP_TTLS:
+        answered = _hop_answered(path["source"], ttl)
+        if answered is None:
+            error = "could not send from this address"
+            break
+        if answered:
+            hop = ttl
+            break
+    return {"source": path["source"], "gateway": path["gateway"], "answering_hop": hop, "error": error}
+
+
+def _intercept_hops() -> list[dict]:
+    """``_path_hops`` for up to ``_MAX_HOP_PATHS`` connections; unusable ones are left out."""
+    try:
+        paths = _gateway_paths()[:_MAX_HOP_PATHS]
+    except Exception:  # noqa: BLE001 -- no registry view means no hop evidence, not a failed probe
+        return []
+    if not paths:
+        return []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(paths)) as ex:
+        results = list(ex.map(_path_hops, paths))
+    return [r for r in results if r["error"] is None]
 
 
 def _direct_lookup(name: str, server: str, host: str) -> dict:
@@ -1074,7 +1178,7 @@ register(
         category="network",
         fn=_p_interception,
         redact=("username",),
-        timeout_s=4,
+        timeout_s=7,
     )
 )
 register(

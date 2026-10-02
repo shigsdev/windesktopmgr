@@ -2957,6 +2957,42 @@ class TestDiagnoseTab:
         assert page.evaluate("document.querySelectorAll('#dx-result .dx-headline b').length") == 0
         assert page.evaluate("document.getElementById('dx-result').dataset.locus") == "local"
 
+    def test_manual_steps_render_as_escaped_text_never_as_buttons(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        page.evaluate(
+            "dx_renderResult({state:'done', verdict:{status:'likely', locus:'local',"
+            " headline:'Your router is blocking hynote.ai', reasoning:'r', evidence_refs:[], suggested_actions:[],"
+            " manual_steps:['Open http://192.168.1.1', '<img src=x onerror=alert(1)>', 7], no_local_fix_reason:''},"
+            " evidence:[], actions:[]})"
+        )
+        box = "#dx-result .dx-steps"
+        assert page.evaluate(f"document.querySelector('{box}').dataset.dxSteps") == "2"  # the non-string is dropped
+        items = page.evaluate(f"[...document.querySelectorAll('{box} li')].map(li => li.textContent)")
+        assert items == ["Open http://192.168.1.1", "<img src=x onerror=alert(1)>"]
+        assert page.evaluate(f"document.querySelectorAll('{box} img, {box} button, {box} a').length") == 0
+        assert "Steps you can take" in page.evaluate(f"document.querySelector('{box}').textContent")
+
+    def test_manual_steps_show_with_external_cause_and_inconclusive(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        for status, locus in (("confident", "external_cause"), ("inconclusive", "unknown")):
+            page.evaluate(
+                f"dx_renderResult({{state:'done', verdict:{{status:'{status}', locus:'{locus}', headline:'h',"
+                " reasoning:'r', evidence_refs:[], suggested_actions:[], manual_steps:['Check the spelling.'],"
+                " no_local_fix_reason:'x'}, evidence:[], actions:[]})"
+            )
+            assert page.evaluate("document.querySelectorAll('#dx-result .dx-steps li').length") == 1, status
+
+    def test_no_steps_block_without_steps(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        page.evaluate(
+            "dx_renderResult({state:'done', verdict:{status:'likely', locus:'local', headline:'h',"
+            " reasoning:'r', evidence_refs:[], suggested_actions:[], no_local_fix_reason:''}, evidence:[], actions:[]})"
+        )
+        assert page.evaluate("document.querySelectorAll('#dx-result .dx-steps').length") == 0
+
     # ── Egress gate, UI side (scripted /api/diagnose/* stubs: nothing real is
     # created, nothing leaves the machine) ───────────────────────────────
 
