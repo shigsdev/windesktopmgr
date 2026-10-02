@@ -174,6 +174,8 @@ def normalize_host(raw: str) -> str | None:
     h = h.rstrip(".")
     if not h:
         return None
+    if "%" in h:  # IPv6 scope id ("fe80::1%eth0") is link-local and not a valid target
+        return None
     try:
         return str(ipaddress.ip_address(h))
     except ValueError:
@@ -182,7 +184,8 @@ def normalize_host(raw: str) -> str | None:
         h = h.encode("idna").decode("ascii").lower()
     except UnicodeError:
         return None
-    return h if _HOSTNAME_RE.match(h) else None
+    # fullmatch, not match + "$": "$" also matches before a trailing newline.
+    return h if _HOSTNAME_RE.fullmatch(h) else None
 
 
 def _dns_result(server: str, rcode: str, *, answers: list[str] | None = None, aa=False, ad=False, error=None) -> dict:

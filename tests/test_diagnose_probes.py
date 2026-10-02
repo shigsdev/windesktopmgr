@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 
 import dns.exception
@@ -157,6 +158,71 @@ def test_normalize_host(raw, expected):
 
 def test_normalize_host_non_string_is_none():
     assert dp.normalize_host(None) is None
+
+
+# A newline exposed by one of the cuts must not survive ("$" matches before a final "\n").
+_NEWLINE_SHAPES = [
+    "hynote.ai\n's",
+    "hynote.ai\n.",
+    "hynote.ai\n:80",
+    "hynote.ai\n/x",
+    "hynote.ai\n?q=1",
+    "hynote.ai\n#frag",
+]
+
+# IPv6 scope ids are link-local interface names, never a diagnosable target.
+_SCOPE_ID_SHAPES = ["fe80::1%eth0", "[fe80::1%25eth0]:80", "fe80::1%-v", "fe80::1%1"]
+
+_HOSTILE = [
+    *_NEWLINE_SHAPES,
+    *_SCOPE_ID_SHAPES,
+    "hynote.ai ; calc",
+    "hynote.ai;rm -rf",
+    "a&b.com",
+    "a|b.com",
+    "`id`.com",
+    "$(id).com",
+    "-hynote.ai",
+    "-v",
+    "--help.com",
+    "hynote.ai\x00",
+    "hyn\x00ote.ai",
+    "hynote.ai\u00a0",
+    "hynote\u00a0.ai",
+    "hynote.ai\u2028",
+    "hynote.ai\u3000",
+    "hynote.ai\t",
+    "hynote.ai\r\n",
+    "a " * 200,
+    "a" * 5000,
+    ("a" * 60 + ".") * 10 + "com",
+    "[" * 50,
+    ":" * 50,
+]
+
+
+@pytest.mark.parametrize("raw,expected", [("hynote.ai\n", "hynote.ai"), ("1.2.3.4\n", "1.2.3.4"), ("::1\n", "::1")])
+def test_normalize_host_strips_outer_whitespace(raw, expected):
+    assert dp.normalize_host(raw) == expected
+
+
+@pytest.mark.parametrize("raw", _NEWLINE_SHAPES)
+def test_normalize_host_rejects_newline_shapes(raw):
+    assert dp.normalize_host(raw) is None
+
+
+@pytest.mark.parametrize("raw", _SCOPE_ID_SHAPES)
+def test_normalize_host_rejects_ipv6_scope_id(raw):
+    assert dp.normalize_host(raw) is None
+
+
+@pytest.mark.parametrize("raw", _HOSTILE)
+def test_normalize_host_output_is_always_argv_safe(raw):
+    """It guards a tracert argument and the egress payload: no result may carry odd characters."""
+    out = dp.normalize_host(raw)
+    if out is not None:
+        assert re.fullmatch(r"[a-z0-9.:-]+", out)
+        assert not out.startswith("-")
 
 
 def _reply(rcode="NOERROR", answers=(), flags=0, rdtype="A", name="example.com"):
