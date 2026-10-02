@@ -31,6 +31,8 @@ from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any
 
+from flask import Blueprint, jsonify, request
+
 import diagnose_probes as dp
 import remediation
 
@@ -40,6 +42,8 @@ except ImportError:  # pragma: no cover - SDK optional, same guard as ai_identif
     anthropic = None
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+diagnose_bp = Blueprint("diagnose", __name__)
 
 # Extra evidence-gathering rounds the engine may run after the first wave, and
 # the most probes one such round may run.
@@ -1205,3 +1209,108 @@ def load_history() -> list[dict]:
     """Past diagnoses, newest first. A missing or corrupt file reads as empty."""
     with _history_lock:
         return list(reversed(_read_history(DIAGNOSE_HISTORY_FILE)))
+
+
+# ---------------------------------------------------------------------------
+# Routes (/api/diagnose/*). Thin: validate, call the engine, map the result to
+# a status code. POST bodies use the non-silent ``request.get_json()`` so a
+# cross-site form post (wrong content type) is refused with 415 and malformed
+# JSON with 400, before the engine sees anything.
+# ---------------------------------------------------------------------------
+
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{16,32}$")
+
+
+def _bad_request(message: str):
+    return jsonify({"ok": False, "error": message}), 400
+
+
+def _json_object():
+    """The POST body as a dict, or None when it is valid JSON but not an object."""
+    data = request.get_json()
+    return data if isinstance(data, dict) else None
+
+
+def _valid_session_id(value: Any) -> bool:
+    return isinstance(value, str) and _SESSION_ID_RE.fullmatch(value) is not None
+
+
+@diagnose_bp.route("/api/diagnose/classes")
+def diagnose_classes_route():
+    """The symptom classes the engine can diagnose, for the symptom-type picker."""
+    return jsonify(
+        [{"key": key, "label": spec["label"], "slots": list(spec["slots"])} for key, spec in SYMPTOM_CLASSES.items()]
+    )
+
+
+@diagnose_bp.route("/api/diagnose/start", methods=["POST"])
+def diagnose_start_route():
+    """Start a diagnosis: ``{symptom, slots?, symptom_class?}``.
+
+    200 with the engine's result (a new ``session_id``, or ``awaiting_slots``
+    naming what is still needed), 400 for bad input, 429 when too many
+    diagnoses are already running."""
+    data = _json_object()
+    if data is None:
+        return _bad_request("Request body must be a JSON object")
+    symptom = data.get("symptom")
+    if not isinstance(symptom, str) or not symptom.strip():
+        return _bad_request("Missing required field: symptom (non-empty string)")
+    slots = data.get("slots")
+    if slots is not None and not isinstance(slots, dict):
+        return _bad_request("slots must be an object")
+    symptom_class = data.get("symptom_class")
+    if symptom_class is not None and not isinstance(symptom_class, str):
+        return _bad_request("symptom_class must be a string")
+    try:
+        result = start_diagnosis(symptom, slots=slots, symptom_class=symptom_class)
+    except ValueError as e:
+        return _bad_request(str(e))
+    if result.get("error") == "busy":
+        return jsonify(result), 429
+    return jsonify(result)
+
+
+@diagnose_bp.route("/api/diagnose/status/<session_id>")
+def diagnose_status_route(session_id):
+    """Poll one diagnosis. 400 for a malformed id, 404 for an unknown one."""
+    if not _valid_session_id(session_id):
+        return _bad_request("Invalid session_id")
+    status = get_status(session_id)
+    if status is None:
+        return jsonify({"ok": False, "error": "unknown session"}), 404
+    return jsonify(status)
+
+
+@diagnose_bp.route("/api/diagnose/consent", methods=["POST"])
+def diagnose_consent_route():
+    """Answer the payload preview: ``{session_id, approved, auto_followups?}``.
+
+    ``approved`` must be a real boolean: a truthy string must never count as
+    consent to send data off the machine. 409 when the session is not waiting."""
+    data = _json_object()
+    if data is None:
+        return _bad_request("Request body must be a JSON object")
+    session_id = data.get("session_id")
+    if not session_id:
+        return _bad_request("Missing required field: session_id")
+    if not _valid_session_id(session_id):
+        return _bad_request("Invalid session_id")
+    approved = data.get("approved")
+    if not isinstance(approved, bool):
+        return _bad_request("approved must be true or false")
+    auto_followups = data.get("auto_followups", False)
+    if not isinstance(auto_followups, bool):
+        return _bad_request("auto_followups must be true or false")
+    result = submit_consent(session_id, approved, auto_followups=auto_followups)
+    if result is None:
+        return jsonify({"ok": False, "error": "unknown session"}), 404
+    if not result.get("ok"):
+        return jsonify(result), 409
+    return jsonify(result)
+
+
+@diagnose_bp.route("/api/diagnose/history")
+def diagnose_history_route():
+    """Past diagnoses, newest first."""
+    return jsonify(load_history())

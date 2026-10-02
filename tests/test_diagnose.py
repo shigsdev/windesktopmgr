@@ -1842,3 +1842,216 @@ class TestRealThreads:
         assert (status["state"], status["reason"]) == ("evidence_only", "superseded")
         assert diagnose.get_status(second)["state"] == "awaiting_consent"
         assert live.model.calls == []
+
+
+# ---------------------------------------------------------------------------
+# /api/diagnose/* routes
+# ---------------------------------------------------------------------------
+
+
+class TestRoutes:
+    @pytest.fixture(autouse=True)
+    def _no_worker(self, engine):
+        """``engine`` stubs ``_spawn_worker`` so no route test starts a thread."""
+        self.engine = engine
+
+    @staticmethod
+    def _start(client, **body):
+        return client.post("/api/diagnose/start", json=body)
+
+    @staticmethod
+    def _park(sid, state="awaiting_consent"):
+        with diagnose._sessions_lock:
+            diagnose._sessions[sid]["state"] = state
+
+    # --- GET /api/diagnose/classes ---
+    def test_classes_lists_every_class(self, client):
+        resp = client.get("/api/diagnose/classes")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert [c["key"] for c in data] == list(diagnose.SYMPTOM_CLASSES)
+        net = data[0]
+        assert net["label"] == diagnose.SYMPTOM_CLASSES["network_dns"]["label"]
+        assert net["slots"] == ["target_host"]
+
+    # --- POST /api/diagnose/start ---
+    def test_start_returns_session_id(self, client):
+        resp = self._start(client, symptom=CHROME_BLOB)
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        assert data["state"] == "probing_wave1"
+        assert data["session_id"] in diagnose._sessions
+        assert self.engine.spawned == [data["session_id"]]
+
+    def test_start_accepts_slots_and_class(self, client):
+        resp = self._start(
+            client, symptom="cannot open it", slots={"target_host": "example.com"}, symptom_class="network_dns"
+        )
+        assert resp.status_code == 200
+        sid = resp.get_json()["session_id"]
+        assert diagnose.get_status(sid)["slots"] == {"target_host": "example.com"}
+
+    def test_start_awaiting_slots_is_200_unchanged(self, client):
+        resp = self._start(client, symptom="my printer keeps jamming")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["state"] == "awaiting_slots"
+        assert data["need"] == ["symptom_class"]
+        assert self.engine.spawned == []
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {},
+            {"symptom": ""},
+            {"symptom": "   "},
+            {"symptom": 5},
+            {"symptom": ["a"]},
+            {"symptom": None},
+            {"symptom": "x" * (diagnose.MAX_SYMPTOM_CHARS + 1)},
+            {"symptom": "site down", "slots": "target_host=a.com"},
+            {"symptom": "site down", "slots": ["a.com"]},
+            {"symptom": "site down", "symptom_class": 7},
+            {"symptom": "site down", "symptom_class": "no_such_class"},
+            {"symptom": "site down", "slots": {"target_host": "not a host!!"}},
+            {"symptom": "site down", "slots": {"target_host": 12345}},
+        ],
+    )
+    def test_start_rejects_bad_input_with_400(self, client, body):
+        resp = self._start(client, **body)
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert data["error"]
+        assert self.engine.spawned == []
+
+    def test_start_error_text_comes_from_the_engine(self, client):
+        resp = self._start(client, symptom="x", symptom_class="no_such_class")
+        assert resp.get_json() == {"ok": False, "error": "unknown symptom class"}
+
+    def test_start_body_that_is_not_an_object_is_400(self, client):
+        resp = client.post("/api/diagnose/start", json=["symptom"])
+        assert resp.status_code == 400
+        assert resp.get_json()["ok"] is False
+
+    def test_start_form_post_is_415(self, client):
+        resp = client.post("/api/diagnose/start", data="symptom=x", content_type="application/x-www-form-urlencoded")
+        assert resp.status_code == 415
+        assert self.engine.spawned == []
+
+    def test_start_malformed_json_is_400(self, client):
+        resp = client.post("/api/diagnose/start", data="{not json", content_type="application/json")
+        assert resp.status_code == 400
+        assert self.engine.spawned == []
+
+    def test_start_busy_is_429(self, client):
+        for _ in range(diagnose._MAX_ACTIVE):
+            assert self._start(client, symptom=CHROME_BLOB).status_code == 200
+        resp = self._start(client, symptom=CHROME_BLOB)
+        assert resp.status_code == 429
+        assert resp.get_json() == {"ok": False, "error": "busy"}
+
+    # --- GET /api/diagnose/status/<session_id> ---
+    def test_status_returns_snapshot(self, client):
+        sid = self._start(client, symptom=CHROME_BLOB).get_json()["session_id"]
+        resp = client.get(f"/api/diagnose/status/{sid}")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["session_id"] == sid
+        assert data["state"] == "probing_wave1"
+        assert data["symptom_class"] == "network_dns"
+        for key in ("evidence", "preview", "verdict", "actions", "reason", "error"):
+            assert key in data
+
+    def test_status_unknown_id_is_404(self, client):
+        resp = client.get("/api/diagnose/status/" + "a" * 22)
+        assert resp.status_code == 404
+        assert resp.get_json()["ok"] is False
+
+    @pytest.mark.parametrize("bad", ["short", "a" * 33, "has.dot." + "a" * 12, "bad%20space" + "a" * 8])
+    def test_status_bad_id_format_is_400_not_404(self, client, bad):
+        resp = client.get(f"/api/diagnose/status/{bad}")
+        assert resp.status_code == 400
+        assert resp.get_json()["ok"] is False
+
+    # --- POST /api/diagnose/consent ---
+    def test_consent_approves_awaiting_session(self, client):
+        sid = self._start(client, symptom=CHROME_BLOB).get_json()["session_id"]
+        self._park(sid)
+        resp = client.post("/api/diagnose/consent", json={"session_id": sid, "approved": True})
+        assert resp.status_code == 200
+        assert resp.get_json() == {"ok": True}
+        assert diagnose._sessions[sid]["consent"] is True
+        assert diagnose._sessions[sid]["auto_followups"] is False
+
+    def test_consent_passes_auto_followups(self, client):
+        sid = self._start(client, symptom=CHROME_BLOB).get_json()["session_id"]
+        self._park(sid)
+        resp = client.post("/api/diagnose/consent", json={"session_id": sid, "approved": True, "auto_followups": True})
+        assert resp.status_code == 200
+        assert diagnose._sessions[sid]["auto_followups"] is True
+
+    def test_consent_decline_is_200(self, client):
+        sid = self._start(client, symptom=CHROME_BLOB).get_json()["session_id"]
+        self._park(sid)
+        resp = client.post("/api/diagnose/consent", json={"session_id": sid, "approved": False})
+        assert resp.status_code == 200
+        assert diagnose._sessions[sid]["consent"] is False
+
+    def test_consent_wrong_state_is_409(self, client):
+        sid = self._start(client, symptom=CHROME_BLOB).get_json()["session_id"]
+        resp = client.post("/api/diagnose/consent", json={"session_id": sid, "approved": True})
+        assert resp.status_code == 409
+        assert resp.get_json() == {"ok": False, "error": "not awaiting consent"}
+
+    def test_consent_unknown_id_is_404(self, client):
+        resp = client.post("/api/diagnose/consent", json={"session_id": "a" * 22, "approved": True})
+        assert resp.status_code == 404
+        assert resp.get_json()["ok"] is False
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"approved": True},
+            {"session_id": "", "approved": True},
+            {"session_id": 12345, "approved": True},
+            {"session_id": "short", "approved": True},
+            {"session_id": "a" * 22},
+            {"session_id": "a" * 22, "approved": 1},
+            {"session_id": "a" * 22, "approved": "true"},
+            {"session_id": "a" * 22, "approved": None},
+            {"session_id": "a" * 22, "approved": True, "auto_followups": "yes"},
+            {"session_id": "a" * 22, "approved": True, "auto_followups": 1},
+        ],
+    )
+    def test_consent_rejects_bad_input_with_400(self, client, body):
+        resp = client.post("/api/diagnose/consent", json=body)
+        assert resp.status_code == 400
+        assert resp.get_json()["ok"] is False
+
+    def test_consent_bad_input_does_not_touch_the_session(self, client):
+        sid = self._start(client, symptom=CHROME_BLOB).get_json()["session_id"]
+        self._park(sid)
+        resp = client.post("/api/diagnose/consent", json={"session_id": sid, "approved": "true"})
+        assert resp.status_code == 400
+        assert diagnose._sessions[sid]["consent"] is None
+
+    def test_consent_body_that_is_not_an_object_is_400(self, client):
+        resp = client.post("/api/diagnose/consent", json=[1, 2])
+        assert resp.status_code == 400
+
+    def test_consent_form_post_is_415(self, client):
+        resp = client.post(
+            "/api/diagnose/consent", data="session_id=x", content_type="application/x-www-form-urlencoded"
+        )
+        assert resp.status_code == 415
+
+    # --- GET /api/diagnose/history ---
+    def test_history_is_a_list_newest_first(self, client):
+        assert client.get("/api/diagnose/history").get_json() == []
+        for sid in ("first", "second"):
+            diagnose._append_history({"session_id": sid, "symptom": "x"})
+        resp = client.get("/api/diagnose/history")
+        assert resp.status_code == 200
+        assert [e["session_id"] for e in resp.get_json()] == ["second", "first"]

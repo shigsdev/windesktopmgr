@@ -65,6 +65,7 @@ from dashboard import (
     _dashboard_state,  # noqa: F401 -- re-exported; route reads/writes, tests mutate
     _trigger_dashboard_refresh_async,  # noqa: F401 -- re-exported; route calls it, tests patch it
 )
+from diagnose import diagnose_bp
 from disk import (
     disk_bp,
     get_disk_health,
@@ -5211,6 +5212,7 @@ app.register_blueprint(disk_bp)
 app.register_blueprint(homenet_bp)
 app.register_blueprint(remediation_bp)
 app.register_blueprint(maintenance_bp)
+app.register_blueprint(diagnose_bp)
 
 
 # ==============================================================================
