@@ -1034,18 +1034,18 @@ def _interpret(payload_text: str, class_key: str) -> tuple[str, Any] | None:
     return None
 
 
-def _out_of_rounds(rule_verdict: dict | None) -> dict:
-    return {
-        "status": "inconclusive",
-        "locus": "unknown",
-        "headline": "Ran out of probe rounds before reaching a conclusion",
-        "reasoning": "The model still asked for more evidence after the last permitted probe round.",
-        "evidence_refs": [],
-        "suggested_actions": [],
-        "no_local_fix_reason": "",
-        "source": "engine",
-        "rule_hits": list((rule_verdict or {}).get("rule_hits") or []),
-    }
+# Stands in for a model verdict when the model still wants probes after the
+# last round. It goes through apply_guards like any verdict (R22), so a
+# confident rule-based external_cause still wins over "inconclusive".
+_OUT_OF_ROUNDS = {
+    "status": "inconclusive",
+    "locus": "unknown",
+    "headline": "Ran out of probe rounds before reaching a conclusion",
+    "reasoning": "The model still asked for more evidence after the last permitted probe round.",
+    "evidence_refs": [],
+    "suggested_actions": [],
+    "no_local_fix_reason": "",
+}
 
 
 def _drive(session: dict) -> None:
@@ -1088,11 +1088,14 @@ def _drive(session: dict) -> None:
             _finish(session, "evidence_only", reason="model_error")
             return
         kind, value = reply
-        if kind == "verdict":
-            _finish(session, "done", verdict=apply_guards(value, _by_key(evidence), session["rule_verdict"]))
-            return
-        if session["round"] >= MAX_ROUNDS:
-            _finish(session, "done", verdict=_out_of_rounds(session["rule_verdict"]))
+        out_of_rounds = kind != "verdict" and session["round"] >= MAX_ROUNDS
+        if kind == "verdict" or out_of_rounds:
+            verdict = apply_guards(
+                _OUT_OF_ROUNDS if out_of_rounds else value, _by_key(evidence), session["rule_verdict"]
+            )
+            if out_of_rounds and verdict["source"] == "model":
+                verdict["source"] = "engine"  # not the model's words; "rules" when guard 3 took over
+            _finish(session, "done", verdict=verdict)
             return
         # parse_reply already filtered these; checked again so that only the
         # class's own escalation probes, each run at most once, can ever run.

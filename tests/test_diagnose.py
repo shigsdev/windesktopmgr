@@ -1392,16 +1392,32 @@ class TestEgressGate:
 
 
 class TestEscalation:
-    def test_escalation_is_capped_at_max_rounds(self, engine):
+    def test_escalation_cap_still_lets_a_confident_external_rule_win(self, engine):
+        # R22: the forced verdict goes through apply_guards, so the hynote answer is not hidden.
         engine.use_model(_need("dns.trace_delegation"))
         status = engine.run()
         assert len(engine.model.calls) == 3
         assert status["state"] == "done"
         assert status["round"] == diagnose.MAX_ROUNDS == 2
-        assert status["verdict"]["status"] == "inconclusive"
-        assert status["verdict"]["locus"] == "unknown"
-        assert status["verdict"]["headline"] == "Ran out of probe rounds before reaching a conclusion"
-        assert status["verdict"]["suggested_actions"] == []
+        verdict = status["verdict"]
+        assert (verdict["status"], verdict["locus"]) == ("confident", "external_cause")
+        assert verdict["source"] == "rules"
+        assert verdict["overridden_model_locus"] == "unknown"
+        assert verdict["headline"] == status["rule_verdict"]["headline"]
+        assert verdict["suggested_actions"] == []
+        assert status["actions"] == []
+
+    def test_escalation_cap_without_a_confident_rule_is_inconclusive(self, engine):
+        engine.use_probes(FakeProbes("healthy_name_resolves"))
+        engine.use_model(_need("dns.trace_delegation"))
+        status = engine.run("example.com won't load")
+        assert len(engine.model.calls) == 3
+        assert status["round"] == 2
+        verdict = status["verdict"]
+        assert (verdict["status"], verdict["locus"]) == ("inconclusive", "unknown")
+        assert verdict["headline"] == "Ran out of probe rounds before reaching a conclusion"
+        assert verdict["source"] == "engine"
+        assert verdict["suggested_actions"] == []
         assert status["actions"] == []
 
     def test_each_round_asks_for_consent_again(self, engine):
