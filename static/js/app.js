@@ -10034,6 +10034,18 @@ function doc_load() {
 
 async function _doc_loadInner() {
   doc_renderCommands();
+  // Reuse the Storage tab's live card diagram rather than a screenshot.
+  const empty = document.getElementById("doc-card-empty");
+  // Reading the PCIe topology walks the PnP tree and can take up to a minute.
+  // Until it returns we must NOT show "no add-in card detected" -- that is a
+  // factual claim about the hardware, and showing it while still looking would
+  // tell someone mid-swap that the card they are holding does not exist. Set
+  // BEFORE the fetch: set after it, the stale text (the template's, or the
+  // previous visit's verdict) stayed up for the whole wait.
+  if (empty) {
+    empty.textContent = "Reading the card layout from the PCIe bus… this can take up to a minute.";
+    empty.style.display = "";
+  }
   // ONE request, shared by the diagram and the drive-state line.
   let topo = null;
   try {
@@ -10042,16 +10054,6 @@ async function _doc_loadInner() {
     console.error("doc: topology fetch failed", e);
   }
   const poolDone = doc_loadPoolState(topo);
-  // Reuse the Storage tab's live card diagram rather than a screenshot.
-  const empty = document.getElementById("doc-card-empty");
-  // Reading the PCIe topology walks the PnP tree and can take up to a minute.
-  // Until it returns we must NOT show "no add-in card detected" -- that is a
-  // factual claim about the hardware, and showing it while still looking would
-  // tell someone mid-swap that the card they are holding does not exist.
-  if (empty) {
-    empty.textContent = "Reading the card layout from the PCIe bus… this can take up to a minute.";
-    empty.style.display = "";
-  }
   try {
     await dkLoadTopology("doc-card-section", "doc-card", topo);
     const sec = document.getElementById("doc-card-section");

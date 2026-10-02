@@ -100,13 +100,36 @@ class TestSafetyGuards:
         roots = maintenance._resolved_roots(cat)
         assert roots == [inside]  # de-duped, and the drive-scope root dropped
 
-    def test_tree_has_recent(self, tmp_path):
+    def test_old_tree_totals(self, tmp_path):
         d = str(tmp_path / "d")
         _mkfile(os.path.join(d, "old.bin"), 10, age_days=10)
+        _mkfile(os.path.join(d, "sub", "old2.bin"), 5, age_days=10)
         cutoff = time.time() - 86400
-        assert maintenance._tree_has_recent(d, cutoff) is False
+        # 2 files + 1 subdirectory, counted the way _scan_dir counts a tree.
+        assert maintenance._old_tree_totals(d, cutoff) == (3, 15)
+
+    def test_old_tree_totals_none_when_any_file_is_fresh(self, tmp_path):
+        d = str(tmp_path / "d")
+        _mkfile(os.path.join(d, "old.bin"), 10, age_days=10)
         _mkfile(os.path.join(d, "sub", "fresh.bin"), 10, age_days=0)
-        assert maintenance._tree_has_recent(d, cutoff) is True
+        assert maintenance._old_tree_totals(d, time.time() - 86400) is None
+
+    def test_old_tree_totals_unreadable_dir_is_empty_not_fresh(self, tmp_path):
+        assert maintenance._old_tree_totals(str(tmp_path / "nope"), time.time()) == (0, 0)
+
+    def test_min_age_scan_walks_each_old_tree_once(self, tmp_path, mocker):
+        """Regression: an old directory was walked twice -- once to look for
+        fresh files, then again to size it. A %TEMP% of ~146k files took 25 s
+        instead of 13 s, past the Maintenance tab's patience."""
+        d = tmp_path / "old"
+        for i in range(3):
+            _mkfile(str(d / f"f{i}.bin"), 10, age_days=10)
+        os.utime(d, (time.time() - 10 * 86400,) * 2)
+        spy = mocker.spy(maintenance.os, "scandir")
+        count, nbytes, _ = maintenance._scan_dir(str(tmp_path), min_age_days=1)
+        assert (count, nbytes) == (4, 30)
+        scanned = [str(c.args[0]) for c in spy.call_args_list]
+        assert scanned.count(str(d)) == 1, scanned
 
 
 class TestScanJunk:
