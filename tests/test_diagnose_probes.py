@@ -970,3 +970,398 @@ class TestLocalConfigRegistration:
         assert p.needs == needs
         assert p.redact == redact
         assert p.fn is getattr(dp, fn)
+
+
+# ── Connectivity probes (control domain, gateway, TCP, TLS, traceroute) ──────
+
+
+class TestControlDomain:
+    def test_constant(self):
+        assert dp.CONTROL_DOMAIN == "www.microsoft.com"
+
+    def test_resolved_and_connected(self, mocker):
+        mocker.patch.object(dp.socket, "getaddrinfo", return_value=[(2, 1, 6, "", ("23.1.2.3", 443))])
+        conn = mocker.patch.object(dp.socket, "create_connection")
+        d = dp._p_control_domain({})
+        assert d["host"] == "www.microsoft.com"
+        assert d["resolved"] is True
+        assert d["connected"] is True
+        assert isinstance(d["connect_ms"], float)
+        assert d["error"] is None
+        dp.socket.getaddrinfo.assert_called_once_with("www.microsoft.com", 443)
+        conn.assert_called_once_with(("www.microsoft.com", 443), timeout=3)
+        conn.return_value.close.assert_called_once()
+
+    def test_resolve_failure_skips_connect(self, mocker):
+        mocker.patch.object(dp.socket, "getaddrinfo", side_effect=socket.gaierror(11001, "getaddrinfo failed"))
+        conn = mocker.patch.object(dp.socket, "create_connection")
+        d = dp._p_control_domain({})
+        assert d["resolved"] is False
+        assert d["connected"] is False
+        assert d["connect_ms"] is None
+        assert "getaddrinfo failed" in d["error"]
+        conn.assert_not_called()
+
+    def test_connect_timeout_sets_error(self, mocker):
+        mocker.patch.object(dp.socket, "getaddrinfo", return_value=[(2, 1, 6, "", ("23.1.2.3", 443))])
+        mocker.patch.object(dp.socket, "create_connection", side_effect=TimeoutError())
+        d = dp._p_control_domain({})
+        assert d["resolved"] is True
+        assert d["connected"] is False
+        assert d["connect_ms"] is None
+        assert d["error"]  # a bare TimeoutError has an empty str(); the probe must still say something
+
+
+def _gateway_registry(mocker, ifaces: dict):
+    """Patch the registry helpers; ``ifaces`` maps guid -> its Interfaces-key values."""
+    hklm = winreg.HKEY_LOCAL_MACHINE
+    values = {(hklm, _IFACES + "\\" + guid): vals for guid, vals in ifaces.items()}
+    return _patch_registry(mocker, subkeys=list(ifaces), values=values)
+
+
+def _ping(mocker, stdout="", returncode=0, side_effect=None):
+    run = mocker.patch.object(dp.subprocess, "run", side_effect=side_effect)
+    if side_effect is None:
+        run.return_value.stdout = stdout
+        run.return_value.returncode = returncode
+        run.return_value.stderr = ""
+    return run
+
+
+_PING_OK = "Reply from 192.168.1.1: bytes=32 time=3ms TTL=64"
+
+
+class TestGateway:
+    def test_dedupes_across_static_and_dhcp_values(self, mocker):
+        _gateway_registry(
+            mocker,
+            {
+                "{G1}": {"DefaultGateway": ["192.168.1.1"]},
+                "{G2}": {"DhcpDefaultGateway": ["192.168.1.1"]},
+            },
+        )
+        _ping(mocker, _PING_OK)
+        assert dp._p_gateway({})["gateways"] == ["192.168.1.1"]
+
+    def test_str_value_empty_strings_and_order(self, mocker):
+        _gateway_registry(
+            mocker,
+            {
+                "{G1}": {"DefaultGateway": [""], "DhcpDefaultGateway": "10.0.0.1"},
+                "{G2}": {"DefaultGateway": ["10.0.0.2", "10.0.0.1"]},
+            },
+        )
+        run = _ping(mocker, _PING_OK)
+        d = dp._p_gateway({})
+        assert d["gateways"] == ["10.0.0.1", "10.0.0.2"]
+        assert run.call_args.args[0][-1] == "10.0.0.1"  # only the first gateway is pinged
+
+    def test_happy_path_parses_rtt(self, mocker):
+        _gateway_registry(mocker, {"{G1}": {"DefaultGateway": ["192.168.1.1"]}})
+        _ping(mocker, _PING_OK)
+        d = dp._p_gateway({})
+        assert d == {"gateways": ["192.168.1.1"], "reachable": True, "rtt_ms": 3.0}
+
+    def test_sub_millisecond_rtt(self, mocker):
+        _gateway_registry(mocker, {"{G1}": {"DefaultGateway": ["192.168.1.1"]}})
+        _ping(mocker, "Reply from 192.168.1.1: bytes=32 time<1ms TTL=64")
+        d = dp._p_gateway({})
+        assert d["reachable"] is True
+        assert d["rtt_ms"] == 0.5
+
+    def test_unparseable_rtt_is_none_but_still_reachable(self, mocker):
+        _gateway_registry(mocker, {"{G1}": {"DefaultGateway": ["192.168.1.1"]}})
+        _ping(mocker, "Antwort von 192.168.1.1: Bytes=32 Zeit=3ms TTL=64")
+        d = dp._p_gateway({})
+        assert d["reachable"] is True
+        assert d["rtt_ms"] is None
+
+    def test_nonzero_returncode_is_unreachable(self, mocker):
+        _gateway_registry(mocker, {"{G1}": {"DefaultGateway": ["192.168.1.1"]}})
+        _ping(mocker, "Request timed out.", returncode=1)
+        d = dp._p_gateway({})
+        assert d["reachable"] is False
+        assert d["rtt_ms"] is None
+
+    def test_unreachable_reply_without_ttl_is_unreachable(self, mocker):
+        # "Destination host unreachable" replies can still exit 0 on Windows.
+        _gateway_registry(mocker, {"{G1}": {"DefaultGateway": ["192.168.1.1"]}})
+        _ping(mocker, "Reply from 192.168.1.50: Destination host unreachable.", returncode=0)
+        assert dp._p_gateway({})["reachable"] is False
+
+    def test_timeout_is_unreachable(self, mocker):
+        _gateway_registry(mocker, {"{G1}": {"DefaultGateway": ["192.168.1.1"]}})
+        _ping(mocker, side_effect=dp.subprocess.TimeoutExpired(cmd="ping", timeout=5))
+        d = dp._p_gateway({})
+        assert d["reachable"] is False
+        assert d["rtt_ms"] is None
+        assert d["gateways"] == ["192.168.1.1"]
+
+    def test_missing_executable_is_unreachable(self, mocker):
+        _gateway_registry(mocker, {"{G1}": {"DefaultGateway": ["192.168.1.1"]}})
+        _ping(mocker, side_effect=FileNotFoundError("ping"))
+        assert dp._p_gateway({})["reachable"] is False
+
+    def test_no_gateway_means_unknown_and_no_subprocess(self, mocker):
+        _gateway_registry(mocker, {"{G1}": {"DefaultGateway": [], "DhcpDefaultGateway": ""}})
+        run = _ping(mocker)
+        d = dp._p_gateway({})
+        assert d == {"gateways": [], "reachable": None, "rtt_ms": None}
+        run.assert_not_called()
+
+    def test_command_content(self, mocker):
+        _gateway_registry(mocker, {"{G1}": {"DefaultGateway": ["192.168.1.1"]}})
+        run = _ping(mocker, _PING_OK)
+        dp._p_gateway({})
+        assert run.call_args.args[0] == ["ping", "-n", "1", "-w", "1000", "192.168.1.1"]
+        assert "shell" not in run.call_args.kwargs
+        assert run.call_args.kwargs["timeout"] == 5
+        assert run.call_args.kwargs["capture_output"] is True
+        assert run.call_args.kwargs["text"] is True
+        assert run.call_args.kwargs["creationflags"] == dp._NO_WINDOW
+
+    @pytest.mark.parametrize(
+        "bad", ["192.168.1.1 & calc", "192.168.1.1;calc", "not-an-ip", "fe80::1%eth0", "0.0.0.0", "::", 5, None]
+    )
+    def test_invalid_gateway_is_dropped_and_never_reaches_ping(self, mocker, bad):
+        _gateway_registry(mocker, {"{G1}": {"DefaultGateway": [bad]}, "{G2}": {"DhcpDefaultGateway": "192.168.1.1"}})
+        run = _ping(mocker, _PING_OK)
+        d = dp._p_gateway({})
+        assert d["gateways"] == ["192.168.1.1"]
+        assert all(str(bad) not in arg for arg in run.call_args.args[0])
+
+    def test_only_invalid_gateway_means_no_ping(self, mocker):
+        _gateway_registry(mocker, {"{G1}": {"DefaultGateway": ["192.168.1.1 & calc"]}})
+        run = _ping(mocker)
+        assert dp._p_gateway({})["reachable"] is None
+        run.assert_not_called()
+
+    def test_ipv6_gateway_is_kept(self, mocker):
+        _gateway_registry(mocker, {"{G1}": {"DefaultGateway": ["fe80::1"]}})
+        _ping(mocker, "Reply from fe80::1: time<1ms")
+        assert dp._p_gateway({})["gateways"] == ["fe80::1"]
+
+
+class TestTcpConnect:
+    def test_both_ports_connect(self, mocker):
+        conn = mocker.patch.object(dp.socket, "create_connection")
+        d = dp._p_tcp_connect(SLOTS)
+        assert [r["port"] for r in d["results"]] == [443, 80]
+        assert all(r["connected"] is True and isinstance(r["ms"], float) and r["error"] is None for r in d["results"])
+        assert [c.args for c in conn.call_args_list] == [(("hynote.ai", 443),), (("hynote.ai", 80),)]
+        assert all(c.kwargs == {"timeout": 3} for c in conn.call_args_list)
+        assert conn.return_value.close.call_count == 2
+
+    def test_per_port_results_when_one_fails(self, mocker):
+        def fake(addr, timeout):
+            if addr[1] == 443:
+                raise ConnectionRefusedError(10061, "refused")
+            return mocker.MagicMock()
+
+        mocker.patch.object(dp.socket, "create_connection", side_effect=fake)
+        by_port = {r["port"]: r for r in dp._p_tcp_connect(SLOTS)["results"]}
+        assert by_port[443]["connected"] is False
+        assert by_port[443]["ms"] is None
+        assert "refused" in by_port[443]["error"]
+        assert by_port[80]["connected"] is True
+
+    def test_timeout_has_nonempty_error(self, mocker):
+        mocker.patch.object(dp.socket, "create_connection", side_effect=TimeoutError())
+        r = dp._p_tcp_connect(SLOTS)["results"][0]
+        assert r["connected"] is False
+        assert r["error"]
+
+
+def _fake_tls(mocker, *, version="TLSv1.3", cert=None, wrap_error=None):
+    """Patch ssl.create_default_context and socket.create_connection; return (ctx, raw_sock, tls_sock)."""
+    if cert is None:
+        cert = {"subject": ((("commonName", "hynote.ai"),),), "notAfter": "Jan  1 00:00:00 2027 GMT"}
+    tls_sock = mocker.MagicMock()
+    tls_sock.version.return_value = version
+    tls_sock.getpeercert.return_value = cert
+    ctx = mocker.MagicMock()
+    if wrap_error is not None:
+        ctx.wrap_socket.side_effect = wrap_error
+    else:
+        ctx.wrap_socket.return_value = tls_sock
+    mocker.patch.object(dp.ssl, "create_default_context", return_value=ctx)
+    raw = mocker.patch.object(dp.socket, "create_connection").return_value
+    return ctx, raw, tls_sock
+
+
+class TestTlsHandshake:
+    def test_happy_path(self, mocker):
+        ctx, raw, tls_sock = _fake_tls(mocker)
+        d = dp._p_tls_handshake(SLOTS)
+        assert d == {
+            "handshake": True,
+            "protocol": "TLSv1.3",
+            "cert_cn": "hynote.ai",
+            "not_after": "Jan  1 00:00:00 2027 GMT",
+            "error": None,
+        }
+        dp.socket.create_connection.assert_called_once_with(("hynote.ai", 443), timeout=5)
+        ctx.wrap_socket.assert_called_once_with(raw, server_hostname="hynote.ai")
+        tls_sock.close.assert_called_once()
+
+    def test_certificate_verification_failure(self, mocker):
+        err = dp.ssl.SSLCertVerificationError(1, "certificate verify failed: unable to get local issuer certificate")
+        _, raw, _ = _fake_tls(mocker, wrap_error=err)
+        d = dp._p_tls_handshake(SLOTS)
+        assert d["handshake"] is False
+        assert "unable to get local issuer certificate" in d["error"]
+        assert d["protocol"] is None
+        assert d["cert_cn"] is None
+        assert d["not_after"] is None
+        raw.close.assert_called_once()
+
+    def test_connect_failure(self, mocker):
+        mocker.patch.object(dp.ssl, "create_default_context")
+        mocker.patch.object(dp.socket, "create_connection", side_effect=ConnectionRefusedError(10061, "refused"))
+        d = dp._p_tls_handshake(SLOTS)
+        assert d["handshake"] is False
+        assert "refused" in d["error"]
+
+    def test_timeout_has_nonempty_error(self, mocker):
+        mocker.patch.object(dp.ssl, "create_default_context")
+        mocker.patch.object(dp.socket, "create_connection", side_effect=TimeoutError())
+        d = dp._p_tls_handshake(SLOTS)
+        assert d["handshake"] is False
+        assert d["error"]
+
+    def test_cert_without_common_name(self, mocker):
+        _fake_tls(mocker, cert={"subject": ((("organizationName", "Acme"),),), "notAfter": "Jan  1 00:00:00 2027 GMT"})
+        d = dp._p_tls_handshake(SLOTS)
+        assert d["handshake"] is True
+        assert d["cert_cn"] is None
+
+    def test_missing_peer_cert(self, mocker):
+        _fake_tls(mocker, cert={})
+        d = dp._p_tls_handshake(SLOTS)
+        assert d["handshake"] is True
+        assert d["cert_cn"] is None
+        assert d["not_after"] is None
+
+
+_TRACERT_OK = """
+Tracing route to hynote.ai [104.16.0.1]
+over a maximum of 15 hops:
+
+  1    <1 ms    <1 ms    <1 ms  192.168.1.1
+  2     *        *        *     Request timed out.
+  3    12 ms    11 ms    13 ms  104.16.0.1
+
+Trace complete.
+"""
+
+
+def _tracert(mocker, stdout="", returncode=0, side_effect=None, stderr=""):
+    run = mocker.patch.object(dp.subprocess, "run", side_effect=side_effect)
+    if side_effect is None:
+        run.return_value.stdout = stdout
+        run.return_value.returncode = returncode
+        run.return_value.stderr = stderr
+    return run
+
+
+class TestTraceroute:
+    def test_parses_hops_and_reached(self, mocker):
+        _tracert(mocker, _TRACERT_OK)
+        d = dp._p_traceroute(SLOTS)
+        assert d["hops"] == [
+            {"hop": 1, "ip": "192.168.1.1", "timeout": False},
+            {"hop": 2, "ip": None, "timeout": True},
+            {"hop": 3, "ip": "104.16.0.1", "timeout": False},
+        ]
+        assert d["reached"] is True
+        assert "error" not in d
+
+    def test_not_reached_without_trace_complete(self, mocker):
+        _tracert(
+            mocker,
+            "  1    <1 ms    <1 ms    <1 ms  192.168.1.1\n  2     *        *        *     Request timed out.\n",
+        )
+        d = dp._p_traceroute(SLOTS)
+        assert d["reached"] is False
+        assert len(d["hops"]) == 2
+
+    def test_not_reached_when_last_hop_timed_out(self, mocker):
+        _tracert(mocker, "  1     *        *        *     Request timed out.\n\nTrace complete.\n")
+        assert dp._p_traceroute(SLOTS)["reached"] is False
+
+    def test_partial_stars_with_ip_is_not_a_timeout(self, mocker):
+        _tracert(mocker, "  4    12 ms     *       13 ms  10.1.1.1\n")
+        assert dp._p_traceroute(SLOTS)["hops"] == [{"hop": 4, "ip": "10.1.1.1", "timeout": False}]
+
+    def test_command_content(self, mocker):
+        run = _tracert(mocker, _TRACERT_OK)
+        dp._p_traceroute(SLOTS)
+        assert run.call_args.args[0] == ["tracert", "-d", "-h", "15", "-w", "500", "hynote.ai"]
+        assert "shell" not in run.call_args.kwargs
+        assert run.call_args.kwargs["timeout"] == 45
+        assert run.call_args.kwargs["capture_output"] is True
+        assert run.call_args.kwargs["text"] is True
+        assert run.call_args.kwargs["creationflags"] == dp._NO_WINDOW
+
+    def test_timeout_returns_fallback_with_error(self, mocker):
+        _tracert(mocker, side_effect=dp.subprocess.TimeoutExpired(cmd="tracert", timeout=45))
+        d = dp._p_traceroute(SLOTS)
+        assert d["hops"] == []
+        assert d["reached"] is False
+        assert d["error"]
+
+    def test_missing_executable_returns_fallback_with_error(self, mocker):
+        _tracert(mocker, side_effect=FileNotFoundError("tracert"))
+        d = dp._p_traceroute(SLOTS)
+        assert d["hops"] == []
+        assert d["reached"] is False
+        assert d["error"]
+
+    def test_empty_output(self, mocker):
+        _tracert(mocker, "  \n")
+        d = dp._p_traceroute(SLOTS)
+        assert d["hops"] == []
+        assert d["reached"] is False
+
+    def test_nonzero_returncode_reports_error(self, mocker):
+        _tracert(mocker, "", returncode=1, stderr="Unable to resolve target system name nope.invalid.")
+        d = dp._p_traceroute(SLOTS)
+        assert d["hops"] == []
+        assert d["reached"] is False
+        assert "Unable to resolve" in d["error"]
+
+    def test_garbage_output_yields_no_hops(self, mocker):
+        _tracert(mocker, "\x00\x01 not a trace\n--- 12 ---\n")
+        assert dp._p_traceroute(SLOTS)["hops"] == []
+
+    @pytest.mark.parametrize("bad", ["x;calc", "a b", "-h 1", "host&calc", "", "ex ample.com\n"])
+    def test_invalid_target_is_rejected_without_running(self, mocker, bad):
+        run = _tracert(mocker, _TRACERT_OK)
+        assert dp._p_traceroute({"target_host": bad}) == {"hops": [], "reached": False, "error": "invalid target"}
+        run.assert_not_called()
+
+    def test_target_is_normalised_before_use(self, mocker):
+        run = _tracert(mocker, _TRACERT_OK)
+        dp._p_traceroute({"target_host": "https://HyNote.AI/path"})
+        assert run.call_args.args[0][-1] == "hynote.ai"
+
+
+class TestConnectivityRegistration:
+    @pytest.mark.parametrize(
+        ("key", "label", "needs", "redact", "timeout", "fn"),
+        [
+            ("net.control_domain", "Reach a known-good site", (), (), 8, "_p_control_domain"),
+            ("net.gateway", "Ping the default gateway", (), ("mac",), 8, "_p_gateway"),
+            ("net.tcp_connect", "Connect to the site's ports", ("target_host",), (), 10, "_p_tcp_connect"),
+            ("net.tls_handshake", "Check the site's TLS certificate", ("target_host",), (), 10, "_p_tls_handshake"),
+            ("net.traceroute", "Trace the route to the site", ("target_host",), (), 50, "_p_traceroute"),
+        ],
+    )
+    def test_registered_with_contract_metadata(self, key, label, needs, redact, timeout, fn):
+        p = _REGISTERED[key]
+        assert p.label == label
+        assert p.category == "network"
+        assert p.needs == needs
+        assert p.redact == redact
+        assert p.timeout_s == timeout
+        assert p.fn is getattr(dp, fn)

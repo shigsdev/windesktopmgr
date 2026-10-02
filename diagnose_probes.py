@@ -25,7 +25,9 @@ import ipaddress
 import os
 import re
 import socket
+import ssl
 import struct
+import subprocess
 import time
 import winreg
 from collections.abc import Callable, Sequence
@@ -49,6 +51,13 @@ except ImportError:  # pragma: no cover -- exercised by patching HAVE_DNSPYTHON
     HAVE_DNSPYTHON = False
 
 _MAX_WORKERS = 8
+
+# A known-good, always-up site: tells "this PC is offline" from "the target is down".
+CONTROL_DOMAIN = "www.microsoft.com"
+
+# CREATE_NO_WINDOW: keep ping/tracert's console off-screen when the tray (pythonw)
+# runs them. 0 on non-Windows so tests/other platforms don't choke.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 # Public recursive resolvers used to cross-check the system resolver (name, ip).
 PUBLIC_RESOLVERS = (("cloudflare", "1.1.1.1"), ("google", "8.8.8.8"))
@@ -554,6 +563,177 @@ def _p_proxy_config(slots: dict) -> dict:
     }
 
 
+# ── Connectivity probes (control domain, gateway, TCP, TLS, traceroute) ──────
+# ``ping`` and ``tracert`` are the only subprocesses in this module. Both take
+# list args (never a shell) and a target that is an ipaddress-validated literal
+# or a normalised hostname.
+
+_PING_RTT_RE = re.compile(r"time([=<])\s*(\d+)\s*ms", re.IGNORECASE)
+_HOP_RE = re.compile(r"^\s*(\d+)\s+(.*\S)\s*$")
+
+
+def _err_text(exc: BaseException) -> str:
+    """``str(exc)``, falling back to the type name (a bare ``TimeoutError`` prints as ``""``)."""
+    return str(exc) or type(exc).__name__
+
+
+def _connect_ms(host: str, port: int, timeout: float) -> tuple[float | None, str | None]:
+    """Open and close a TCP connection; return ``(elapsed_ms, None)`` or ``(None, error)``."""
+    t0 = time.perf_counter()
+    try:
+        sock = socket.create_connection((host, port), timeout=timeout)
+    except OSError as exc:
+        return None, _err_text(exc)
+    ms = _elapsed_ms(t0)
+    sock.close()
+    return ms, None
+
+
+def _p_control_domain(slots: dict) -> dict:
+    """Can this PC resolve and reach a known-good site? Separates 'we are offline' from 'the target is down'."""
+    try:
+        socket.getaddrinfo(CONTROL_DOMAIN, 443)
+    except OSError as exc:  # socket.gaierror is an OSError
+        return {
+            "host": CONTROL_DOMAIN,
+            "resolved": False,
+            "connected": False,
+            "connect_ms": None,
+            "error": _err_text(exc),
+        }
+    ms, error = _connect_ms(CONTROL_DOMAIN, 443, timeout=3)
+    return {"host": CONTROL_DOMAIN, "resolved": True, "connected": ms is not None, "connect_ms": ms, "error": error}
+
+
+def _default_gateways() -> list[str]:
+    """Default gateways from every adapter's static and DHCP settings: valid IPs only, deduped, in order."""
+    hklm = winreg.HKEY_LOCAL_MACHINE
+    gateways: list[str] = []
+    for guid in _reg_subkeys(hklm, _TCPIP_IFACES):
+        vals = _reg_values(hklm, f"{_TCPIP_IFACES}\\{guid}")
+        for name in ("DefaultGateway", "DhcpDefaultGateway"):
+            raw = vals.get(name)
+            for item in raw if isinstance(raw, list) else [raw]:
+                if not isinstance(item, str) or not item.strip():
+                    continue
+                item = item.strip()
+                try:
+                    ip = ipaddress.ip_address(item)
+                except ValueError:
+                    continue  # also drops injection attempts like "1.2.3.4 & calc"
+                # 0.0.0.0 / :: mean "no gateway"; a scope id ("%eth0") is not a usable ping target.
+                if ip.is_unspecified or "%" in item:
+                    continue
+                if str(ip) not in gateways:
+                    gateways.append(str(ip))
+    return gateways
+
+
+def _p_gateway(slots: dict) -> dict:
+    """Ping the first configured default gateway once."""
+    gateways = _default_gateways()
+    if not gateways:
+        return {"gateways": [], "reachable": None, "rtt_ms": None}
+    try:
+        proc = subprocess.run(  # noqa: S603 -- list args, no shell; target is an ipaddress-validated literal
+            ["ping", "-n", "1", "-w", "1000", gateways[0]],  # noqa: S607 -- ping.exe resolved via PATH
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=_NO_WINDOW,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return {"gateways": gateways, "reachable": False, "rtt_ms": None}
+    stdout = proc.stdout or ""
+    # Some "Destination host unreachable" replies exit 0; only a real echo reply carries a TTL.
+    reachable = proc.returncode == 0 and "TTL=" in stdout
+    rtt_ms = None
+    if reachable and (m := _PING_RTT_RE.search(stdout)):
+        rtt_ms = 0.5 if m.group(1) == "<" else float(m.group(2))
+    return {"gateways": gateways, "reachable": reachable, "rtt_ms": rtt_ms}
+
+
+def _p_tcp_connect(slots: dict) -> dict:
+    """Try a TCP connection to ports 443 and 80 on the target."""
+    host = slots["target_host"]
+    results = []
+    for port in (443, 80):
+        ms, error = _connect_ms(host, port, timeout=3)
+        results.append({"port": port, "connected": ms is not None, "ms": ms, "error": error})
+    return {"results": results}
+
+
+def _cert_common_name(cert: dict) -> str | None:
+    for rdn in cert.get("subject", ()):
+        for key, value in rdn:
+            if key == "commonName":
+                return value
+    return None
+
+
+def _p_tls_handshake(slots: dict) -> dict:
+    """Complete a verified TLS handshake on port 443 and report the certificate."""
+    host = slots["target_host"]
+    sock = tls = None
+    try:
+        ctx = ssl.create_default_context()
+        sock = socket.create_connection((host, 443), timeout=5)
+        tls = ctx.wrap_socket(sock, server_hostname=host)
+        cert = tls.getpeercert() or {}
+        return {
+            "handshake": True,
+            "protocol": tls.version(),
+            "cert_cn": _cert_common_name(cert),
+            "not_after": cert.get("notAfter"),
+            "error": None,
+        }
+    except OSError as exc:  # ssl.SSLError (including certificate verification failures) is an OSError
+        return {"handshake": False, "protocol": None, "cert_cn": None, "not_after": None, "error": _err_text(exc)}
+    finally:
+        for s in (tls, sock):
+            if s is not None:
+                s.close()
+
+
+def _parse_tracert(stdout: str) -> list[dict]:
+    """Hop lines start with the hop number; the address (if any) is the last token."""
+    hops = []
+    for line in stdout.splitlines():
+        m = _HOP_RE.match(line)
+        if not m:
+            continue
+        try:
+            ip = str(ipaddress.ip_address(m.group(2).split()[-1]))
+        except ValueError:
+            ip = None
+        hops.append({"hop": int(m.group(1)), "ip": ip, "timeout": ip is None and "*" in line})
+    return hops
+
+
+def _p_traceroute(slots: dict) -> dict:
+    """Trace the route to the target (no name lookups, 15 hops, 500 ms per hop)."""
+    # Re-validate here even though the engine already did: this value goes to a subprocess.
+    host = normalize_host(slots.get("target_host"))
+    if host is None:
+        return {"hops": [], "reached": False, "error": "invalid target"}
+    try:
+        proc = subprocess.run(  # noqa: S603 -- list args, no shell; host passed normalize_host
+            ["tracert", "-d", "-h", "15", "-w", "500", host],  # noqa: S607 -- tracert.exe resolved via PATH
+            capture_output=True,
+            text=True,
+            timeout=45,
+            creationflags=_NO_WINDOW,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return {"hops": [], "reached": False, "error": _err_text(exc)}
+    stdout = proc.stdout or ""
+    hops = _parse_tracert(stdout)
+    result = {"hops": hops, "reached": bool(hops) and hops[-1]["ip"] is not None and "Trace complete." in stdout}
+    if proc.returncode != 0:
+        result["error"] = (proc.stderr or "").strip() or f"tracert exited with code {proc.returncode}"
+    return result
+
+
 for _key, _label, _fn, _timeout in (
     ("dns.resolve_cached", "Resolve through Windows (uses the DNS cache)", _p_resolve_cached, 8),
     ("dns.resolve_direct", "Ask DNS servers directly (bypasses the cache)", _p_resolve_direct, 8),
@@ -598,5 +778,52 @@ register(
         category="network",
         fn=_p_proxy_config,
         redact=("username",),
+    )
+)
+register(
+    Probe(
+        key="net.control_domain",
+        label="Reach a known-good site",
+        category="network",
+        fn=_p_control_domain,
+    )
+)
+register(
+    Probe(
+        key="net.gateway",
+        label="Ping the default gateway",
+        category="network",
+        fn=_p_gateway,
+        redact=("mac",),
+    )
+)
+register(
+    Probe(
+        key="net.tcp_connect",
+        label="Connect to the site's ports",
+        category="network",
+        fn=_p_tcp_connect,
+        needs=("target_host",),
+        timeout_s=10,
+    )
+)
+register(
+    Probe(
+        key="net.tls_handshake",
+        label="Check the site's TLS certificate",
+        category="network",
+        fn=_p_tls_handshake,
+        needs=("target_host",),
+        timeout_s=10,
+    )
+)
+register(
+    Probe(
+        key="net.traceroute",
+        label="Trace the route to the site",
+        category="network",
+        fn=_p_traceroute,
+        needs=("target_host",),
+        timeout_s=50,
     )
 )
