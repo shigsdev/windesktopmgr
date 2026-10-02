@@ -9,6 +9,7 @@ import os
 import re
 import socket
 import struct
+import sys
 import time
 import types
 import winreg
@@ -34,6 +35,27 @@ _REGISTERED = dict(dp.PROBES)
 def _isolated_registry(mocker):
     """Every test starts with an empty PROBES dict and registers throwaway probes."""
     mocker.patch.dict(dp.PROBES, {}, clear=True)
+
+
+class TestResolverConfigMethod:
+    """dnspython must not read the resolver config through WMI (it hung inside the tray)."""
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="dnspython's config method is Windows-only")
+    def test_import_switches_dnspython_off_wmi(self):
+        import dns.win32util
+
+        assert dns.win32util._config_method == dns.win32util.ConfigMethod.Win32
+
+    def test_no_dnspython_is_a_no_op(self, mocker):
+        mocker.patch.object(dp, "HAVE_DNSPYTHON", False)
+        assert dp._use_win32_resolver_config() is False
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="dnspython's config method is Windows-only")
+    def test_a_failing_switch_never_raises(self, mocker):
+        import dns.win32util
+
+        mocker.patch.object(dns.win32util, "set_config_method", side_effect=RuntimeError("old dnspython"))
+        assert dp._use_win32_resolver_config() is False
 
 
 def _probe(key="t.probe", fn=None, **kw):
