@@ -1004,7 +1004,7 @@
     .th-core-bar, .th-sensor-fill { transition: none; }
     .th-core.tband-crit, .th-sensor.tband-crit { animation: none; }
   }
-
+
 /* ── Print ──────────────────────────────────────────────────────────────────
    The Docs tab's "Export PDF" button does NOT rely on these rules: it clones
    the page into an isolated iframe and prints that, because printing the app
@@ -1096,6 +1096,10 @@
   .dx-risk { margin-left: 8px; font-size: 10px; text-transform: uppercase; color: var(--text-dim); }
   .dx-risk-medium { color: var(--orange-hi); }
   .dx-risk-high { color: var(--red); }
+  .dx-steps { margin-top: 14px; }
+  .dx-steps-title { font-size: 12px; font-weight: 700; color: var(--text-bright); }
+  .dx-steps ol { margin: 6px 0 0; padding-left: 20px; font-size: 12px; line-height: 1.6; color: var(--text); }
+  .dx-steps li { margin-bottom: 4px; }
   .dx-refs { margin-top: 12px; font-size: 11px; color: var(--text-dim); }
   .dx-ref { display: inline-block; margin: 2px 4px 2px 0; padding: 1px 6px; border-radius: 4px;
     background: var(--surface); border: 1px solid var(--border); color: var(--text-dim); }

@@ -307,6 +307,7 @@ VERDICT_KEYS = {
     "reasoning",
     "evidence_refs",
     "suggested_actions",
+    "manual_steps",
     "no_local_fix_reason",
     "source",
     "rule_hits",
@@ -651,6 +652,205 @@ class TestInterceptionRules:
         assert 'transport "tls"' in prompt
         for key in ("dns.authoritative", "dns.record_sweep", "dns.trace_delegation", "dns.dnssec_check"):
             assert key in prompt
+
+
+def _hop_paths(*hops):
+    """dns.interception paths: one (gateway, answering_hop) pair per connection."""
+    return [
+        {"source": f"10.0.{i}.2", "gateway": gw, "answering_hop": hop, "error": None}
+        for i, (gw, hop) in enumerate(hops)
+    ]
+
+
+def _with_paths(ev, paths):
+    ev["dns.interception"]["data"]["paths"] = paths
+    return ev
+
+
+class TestInterceptorLocation:
+    @pytest.mark.parametrize(
+        ("paths", "where", "gateway"),
+        [
+            # Today's real case: Ethernet's router answers at hop 1, Wi-Fi's router sits behind it (hop 2).
+            ([("192.168.1.1", 1), ("10.0.0.1", 2)], "router", "192.168.1.1"),
+            ([("10.0.0.1", 2)], "upstream", "10.0.0.1"),
+            ([("10.0.0.1", 3), ("192.168.1.1", 2)], "upstream", "10.0.0.1"),
+            # A connection with no interception at all rules this PC out too.
+            ([("192.168.1.1", 1), ("10.0.0.1", None)], "router", "192.168.1.1"),
+            ([("192.168.1.1", 1), ("10.0.0.1", 1)], "pc", None),
+            ([("192.168.1.1", 1)], "pc_or_router", "192.168.1.1"),
+            ([("192.168.1.1", 1), ("192.168.1.1", 1)], "pc_or_router", "192.168.1.1"),
+            ([("192.168.1.1", None)], "unknown", None),
+            ([], "unknown", None),
+        ],
+    )
+    def test_where_from_hops(self, paths, where, gateway):
+        ev = _with_paths(_fixture_evidence("dns_filtered_by_network"), _hop_paths(*paths))
+        assert diagnose.interceptor_location(ev) == {"where": where, "gateway": gateway}
+
+    @pytest.mark.parametrize(
+        "evidence",
+        [
+            {},
+            {"dns.interception": {"ok": False, "error": "x"}},
+            {"dns.interception": {"ok": True, "data": {"intercepted": True, "paths": "junk"}}},
+            {"dns.interception": {"ok": True, "data": {"intercepted": True, "paths": [None, {"answering_hop": 1}]}}},
+        ],
+    )
+    def test_missing_or_malformed_paths_are_unknown(self, evidence):
+        assert diagnose.interceptor_location(evidence) == {"where": "unknown", "gateway": None}
+
+
+class TestDnsFilteredByLocation:
+    def test_router_case_names_the_router_and_its_admin_page(self):
+        v = diagnose.evaluate_rules(_fixture_evidence("dns_filtered_by_router"), "hynote.ai")
+        assert v["headline"] == "Your router is blocking hynote.ai"
+        assert "not from software on this PC" in v["reasoning"]
+        assert v["rule_hits"][0] == "dns_filtered"
+        assert v["suggested_actions"] == []  # advice only: nothing here is runnable
+        steps = v["manual_steps"]
+        assert "http://192.168.1.1" in steps[0]
+        assert "Parental Controls" in steps[0]
+        assert any("DNS over HTTPS" in s for s in steps)
+        assert any("nslookup hynote.ai" in s for s in steps)
+        assert "ipconfig /flushdns" in steps[-1]
+
+    @pytest.mark.parametrize(
+        ("hops", "headline", "first_step"),
+        [
+            ([("10.0.0.1", 2)], "A device past your router is blocking hynote.ai", "past your own router"),
+            ([("192.168.1.1", 1), ("10.0.0.1", 1)], "Software on this PC is probably blocking hynote.ai", "VPN apps"),
+            ([("192.168.1.1", 1)], "Your network's DNS is blocking hynote.ai", "http://192.168.1.1"),
+        ],
+    )
+    def test_headline_and_first_step_follow_the_location(self, hops, headline, first_step):
+        ev = _with_paths(_fixture_evidence("dns_filtered_by_network"), _hop_paths(*hops))
+        v = diagnose.evaluate_rules(ev, "hynote.ai")
+        assert v["headline"] == headline
+        assert first_step in v["manual_steps"][0]
+
+    def test_pc_case_checks_pc_software_first_and_the_router_last(self):
+        # Two gateway IPs can still be one router (main + guest network), so the router stays on the list.
+        ev = _with_paths(_fixture_evidence("dns_filtered_by_network"), _hop_paths(("a", 1), ("b", 1)))
+        steps = diagnose.evaluate_rules(ev, "hynote.ai")["manual_steps"]
+        assert "router" not in steps[0]
+        assert "same router" in steps[-2]
+        assert "http://" not in " ".join(steps)  # no single gateway to point at
+
+    def test_unknown_location_covers_router_and_pc_without_an_address(self):
+        v = diagnose.evaluate_rules(_fixture_evidence("dns_filtered_by_network"), "hynote.ai")
+        steps = v["manual_steps"]
+        assert "http://" not in steps[0]  # no gateway known: no made-up admin URL
+        assert "router" in steps[0]
+        assert "VPN apps" in steps[1]
+
+    def test_steps_stay_within_the_caps(self):
+        for name in ("dns_filtered_by_router", "dns_filtered_by_network"):
+            steps = diagnose.evaluate_rules(_fixture_evidence(name), "hynote.ai")["manual_steps"]
+            assert steps == diagnose.clean_steps(steps)
+
+
+class TestRuleSteps:
+    def test_hosts_override_steps_name_the_line(self):
+        ev = _fixture_evidence("hosts_file_override")
+        v = diagnose.evaluate_rules(ev, "hynote.ai")
+        line = ev["dns.hosts_file"]["data"]["matches"][0]["line_no"]
+        assert any(f"Delete line {line}" in s for s in v["manual_steps"])
+        assert any(r"C:\Windows\System32\drivers\etc\hosts" in s for s in v["manual_steps"])
+
+    def test_external_steps_never_claim_a_local_fix(self):
+        v = diagnose.evaluate_rules(_fixture_evidence("nxdomain_nonexistent_domain"), "no-such-name-zq7.ai")
+        assert v["manual_steps"][0] == "Check the spelling of no-such-name-zq7.ai."
+        assert any("nothing on this PC needs changing" in s for s in v["manual_steps"])
+
+    @pytest.mark.parametrize(
+        ("fixture", "phrase"),
+        [
+            ("stale_cache_direct_resolves", "ipconfig /flushdns"),
+            ("dead_gateway", "Restart the router"),
+            ("hynote_zone_missing_a", "A) record"),
+        ],
+    )
+    def test_each_rule_carries_steps(self, fixture, phrase):
+        fx = json.loads((FIXTURE_DIR / f"{fixture}.json").read_text(encoding="utf-8"))
+        host = fx["expect"].get("target_host") or diagnose.classify(fx["symptom"])["slots"].get("target_host")
+        v = diagnose.evaluate_rules(fx["evidence"], host)
+        assert any(phrase in s for s in v["manual_steps"])
+
+    def test_inconclusive_fallbacks_have_no_steps(self):
+        assert diagnose.evaluate_rules({}, "hynote.ai")["manual_steps"] == []
+        v = diagnose.evaluate_rules(_fixture_evidence("network_intercepts_everything"), "example.com")
+        assert v["manual_steps"] == []
+
+
+class TestCleanSteps:
+    def test_strips_dedupes_and_drops_non_strings(self):
+        assert diagnose.clean_steps(["  a\n  b ", "a b", "", "   ", 7, None, {"x": 1}, "c"]) == ["a b", "c"]
+
+    def test_caps_count_and_length(self):
+        steps = [f"step {i}" for i in range(10)]
+        assert diagnose.clean_steps(steps) == steps[: diagnose.MAX_MANUAL_STEPS]
+        long = diagnose.clean_steps(["x" * 1000])[0]
+        assert len(long) == diagnose.MAX_STEP_CHARS
+        assert long.endswith("…")
+
+    @pytest.mark.parametrize("junk", [None, "one string", 5, {"a": "b"}])
+    def test_non_list_is_empty(self, junk):
+        assert diagnose.clean_steps(junk) == []
+
+
+class TestManualStepsFromModel:
+    def test_schema_requires_a_string_list(self):
+        schema = diagnose.reply_schema("network_dns")
+        assert "manual_steps" in schema["required"]
+        assert schema["properties"]["manual_steps"] == {"type": "array", "items": {"type": "string"}}
+
+    def test_prompt_asks_for_steps_and_explains_the_hop_test(self):
+        assert "manual_steps" in diagnose._SYSTEM_PROMPT
+        assert "never run" in diagnose._SYSTEM_PROMPT
+        assert "hop" in diagnose._SYSTEM_PROMPT
+
+    def test_parse_reply_cleans_steps(self):
+        _, v = diagnose.parse_reply({**REPLY, "manual_steps": ["  Do X ", "Do X", 3]}, "network_dns")
+        assert v["manual_steps"] == ["Do X"]
+
+    @pytest.mark.parametrize("junk", [None, "Do X", 7])
+    def test_missing_or_malformed_steps_are_not_fatal(self, junk):
+        reply = {**REPLY, "manual_steps": junk}
+        if junk is None:
+            del reply["manual_steps"]
+        kind, v = diagnose.parse_reply(reply, "network_dns")
+        assert kind == "verdict"
+        assert v["manual_steps"] == []
+
+    def test_model_steps_kept_and_capped(self):
+        out = diagnose.apply_guards(_model_verdict(manual_steps=[f"s{i}" for i in range(9)]), {}, {})
+        assert out["manual_steps"] == [f"s{i}" for i in range(diagnose.MAX_MANUAL_STEPS)]
+
+    def test_agreeing_model_without_steps_borrows_the_rule_steps(self):
+        rule = diagnose.evaluate_rules(_fixture_evidence("dns_filtered_by_router"), "hynote.ai")
+        out = diagnose.apply_guards(_model_verdict(manual_steps=[]), {}, rule)
+        assert out["manual_steps"] == rule["manual_steps"]
+
+    @pytest.mark.parametrize("over", [{"status": "inconclusive"}, {"locus": "unknown"}])
+    def test_no_borrowing_when_the_model_disagrees_or_is_unsure(self, over):
+        rule = diagnose.evaluate_rules(_fixture_evidence("dns_filtered_by_router"), "hynote.ai")
+        out = diagnose.apply_guards(_model_verdict(manual_steps=[], **over), {}, rule)
+        assert out["manual_steps"] == []
+
+    def test_model_steps_win_over_rule_steps(self):
+        rule = diagnose.evaluate_rules(_fixture_evidence("dns_filtered_by_router"), "hynote.ai")
+        out = diagnose.apply_guards(_model_verdict(manual_steps=["Model step"]), {}, rule)
+        assert out["manual_steps"] == ["Model step"]
+
+    def test_external_override_replaces_the_model_steps(self):
+        rule = diagnose.evaluate_rules(_fixture_evidence("hynote_zone_missing_a"), "hynote.ai")
+        out = diagnose.apply_guards(_model_verdict(manual_steps=["Flush your DNS"]), {}, rule)
+        assert out["locus"] == "external_cause"
+        assert out["manual_steps"] == rule["manual_steps"]
+
+    def test_out_of_rounds_stand_in_has_steps_key(self):
+        assert diagnose._OUT_OF_ROUNDS["manual_steps"] == []
 
 
 class TestRedact:
@@ -1020,6 +1220,7 @@ REPLY = {
     "reasoning": "r",
     "evidence_refs": ["dns.resolve_cached"],
     "suggested_actions": ["flush_dns"],
+    "manual_steps": ["Restart the browser."],
     "no_local_fix_reason": "",
 }
 
@@ -1172,6 +1373,7 @@ class TestParseReply:
             "reasoning",
             "evidence_refs",
             "suggested_actions",
+            "manual_steps",
             "no_local_fix_reason",
         }
         assert verdict["suggested_actions"] == ["flush_dns"]

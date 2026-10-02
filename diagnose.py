@@ -261,6 +261,35 @@ def _intercepted(evidence: dict) -> bool:
     return (_data(evidence, "dns.interception") or {}).get("intercepted") is True
 
 
+def interceptor_location(evidence: dict) -> dict:
+    """Where the DNS interceptor sits, read from dns.interception's hop test.
+
+    ``{"where", "gateway"}``. ``where`` is ``"router"`` (a connection's own
+    router, ``gateway``), ``"upstream"`` (past this PC's router, whose address
+    is ``gateway``), ``"pc"``, ``"pc_or_router"`` (one connection, answered at
+    hop 1: software here and the router look the same) or ``"unknown"``.
+    Software on this PC answers at any hop limit on every connection, so a
+    connection that needed 2+ hops, or got no answer at all, rules the PC out.
+    """
+    paths = [
+        p
+        for p in (_data(evidence, "dns.interception") or {}).get("paths") or []
+        if isinstance(p, dict) and isinstance(p.get("gateway"), str)
+    ]
+    hops = [p.get("answering_hop") for p in paths]
+    if not paths or not any(isinstance(h, int) for h in hops):
+        return {"where": "unknown", "gateway": None}
+    first = [p for p in paths if p.get("answering_hop") == 1]
+    if any(not isinstance(h, int) or h >= 2 for h in hops):
+        if first:
+            return {"where": "router", "gateway": first[0]["gateway"]}
+        return {"where": "upstream", "gateway": paths[0]["gateway"]}
+    if len({p["gateway"] for p in first}) >= 2:
+        # Two different routers both faking DNS is far less likely than one program on this PC.
+        return {"where": "pc", "gateway": None}
+    return {"where": "pc_or_router", "gateway": first[0]["gateway"]}
+
+
 def _trusted_resolvers(evidence: dict) -> list[dict]:
     """The direct resolvers whose answers are measurements: all of them, or only
     the DNS-over-TLS ones when the network intercepts plain DNS."""
@@ -383,12 +412,87 @@ def _verdict(status: str, locus: str, headline: str, reasoning: str, **extra) ->
         "reasoning": reasoning,
         "evidence_refs": [],
         "suggested_actions": [],
+        "manual_steps": [],
         "no_local_fix_reason": "",
         "source": "rules",
         "rule_hits": [],
     }
     verdict.update(extra)
     return verdict
+
+
+# "Steps you can take": plain-language advice shown as text. Unlike
+# suggested_actions nothing here is ever run; the user follows it themselves.
+MAX_MANUAL_STEPS = 6
+MAX_STEP_CHARS = 300
+
+_FLUSH_STEP = "Then run ipconfig /flushdns in a terminal (or restart the browser) so the PC forgets the old answer."
+_DOH_STEP = (
+    "Workaround for this PC: Settings > Network & internet > your connection > DNS server assignment > Edit > "
+    "Manual, IPv4 on, Preferred DNS 1.1.1.1 and Alternate 1.0.0.1, with DNS over HTTPS set to On. Encrypted "
+    "DNS goes past the filter."
+)
+_BROWSER_DOH_STEP = (
+    "Browser-only workaround: in Chrome or Edge, Settings > Privacy and security > Security > Use secure DNS, "
+    "and choose Cloudflare."
+)
+
+
+def _pc_filter_step(host: str) -> str:
+    return (
+        "Check software on this PC that can block sites: VPN apps (even when disconnected), antivirus or "
+        f"security suites with web or DNS protection, and parental-control apps. Allow {host} or turn the "
+        "blocking off."
+    )
+
+
+def _router_step(host: str, gateway: str | None) -> str:
+    page = f"at http://{gateway} " if gateway else ""
+    return (
+        f"Open your router's admin page {page}and look under Parental Controls and any security or "
+        f"network-protection setting. Allow {host} or turn that blocking off. If your internet provider "
+        "supplied the router, the same setting is often in the provider's phone app."
+    )
+
+
+def _dns_block_steps(host: str, where: str, gateway: str | None) -> list[str]:
+    """Steps for a name that this network's DNS blocks, by where the interceptor sits."""
+    check = f"To check, run nslookup {host} in a terminal: it lists an address once the block is lifted."
+    if where == "router":
+        return [_router_step(host, gateway), _DOH_STEP, _BROWSER_DOH_STEP, check, _FLUSH_STEP]
+    if where == "upstream":
+        upstream = (
+            "The blocking device is past your own router: usually the internet provider's modem or router. "
+            "Check its admin page for Parental Controls or security blocking, or ask the provider to "
+            f"unblock {host}."
+        )
+        return [upstream, _DOH_STEP, _BROWSER_DOH_STEP, check, _FLUSH_STEP]
+    if where == "pc":
+        return [
+            _pc_filter_step(host),
+            f"Turn them off one at a time and run nslookup {host} after each.",
+            _BROWSER_DOH_STEP,
+            "If none of them is the cause, check your router's Parental Controls and security settings too: "
+            "two connections can lead to the same router (for example its main and guest networks).",
+            _FLUSH_STEP,
+        ]
+    return [_router_step(host, gateway), _pc_filter_step(host), _DOH_STEP, check, _FLUSH_STEP]
+
+
+def clean_steps(steps: Any) -> list[str]:
+    """``steps`` as at most MAX_MANUAL_STEPS distinct, non-empty, single-line strings."""
+    out: list[str] = []
+    for step in steps if isinstance(steps, list) else []:
+        if not isinstance(step, str):
+            continue
+        text = " ".join(step.split())
+        if len(text) > MAX_STEP_CHARS:
+            text = text[: MAX_STEP_CHARS - 1].rstrip() + "…"
+        if text and text not in out:
+            out.append(text)
+        if len(out) == MAX_MANUAL_STEPS:
+            break
+    return out
 
 
 def _rule_hosts_override(evidence: dict, host: str) -> dict | None:
@@ -405,8 +509,43 @@ def _rule_hosts_override(evidence: dict, host: str) -> dict | None:
         f"The hosts file on this PC (line {line}) maps {host} to {ip}, which overrides DNS. "
         "Remove or fix that line to restore normal lookups.",
         evidence_refs=["dns.hosts_file"],
+        manual_steps=[
+            "Open Notepad as administrator (right-click Notepad > Run as administrator).",
+            r"In Notepad choose File > Open, set the file type to All files, and open "
+            r"C:\Windows\System32\drivers\etc\hosts.",
+            f"Delete line {line} (or put # at its start to disable it), then save.",
+            _FLUSH_STEP,
+        ],
         rule_hits=["hosts_override"],
     )
+
+
+# interceptor_location's "where" -> (headline template, reasoning sentence).
+_BLOCK_WHERE = {
+    "router": (
+        "Your router is blocking {host}",
+        "A hop-limited test shows the fake answers come from your router, not from software on this PC.",
+    ),
+    "upstream": (
+        "A device past your router is blocking {host}",
+        "A hop-limited test shows the fake answers come from beyond your own router (often the internet "
+        "provider's modem or router), not from this PC.",
+    ),
+    "pc": (
+        "Software on this PC is probably blocking {host}",
+        "A hop-limited test shows the fake answers come from the first hop on every connection. The "
+        "connections use different routers, so a VPN, security suite or other DNS filter installed on this PC "
+        "is the likely source, unless both connections lead to the same router.",
+    ),
+    "unknown": (
+        "Your network's DNS is blocking {host}",
+        "Something that answers DNS queries itself (a router, VPN or DNS filter) is giving that answer.",
+    ),
+}
+_BLOCK_WHERE["pc_or_router"] = (
+    _BLOCK_WHERE["unknown"][0],
+    "The fake answers come from this PC or your router; a test from a single connection cannot tell which.",
+)
 
 
 def _rule_dns_filtered(evidence: dict, host: str) -> dict | None:
@@ -419,16 +558,26 @@ def _rule_dns_filtered(evidence: dict, host: str) -> dict | None:
     tls = [r for r in _resolvers(evidence) if r.get("transport") == "tls"]
     if not any(r.get("rcode") == "NOERROR" and r.get("answers") for r in tls):
         return None
+    loc = interceptor_location(evidence)
+    headline, where_text = _BLOCK_WHERE.get(loc["where"], _BLOCK_WHERE["unknown"])
     return _verdict(
         "likely",
         "local",
-        f"Your network's DNS is blocking {host}",
+        headline.format(host=host),
         f"Public DNS servers asked over encrypted DNS return an address for {host}, but this network's own DNS "
-        "(a VPN, router or DNS filter that answers DNS queries itself) says it has none. The block is on this "
-        "network, not at the site, so flushing this PC's DNS cache will not help.",
+        f"says it has none. {where_text} The block is not at the site, so flushing this PC's DNS cache will "
+        "not help.",
         evidence_refs=["dns.interception", "dns.resolve_direct"],
+        manual_steps=_dns_block_steps(host, loc["where"], loc["gateway"]),
         rule_hits=["dns_filtered"],
     )
+
+
+def _external_steps(host: str) -> list[str]:
+    return [
+        f"If you manage {host}, add an address (A) record for it at your DNS provider.",
+        "Otherwise, contact the site's owner or try again later; nothing on this PC needs changing.",
+    ]
 
 
 def _rule_external_no_address(evidence: dict, host: str) -> dict | None:
@@ -461,6 +610,7 @@ def _rule_external_no_address(evidence: dict, host: str) -> dict | None:
             "with no address record, although it publishes other records such as mail or text records.",
             evidence_refs=[*refs, "dns.record_sweep"],
             no_local_fix_reason=_NO_LOCAL_FIX_NODATA,
+            manual_steps=_external_steps(host),
             rule_hits=["external_no_address"],
         )
     if any(ns.get("rcode") == "NXDOMAIN" for ns in answering):
@@ -472,6 +622,7 @@ def _rule_external_no_address(evidence: dict, host: str) -> dict | None:
             "does not exist.",
             evidence_refs=refs,
             no_local_fix_reason=_NO_LOCAL_FIX_NXDOMAIN,
+            manual_steps=[f"Check the spelling of {host}.", *_external_steps(host)],
             rule_hits=["external_no_address"],
         )
     if sweep is not None:
@@ -484,8 +635,15 @@ def _rule_external_no_address(evidence: dict, host: str) -> dict | None:
         f"record for {host}.",
         evidence_refs=refs,
         no_local_fix_reason=_NO_LOCAL_FIX_NODATA,
+        manual_steps=_external_steps(host),
         rule_hits=["external_no_address"],
     )
+
+
+_STALE_STEPS = [
+    "Use the Flush DNS cache fix below, or run ipconfig /flushdns in a terminal.",
+    "Restart the browser too: browsers keep their own short-lived DNS cache.",
+]
 
 
 def _rule_stale_cache(evidence: dict, host: str) -> dict | None:
@@ -511,6 +669,7 @@ def _rule_stale_cache(evidence: dict, host: str) -> dict | None:
             "answer, so the cached entry is stale. Flushing the DNS cache should clear it.",
             evidence_refs=refs,
             suggested_actions=["flush_dns"],
+            manual_steps=_STALE_STEPS,
             rule_hits=["stale_cache"],
         )
     if live_addrs:
@@ -522,6 +681,7 @@ def _rule_stale_cache(evidence: dict, host: str) -> dict | None:
             "so the cached entry is stale. Flushing the DNS cache should clear it.",
             evidence_refs=refs,
             suggested_actions=["flush_dns"],
+            manual_steps=_STALE_STEPS,
             rule_hits=["stale_cache"],
         )
     # The cache resolves but live DNS definitively says there is no address.
@@ -542,6 +702,7 @@ def _rule_stale_cache(evidence: dict, host: str) -> dict | None:
                 "The domain's own nameservers no longer publish an address for it; this PC is only "
                 "holding an old cached copy. Only whoever manages the domain's DNS can restore it."
             ),
+            manual_steps=_external_steps(host),
             rule_hits=["stale_cache_external"],
         )
     return _verdict(
@@ -551,6 +712,7 @@ def _rule_stale_cache(evidence: dict, host: str) -> dict | None:
         f"This PC's DNS cache still holds an address for {host} that the live DNS servers no longer return.",
         evidence_refs=refs,
         suggested_actions=["flush_dns"],
+        manual_steps=_STALE_STEPS,
         rule_hits=["stale_cache"],
     )
 
@@ -568,6 +730,11 @@ def _rule_dead_gateway(evidence: dict, host: str) -> dict | None:
         f"reached, so {host} is unreachable because this PC has lost its network path.",
         evidence_refs=["net.gateway", "net.control_domain"],
         suggested_actions=["reset_network_adapter"],
+        manual_steps=[
+            "Check the network cable, or that Wi-Fi is connected to your own network.",
+            "Restart the router: unplug it for 30 seconds, plug it back in and wait two minutes.",
+            "If other devices are online but this PC is not, use the Reset network adapter fix below.",
+        ],
         rule_hits=["dead_gateway"],
     )
 
@@ -822,7 +989,14 @@ _SYSTEM_PROMPT = (
     'from a local interceptor, not the named servers, so trust only transport "tls" results. '
     'Use kind "need_probes" to request up to 4 keys from available_probes when the evidence cannot yet '
     "distinguish the causes. When rounds_remaining is 0 you must return a verdict. "
-    "Say inconclusive rather than guess."
+    "Say inconclusive rather than guess. "
+    "dns.interception paths give, per network connection, the smallest hop limit at which the fake answer "
+    "came back: software on this PC answers at hop 1 on every connection, so an answer needing 2 or more "
+    "hops, or none, means a router or a device beyond it. "
+    f"In manual_steps give up to {MAX_MANUAL_STEPS} short, plain-language steps, in order, that the user can "
+    "take themselves to fix or work around the problem (settings to check, things to try, how to confirm the "
+    "fix). They are shown as text and never run. Do not repeat the suggested_actions; use [] when nothing "
+    "applies."
 )
 
 
@@ -862,6 +1036,7 @@ def reply_schema(class_key: str) -> dict:
             "reasoning",
             "evidence_refs",
             "suggested_actions",
+            "manual_steps",
             "no_local_fix_reason",
         ],
         "properties": {
@@ -873,6 +1048,7 @@ def reply_schema(class_key: str) -> dict:
             "reasoning": {"type": "string"},
             "evidence_refs": {"type": "array", "items": {"type": "string"}},
             "suggested_actions": {"type": "array", "items": {"type": "string", "enum": actions}},
+            "manual_steps": {"type": "array", "items": {"type": "string"}},
             "no_local_fix_reason": {"type": "string"},
         },
     }
@@ -979,6 +1155,8 @@ def parse_reply(obj: dict, class_key: str) -> tuple[str, Any] | None:
         "reasoning": texts["reasoning"],
         "evidence_refs": [str(r) for r in refs],
         "suggested_actions": _keep_known(actions, remediation.REMEDIATION_REGISTRY, "action"),
+        # Advice text only; a missing or malformed list just means no steps.
+        "manual_steps": clean_steps(obj.get("manual_steps")),
         "no_local_fix_reason": texts["no_local_fix_reason"],
     }
 
@@ -996,6 +1174,10 @@ def apply_guards(verdict: dict, evidence: dict, rule_verdict: dict, target_host:
     contradict it, so status, headline, reasoning and no_local_fix_reason are
     taken from the rule verdict too, ``evidence_refs`` are merged (rule first)
     and ``overridden_model_locus`` records what the model had said.
+
+    ``manual_steps`` (advice text, never run) are cleaned by ``clean_steps``,
+    taken from the rule verdict on that override, and borrowed from a
+    conclusive rule verdict with the same locus when the model gave none.
     """
     rule_verdict = rule_verdict or {}
     out = copy.deepcopy(verdict)
@@ -1019,12 +1201,22 @@ def apply_guards(verdict: dict, evidence: dict, rule_verdict: dict, target_host:
             out["overridden_model_locus"] = out.get("locus")
             for key in ("status", "headline", "reasoning", "no_local_fix_reason"):
                 out[key] = rule_verdict.get(key) or ""
+            out["manual_steps"] = rule_verdict.get("manual_steps") or []
             merged = [*(rule_verdict.get("evidence_refs") or []), *(out["evidence_refs"] or [])]
             out["evidence_refs"] = list(dict.fromkeys(merged))
             source = "rules"
         out["locus"] = "external_cause"
         if not out["no_local_fix_reason"]:
             out["no_local_fix_reason"] = rule_verdict.get("no_local_fix_reason") or ""
+    out["manual_steps"] = clean_steps(out.get("manual_steps"))
+    # A model that agrees with a conclusive rule finding but gave no steps borrows the rule's.
+    if (
+        not out["manual_steps"]
+        and out.get("status") in ("confident", "likely")
+        and rule_verdict.get("status") in ("confident", "likely")
+        and out.get("locus") == rule_verdict.get("locus")
+    ):
+        out["manual_steps"] = clean_steps(rule_verdict.get("manual_steps"))
     # Allowlist, last line of defence: anything odd or missing carries no actions.
     if not (out.get("status") in ("confident", "likely") and out.get("locus") in ("local", "unknown")):
         out["suggested_actions"] = []
@@ -1286,6 +1478,7 @@ _OUT_OF_ROUNDS = {
     "reasoning": "The model still asked for more evidence after the last permitted probe round.",
     "evidence_refs": [],
     "suggested_actions": [],
+    "manual_steps": [],
     "no_local_fix_reason": "",
 }
 

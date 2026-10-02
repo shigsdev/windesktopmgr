@@ -1,0 +1,180 @@
+{
+  "symptom": "This site can’t be reached\nhynote.ai’s server IP address could not be found.\nTry:\nChecking the connection\nChecking the proxy, firewall, and DNS configuration\nRunning Windows Network Diagnostics\nERR_NAME_NOT_RESOLVED",
+  "evidence": {
+    "dns.interception": {
+      "ok": true,
+      "data": {
+        "intercepted": true,
+        "probe_server": "192.0.2.1",
+        "answered_rcode": "NOERROR",
+        "paths": [
+          {
+            "source": "192.168.1.159",
+            "gateway": "192.168.1.1",
+            "answering_hop": 1,
+            "error": null
+          },
+          {
+            "source": "10.0.0.34",
+            "gateway": "10.0.0.1",
+            "answering_hop": 2,
+            "error": null
+          }
+        ]
+      }
+    },
+    "dns.resolve_cached": {
+      "ok": true,
+      "data": {
+        "resolved": false,
+        "addresses": [],
+        "error": "[Errno 11001] getaddrinfo failed"
+      }
+    },
+    "dns.resolve_direct": {
+      "ok": true,
+      "data": {
+        "dnspython": true,
+        "resolvers": [
+          {
+            "name": "system",
+            "server": "192.168.1.1",
+            "transport": "udp",
+            "rcode": "NXDOMAIN",
+            "nodata": false,
+            "answers": []
+          },
+          {
+            "name": "cloudflare",
+            "server": "1.1.1.1",
+            "transport": "tls",
+            "rcode": "NOERROR",
+            "nodata": false,
+            "answers": [
+              "34.110.213.225"
+            ]
+          },
+          {
+            "name": "google",
+            "server": "8.8.8.8",
+            "transport": "tls",
+            "rcode": "NOERROR",
+            "nodata": false,
+            "answers": [
+              "34.110.213.225"
+            ]
+          }
+        ]
+      }
+    },
+    "dns.authoritative": {
+      "ok": true,
+      "data": {
+        "zone": "hynote.ai",
+        "nameservers": [
+          {
+            "name": "ns-cloud-a1.googledomains.com",
+            "ip": "216.239.32.106",
+            "rcode": "NXDOMAIN",
+            "nodata": false,
+            "aa": false,
+            "answers": []
+          }
+        ]
+      }
+    },
+    "dns.record_sweep": {
+      "ok": true,
+      "data": {
+        "rcode": "NXDOMAIN",
+        "records": {
+          "A": [],
+          "AAAA": [],
+          "CNAME": [],
+          "MX": [
+            "1 smtp.google.com."
+          ],
+          "TXT": [
+            "\"v=spf1 include:_spf.google.com include:sendgrid.net ~all\""
+          ],
+          "SOA": [],
+          "NS": []
+        }
+      }
+    },
+    "dns.hosts_file": {
+      "ok": true,
+      "data": {
+        "path": "C:\\Windows\\System32\\drivers\\etc\\hosts",
+        "readable": true,
+        "matches": []
+      }
+    },
+    "dns.client_config": {
+      "ok": true,
+      "data": {
+        "adapters": [
+          {
+            "guid": "{00000000-0000-0000-0000-000000000001}",
+            "dns_servers": [
+              "192.168.1.1"
+            ]
+          }
+        ],
+        "search_list": [],
+        "enable_auto_doh": null
+      }
+    },
+    "net.control_domain": {
+      "ok": true,
+      "data": {
+        "host": "www.microsoft.com",
+        "resolved": true,
+        "address": "23.1.2.3",
+        "connected": true,
+        "connect_ms": 18.2,
+        "error": null
+      }
+    },
+    "net.gateway": {
+      "ok": true,
+      "data": {
+        "gateways": [
+          "192.168.1.1"
+        ],
+        "reachable": true,
+        "rtt_ms": 0.5
+      }
+    },
+    "net.proxy_config": {
+      "ok": true,
+      "data": {
+        "wininet": {
+          "proxy_enable": 0,
+          "proxy_server": null,
+          "proxy_override": null,
+          "auto_config_url": null,
+          "auto_detect": null
+        },
+        "winhttp": {
+          "direct": true,
+          "proxy_server": "",
+          "bypass": ""
+        },
+        "env": {
+          "HTTP_PROXY": null,
+          "HTTPS_PROXY": null,
+          "NO_PROXY": null
+        }
+      }
+    }
+  },
+  "expect": {
+    "target_host": "hynote.ai",
+    "locus": "local",
+    "must_include": [],
+    "must_exclude": [
+      "flush_dns"
+    ]
+  }
+}

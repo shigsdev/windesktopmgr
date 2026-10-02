@@ -140,6 +140,7 @@ record type, so the Python-first ladder in CLAUDE.md lands on the pip package
 | `net.control_domain` | Resolve + TCP-connect a known-good domain | Separates "this name" from "all DNS" |
 | `net.gateway` | Ping/ARP the default gateway | Separates DNS from link-layer |
 | `net.proxy_config` | WinINET/WinHTTP proxy + PAC settings | A PAC file can produce resolution-shaped failures |
+| `dns.interception` | Ask a never-routed address (192.0.2.1) for a name; any reply means something answers DNS itself. When it does, a **hop test** repeats the query with the IP hop limit (TTL) at 1, 2, 3 from each connection's own address and records the first hop that answers | Without it every plain-DNS result is the interceptor's word. The hop test says *where* the interceptor is (added 2026-10-02, see §8.1) |
 
 **The cache-comparison insight is the centrepiece.** `dns.resolve_cached`
 agreeing with `dns.resolve_direct` proves the OS cache is not the problem,
@@ -200,9 +201,13 @@ failure degrades to evidence-only, never a 500):
   "reasoning": "Prose citing probe keys.",
   "evidence_refs": ["dns.record_sweep", "dns.authoritative"],
   "suggested_actions": ["flush_dns"],
+  "manual_steps": ["Plain-language step the user takes themselves", "..."],
   "no_local_fix_reason": "The zone is served correctly; the A record is absent at the source."
 }
 ```
+
+`manual_steps` was added 2026-10-02 (§8.1). It is advice text, never an
+action, and appears on every verdict shape (rules and model).
 
 - `locus: "external_cause"` exists specifically so the engine can say *there
   is nothing to fix here*. When `locus` is `external_cause`,
@@ -253,6 +258,51 @@ The user clicks; the existing `POST /api/remediation/run` executes it, with
 its existing logging. **Nothing auto-executes.** The model cannot invent an
 action, cannot pass arguments, and cannot reach anything outside the ten
 vetted entries.
+
+### 8.1 Steps you can take (added 2026-10-02)
+
+The first real run (hynote.ai) explained the cause but gave no way to fix
+it: no registry action applies to "your router blocks this name". So every
+verdict also carries `manual_steps`, a list of at most 6 short strings
+(each at most 300 characters) that the user follows themselves.
+
+- **Text only, never run.** Steps are separate from `suggested_actions` on
+  purpose: the registry allowlist stays the only path to execution. The UI
+  renders them HTML-escaped in an ordered list under "Steps you can take",
+  with no buttons or links.
+- **Rules carry built-in steps.** `hosts_override` (edit line N of the hosts
+  file), `dns_filtered` (by interceptor location, below), `stale_cache`,
+  `external_no_address` / `stale_cache_external` (spelling, the domain
+  owner's DNS), `dead_gateway` (cable, router restart). The inconclusive
+  fallbacks carry none.
+- **The model writes its own.** The schema requires `manual_steps`; the
+  prompt asks for ordered, plain-language steps and says they are never run.
+  `clean_steps` collapses whitespace, drops non-strings, blanks and
+  duplicates, and caps count and length. A missing or malformed list means
+  no steps, not a parse failure.
+- **Guards.** When the confident-external override replaces the model's
+  text, the rule's steps replace the model's steps too. A conclusive model
+  verdict that agrees with a conclusive rule verdict's locus but gave no
+  steps borrows the rule's. An inconclusive or disagreeing model verdict
+  never borrows.
+
+**Interceptor location (`interceptor_location`).** Software on this PC
+answers the never-routed query at any hop limit on every connection; a
+router answers only once the limit lets the packet reach it. So:
+
+| Hop test result | `where` | Headline |
+|---|---|---|
+| Some connection needed 2+ hops (or got no answer) and another answered at hop 1 | `router` (that connection's gateway) | "Your router is blocking X" |
+| Every answering connection needed 2+ hops | `upstream` | "A device past your router is blocking X" |
+| Two connections, different gateways, both hop 1 | `pc` | "Software on this PC is probably blocking X" |
+| One connection (or one gateway), hop 1 | `pc_or_router` | "Your network's DNS is blocking X" |
+
+The `pc` reading still lists the router last: two gateway IPs can be one
+router (main and guest networks). Windows reports a non-intercepting
+router's ICMP "time exceeded" as a receive error, which counts as no answer
+at that hop, not as a failed path. The real case that motivated it: Ethernet
+answered at hop 1 (the Verizon CR1000A) and Wi-Fi at hop 2 (a second router
+behind it), so the culprit was the CR1000A, not this PC.
 
 ## 9. Evidence-only mode
 

@@ -10441,8 +10441,18 @@ function dx_verdictHtml(v, status) {
         <span class="dx-risk dx-risk-${escHtml(a.risk)}">${escHtml(a.risk)} risk</span></button>`).join("") +
       '</div><div id="dx-action-msg" class="dx-msg" style="display:none"></div>';
   }
+  html += dx_stepsHtml(v);
   if (refs) html += `<div class="dx-refs">Based on: ${refs}</div>`;
   return html + "</div>";
+}
+
+// "Steps you can take": advice text only. Unlike the fix buttons above,
+// nothing here runs; the user follows the steps themselves.
+function dx_stepsHtml(v) {
+  const steps = v && Array.isArray(v.manual_steps) ? v.manual_steps.filter(s => typeof s === "string" && s) : [];
+  if (!steps.length) return "";
+  return `<div class="dx-steps" data-dx-steps="${steps.length}"><div class="dx-steps-title">Steps you can take</div>
+    <ol>${steps.map(s => `<li>${escHtml(s)}</li>`).join("")}</ol></div>`;
 }
 
 function dx_renderResult(status) {
@@ -10470,6 +10480,7 @@ function dx_renderResult(status) {
       evidenceOpen = true;
       html += `<div class="dx-inconclusive"><div class="dx-headline">Couldn't determine this</div>
         <div class="dx-reasoning">${escHtml(v && v.reasoning ? v.reasoning : "The checks did not point to a single cause.")}</div>
+        ${dx_stepsHtml(v)}
         <div class="dx-sub">The evidence is below. Nothing was changed on this PC.</div></div>`;
     }
   }
