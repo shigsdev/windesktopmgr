@@ -999,15 +999,49 @@ class TestApplyGuards:
         out = diagnose.apply_guards(_model_verdict(), evidence, rule)
         assert out["locus"] == "external_cause"
         assert out["suggested_actions"] == []
+        # The model's text contradicted the override, so the rule's text replaces it.
+        assert out["headline"] == rule["headline"]
+        assert out["status"] == rule["status"] == "confident"
+        assert out["reasoning"] == rule["reasoning"]
         assert out["no_local_fix_reason"] == rule["no_local_fix_reason"]
-        assert out["source"] == "model"
+        assert out["source"] == "rules"
+        assert out["overridden_model_locus"] == "local"
         assert out["rule_hits"] == rule["rule_hits"]
 
-    def test_models_own_no_local_fix_reason_is_kept(self):
+    def test_override_merges_evidence_refs_rule_first_deduplicated(self):
         evidence = _fixture_evidence("hynote_zone_missing_a")
         rule = diagnose.evaluate_rules(evidence, "hynote.ai")
-        out = diagnose.apply_guards(_model_verdict(no_local_fix_reason="mine"), evidence, rule)
+        verdict = _model_verdict(evidence_refs=["net.gateway", "dns.resolve_cached"])
+        out = diagnose.apply_guards(verdict, evidence, rule)
+        assert out["evidence_refs"] == [*rule["evidence_refs"], "net.gateway"]
+
+    def test_inconclusive_model_does_not_hide_a_confident_external_rule(self):
+        evidence = _fixture_evidence("hynote_zone_missing_a")
+        rule = diagnose.evaluate_rules(evidence, "hynote.ai")
+        out = diagnose.apply_guards(_model_verdict(status="inconclusive", locus="unknown"), evidence, rule)
+        assert (out["status"], out["locus"]) == ("confident", "external_cause")
+        assert out["headline"] == rule["headline"]
+        assert out["suggested_actions"] == []
+        assert out["overridden_model_locus"] == "unknown"
+
+    def test_model_already_external_keeps_its_text(self):
+        evidence = _fixture_evidence("hynote_zone_missing_a")
+        rule = diagnose.evaluate_rules(evidence, "hynote.ai")
+        verdict = _model_verdict(locus="external_cause", headline="model words", no_local_fix_reason="mine")
+        out = diagnose.apply_guards(verdict, evidence, rule)
+        assert out["locus"] == "external_cause"
+        assert out["headline"] == "model words"
         assert out["no_local_fix_reason"] == "mine"
+        assert out["source"] == "model"
+        assert "overridden_model_locus" not in out
+        assert out["evidence_refs"] == ["dns.resolve_cached"]
+
+    def test_model_already_external_with_empty_reason_gets_the_rules(self):
+        evidence = _fixture_evidence("hynote_zone_missing_a")
+        rule = diagnose.evaluate_rules(evidence, "hynote.ai")
+        out = diagnose.apply_guards(_model_verdict(locus="external_cause"), evidence, rule)
+        assert out["no_local_fix_reason"] == rule["no_local_fix_reason"]
+        assert out["source"] == "model"
 
     def test_cache_agrees_drops_flush_dns_keeps_other_actions(self):
         verdict = _model_verdict(suggested_actions=["flush_dns", "reset_winsock"])
@@ -1052,9 +1086,38 @@ class TestApplyGuards:
         out = diagnose.apply_guards(verdict, _agreeing_evidence(), rule)
         assert verdict == v0
         assert rule == r0
-        assert set(out) == VERDICT_KEYS
+        assert set(out) == VERDICT_KEYS | {"overridden_model_locus"}
         out["rule_hits"].append("y")
         assert rule["rule_hits"] == ["x"]
+
+    def test_non_overridden_verdict_has_exactly_the_verdict_keys(self):
+        out = diagnose.apply_guards(_model_verdict(), {}, {})
+        assert set(out) == VERDICT_KEYS
+
+    @pytest.mark.parametrize(
+        "odd",
+        [
+            {"status": "Inconclusive"},
+            {"status": None},
+            {"locus": None},
+            {"locus": "Local"},
+            {"locus": "cloud"},
+            {"status": "certain"},
+        ],
+    )
+    def test_odd_status_or_locus_carries_no_actions(self, odd):
+        out = diagnose.apply_guards(_model_verdict(**odd), {}, {})
+        assert out["suggested_actions"] == []
+
+    def test_missing_locus_carries_no_actions(self):
+        verdict = _model_verdict()
+        del verdict["locus"]
+        assert diagnose.apply_guards(verdict, {}, {})["suggested_actions"] == []
+
+    @pytest.mark.parametrize(("status", "locus"), [("confident", "local"), ("likely", "unknown"), ("likely", "local")])
+    def test_actions_survive_on_confident_or_likely_local_or_unknown(self, status, locus):
+        out = diagnose.apply_guards(_model_verdict(status=status, locus=locus), {}, {})
+        assert out["suggested_actions"] == ["flush_dns"]
 
     def test_tolerates_a_sparse_verdict(self):
         out = diagnose.apply_guards({"status": "likely", "locus": "local"}, {}, None)

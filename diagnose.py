@@ -775,7 +775,13 @@ def apply_guards(verdict: dict, evidence: dict, rule_verdict: dict) -> dict:
 
     Order: unknown actions dropped; ``flush_dns`` dropped when the cache and
     live DNS agree; a confident rule-based ``external_cause`` overrides the
-    model's locus; ``external_cause`` / ``inconclusive`` carry no actions.
+    model's locus; actions survive only on a ``confident``/``likely`` verdict
+    whose locus is ``local``/``unknown``.
+
+    When that override actually changes the locus, the model's text would
+    contradict it, so status, headline, reasoning and no_local_fix_reason are
+    taken from the rule verdict too, ``evidence_refs`` are merged (rule first)
+    and ``overridden_model_locus`` records what the model had said.
     """
     rule_verdict = rule_verdict or {}
     out = copy.deepcopy(verdict)
@@ -787,12 +793,21 @@ def apply_guards(verdict: dict, evidence: dict, rule_verdict: dict) -> dict:
     )
     if cache_agrees(evidence) is True:
         out["suggested_actions"] = [a for a in out["suggested_actions"] if a != "flush_dns"]
+    source = "model"
     if rule_verdict.get("status") == "confident" and rule_verdict.get("locus") == "external_cause":
+        if out.get("locus") != "external_cause":
+            out["overridden_model_locus"] = out.get("locus")
+            for key in ("status", "headline", "reasoning", "no_local_fix_reason"):
+                out[key] = rule_verdict.get(key) or ""
+            merged = [*(rule_verdict.get("evidence_refs") or []), *(out["evidence_refs"] or [])]
+            out["evidence_refs"] = list(dict.fromkeys(merged))
+            source = "rules"
         out["locus"] = "external_cause"
         if not out["no_local_fix_reason"]:
             out["no_local_fix_reason"] = rule_verdict.get("no_local_fix_reason") or ""
-    if out.get("locus") == "external_cause" or out.get("status") == "inconclusive":
+    # Allowlist, last line of defence: anything odd or missing carries no actions.
+    if not (out.get("status") in ("confident", "likely") and out.get("locus") in ("local", "unknown")):
         out["suggested_actions"] = []
-    out["source"] = "model"
+    out["source"] = source
     out["rule_hits"] = list(rule_verdict.get("rule_hits") or [])
     return out
