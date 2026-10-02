@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -396,3 +398,237 @@ class TestEvaluateRulesVerdicts:
             "net.gateway": {"ok": True, "data": None},
         }
         assert diagnose.evaluate_rules(ev, None)["status"] == "inconclusive"
+
+
+class TestRedact:
+    @pytest.fixture(autouse=True)
+    def _user(self, monkeypatch):
+        monkeypatch.setenv("USERNAME", "Al")
+
+    def test_username_in_paths_any_case(self):
+        assert diagnose.redact(r"C:\Users\Al\x", ["username"]) == r"C:\Users\<user>\x"
+        assert diagnose.redact(r"C:\USERS\al\x", ["username"]) == r"C:\USERS\<user>\x"
+
+    def test_username_is_whole_word_only(self):
+        assert diagnose.redact("local alpha", ["username"]) == "local alpha"
+
+    def test_username_plain_word(self):
+        assert diagnose.redact("Al reported", ["username"]) == "<user> reported"
+
+    @pytest.mark.parametrize("value", [None, "", "   "])
+    def test_username_unset_or_blank_leaves_input(self, monkeypatch, value):
+        if value is None:
+            monkeypatch.delenv("USERNAME", raising=False)
+        else:
+            monkeypatch.setenv("USERNAME", value)
+        assert diagnose.redact("Al reported", ["username"]) == "Al reported"
+
+    def test_username_is_regex_escaped(self, monkeypatch):
+        monkeypatch.setenv("USERNAME", "a.b")
+        assert diagnose.redact("a.b and axb", ["username"]) == "<user> and axb"
+
+    def test_username_idempotent_even_for_placeholder_like_name(self, monkeypatch):
+        monkeypatch.setenv("USERNAME", "user")
+        once = diagnose.redact(r"user at C:\Users\user", ["username"])
+        assert once == r"<user> at C:\Users\<user>"
+        assert diagnose.redact(once, ["username"]) == once
+
+    @pytest.mark.parametrize("mac", ["aa:bb:cc:dd:ee:ff", "AA-BB-CC-DD-EE-FF", "Aa:bB-cC:dd-Ee:fF"])
+    def test_mac_both_separators(self, mac):
+        assert diagnose.redact(f"adapter {mac} up", ["mac"]) == "adapter <mac> up"
+
+    def test_mac_not_applied_unless_requested(self):
+        assert diagnose.redact("aa:bb:cc:dd:ee:ff", ["username"]) == "aa:bb:cc:dd:ee:ff"
+
+    def test_serial_key_value_replaced(self):
+        assert diagnose.redact({"SerialNumber": "S3Z9NX0K"}, ["serial"]) == {"SerialNumber": "<serial>"}
+
+    def test_serial_replaces_nested_value_and_matches_any_key_containing_serial(self):
+        out = diagnose.redact({"a": [{"disk_serial_no": {"x": 1}, "ok": "S3Z9NX0K"}]}, ["serial"])
+        assert out == {"a": [{"disk_serial_no": "<serial>", "ok": "S3Z9NX0K"}]}
+
+    def test_local_ip_redacts_only_private(self):
+        assert diagnose.redact("192.168.1.1 and 8.8.8.8", ["local_ip"]) == "<private-ip> and 8.8.8.8"
+
+    @pytest.mark.parametrize(
+        ("ip", "private"),
+        [
+            ("10.0.0.5", True),
+            ("172.16.0.1", True),
+            ("172.31.255.254", True),
+            ("172.32.0.1", False),
+            ("172.15.0.1", False),
+            ("192.168.255.1", True),
+            ("192.169.0.1", False),
+            ("127.0.0.1", False),
+            ("198.51.100.53", False),
+            ("999.168.1.1", False),
+        ],
+    )
+    def test_local_ip_boundaries(self, ip, private):
+        assert diagnose.redact(ip, ["local_ip"]) == ("<private-ip>" if private else ip)
+
+    def test_local_ip_ignores_longer_dotted_numbers(self):
+        assert diagnose.redact("v10.0.0.1.2", ["local_ip"]) == "v10.0.0.1.2"
+
+    def test_local_ip_off_keeps_private_address(self):
+        assert diagnose.redact("192.168.1.1", ["username", "mac"]) == "192.168.1.1"
+
+    def test_does_not_mutate_input_and_handles_containers(self):
+        original = {"p": ["Al", ("aa:bb:cc:dd:ee:ff", {"n": "Al"})], "n": 5, "f": 1.5, "b": True, "z": None}
+        snapshot = copy.deepcopy(original)
+        out = diagnose.redact(original, ["username", "mac"])
+        assert original == snapshot
+        assert out == {"p": ["<user>", ("<mac>", {"n": "<user>"})], "n": 5, "f": 1.5, "b": True, "z": None}
+        assert isinstance(out["p"][1], tuple)
+
+    def test_dict_keys_are_scrubbed_too(self):
+        assert diagnose.redact({r"C:\Users\Al": 1}, ["username"]) == {r"C:\Users\<user>": 1}
+
+    def test_unknown_class_is_ignored(self):
+        assert diagnose.redact("Al", ["nonsense"]) == "Al"
+
+
+def _session(**over):
+    session = {
+        "symptom": "hynote.ai won't load",
+        "symptom_class": "network_dns",
+        "slots": {"target_host": "hynote.ai"},
+        "round": 0,
+        "evidence": [],
+        "rule_verdict": {
+            "status": "confident",
+            "locus": "external_cause",
+            "headline": "hynote.ai has no web address record",
+            "rule_hits": ["external_no_address"],
+        },
+    }
+    session.update(over)
+    return session
+
+
+class TestBuildPayload:
+    @pytest.fixture(autouse=True)
+    def _user(self, monkeypatch):
+        monkeypatch.setenv("USERNAME", "Al")
+
+    def test_planted_secrets_never_leave_but_diagnostic_facts_do(self):
+        session = _session(
+            symptom=r"Al says hynote.ai won't load, log at C:\Users\Al\err.txt",
+            evidence=[
+                {
+                    "key": "dns.client_config",
+                    "label": "This PC's DNS settings",
+                    "ok": True,
+                    "data": {
+                        "adapters": [{"mac": "AA-BB-CC-DD-EE-FF", "dns": ["198.51.100.53"]}],
+                        "profile": r"C:\Users\al\AppData",
+                    },
+                    "elapsed_ms": 3.0,
+                },
+                {
+                    "key": "net.gateway",
+                    "label": "Ping the default gateway",
+                    "ok": True,
+                    "data": {"gateway": "192.168.1.1", "mac": "aa:bb:cc:dd:ee:ff"},
+                    "elapsed_ms": 4.0,
+                },
+            ],
+        )
+        text = diagnose.build_payload(session)
+        assert "AA-BB-CC-DD-EE-FF" not in text
+        assert "aa:bb:cc:dd:ee:ff" not in text
+        assert not re.search(r"(?<![A-Za-z0-9])al(?![A-Za-z0-9])", text, re.IGNORECASE)
+        assert "hynote.ai" in text
+        assert "198.51.100.53" in text
+        assert "<user>" in text
+        assert "<mac>" in text
+        # local_ip is off for the network class, so the gateway address stays.
+        assert "192.168.1.1" in text
+
+    def test_serial_redacted_only_where_the_probe_declares_it(self, monkeypatch):
+        probe = diagnose.dp.Probe("x.y", "X", "c", lambda s: {}, redact=("serial",))
+        monkeypatch.setitem(diagnose.dp.PROBES, "x.y", probe)
+        ev = [{"key": "x.y", "label": "X", "ok": True, "data": {"SerialNumber": "S3Z9NX0K"}, "elapsed_ms": 1}]
+        text = diagnose.build_payload(_session(evidence=ev))
+        assert "S3Z9NX0K" not in text
+        assert "<serial>" in text
+
+    def test_unknown_probe_key_gets_only_username(self):
+        ev = [{"key": "nope", "label": "N", "ok": True, "data": {"mac": "aa:bb:cc:dd:ee:ff", "u": "Al"}}]
+        text = diagnose.build_payload(_session(evidence=ev))
+        assert "aa:bb:cc:dd:ee:ff" in text
+        assert "<user>" in text
+
+    def test_shape_and_fields(self):
+        payload = json.loads(diagnose.build_payload(_session(round=1)))
+        assert set(payload) == {
+            "schema_version",
+            "symptom",
+            "symptom_class",
+            "slots",
+            "round",
+            "rounds_remaining",
+            "capabilities",
+            "evidence",
+            "rule_finding",
+            "available_probes",
+            "available_actions",
+        }
+        assert payload["schema_version"] == 1
+        assert payload["round"] == 1
+        assert payload["rounds_remaining"] == diagnose.MAX_ROUNDS - 1
+        assert payload["capabilities"] == {"dnspython": diagnose.dp.HAVE_DNSPYTHON}
+        assert payload["slots"] == {"target_host": "hynote.ai"}
+        assert payload["rule_finding"] == {
+            "status": "confident",
+            "locus": "external_cause",
+            "headline": "hynote.ai has no web address record",
+            "rule_hits": ["external_no_address"],
+        }
+
+    def test_max_rounds_is_two(self):
+        assert diagnose.MAX_ROUNDS == 2
+
+    def test_capabilities_follow_have_dnspython(self, monkeypatch):
+        monkeypatch.setattr(diagnose.dp, "HAVE_DNSPYTHON", False)
+        assert json.loads(diagnose.build_payload(_session()))["capabilities"] == {"dnspython": False}
+
+    def test_available_actions_is_the_whole_registry_sorted(self):
+        actions = json.loads(diagnose.build_payload(_session()))["available_actions"]
+        registry = diagnose.remediation.REMEDIATION_REGISTRY
+        assert [a["key"] for a in actions] == sorted(registry)
+        assert set(actions[0]) == {"key", "label", "description"}
+        assert actions[0]["label"] == registry[actions[0]["key"]]["label"]
+
+    def test_available_probes_excludes_already_run_escalations(self):
+        ev = [{"key": "dns.trace_delegation", "label": "T", "ok": True, "data": {}}]
+        probes = json.loads(diagnose.build_payload(_session(evidence=ev)))["available_probes"]
+        escalate = diagnose.SYMPTOM_CLASSES["network_dns"]["escalate"]
+        assert [p["key"] for p in probes] == [k for k in escalate if k != "dns.trace_delegation"]
+        assert probes[0] == {"key": "dns.dnssec_check", "label": diagnose.dp.PROBES["dns.dnssec_check"].label}
+
+    def test_available_probes_empty_for_unknown_class(self):
+        payload = json.loads(diagnose.build_payload(_session(symptom_class=None)))
+        assert payload["available_probes"] == []
+
+    def test_deterministic(self):
+        session = _session(symptom="Al: hynote.ai down")
+        assert diagnose.build_payload(session) == diagnose.build_payload(session)
+
+    def test_session_is_not_mutated(self):
+        session = _session(symptom="Al: hynote.ai down")
+        snapshot = copy.deepcopy(session)
+        diagnose.build_payload(session)
+        assert session == snapshot
+
+    def test_non_ascii_kept_and_keys_sorted(self):
+        text = diagnose.build_payload(_session(symptom="can’t be reached"))
+        assert "can’t be reached" in text
+        keys = list(json.loads(text))
+        assert keys == sorted(keys)
+
+    def test_minimal_session_does_not_raise(self):
+        payload = json.loads(diagnose.build_payload({}))
+        assert payload["evidence"] == []
+        assert payload["rule_finding"]["rule_hits"] == []
