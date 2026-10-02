@@ -70,6 +70,26 @@ def _isolate_homenet_inventory_file(tmp_path_factory):
         homenet.HOMENET_INVENTORY_FILE = real
 
 
+# Same structural guard for the Diagnose audit trail, which holds the exact
+# payloads sent off-machine. A diagnosis worker thread writes history after
+# its session turns terminal, so a test that forgets to redirect the file (or
+# a worker that outlives a test's own monkeypatch) must land here, never in
+# the live tray's diagnose_history.json. test_diagnose.py additionally gives
+# each test its own file on top of this.
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _isolate_diagnose_history_file(tmp_path_factory):
+    """Redirect diagnose.DIAGNOSE_HISTORY_FILE to a per-session tmp path."""
+    test_file = tmp_path_factory.mktemp("diagnose_history_isolated") / "diagnose_history.json"
+    real = diagnose.DIAGNOSE_HISTORY_FILE
+    diagnose.DIAGNOSE_HISTORY_FILE = str(test_file)
+    try:
+        yield str(test_file)
+    finally:
+        diagnose.DIAGNOSE_HISTORY_FILE = real
+
+
 # ── Fixture loading helpers ───────────────────────────────────────────────────
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")

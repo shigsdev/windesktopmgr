@@ -1134,6 +1134,7 @@ class TestApplyGuards:
 # ---------------------------------------------------------------------------
 
 _TERMINAL = ("done", "evidence_only", "error")
+_REAL_WAIT_FOR_CONSENT = diagnose._wait_for_consent
 _WAVE1 = list(diagnose.SYMPTOM_CLASSES["network_dns"]["wave1"])
 _ESCALATE = list(diagnose.SYMPTOM_CLASSES["network_dns"]["escalate"])
 
@@ -1287,6 +1288,16 @@ class TestStartDiagnosis:
         r = diagnose.start_diagnosis("hynote.ai won't load", slots={"target_host": "hynote.ai", "evil": "x"})
         assert diagnose.get_status(r["session_id"])["slots"] == {"target_host": "hynote.ai"}
 
+    def test_none_valued_slot_does_not_hide_the_classifiers_host(self, engine):
+        r = diagnose.start_diagnosis("hynote.ai won't load", slots={"target_host": None})
+        assert r["state"] == "probing_wave1"
+        assert diagnose.get_status(r["session_id"])["slots"] == {"target_host": "hynote.ai"}
+
+    def test_none_valued_slot_still_asks_when_the_classifier_found_nothing(self, engine):
+        r = diagnose.start_diagnosis("the internet is broken", slots={"target_host": None})
+        assert r["state"] == "awaiting_slots"
+        assert r["need"] == ["target_host"]
+
     def test_non_dict_slots_raise(self, engine):
         with pytest.raises(ValueError):
             diagnose.start_diagnosis("hynote.ai won't load", slots=["hynote.ai"])
@@ -1320,6 +1331,61 @@ class TestStartDiagnosis:
             assert diagnose.start_diagnosis(CHROME_BLOB)["ok"] is True
         assert diagnose.start_diagnosis(CHROME_BLOB) == {"ok": False, "error": "busy"}
         assert len(diagnose._sessions) == diagnose._MAX_ACTIVE
+        assert not any(s["superseded"] or s["consent_event"].is_set() for s in diagnose._sessions.values())
+
+    @staticmethod
+    def _park(sid):
+        """Put a (worker-less) session where a real worker sits while the preview shows."""
+        diagnose._sessions[sid]["state"] = "awaiting_consent"
+
+    def test_at_the_limit_the_parked_session_is_superseded_not_the_probing_one(self, engine):
+        parked = diagnose.start_diagnosis(CHROME_BLOB)["session_id"]
+        probing = diagnose.start_diagnosis(CHROME_BLOB)["session_id"]
+        self._park(parked)
+        new = diagnose.start_diagnosis(CHROME_BLOB)
+        assert new["ok"] is True
+        old = diagnose._sessions[parked]
+        assert (old["superseded"], old["consent"], old["consent_event"].is_set()) == (True, False, True)
+        assert diagnose._sessions[probing]["superseded"] is False
+        assert diagnose._sessions[probing]["consent_event"].is_set() is False
+
+    def test_the_oldest_parked_session_is_superseded_first(self, engine):
+        first = diagnose.start_diagnosis(CHROME_BLOB)["session_id"]
+        second = diagnose.start_diagnosis(CHROME_BLOB)["session_id"]
+        self._park(second)
+        self._park(first)
+        diagnose._sessions[first]["created"] -= 10
+        assert diagnose.start_diagnosis(CHROME_BLOB)["ok"] is True
+        assert diagnose._sessions[first]["superseded"] is True
+        assert diagnose._sessions[second]["superseded"] is False
+        # The superseded one no longer counts, so the next start supersedes the other parked one.
+        assert diagnose.start_diagnosis(CHROME_BLOB)["ok"] is True
+        assert diagnose._sessions[second]["superseded"] is True
+        # Now both active sessions are probing: busy.
+        assert diagnose.start_diagnosis(CHROME_BLOB) == {"ok": False, "error": "busy"}
+
+    def test_an_answered_preview_is_not_superseded(self, engine):
+        sids = [diagnose.start_diagnosis(CHROME_BLOB)["session_id"] for _ in range(diagnose._MAX_ACTIVE)]
+        for sid in sids:
+            self._park(sid)
+            assert diagnose.submit_consent(sid, True) == {"ok": True}  # the worker just has not woken yet
+        assert diagnose.start_diagnosis(CHROME_BLOB) == {"ok": False, "error": "busy"}
+        assert all(diagnose._sessions[sid]["consent"] is True for sid in sids)
+
+    def test_superseded_worker_ends_superseded_without_calling_the_model(self, engine, monkeypatch):
+        def wait(session):
+            # Two more diagnoses start while this one's preview is showing: the
+            # first fits, the second supersedes this parked one.
+            assert diagnose.start_diagnosis(CHROME_BLOB)["ok"] is True
+            assert diagnose.start_diagnosis(CHROME_BLOB)["ok"] is True
+            return _REAL_WAIT_FOR_CONSENT(session)  # returns at once: the event is set
+
+        monkeypatch.setattr(diagnose, "_wait_for_consent", wait)
+        status = engine.run()
+        assert (status["state"], status["reason"]) == ("evidence_only", "superseded")
+        assert engine.model.calls == []
+        assert diagnose.load_history()[0]["sent"] == []
+        assert diagnose.submit_consent(status["session_id"], True) == {"ok": False, "error": "not awaiting consent"}
 
     def test_finished_sessions_do_not_count_as_busy(self, engine):
         for _ in range(diagnose._MAX_ACTIVE + 1):
@@ -1708,34 +1774,71 @@ class TestHistory:
         assert len(diagnose.load_history()) == 1
 
 
-class TestRealThreads:
-    def test_model_is_not_called_until_consent_then_exactly_once(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-        monkeypatch.setattr(diagnose, "anthropic", types.SimpleNamespace())
-        monkeypatch.setattr(diagnose, "_CONSENT_TIMEOUT_S", 3)
-        monkeypatch.setattr(diagnose.dp, "run_probes", FakeProbes())
-        model = FakeModel(REPLY)
-        monkeypatch.setattr(diagnose, "_call_model", model)
+def _poll(sid, states, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    status = diagnose.get_status(sid)
+    while status["state"] not in states and time.monotonic() < deadline:
+        time.sleep(0.02)
+        status = diagnose.get_status(sid)
+    return status
 
-        def poll(sid, states, timeout=5.0):
-            deadline = time.monotonic() + timeout
-            status = diagnose.get_status(sid)
-            while status["state"] not in states and time.monotonic() < deadline:
-                time.sleep(0.02)
-                status = diagnose.get_status(sid)
-            return status
 
-        sid = diagnose.start_diagnosis(CHROME_BLOB)["session_id"]
-        try:
-            status = poll(sid, ("awaiting_consent", *_TERMINAL))
-            assert status["state"] == "awaiting_consent"
-            preview = status["preview"]
-            assert model.calls == []
-            assert diagnose.submit_consent(sid, True) == {"ok": True}
-            status = poll(sid, _TERMINAL)
-        finally:
-            # Never leave a worker behind to write history after monkeypatch is undone.
+@pytest.fixture
+def live(monkeypatch):
+    """Real worker threads and the real consent wait; probes and the model faked.
+
+    Every worker thread is captured. Teardown declines whatever is still
+    waiting and joins each thread BEFORE monkeypatch is undone, so no worker
+    can write history after the test's history path is restored (R25).
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(diagnose, "anthropic", types.SimpleNamespace())
+    monkeypatch.setattr(diagnose, "_CONSENT_TIMEOUT_S", 10)
+    monkeypatch.setattr(diagnose.dp, "run_probes", FakeProbes())
+    model = FakeModel(REPLY)
+    monkeypatch.setattr(diagnose, "_call_model", model)
+    threads = []
+    real_spawn = diagnose._spawn_worker
+
+    def spawn(sid):
+        threads.append(real_spawn(sid))
+        return threads[-1]
+
+    monkeypatch.setattr(diagnose, "_spawn_worker", spawn)
+    yield types.SimpleNamespace(model=model, threads=threads)
+    deadline = time.monotonic() + 10
+    while any(t.is_alive() for t in threads) and time.monotonic() < deadline:
+        for sid in list(diagnose._sessions):
             diagnose.submit_consent(sid, False)
-            poll(sid, _TERMINAL)
+        time.sleep(0.02)
+    for thread in threads:
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+    assert not any(t.is_alive() for t in threads), "a diagnose worker outlived its test"
+
+
+class TestRealThreads:
+    def test_model_is_not_called_until_consent_then_exactly_once(self, live):
+        sid = diagnose.start_diagnosis(CHROME_BLOB)["session_id"]
+        status = _poll(sid, ("awaiting_consent", *_TERMINAL))
+        assert status["state"] == "awaiting_consent"
+        preview = status["preview"]
+        assert live.model.calls == []
+        assert diagnose.submit_consent(sid, True) == {"ok": True}
+        status = _poll(sid, _TERMINAL)
         assert status["state"] == "done"
-        assert model.calls == [preview]
+        assert live.model.calls == [preview]
+        live.threads[0].join(timeout=10)
+        assert not live.threads[0].is_alive()
+        assert diagnose.load_history()[0]["session_id"] == sid  # written before the thread ended
+
+    def test_two_parked_previews_do_not_lock_out_a_new_diagnosis(self, live):
+        first = diagnose.start_diagnosis(CHROME_BLOB)["session_id"]
+        assert _poll(first, ("awaiting_consent", *_TERMINAL))["state"] == "awaiting_consent"
+        second = diagnose.start_diagnosis(CHROME_BLOB)["session_id"]
+        assert _poll(second, ("awaiting_consent", *_TERMINAL))["state"] == "awaiting_consent"
+        third = diagnose.start_diagnosis(CHROME_BLOB)
+        assert third["ok"] is True
+        status = _poll(first, _TERMINAL)
+        assert (status["state"], status["reason"]) == ("evidence_only", "superseded")
+        assert diagnose.get_status(second)["state"] == "awaiting_consent"
+        assert live.model.calls == []

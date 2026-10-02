@@ -848,8 +848,9 @@ def _given_slots(slots: Any) -> dict:
         return {}
     if not isinstance(slots, dict):
         raise ValueError("slots must be an object")
-    out = dict(slots)
-    if out.get("target_host") is not None:
+    # A None value means "not given": it must not hide a slot the classifier found.
+    out = {name: value for name, value in slots.items() if value is not None}
+    if "target_host" in out:
         host = dp.normalize_host(out["target_host"])
         if host is None:
             raise ValueError("invalid host")
@@ -877,7 +878,8 @@ def start_diagnosis(symptom: str, slots: dict | None = None, symptom_class: str 
     ``slots`` and ``symptom_class`` come from the user and override the
     classifier. Returns ``awaiting_slots`` (no session is created) while the
     class or a required slot is unknown, ``{"ok": False, "error": "busy"}``
-    when ``_MAX_ACTIVE`` diagnoses are already running, and otherwise the new
+    when ``_MAX_ACTIVE`` diagnoses are already probing or interpreting (one
+    parked on its preview is superseded instead, see ``_admit``), and otherwise the new
     ``session_id`` in state ``probing_wave1``. Raises ValueError for an empty,
     non-string or over-long symptom, non-dict slots, an invalid host, or an
     unknown symptom class.
@@ -916,7 +918,7 @@ def start_diagnosis(symptom: str, slots: dict | None = None, symptom_class: str 
     now = time.time()
     with _sessions_lock:
         _evict_sessions(now)
-        if sum(1 for s in _sessions.values() if s["state"] not in _TERMINAL_STATES) >= _MAX_ACTIVE:
+        if not _admit():
             return {"ok": False, "error": "busy"}
         session = _sessions[sid] = {
             "session_id": sid,
@@ -934,6 +936,7 @@ def start_diagnosis(symptom: str, slots: dict | None = None, symptom_class: str 
             "sent": [],
             "consent": None,
             "auto_followups": False,
+            "superseded": False,
             "consent_event": threading.Event(),
             "created": now,
             "updated": now,
@@ -946,8 +949,33 @@ def start_diagnosis(symptom: str, slots: dict | None = None, symptom_class: str 
     return {"ok": True, "session_id": sid, "state": "probing_wave1"}
 
 
-def _spawn_worker(sid: str) -> None:
-    threading.Thread(target=_run_session, args=(sid,), daemon=True, name=f"Diagnose-{sid[:8]}").start()
+def _admit() -> bool:
+    """Whether a new session may start; caller holds ``_sessions_lock``.
+
+    A session that is probing or interpreting counts toward ``_MAX_ACTIVE``.
+    One parked on its payload preview is only waiting on a user who may have
+    closed the tab, so at the limit the oldest such session is declined on
+    the user's behalf (R26; it ends ``evidence_only`` / ``superseded``, with
+    nothing sent) rather than locking the tab out for ``_CONSENT_TIMEOUT_S``.
+    """
+    active = [s for s in _sessions.values() if s["state"] not in _TERMINAL_STATES and not s["superseded"]]
+    if len(active) < _MAX_ACTIVE:
+        return True
+    parked = [s for s in active if s["state"] == "awaiting_consent" and s["consent"] is None]
+    if not parked:
+        return False
+    oldest = min(parked, key=lambda s: s["created"])
+    oldest["superseded"] = True
+    oldest["consent"] = False
+    oldest["updated"] = time.time()
+    oldest["consent_event"].set()
+    return True
+
+
+def _spawn_worker(sid: str) -> threading.Thread:
+    thread = threading.Thread(target=_run_session, args=(sid,), daemon=True, name=f"Diagnose-{sid[:8]}")
+    thread.start()
+    return thread
 
 
 def get_status(session_id: str) -> dict | None:
@@ -1075,7 +1103,9 @@ def _drive(session: dict) -> None:
                 _finish(session, "evidence_only", reason="consent_timeout")
                 return
             if decision is not True:
-                _finish(session, "evidence_only", reason="declined")
+                with _sessions_lock:
+                    reason = "superseded" if session["superseded"] else "declined"
+                _finish(session, "evidence_only", reason=reason)
                 return
             with _sessions_lock:
                 approved_ahead = session["auto_followups"] is True
@@ -1141,9 +1171,9 @@ def _finish(session: dict, state: str, *, reason: str | None = None, verdict: di
     _append_history(entry)
 
 
-def _read_history() -> list:
+def _read_history(path: str) -> list:
     try:
-        with open(DIAGNOSE_HISTORY_FILE, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
         return []
@@ -1152,14 +1182,17 @@ def _read_history() -> list:
 
 def _append_history(entry: dict) -> None:
     """Append ``entry`` to the audit trail (newest last, capped). Never raises."""
-    tmp = DIAGNOSE_HISTORY_FILE + ".tmp"
+    # Bound once: the read, the tmp file and the replace must all hit the same
+    # file even if the module global is repointed mid-write (R25).
+    path = DIAGNOSE_HISTORY_FILE
+    tmp = path + ".tmp"
     with _history_lock:
         try:
             entry["symptom"] = redact(entry["symptom"], ["username"])
-            entries = [*_read_history(), entry][-_HISTORY_MAX:]
+            entries = [*_read_history(path), entry][-_HISTORY_MAX:]
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(entries, fh, ensure_ascii=False)
-            os.replace(tmp, DIAGNOSE_HISTORY_FILE)
+            os.replace(tmp, path)
         except Exception as e:  # noqa: BLE001 -- best effort; never break the worker
             print(f"[Diagnose] could not write history: {type(e).__name__}")
             try:
@@ -1171,4 +1204,4 @@ def _append_history(entry: dict) -> None:
 def load_history() -> list[dict]:
     """Past diagnoses, newest first. A missing or corrupt file reads as empty."""
     with _history_lock:
-        return list(reversed(_read_history()))
+        return list(reversed(_read_history(DIAGNOSE_HISTORY_FILE)))
