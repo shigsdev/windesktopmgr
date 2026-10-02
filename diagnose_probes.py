@@ -23,6 +23,7 @@ from __future__ import annotations
 import concurrent.futures
 import ipaddress
 import re
+import socket
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -248,3 +249,121 @@ def _system_nameservers() -> list[str]:
         return list(dns.resolver.Resolver().nameservers)
     except Exception:  # noqa: BLE001 -- no resolver config is a normal condition
         return []
+
+
+# ── Wave-one resolution probes ───────────────────────────────────────────────
+# Each returns only its ``data`` dict (see the evidence-shapes contract). A
+# failed lookup is a normal ``ok`` result describing the failure; the runner
+# reserves ``ok: False`` for a probe that could not run at all.
+
+_SWEEP_TYPES = ("A", "AAAA", "CNAME", "MX", "TXT", "SOA", "NS")
+
+
+def _first_system_or_cloudflare() -> str:
+    """The first configured system nameserver, else Cloudflare."""
+    ns = _system_nameservers()
+    return ns[0] if ns else PUBLIC_RESOLVERS[0][1]
+
+
+def _p_resolve_cached(slots: dict) -> dict:
+    """Resolve through the Windows resolver, so the OS DNS cache is in play."""
+    host = slots["target_host"]
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError as exc:  # socket.gaierror is an OSError
+        return {"resolved": False, "addresses": [], "error": str(exc)}
+    addresses = sorted({info[4][0] for info in infos})
+    if not addresses:
+        return {"resolved": False, "addresses": [], "error": "no addresses returned"}
+    return {"resolved": True, "addresses": addresses, "error": None}
+
+
+def _p_resolve_direct(slots: dict) -> dict:
+    """Ask the system, Cloudflare and Google resolvers for A records directly."""
+    if not HAVE_DNSPYTHON:
+        return {"dnspython": False, "resolvers": []}
+    host = slots["target_host"]
+    targets: list[tuple[str, str]] = []
+    system = _system_nameservers()
+    if system:
+        targets.append(("system", system[0]))
+    targets.extend(PUBLIC_RESOLVERS)
+    resolvers = []
+    for name, server in targets:
+        r = _dns_query(server, host, "A")
+        resolvers.append(
+            {
+                "name": name,
+                "server": r["server"],
+                "rcode": r["rcode"],
+                "nodata": r["nodata"],
+                "answers": r["answers"],
+            }
+        )
+    return {"dnspython": True, "resolvers": resolvers}
+
+
+def _p_authoritative(slots: dict) -> dict:
+    """Ask up to two of the domain's own nameservers for the A record."""
+    if not HAVE_DNSPYTHON:
+        return {"zone": None, "nameservers": []}
+    host = slots["target_host"]
+    try:
+        zone = dns.resolver.zone_for_name(host).to_text().rstrip(".")
+    except Exception:  # noqa: BLE001 -- no resolvable zone is a normal outcome
+        return {"zone": None, "nameservers": []}
+    via = _first_system_or_cloudflare()
+    ns_names = [a.rstrip(".") for a in _dns_query(via, zone, "NS")["answers"]][:2]
+    nameservers = []
+    for ns_name in ns_names:
+        ip_answers = _dns_query(via, ns_name, "A")["answers"]
+        if not ip_answers:
+            continue
+        ns_ip = ip_answers[0]
+        r = _dns_query(ns_ip, host, "A")
+        nameservers.append(
+            {
+                "name": ns_name,
+                "ip": ns_ip,
+                "rcode": r["rcode"],
+                "nodata": r["nodata"],
+                "aa": r["aa"],
+                "answers": r["answers"],
+            }
+        )
+    return {"zone": zone, "nameservers": nameservers}
+
+
+def _p_record_sweep(slots: dict) -> dict:
+    """Fetch A/AAAA/CNAME/MX/TXT/SOA/NS so a missing record type stands out."""
+    if not HAVE_DNSPYTHON:
+        return {"records": {t: [] for t in _SWEEP_TYPES}, "rcode": "ERROR"}
+    host = slots["target_host"]
+    via = _first_system_or_cloudflare()
+    records: dict[str, list[str]] = {}
+    rcode = "ERROR"
+    for rdtype in _SWEEP_TYPES:
+        r = _dns_query(via, host, rdtype)
+        records[rdtype] = r["answers"]
+        if rdtype == "A":
+            rcode = r["rcode"]
+    return {"records": records, "rcode": rcode}
+
+
+for _key, _label, _fn, _timeout in (
+    ("dns.resolve_cached", "Resolve through Windows (uses the DNS cache)", _p_resolve_cached, 8),
+    ("dns.resolve_direct", "Ask DNS servers directly (bypasses the cache)", _p_resolve_direct, 8),
+    ("dns.authoritative", "Ask the domain's own nameservers", _p_authoritative, 12),
+    ("dns.record_sweep", "List every DNS record type for the name", _p_record_sweep, 10),
+):
+    register(
+        Probe(
+            key=_key,
+            label=_label,
+            category="network",
+            fn=_fn,
+            needs=("target_host",),
+            redact=("username",),
+            timeout_s=_timeout,
+        )
+    )

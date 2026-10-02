@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import re
+import socket
 import time
 
 import dns.exception
 import dns.flags
 import dns.message
+import dns.name
 import dns.rcode
 import dns.rdatatype
 import dns.rrset
 import pytest
 
 import diagnose_probes as dp
+
+# Snapshot before the autouse fixture empties PROBES: the real wave-one registrations.
+_REGISTERED = dict(dp.PROBES)
 
 
 @pytest.fixture(autouse=True)
@@ -356,3 +361,235 @@ class TestSystemNameservers:
 
 def test_public_resolvers_constant():
     assert dp.PUBLIC_RESOLVERS == (("cloudflare", "1.1.1.1"), ("google", "8.8.8.8"))
+
+
+class TestWaveOneRegistration:
+    @pytest.mark.parametrize(
+        ("key", "label", "timeout"),
+        [
+            ("dns.resolve_cached", "Resolve through Windows (uses the DNS cache)", 8),
+            ("dns.resolve_direct", "Ask DNS servers directly (bypasses the cache)", 8),
+            ("dns.authoritative", "Ask the domain's own nameservers", 12),
+            ("dns.record_sweep", "List every DNS record type for the name", 10),
+        ],
+    )
+    def test_registered_with_contract_metadata(self, key, label, timeout):
+        p = _REGISTERED[key]
+        assert p.label == label
+        assert p.category == "network"
+        assert p.needs == ("target_host",)
+        assert p.redact == ("username",)
+        assert p.timeout_s == timeout
+
+    def test_registry_functions_are_the_p_functions(self):
+        assert _REGISTERED["dns.resolve_cached"].fn is dp._p_resolve_cached
+        assert _REGISTERED["dns.resolve_direct"].fn is dp._p_resolve_direct
+        assert _REGISTERED["dns.authoritative"].fn is dp._p_authoritative
+        assert _REGISTERED["dns.record_sweep"].fn is dp._p_record_sweep
+
+
+SLOTS = {"target_host": "hynote.ai"}
+
+
+class TestResolveCached:
+    def test_happy_path_dedupes_and_sorts(self, mocker):
+        mocker.patch.object(
+            dp.socket,
+            "getaddrinfo",
+            return_value=[
+                (2, 1, 6, "", ("104.21.5.9", 0)),
+                (2, 2, 17, "", ("104.21.5.9", 0)),
+                (2, 1, 6, "", ("104.21.1.1", 0)),
+            ],
+        )
+        assert dp._p_resolve_cached(SLOTS) == {
+            "resolved": True,
+            "addresses": ["104.21.1.1", "104.21.5.9"],
+            "error": None,
+        }
+
+    def test_gaierror_reports_failure(self, mocker):
+        mocker.patch.object(dp.socket, "getaddrinfo", side_effect=socket.gaierror(11001, "getaddrinfo failed"))
+        d = dp._p_resolve_cached(SLOTS)
+        assert d["resolved"] is False
+        assert d["addresses"] == []
+        assert "11001" in d["error"]
+
+    def test_empty_result_is_unresolved(self, mocker):
+        mocker.patch.object(dp.socket, "getaddrinfo", return_value=[])
+        d = dp._p_resolve_cached(SLOTS)
+        assert d["resolved"] is False
+        assert d["addresses"] == []
+        assert d["error"]
+
+    def test_queries_the_target_host(self, mocker):
+        m = mocker.patch.object(dp.socket, "getaddrinfo", return_value=[])
+        dp._p_resolve_cached(SLOTS)
+        assert m.call_args.args[0] == "hynote.ai"
+
+
+def _fake_reply(server, rcode="NOERROR", answers=(), aa=False):
+    answers = list(answers)
+    return {
+        "server": server,
+        "rcode": rcode,
+        "nodata": rcode == "NOERROR" and not answers,
+        "answers": answers,
+        "aa": aa,
+        "ad": False,
+        "error": None,
+    }
+
+
+class TestResolveDirect:
+    def test_three_resolvers_in_order(self, mocker):
+        mocker.patch.object(dp, "_system_nameservers", return_value=["192.168.1.1"])
+        q = mocker.patch.object(
+            dp,
+            "_dns_query",
+            side_effect=lambda server, name, rdtype, **kw: _fake_reply(
+                server, answers=["1.2.3.4"] if server != "8.8.8.8" else []
+            ),
+        )
+        d = dp._p_resolve_direct(SLOTS)
+        assert d["dnspython"] is True
+        assert [r["name"] for r in d["resolvers"]] == ["system", "cloudflare", "google"]
+        assert [r["server"] for r in d["resolvers"]] == ["192.168.1.1", "1.1.1.1", "8.8.8.8"]
+        assert d["resolvers"][0] == {
+            "name": "system",
+            "server": "192.168.1.1",
+            "rcode": "NOERROR",
+            "nodata": False,
+            "answers": ["1.2.3.4"],
+        }
+        assert d["resolvers"][2]["nodata"] is True
+        assert all(c.args[1] == "hynote.ai" and c.args[2] == "A" for c in q.call_args_list)
+
+    def test_no_system_nameserver_omits_system(self, mocker):
+        mocker.patch.object(dp, "_system_nameservers", return_value=[])
+        mocker.patch.object(dp, "_dns_query", side_effect=lambda server, *a, **k: _fake_reply(server))
+        d = dp._p_resolve_direct(SLOTS)
+        assert [r["name"] for r in d["resolvers"]] == ["cloudflare", "google"]
+
+    def test_queries_a_records_on_public_servers(self, mocker):
+        mocker.patch.object(dp, "_system_nameservers", return_value=[])
+        q = mocker.patch.object(dp, "_dns_query", side_effect=lambda server, *a, **k: _fake_reply(server))
+        dp._p_resolve_direct(SLOTS)
+        assert {c.args[0] for c in q.call_args_list} == {"1.1.1.1", "8.8.8.8"}
+        assert {c.args[2] for c in q.call_args_list} == {"A"}
+
+    def test_failure_rcodes_copied_through(self, mocker):
+        mocker.patch.object(dp, "_system_nameservers", return_value=[])
+        mocker.patch.object(dp, "_dns_query", side_effect=lambda server, *a, **k: _fake_reply(server, rcode="NXDOMAIN"))
+        d = dp._p_resolve_direct(SLOTS)
+        assert [r["rcode"] for r in d["resolvers"]] == ["NXDOMAIN", "NXDOMAIN"]
+
+    def test_without_dnspython(self, mocker):
+        mocker.patch.object(dp, "HAVE_DNSPYTHON", False)
+        assert dp._p_resolve_direct(SLOTS) == {"dnspython": False, "resolvers": []}
+
+
+class TestAuthoritative:
+    @staticmethod
+    def _query_fn(ns_names, ns_ips, target_answers=("104.21.1.1",)):
+        def fake(server, name, rdtype, **kw):
+            if rdtype == "NS":
+                return _fake_reply(server, answers=[n + "." for n in ns_names])
+            if name in ns_ips:
+                return _fake_reply(server, answers=[ns_ips[name]])
+            return _fake_reply(server, answers=list(target_answers), aa=True)
+
+        return fake
+
+    def test_happy_path(self, mocker):
+        mocker.patch.object(dp, "_system_nameservers", return_value=["192.168.1.1"])
+        mocker.patch.object(dp.dns.resolver, "zone_for_name", return_value=dns.name.from_text("hynote.ai."))
+        ips = {"ns1.cf.com": "10.0.0.1", "ns2.cf.com": "10.0.0.2"}
+        q = mocker.patch.object(dp, "_dns_query", side_effect=self._query_fn(list(ips), ips))
+        d = dp._p_authoritative(SLOTS)
+        assert d["zone"] == "hynote.ai"
+        assert [n["name"] for n in d["nameservers"]] == ["ns1.cf.com", "ns2.cf.com"]
+        assert [n["ip"] for n in d["nameservers"]] == ["10.0.0.1", "10.0.0.2"]
+        assert all(n["aa"] is True and n["rcode"] == "NOERROR" and n["answers"] for n in d["nameservers"])
+        assert set(d["nameservers"][0]) == {"name", "ip", "rcode", "nodata", "aa", "answers"}
+        # NS and NS-address lookups go via the system resolver; target A goes to the NS IP.
+        assert q.call_args_list[0].args[:3] == ("192.168.1.1", "hynote.ai", "NS")
+        assert ("10.0.0.1", "hynote.ai", "A") in [c.args[:3] for c in q.call_args_list]
+
+    def test_only_first_two_ns_queried(self, mocker):
+        mocker.patch.object(dp, "_system_nameservers", return_value=[])
+        mocker.patch.object(dp.dns.resolver, "zone_for_name", return_value=dns.name.from_text("hynote.ai."))
+        ips = {f"ns{i}.cf.com": f"10.0.0.{i}" for i in range(1, 5)}
+        q = mocker.patch.object(dp, "_dns_query", side_effect=self._query_fn(list(ips), ips))
+        d = dp._p_authoritative(SLOTS)
+        assert len(d["nameservers"]) == 2
+        assert "ns3.cf.com" not in [c.args[1] for c in q.call_args_list]
+        assert q.call_args_list[0].args[0] == "1.1.1.1"
+
+    def test_ns_without_ip_is_skipped(self, mocker):
+        mocker.patch.object(dp, "_system_nameservers", return_value=[])
+        mocker.patch.object(dp.dns.resolver, "zone_for_name", return_value=dns.name.from_text("hynote.ai."))
+
+        def fake(server, name, rdtype, **kw):
+            if rdtype == "NS":
+                return _fake_reply(server, answers=["ns1.cf.com.", "ns2.cf.com."])
+            if name == "ns1.cf.com":
+                return _fake_reply(server, rcode="NXDOMAIN")
+            if name == "ns2.cf.com":
+                return _fake_reply(server, answers=["10.0.0.2"])
+            return _fake_reply(server, answers=["104.21.1.1"], aa=True)
+
+        mocker.patch.object(dp, "_dns_query", side_effect=fake)
+        d = dp._p_authoritative(SLOTS)
+        assert [n["name"] for n in d["nameservers"]] == ["ns2.cf.com"]
+
+    def test_zone_lookup_failure(self, mocker):
+        mocker.patch.object(dp.dns.resolver, "zone_for_name", side_effect=RuntimeError("boom"))
+        assert dp._p_authoritative(SLOTS) == {"zone": None, "nameservers": []}
+
+    def test_without_dnspython(self, mocker):
+        mocker.patch.object(dp, "HAVE_DNSPYTHON", False)
+        assert dp._p_authoritative(SLOTS) == {"zone": None, "nameservers": []}
+
+
+class TestRecordSweep:
+    TYPES = ("A", "AAAA", "CNAME", "MX", "TXT", "SOA", "NS")
+
+    def test_one_query_per_type_against_system_resolver(self, mocker):
+        mocker.patch.object(dp, "_system_nameservers", return_value=["192.168.1.1"])
+        q = mocker.patch.object(
+            dp,
+            "_dns_query",
+            side_effect=lambda server, name, rdtype, **kw: _fake_reply(server, answers=[f"{rdtype}-rec"]),
+        )
+        d = dp._p_record_sweep(SLOTS)
+        assert [c.args[2] for c in q.call_args_list] == list(self.TYPES)
+        assert {c.args[0] for c in q.call_args_list} == {"192.168.1.1"}
+        assert set(d["records"]) == set(self.TYPES)
+        assert d["records"]["MX"] == ["MX-rec"]
+        assert d["rcode"] == "NOERROR"
+
+    def test_falls_back_to_cloudflare(self, mocker):
+        mocker.patch.object(dp, "_system_nameservers", return_value=[])
+        q = mocker.patch.object(dp, "_dns_query", side_effect=lambda server, *a, **k: _fake_reply(server))
+        dp._p_record_sweep(SLOTS)
+        assert {c.args[0] for c in q.call_args_list} == {"1.1.1.1"}
+
+    def test_rcode_comes_from_a_query(self, mocker):
+        mocker.patch.object(dp, "_system_nameservers", return_value=[])
+        mocker.patch.object(
+            dp,
+            "_dns_query",
+            side_effect=lambda server, name, rdtype, **kw: _fake_reply(
+                server, rcode="NXDOMAIN" if rdtype == "A" else "NOERROR"
+            ),
+        )
+        d = dp._p_record_sweep(SLOTS)
+        assert d["rcode"] == "NXDOMAIN"
+        assert d["records"]["A"] == []
+
+    def test_without_dnspython(self, mocker):
+        mocker.patch.object(dp, "HAVE_DNSPYTHON", False)
+        d = dp._p_record_sweep(SLOTS)
+        assert d["rcode"] == "ERROR"
+        assert d["records"] == {t: [] for t in self.TYPES}
