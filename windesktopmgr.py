@@ -4,6 +4,7 @@ Flask backend — driver update checker + BSOD trend dashboard.
 Reads from Windows Event Log and existing SystemHealthDiag HTML reports.
 """
 
+import copy
 import glob
 import hashlib
 import json
@@ -361,7 +362,9 @@ def bounded_wmi_query(work, *, timeout_s: float = 8.0, fallback=None, label: str
     wedged Winmgmt can't freeze the request (or leak unbounded stuck threads).
 
     ``work`` MUST be self-contained (create its own ``_wmi_conn()`` /
-    ``wmi.WMI()`` inside) so COM is initialised on the worker thread.
+    ``wmi.WMI()`` inside) so COM is initialised on the worker thread, and must
+    not depend on caller arguments: concurrent calls of the same ``work`` share
+    one in-flight worker (see ``_wu_run``).
     """
     try:
         return _wu_run(work, timeout_s, label)
@@ -497,33 +500,74 @@ def _wu_searcher():
     return session.CreateUpdateSearcher()
 
 
+# One in-flight worker per query, keyed by the work function's code object:
+# every call site builds its closure from the same code, so equal code means the
+# same parameterless query (labels alone are not unique -- tests reuse "test").
+_wu_inflight: dict = {}
+_wu_inflight_lock = threading.Lock()
+# A worker still running after this long is treated as wedged (a COM call that
+# will never return): the next caller starts a fresh one instead of waiting on
+# it forever. Caps the leak at one thread per query per window, where the old
+# code leaked one per call.
+_WU_WEDGED_S = 300.0
+
+
 def _wu_run(work, timeout_s: float, label: str):
     """Run a COM-using callable bounded by a wall-clock timeout.
 
     WU COM calls (``Search`` / ``QueryHistory``) block and cannot be
     interrupted, and a cold Windows Update Agent can take tens of seconds to
     initialise on the first call after a restart. So ``work`` runs in a
-    daemon worker thread we join with a timeout — mirroring the subprocess
+    daemon worker thread we wait on with a timeout — mirroring the subprocess
     timeouts the PowerShell versions had. Raises ``TimeoutError`` on timeout
     (the orphaned daemon worker finishes on its own); re-raises any error
     from ``work``.
+
+    Single-flight: while a worker for the same query is still running --
+    including one whose caller already timed out -- later callers wait on THAT
+    worker instead of starting another. Without this, every dashboard poll
+    under a slow WMI added a copy of the same query; on 2026-10-02 the tray
+    reached 688 threads (30+ "WU-installed drivers" alone) burning 1.6 cores,
+    which starved every other feature in the process. Each caller gets its own
+    deep copy, since they share one result. A worker older than
+    ``_WU_WEDGED_S`` is presumed wedged and no longer joined.
+
+    ``work`` must be parameterless in effect: callers are coalesced by the
+    function's code, so a closure capturing call-specific values (a device
+    name, a path) would hand one caller another caller's result.
     """
-    box: dict = {}
+    key = getattr(work, "__code__", work)
+    with _wu_inflight_lock:
+        job = _wu_inflight.get(key)
+        if job is not None and time.monotonic() - job["started"] > _WU_WEDGED_S:
+            job = None  # the orphan's cleanup checks identity, so it won't evict the new job
+        if job is None:
+            job = {"done": threading.Event(), "started": time.monotonic()}
 
-    def _runner():
-        try:
-            box["data"] = work()
-        except Exception as e:  # noqa: BLE001 — surfaced to the caller below
-            box["error"] = e
+            def _runner(job=job):
+                try:
+                    job["data"] = work()
+                except Exception as e:  # noqa: BLE001 — surfaced to the caller below
+                    job["error"] = e
+                finally:
+                    with _wu_inflight_lock:
+                        if _wu_inflight.get(key) is job:
+                            del _wu_inflight[key]
+                    job["done"].set()
 
-    t = threading.Thread(target=_runner, name=f"WU-{label}", daemon=True)
-    t.start()
-    t.join(timeout_s)
-    if t.is_alive():
+            # Registered before start so a racing caller joins this job; rolled
+            # back if the thread cannot start, so a failure never wedges the key.
+            _wu_inflight[key] = job
+            try:
+                threading.Thread(target=_runner, name=f"WU-{label}", daemon=True).start()
+            except BaseException:
+                del _wu_inflight[key]
+                raise
+    if not job["done"].wait(timeout_s):
         raise TimeoutError(f"{label} exceeded {timeout_s:.0f}s")
-    if "error" in box:
-        raise box["error"]
-    return box.get("data")
+    if "error" in job:
+        raise job["error"]
+    return copy.deepcopy(job.get("data"))
 
 
 def _wu_search_drivers(timeout_s: float = 120.0) -> list:

@@ -193,6 +193,115 @@ class TestBoundedWmiQuery:
         assert wdm.bounded_wmi_query(_boom, timeout_s=5.0, fallback={}, label="test") == {}
 
 
+class TestWuRunSingleFlight:
+    """Regression (2026-10-02): _wu_run started a NEW worker on every call, and a
+    timed-out worker keeps running. Under a slow WMI the dashboard, Drivers tab
+    and update checks piled up 30+ concurrent copies of the same query
+    ("WU-installed drivers" x30, "WU-Windows Update driver search" x28, ...),
+    688 threads burning 1.6 cores, which starved everything else in the process
+    (junk scan 504 s instead of ~20 s, Baseline past its budget). One query may
+    have at most one worker in flight; later callers wait on it."""
+
+    @staticmethod
+    def _slow_query(release, calls):
+        def _work():
+            calls.append(1)
+            release.wait(timeout=5)
+            return {"rows": [1, 2]}
+
+        return _work
+
+    @staticmethod
+    def _run_callers(n, query, label, results):
+        """Start n callers and return once all are past the barrier. The worker
+        stays blocked until the test releases it, so a 0.3 s settle after the
+        barrier only has to cover a few bytecodes, not thread start-up."""
+        gate = threading.Barrier(n + 1)
+
+        def _call():
+            gate.wait(5)
+            results.append(wdm._wu_run(query, 5.0, label))
+
+        threads = [threading.Thread(target=_call) for _ in range(n)]
+        for t in threads:
+            t.start()
+        gate.wait(5)
+        time.sleep(0.3)
+        return threads
+
+    def test_concurrent_callers_share_one_worker(self):
+        release, calls, results = threading.Event(), [], []
+        threads = self._run_callers(4, self._slow_query(release, calls), "sf-share", results)
+        release.set()
+        for t in threads:
+            t.join(5)
+        assert len(calls) == 1, f"expected one worker for the same query, ran {len(calls)}"
+        assert results == [{"rows": [1, 2]}] * 4
+
+    def test_caller_after_a_timeout_waits_on_the_orphan_instead_of_spawning(self):
+        release, calls = threading.Event(), []
+        with pytest.raises(TimeoutError):
+            wdm._wu_run(self._slow_query(release, calls), 0.1, "sf-orphan")
+        with pytest.raises(TimeoutError):
+            wdm._wu_run(self._slow_query(release, calls), 0.1, "sf-orphan")
+        release.set()
+        assert len(calls) == 1, "a second caller must not start a duplicate worker while one is in flight"
+
+    def test_a_wedged_orphan_is_replaced_after_the_wedge_window(self, monkeypatch):
+        """A COM call that never returns must not block its query forever: past
+        _WU_WEDGED_S the next caller gets a fresh worker."""
+        monkeypatch.setattr(wdm, "_WU_WEDGED_S", 0.2)
+        hang, calls = threading.Event(), []
+
+        def _work():
+            calls.append(1)
+            if len(calls) == 1:
+                hang.wait(timeout=5)  # the first worker "wedges"
+            return "fresh"
+
+        with pytest.raises(TimeoutError):
+            wdm._wu_run(_work, 0.1, "sf-wedged")
+        time.sleep(0.3)
+        assert wdm._wu_run(_work, 5.0, "sf-wedged") == "fresh"
+        assert len(calls) == 2
+        hang.set()
+
+    def test_next_call_after_completion_runs_fresh(self):
+        calls = []
+
+        def _work():
+            calls.append(1)
+            return len(calls)
+
+        assert wdm._wu_run(_work, 5.0, "sf-fresh") == 1
+        assert wdm._wu_run(_work, 5.0, "sf-fresh") == 2, "a finished query must not be served from cache"
+
+    def test_different_queries_with_the_same_label_do_not_share(self):
+        assert wdm._wu_run(lambda: "a", 5.0, "same") == "a"
+        assert wdm._wu_run(lambda: "b", 5.0, "same") == "b"
+
+    def test_each_caller_gets_its_own_copy(self):
+        release, calls, results = threading.Event(), [], []
+        threads = self._run_callers(2, self._slow_query(release, calls), "sf-copy", results)
+        release.set()
+        for t in threads:
+            t.join(5)
+        assert len(calls) == 1, "both callers must share one worker for this test to mean anything"
+        results[0]["rows"].append(99)
+        assert results[1] == {"rows": [1, 2]}, "callers must not share one mutable result"
+
+    def test_thread_start_failure_leaves_nothing_in_flight(self, mocker):
+        mocker.patch("windesktopmgr.threading.Thread", side_effect=RuntimeError("can't start new thread"))
+
+        def _work():
+            return 1
+
+        with pytest.raises(RuntimeError):
+            wdm._wu_run(_work, 1.0, "sf-start")
+        mocker.stopall()
+        assert wdm._wu_run(_work, 1.0, "sf-start") == 1, "a failed start must not wedge later calls"
+
+
 class TestGetInstalledDrivers:
     """Tests for get_installed_drivers() — now uses wmi.WMI().Win32_PnPSignedDriver()."""
 
