@@ -24,8 +24,11 @@ import ipaddress
 import json
 import os
 import re
+import secrets
 import threading
+import time
 from collections.abc import Iterable
+from datetime import datetime, timezone
 from typing import Any
 
 import diagnose_probes as dp
@@ -36,8 +39,12 @@ try:
 except ImportError:  # pragma: no cover - SDK optional, same guard as ai_identify.py
     anthropic = None
 
-# Extra evidence-gathering rounds the engine may run after the first wave.
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Extra evidence-gathering rounds the engine may run after the first wave, and
+# the most probes one such round may run.
 MAX_ROUNDS = 2
+MAX_PROBES_PER_ROUND = 4
 
 # What the engine can diagnose. ``wave1`` runs for every diagnosis of the
 # class; ``escalate`` holds the deeper probes a follow-up round may request.
@@ -592,7 +599,6 @@ DIAGNOSE_MODEL = os.environ.get("DIAGNOSE_MODEL", "claude-sonnet-5-5")
 DIAGNOSE_TIMEOUT_S = 90.0
 # Safety ceiling on model calls per process lifetime (one diagnosis makes at most ~6).
 MAX_DIAGNOSE_CALLS = 60
-_MAX_PROBES_PER_ROUND = 4
 _STATUSES = ("confident", "likely", "inconclusive")
 _LOCI = ("local", "external_cause", "unknown")
 
@@ -747,7 +753,7 @@ def parse_reply(obj: dict, class_key: str) -> tuple[str, Any] | None:
         if not isinstance(probes, list):
             return None
         escalate = SYMPTOM_CLASSES.get(class_key, {}).get("escalate", ())
-        return "need_probes", _keep_known(probes, escalate, "probe")[:_MAX_PROBES_PER_ROUND]
+        return "need_probes", _keep_known(probes, escalate, "probe")[:MAX_PROBES_PER_ROUND]
     if kind != "verdict":
         return None
     status, locus = obj.get("status"), obj.get("locus")
@@ -811,3 +817,355 @@ def apply_guards(verdict: dict, evidence: dict, rule_verdict: dict) -> dict:
     out["source"] = source
     out["rule_hits"] = list(rule_verdict.get("rule_hits") or [])
     return out
+
+
+# ---------------------------------------------------------------------------
+# Session engine (spec §6, §7, §11). Each diagnosis runs on its own background
+# thread and the routes only poll, following maintenance.start_or_get: state
+# lives in a bounded dict under one lock, finished sessions are evicted by age.
+# The egress gate lives here: the model is called with a payload only after the
+# user's consent to that exact payload text is recorded, and every payload that
+# leaves the machine is kept in the history file.
+# ---------------------------------------------------------------------------
+
+MAX_SYMPTOM_CHARS = 4000
+_SESSIONS_MAX = 20
+_SESSION_TTL_S = 1800
+_MAX_ACTIVE = 2
+_CONSENT_TIMEOUT_S = 600
+DIAGNOSE_HISTORY_FILE = os.path.join(APP_DIR, "diagnose_history.json")
+_HISTORY_MAX = 100
+_TERMINAL_STATES = frozenset({"done", "evidence_only", "error"})
+
+_sessions: dict[str, dict] = {}
+_sessions_lock = threading.Lock()
+_history_lock = threading.Lock()
+
+
+def _given_slots(slots: Any) -> dict:
+    """The caller's ``slots`` with ``target_host`` normalised. Raises ValueError."""
+    if slots is None:
+        return {}
+    if not isinstance(slots, dict):
+        raise ValueError("slots must be an object")
+    out = dict(slots)
+    if out.get("target_host") is not None:
+        host = dp.normalize_host(out["target_host"])
+        if host is None:
+            raise ValueError("invalid host")
+        out["target_host"] = host
+    return out
+
+
+def _evict_sessions(now: float) -> None:
+    """Drop expired finished sessions, then make room for one more under
+    ``_SESSIONS_MAX``, oldest finished first. A running session is never
+    evicted: its worker still holds it. Caller holds ``_sessions_lock``."""
+    for sid in [sid for sid, s in _sessions.items() if s["state"] in _TERMINAL_STATES]:
+        if now - _sessions[sid]["updated"] > _SESSION_TTL_S:
+            del _sessions[sid]
+    excess = len(_sessions) - _SESSIONS_MAX + 1
+    if excess > 0:
+        finished = sorted((s["updated"], sid) for sid, s in _sessions.items() if s["state"] in _TERMINAL_STATES)
+        for _, sid in finished[:excess]:
+            del _sessions[sid]
+
+
+def start_diagnosis(symptom: str, slots: dict | None = None, symptom_class: str | None = None) -> dict:
+    """Start a diagnosis in the background, or say what is still needed first.
+
+    ``slots`` and ``symptom_class`` come from the user and override the
+    classifier. Returns ``awaiting_slots`` (no session is created) while the
+    class or a required slot is unknown, ``{"ok": False, "error": "busy"}``
+    when ``_MAX_ACTIVE`` diagnoses are already running, and otherwise the new
+    ``session_id`` in state ``probing_wave1``. Raises ValueError for an empty,
+    non-string or over-long symptom, non-dict slots, an invalid host, or an
+    unknown symptom class.
+    """
+    if not isinstance(symptom, str) or not symptom.strip():
+        raise ValueError("symptom must be a non-empty string")
+    if len(symptom) > MAX_SYMPTOM_CHARS:
+        raise ValueError(f"symptom is longer than {MAX_SYMPTOM_CHARS} characters")
+    if symptom_class is not None and symptom_class not in SYMPTOM_CLASSES:
+        raise ValueError("unknown symptom class")
+    given = _given_slots(slots)
+    found = classify(symptom)
+    class_key = symptom_class or found["symptom_class"]
+    if class_key is None:
+        return {
+            "ok": True,
+            "state": "awaiting_slots",
+            "symptom_class": None,
+            "need": ["symptom_class"],
+            "candidates": found["candidates"],
+        }
+    merged = {**found["slots"], **given}
+    # Only the class's own slots are kept: they are all its probes may read.
+    names = SYMPTOM_CLASSES[class_key]["slots"]
+    filled = {name: merged[name] for name in names if merged.get(name)}
+    need = [name for name in names if name not in filled]
+    if need:
+        return {
+            "ok": True,
+            "state": "awaiting_slots",
+            "symptom_class": class_key,
+            "need": need,
+            "candidates": found["candidates"],
+        }
+    sid = secrets.token_urlsafe(16)
+    now = time.time()
+    with _sessions_lock:
+        _evict_sessions(now)
+        if sum(1 for s in _sessions.values() if s["state"] not in _TERMINAL_STATES) >= _MAX_ACTIVE:
+            return {"ok": False, "error": "busy"}
+        session = _sessions[sid] = {
+            "session_id": sid,
+            "state": "probing_wave1",
+            "symptom": symptom,
+            "symptom_class": class_key,
+            "slots": filled,
+            "round": 0,
+            "evidence": [],
+            "rule_verdict": None,
+            "preview": None,
+            "verdict": None,
+            "reason": None,
+            "error": None,
+            "sent": [],
+            "consent": None,
+            "auto_followups": False,
+            "consent_event": threading.Event(),
+            "created": now,
+            "updated": now,
+        }
+    try:
+        _spawn_worker(sid)
+    except Exception as e:  # noqa: BLE001 -- thread exhaustion must not wedge the tab
+        _finish(session, "error", error=f"Could not start diagnosis: {e}")
+        return {"ok": True, "session_id": sid, "state": "error"}
+    return {"ok": True, "session_id": sid, "state": "probing_wave1"}
+
+
+def _spawn_worker(sid: str) -> None:
+    threading.Thread(target=_run_session, args=(sid,), daemon=True, name=f"Diagnose-{sid[:8]}").start()
+
+
+def get_status(session_id: str) -> dict | None:
+    """A snapshot of the session for the poll route; None for an unknown id.
+
+    ``preview`` is the payload text only while awaiting consent. ``verdict``
+    is the guarded model verdict once ``done``. ``actions`` are registry
+    entries for the final verdict's actions, or for the rule verdict's actions
+    in ``evidence_only``, so a deterministic finding still offers its fix.
+    """
+    with _sessions_lock:
+        s = _sessions.get(session_id)
+        if s is None:
+            return None
+        state = s["state"]
+        source = {"done": s["verdict"], "evidence_only": s["rule_verdict"]}.get(state) or {}
+        keys = source.get("suggested_actions") or []
+        return copy.deepcopy(
+            {
+                "ok": True,
+                "session_id": session_id,
+                "state": state,
+                "symptom_class": s["symptom_class"],
+                "slots": s["slots"],
+                "round": s["round"],
+                "evidence": s["evidence"],
+                "rule_verdict": s["rule_verdict"],
+                "preview": s["preview"] if state == "awaiting_consent" else None,
+                "verdict": s["verdict"] if state == "done" else None,
+                "actions": [remediation.REMEDIATION_REGISTRY[k] for k in keys if k in remediation.REMEDIATION_REGISTRY],
+                "reason": s["reason"],
+                "error": s["error"],
+            }
+        )
+
+
+def submit_consent(session_id: str, approved: bool, auto_followups: bool = False) -> dict | None:
+    """Record the user's answer to the payload preview and wake the worker.
+
+    None for an unknown id. Only the first answer to a preview counts: a
+    second one (a double click), or one in any other state, is refused.
+    ``auto_followups`` pre-approves the escalation rounds of this diagnosis.
+    """
+    with _sessions_lock:
+        session = _sessions.get(session_id)
+        if session is None:
+            return None
+        if session["state"] != "awaiting_consent" or session["consent"] is not None:
+            return {"ok": False, "error": "not awaiting consent"}
+        session["consent"] = approved is True
+        session["auto_followups"] = approved is True and auto_followups is True
+        session["updated"] = time.time()
+        session["consent_event"].set()
+    return {"ok": True}
+
+
+def _wait_for_consent(session: dict) -> bool | None:
+    """Block until the user answers the preview: True/False, or None on timeout.
+
+    Called without ``_sessions_lock`` held, since ``submit_consent`` needs it.
+    """
+    session["consent_event"].wait(_CONSENT_TIMEOUT_S)
+    with _sessions_lock:
+        return session["consent"]
+
+
+def _set(session: dict, **fields) -> None:
+    with _sessions_lock:
+        session.update(fields, updated=time.time())
+
+
+def _by_key(evidence: list[dict]) -> dict[str, dict]:
+    """Probe results indexed by key, the shape the rules and guards read."""
+    return {r["key"]: r for r in evidence if isinstance(r, dict) and "key" in r}
+
+
+def _interpret(payload_text: str, class_key: str) -> tuple[str, Any] | None:
+    """One model call plus one retry (§12). The retry re-sends the same text,
+    which the user already approved, so it needs no new consent."""
+    for _ in range(2):
+        parsed = parse_reply(_call_model(payload_text, class_key), class_key)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _out_of_rounds(rule_verdict: dict | None) -> dict:
+    return {
+        "status": "inconclusive",
+        "locus": "unknown",
+        "headline": "Ran out of probe rounds before reaching a conclusion",
+        "reasoning": "The model still asked for more evidence after the last permitted probe round.",
+        "evidence_refs": [],
+        "suggested_actions": [],
+        "no_local_fix_reason": "",
+        "source": "engine",
+        "rule_hits": list((rule_verdict or {}).get("rule_hits") or []),
+    }
+
+
+def _drive(session: dict) -> None:
+    """The state machine (spec §6). Only this worker writes the session's
+    evidence, round and rule verdict, so it reads them without the lock."""
+    class_key = session["symptom_class"]
+    spec = SYMPTOM_CLASSES[class_key]
+    slots = dict(session["slots"])
+    host = slots.get("target_host")
+    evidence = list(dp.run_probes(list(spec["wave1"]), slots))
+    _set(session, evidence=evidence, rule_verdict=evaluate_rules(_by_key(evidence), host))
+
+    reason = model_unavailable_reason()
+    if reason:
+        _finish(session, "evidence_only", reason=reason)
+        return
+
+    approved_ahead = False
+    while True:
+        payload = build_payload(session)
+        if not approved_ahead:
+            with _sessions_lock:
+                session["consent_event"].clear()
+                session.update(state="awaiting_consent", preview=payload, consent=None, updated=time.time())
+            decision = _wait_for_consent(session)
+            if decision is None:
+                _finish(session, "evidence_only", reason="consent_timeout")
+                return
+            if decision is not True:
+                _finish(session, "evidence_only", reason="declined")
+                return
+            with _sessions_lock:
+                approved_ahead = session["auto_followups"] is True
+        # The gate: only text the user consented to gets past this point.
+        with _sessions_lock:
+            session["sent"].append(payload)
+            session.update(state="interpreting", preview=None, updated=time.time())
+        reply = _interpret(payload, class_key)
+        if reply is None:
+            _finish(session, "evidence_only", reason="model_error")
+            return
+        kind, value = reply
+        if kind == "verdict":
+            _finish(session, "done", verdict=apply_guards(value, _by_key(evidence), session["rule_verdict"]))
+            return
+        if session["round"] >= MAX_ROUNDS:
+            _finish(session, "done", verdict=_out_of_rounds(session["rule_verdict"]))
+            return
+        # parse_reply already filtered these; checked again so that only the
+        # class's own escalation probes, each run at most once, can ever run.
+        seen = {r.get("key") for r in evidence if isinstance(r, dict)}
+        wanted = dict.fromkeys(k for k in value if k in spec["escalate"])
+        keys = [k for k in wanted if k not in seen][:MAX_PROBES_PER_ROUND]
+        rnd = session["round"] + 1  # an empty request still uses up the round
+        _set(session, round=rnd, state=f"probing_wave{rnd + 1}")
+        if keys:
+            evidence = [*evidence, *dp.run_probes(keys, slots)]
+        _set(session, evidence=evidence, rule_verdict=evaluate_rules(_by_key(evidence), host))
+
+
+def _run_session(sid: str) -> None:
+    """Worker body: drive one session to a terminal state. Never raises."""
+    with _sessions_lock:
+        session = _sessions.get(sid)
+    if session is None:
+        return
+    try:
+        _drive(session)
+    except Exception as e:  # noqa: BLE001 -- a crashed diagnosis must end in "error", not hang
+        print(f"[Diagnose] session failed: {type(e).__name__}")
+        _finish(session, "error", error=str(e))
+
+
+def _finish(session: dict, state: str, *, reason: str | None = None, verdict: dict | None = None, error=None) -> None:
+    """Move the session to a terminal state and append its history entry."""
+    with _sessions_lock:
+        session.update(state=state, reason=reason, verdict=verdict, error=error, preview=None, updated=time.time())
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "session_id": session["session_id"],
+            "symptom": session["symptom"],
+            "symptom_class": session["symptom_class"],
+            "target_host": session["slots"].get("target_host"),
+            "state": state,
+            "reason": reason,
+            "verdict": copy.deepcopy(verdict),
+            "sent": list(session["sent"]),
+            "model": DIAGNOSE_MODEL if session["sent"] else None,
+        }
+    _append_history(entry)
+
+
+def _read_history() -> list:
+    try:
+        with open(DIAGNOSE_HISTORY_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _append_history(entry: dict) -> None:
+    """Append ``entry`` to the audit trail (newest last, capped). Never raises."""
+    tmp = DIAGNOSE_HISTORY_FILE + ".tmp"
+    with _history_lock:
+        try:
+            entry["symptom"] = redact(entry["symptom"], ["username"])
+            entries = [*_read_history(), entry][-_HISTORY_MAX:]
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(entries, fh, ensure_ascii=False)
+            os.replace(tmp, DIAGNOSE_HISTORY_FILE)
+        except Exception as e:  # noqa: BLE001 -- best effort; never break the worker
+            print(f"[Diagnose] could not write history: {type(e).__name__}")
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
+def load_history() -> list[dict]:
+    """Past diagnoses, newest first. A missing or corrupt file reads as empty."""
+    with _history_lock:
+        return list(reversed(_read_history()))

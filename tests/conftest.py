@@ -25,6 +25,7 @@ if PROJECT_ROOT not in sys.path:
 import pytest
 
 import bsod
+import diagnose
 import disk
 import events
 import homenet
@@ -190,6 +191,15 @@ def reset_globals():
 
     homenet._inventory_load_failed = False
     homenet._inventory_load_failure_reason = ""
+
+    # Diagnose engine (diagnose.py): session registry, per-process model-call
+    # cap and the lazily built SDK client. A prior test's sessions would count
+    # toward _MAX_ACTIVE ("busy"), and a spent call counter would make a later
+    # test see "call_cap" instead of its own mocks.
+    with diagnose._sessions_lock:
+        diagnose._sessions.clear()
+    diagnose._model_calls = 0
+    diagnose._client = None
 
     yield  # run the test
 

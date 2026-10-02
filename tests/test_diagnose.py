@@ -6,6 +6,8 @@ import copy
 import json
 import os
 import re
+import threading
+import time
 import types
 from pathlib import Path
 
@@ -1125,3 +1127,599 @@ class TestApplyGuards:
         assert out["evidence_refs"] == []
         assert out["no_local_fix_reason"] == ""
         assert out["rule_hits"] == []
+
+
+# ---------------------------------------------------------------------------
+# Session engine, egress gate, history (Task 11)
+# ---------------------------------------------------------------------------
+
+_TERMINAL = ("done", "evidence_only", "error")
+_WAVE1 = list(diagnose.SYMPTOM_CLASSES["network_dns"]["wave1"])
+_ESCALATE = list(diagnose.SYMPTOM_CLASSES["network_dns"]["escalate"])
+
+
+@pytest.fixture(autouse=True)
+def _isolated_history(tmp_path, monkeypatch):
+    """No test in this file may touch the real diagnose_history.json."""
+    path = tmp_path / "diagnose_history.json"
+    monkeypatch.setattr(diagnose, "DIAGNOSE_HISTORY_FILE", str(path))
+    return path
+
+
+class FakeProbes:
+    """Stands in for dp.run_probes: fixture evidence for its keys, an empty success otherwise."""
+
+    def __init__(self, fixture="hynote_zone_missing_a", raises=None):
+        self.evidence = _fixture_evidence(fixture)
+        self.raises = raises
+        self.calls = []
+        self.slots = []
+
+    def __call__(self, keys, slots):
+        self.calls.append(list(keys))
+        self.slots.append(dict(slots))
+        if self.raises is not None:
+            raise self.raises
+        return [
+            {"key": k, "label": k, **self.evidence.get(k, {"ok": True, "data": {}}), "elapsed_ms": 1.0} for k in keys
+        ]
+
+
+class FakeModel:
+    """Stands in for diagnose._call_model: scripted replies, the last one repeating."""
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.calls = []
+
+    def __call__(self, payload_text, class_key):
+        self.calls.append(payload_text)
+        return self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+
+
+def _need(*keys):
+    return {**REPLY, "kind": "need_probes", "need_probes": list(keys)}
+
+
+@pytest.fixture
+def engine(monkeypatch):
+    """The engine with probes, the model and the worker thread faked. Consent approves by default.
+
+    ``answer`` scripts the consent waits: each takes the next decision (the
+    last repeats), records the status it saw, and approves or declines through
+    the real ``submit_consent``; ``None`` is a timeout.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(diagnose, "anthropic", types.SimpleNamespace())
+    spawned = []
+    monkeypatch.setattr(diagnose, "_spawn_worker", spawned.append)
+    eng = types.SimpleNamespace(spawned=spawned, waits=[], previews=[])
+
+    def use_probes(probes):
+        eng.probes = probes
+        monkeypatch.setattr(diagnose.dp, "run_probes", probes)
+
+    def use_model(*replies):
+        eng.model = FakeModel(*replies)
+        monkeypatch.setattr(diagnose, "_call_model", eng.model)
+
+    def answer(*decisions, auto=False):
+        queue = list(decisions)
+
+        def wait(session):
+            sid = session["session_id"]
+            status = diagnose.get_status(sid)
+            eng.waits.append(status["state"])
+            eng.previews.append(status["preview"])
+            decision = queue.pop(0) if len(queue) > 1 else queue[0]
+            if decision is not None:
+                assert diagnose.submit_consent(sid, decision, auto_followups=auto) == {"ok": True}
+            return decision
+
+        monkeypatch.setattr(diagnose, "_wait_for_consent", wait)
+
+    def run(symptom=CHROME_BLOB, **kwargs):
+        started = diagnose.start_diagnosis(symptom, **kwargs)
+        assert started["state"] == "probing_wave1"
+        diagnose._run_session(started["session_id"])
+        return diagnose.get_status(started["session_id"])
+
+    eng.use_probes, eng.use_model, eng.answer, eng.run = use_probes, use_model, answer, run
+    use_probes(FakeProbes())
+    use_model(REPLY)
+    answer(True)
+    return eng
+
+
+class TestStartDiagnosis:
+    def test_no_host_asks_for_one_and_creates_no_session(self, engine):
+        r = diagnose.start_diagnosis("the internet is broken")
+        assert r == {
+            "ok": True,
+            "state": "awaiting_slots",
+            "symptom_class": "network_dns",
+            "need": ["target_host"],
+            "candidates": [],
+        }
+        assert diagnose._sessions == {}
+        assert engine.spawned == []
+
+    def test_two_candidates_are_offered_not_guessed(self, engine):
+        r = diagnose.start_diagnosis("google.com works but hynote.ai doesn't load")
+        assert r["state"] == "awaiting_slots"
+        assert r["candidates"] == ["google.com", "hynote.ai"]
+        assert r["need"] == ["target_host"]
+        assert diagnose._sessions == {}
+
+    def test_unclassified_symptom_asks_for_the_class(self, engine):
+        r = diagnose.start_diagnosis("my printer jams")
+        assert r["state"] == "awaiting_slots"
+        assert r["symptom_class"] is None
+        assert r["need"] == ["symptom_class"]
+        assert diagnose._sessions == {}
+
+    def test_creates_a_session_and_spawns_its_worker(self, engine):
+        r = diagnose.start_diagnosis(CHROME_BLOB)
+        assert r["ok"] is True
+        assert r["state"] == "probing_wave1"
+        assert re.fullmatch(r"[A-Za-z0-9_-]{16,32}", r["session_id"])
+        assert engine.spawned == [r["session_id"]]
+        status = diagnose.get_status(r["session_id"])
+        assert status["state"] == "probing_wave1"
+        assert status["slots"] == {"target_host": "hynote.ai"}
+        assert status["symptom_class"] == "network_dns"
+
+    def test_slots_override_the_classifier(self, engine):
+        r = diagnose.start_diagnosis("hynote.ai won't load", slots={"target_host": "Example.COM."})
+        assert diagnose.get_status(r["session_id"])["slots"] == {"target_host": "example.com"}
+
+    def test_slots_fill_the_missing_host(self, engine):
+        r = diagnose.start_diagnosis("google.com works but hynote.ai doesn't", slots={"target_host": "hynote.ai"})
+        assert r["state"] == "probing_wave1"
+
+    @pytest.mark.parametrize("host", ["", "not a host", 42, "a" * 300])
+    def test_invalid_host_in_slots_raises(self, engine, host):
+        with pytest.raises(ValueError, match="invalid host"):
+            diagnose.start_diagnosis("hynote.ai won't load", slots={"target_host": host})
+        assert diagnose._sessions == {}
+
+    def test_unknown_slot_names_are_dropped(self, engine):
+        r = diagnose.start_diagnosis("hynote.ai won't load", slots={"target_host": "hynote.ai", "evil": "x"})
+        assert diagnose.get_status(r["session_id"])["slots"] == {"target_host": "hynote.ai"}
+
+    def test_non_dict_slots_raise(self, engine):
+        with pytest.raises(ValueError):
+            diagnose.start_diagnosis("hynote.ai won't load", slots=["hynote.ai"])
+
+    def test_symptom_class_with_slots_works_without_keywords(self, engine):
+        r = diagnose.start_diagnosis("my printer jams", slots={"target_host": "hynote.ai"}, symptom_class="network_dns")
+        assert r["state"] == "probing_wave1"
+        assert diagnose.get_status(r["session_id"])["symptom_class"] == "network_dns"
+
+    def test_symptom_class_without_a_host_still_asks_for_it(self, engine):
+        r = diagnose.start_diagnosis("my printer jams", symptom_class="network_dns")
+        assert r["state"] == "awaiting_slots"
+        assert r["need"] == ["target_host"]
+
+    def test_unknown_symptom_class_raises(self, engine):
+        with pytest.raises(ValueError, match="unknown symptom class"):
+            diagnose.start_diagnosis("hynote.ai won't load", symptom_class="printer")
+
+    @pytest.mark.parametrize("symptom", [None, 7, b"hynote.ai", "", "   \n", "x" * (diagnose.MAX_SYMPTOM_CHARS + 1)])
+    def test_bad_symptom_raises(self, engine, symptom):
+        with pytest.raises(ValueError):
+            diagnose.start_diagnosis(symptom)
+
+    def test_symptom_at_the_length_limit_is_accepted(self, engine):
+        head = "hynote.ai won't load "
+        symptom = head + "x" * (diagnose.MAX_SYMPTOM_CHARS - len(head))
+        assert diagnose.start_diagnosis(symptom)["state"] == "probing_wave1"
+
+    def test_busy_when_max_active_sessions_are_running(self, engine):
+        for _ in range(diagnose._MAX_ACTIVE):
+            assert diagnose.start_diagnosis(CHROME_BLOB)["ok"] is True
+        assert diagnose.start_diagnosis(CHROME_BLOB) == {"ok": False, "error": "busy"}
+        assert len(diagnose._sessions) == diagnose._MAX_ACTIVE
+
+    def test_finished_sessions_do_not_count_as_busy(self, engine):
+        for _ in range(diagnose._MAX_ACTIVE + 1):
+            assert engine.run()["state"] == "done"
+
+    def test_worker_start_failure_marks_the_session_error(self, engine, monkeypatch):
+        def boom(sid):
+            raise RuntimeError("can't start new thread")
+
+        monkeypatch.setattr(diagnose, "_spawn_worker", boom)
+        r = diagnose.start_diagnosis(CHROME_BLOB)
+        status = diagnose.get_status(r["session_id"])
+        assert status["state"] == "error"
+        assert "can't start new thread" in status["error"]
+
+
+class TestEgressGate:
+    def test_declined_never_calls_the_model(self, engine):
+        engine.answer(False)
+        status = engine.run()
+        assert engine.model.calls == []
+        assert (status["state"], status["reason"]) == ("evidence_only", "declined")
+        assert diagnose.load_history()[0]["sent"] == []
+
+    def test_consent_timeout_never_calls_the_model(self, engine):
+        engine.answer(None)
+        status = engine.run()
+        assert engine.model.calls == []
+        assert (status["state"], status["reason"]) == ("evidence_only", "consent_timeout")
+        assert diagnose.load_history()[0]["sent"] == []
+
+    def test_the_model_gets_exactly_the_previewed_payload(self, engine):
+        status = engine.run()
+        assert engine.waits == ["awaiting_consent"]
+        assert isinstance(engine.previews[0], str)
+        assert engine.previews[0]
+        assert engine.model.calls == [engine.previews[0]]
+        assert status["state"] == "done"
+        assert diagnose.load_history()[0]["sent"] == [engine.previews[0]]
+
+    def test_preview_is_the_redacted_payload(self, engine, monkeypatch):
+        monkeypatch.setenv("USERNAME", "Zed")
+        engine.run("hynote.ai won't load for Zed")
+        preview = json.loads(engine.previews[0])
+        assert preview["symptom"] == "hynote.ai won't load for <user>"
+        assert preview["round"] == 0
+        assert [e["key"] for e in preview["evidence"]] == _WAVE1
+
+    @pytest.mark.parametrize("reason", ["no_api_key", "sdk_missing", "call_cap"])
+    def test_model_unavailable_is_evidence_only_without_asking(self, engine, monkeypatch, reason):
+        if reason == "no_api_key":
+            monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        elif reason == "sdk_missing":
+            monkeypatch.setattr(diagnose, "anthropic", None)
+        else:
+            monkeypatch.setattr(diagnose, "_model_calls", diagnose.MAX_DIAGNOSE_CALLS)
+        status = engine.run()
+        assert (status["state"], status["reason"]) == ("evidence_only", reason)
+        assert engine.waits == []
+        assert engine.model.calls == []
+        assert status["rule_verdict"]["locus"] == "external_cause"  # S3: the rules still answer
+        assert diagnose.load_history()[0]["sent"] == []
+
+    def test_preview_only_exposed_while_awaiting_consent(self, engine):
+        sid = diagnose.start_diagnosis(CHROME_BLOB)["session_id"]
+        assert diagnose.get_status(sid)["preview"] is None
+        diagnose._run_session(sid)
+        assert engine.previews[0]
+        assert diagnose.get_status(sid)["preview"] is None
+
+
+class TestEscalation:
+    def test_escalation_is_capped_at_max_rounds(self, engine):
+        engine.use_model(_need("dns.trace_delegation"))
+        status = engine.run()
+        assert len(engine.model.calls) == 3
+        assert status["state"] == "done"
+        assert status["round"] == diagnose.MAX_ROUNDS == 2
+        assert status["verdict"]["status"] == "inconclusive"
+        assert status["verdict"]["locus"] == "unknown"
+        assert status["verdict"]["headline"] == "Ran out of probe rounds before reaching a conclusion"
+        assert status["verdict"]["suggested_actions"] == []
+        assert status["actions"] == []
+
+    def test_each_round_asks_for_consent_again(self, engine):
+        engine.use_model(_need("dns.trace_delegation"), REPLY)
+        engine.run()
+        assert engine.waits == ["awaiting_consent", "awaiting_consent"]
+        second = json.loads(engine.previews[1])
+        assert second["round"] == 1
+        assert second["evidence"][-1]["key"] == "dns.trace_delegation"
+        assert engine.model.calls == engine.previews
+
+    def test_auto_followups_skips_later_consent(self, engine):
+        engine.use_model(_need("dns.trace_delegation"), _need("net.tcp_connect"), REPLY)
+        engine.answer(True, auto=True)
+        status = engine.run()
+        assert len(engine.waits) == 1
+        assert len(engine.model.calls) == 3
+        assert status["state"] == "done"
+        assert len(diagnose.load_history()[0]["sent"]) == 3
+
+    @staticmethod
+    def _bypass_parse_reply(monkeypatch, *parsed):
+        """Script parse_reply's output so the engine's own key checks are what is tested."""
+        replies = iter(parsed)
+        monkeypatch.setattr(diagnose, "parse_reply", lambda obj, class_key: next(replies))
+
+    def test_unknown_escalation_key_is_dropped_but_the_round_counts(self, engine, monkeypatch):
+        self._bypass_parse_reply(monkeypatch, ("need_probes", ["evil.rm_rf"]), ("verdict", _model_verdict()))
+        status = engine.run()
+        assert engine.probes.calls == [_WAVE1]
+        assert status["round"] == 1
+        assert status["state"] == "done"
+
+    def test_unknown_key_from_the_model_never_reaches_the_probes(self, engine):
+        engine.use_model(_need("evil.rm_rf", "dns.resolve_cached"), REPLY)
+        status = engine.run()
+        assert engine.probes.calls == [_WAVE1]
+        assert status["round"] == 1
+
+    def test_at_most_four_probes_per_round(self, engine, monkeypatch):
+        assert diagnose.MAX_PROBES_PER_ROUND == 4
+        assert len(_ESCALATE) == 5
+        self._bypass_parse_reply(monkeypatch, ("need_probes", list(_ESCALATE)), ("verdict", _model_verdict()))
+        engine.run()
+        assert engine.probes.calls[1] == _ESCALATE[:4]
+
+    def test_model_asking_for_five_runs_four(self, engine):
+        engine.use_model(_need(*_ESCALATE), REPLY)
+        engine.run()
+        assert engine.probes.calls[1] == _ESCALATE[:4]
+
+    def test_probes_already_run_are_not_run_again(self, engine):
+        engine.use_model(_need("dns.trace_delegation"), _need("dns.trace_delegation", "net.tcp_connect"), REPLY)
+        status = engine.run()
+        assert engine.probes.calls[1:] == [["dns.trace_delegation"], ["net.tcp_connect"]]
+        assert [e["key"] for e in status["evidence"]] == [*_WAVE1, "dns.trace_delegation", "net.tcp_connect"]
+
+    def test_escalation_runs_with_the_session_slots(self, engine):
+        engine.use_model(_need("net.tcp_connect"), REPLY)
+        engine.run()
+        assert engine.probes.slots == [{"target_host": "hynote.ai"}] * 2
+
+
+class TestModelFailures:
+    @pytest.mark.parametrize("bad", [None, {"kind": "nonsense"}, {"kind": "verdict", "status": "maybe"}])
+    def test_one_failure_then_success_is_done(self, engine, bad):
+        engine.use_model(bad, REPLY)
+        status = engine.run()
+        assert len(engine.model.calls) == 2
+        assert engine.model.calls[0] == engine.model.calls[1] == engine.previews[0]
+        assert len(engine.waits) == 1  # the retry re-sends the text already approved
+        assert status["state"] == "done"
+
+    def test_two_failures_are_evidence_only(self, engine):
+        engine.use_model(None)
+        status = engine.run()
+        assert len(engine.model.calls) == 2
+        assert (status["state"], status["reason"]) == ("evidence_only", "model_error")
+        assert diagnose.load_history()[0]["sent"] == [engine.previews[0]]
+
+
+class TestOutcome:
+    def test_s1_model_local_flush_dns_ends_external_with_no_actions(self, engine):
+        engine.use_model({**REPLY, "locus": "local", "suggested_actions": ["flush_dns"]})
+        status = engine.run()
+        assert status["state"] == "done"
+        assert status["verdict"]["locus"] == "external_cause"
+        assert status["verdict"]["suggested_actions"] == []
+        assert status["verdict"]["overridden_model_locus"] == "local"
+        assert status["actions"] == []
+
+    def test_done_offers_registry_entries_for_the_verdict(self, engine):
+        engine.use_probes(FakeProbes("stale_cache_direct_resolves"))
+        status = engine.run("example.com won't load")
+        assert status["verdict"]["suggested_actions"] == ["flush_dns"]
+        assert status["actions"] == [remediation.REMEDIATION_REGISTRY["flush_dns"]]
+
+    def test_evidence_only_offers_the_rule_verdicts_actions(self, engine, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        engine.use_probes(FakeProbes("stale_cache_direct_resolves"))
+        status = engine.run("example.com won't load")
+        assert status["state"] == "evidence_only"
+        assert status["verdict"] is None
+        assert [a["id"] for a in status["actions"]] == ["flush_dns"]
+
+    def test_probe_exception_is_error_with_the_message(self, engine):
+        engine.use_probes(FakeProbes(raises=RuntimeError("resolver exploded")))
+        status = engine.run()
+        assert status["state"] == "error"
+        assert status["error"] == "resolver exploded"
+        assert status["actions"] == []
+        assert diagnose.load_history()[0]["state"] == "error"
+
+    def test_model_exception_is_error_and_does_not_escape(self, engine, monkeypatch):
+        def boom(payload_text, class_key):
+            raise RuntimeError("sdk bug")
+
+        monkeypatch.setattr(diagnose, "_call_model", boom)
+        assert engine.run()["state"] == "error"
+
+    def test_history_failure_does_not_escape(self, engine, monkeypatch):
+        monkeypatch.setattr(diagnose, "DIAGNOSE_HISTORY_FILE", os.path.join("Z:\\no", "such", "dir", "h.json"))
+        assert engine.run()["state"] == "done"
+
+    def test_unknown_session_is_a_no_op(self, engine):
+        diagnose._run_session("nope")
+        assert diagnose.load_history() == []
+
+    def test_get_status_unknown_id_is_none(self, engine):
+        assert diagnose.get_status("nope") is None
+
+    def test_status_carries_the_documented_keys(self, engine):
+        status = engine.run()
+        assert set(status) == {
+            "ok",
+            "session_id",
+            "state",
+            "symptom_class",
+            "slots",
+            "round",
+            "evidence",
+            "rule_verdict",
+            "preview",
+            "verdict",
+            "actions",
+            "reason",
+            "error",
+        }
+        assert status["ok"] is True
+        assert [e["key"] for e in status["evidence"]] == _WAVE1
+
+    def test_status_is_a_snapshot(self, engine):
+        status = engine.run()
+        status["evidence"].clear()
+        status["rule_verdict"]["locus"] = "x"
+        again = diagnose.get_status(status["session_id"])
+        assert again["evidence"]
+        assert again["rule_verdict"]["locus"] == "external_cause"
+
+
+class TestSubmitConsent:
+    def test_unknown_id_is_none(self, engine):
+        assert diagnose.submit_consent("nope", True) is None
+
+    def test_wrong_state_is_refused(self, engine):
+        sid = diagnose.start_diagnosis(CHROME_BLOB)["session_id"]
+        assert diagnose.submit_consent(sid, True) == {"ok": False, "error": "not awaiting consent"}
+
+    def test_second_consent_after_the_session_moved_on_is_refused(self, engine):
+        sid = engine.run()["session_id"]
+        assert diagnose.submit_consent(sid, True) == {"ok": False, "error": "not awaiting consent"}
+
+    def test_double_click_while_awaiting_is_refused(self, engine, monkeypatch):
+        second = []
+
+        def wait(session):
+            sid = session["session_id"]
+            assert diagnose.submit_consent(sid, False) == {"ok": True}
+            second.append(diagnose.submit_consent(sid, True))
+            return session["consent"]
+
+        monkeypatch.setattr(diagnose, "_wait_for_consent", wait)
+        status = engine.run()
+        assert second == [{"ok": False, "error": "not awaiting consent"}]
+        assert status["reason"] == "declined"
+        assert engine.model.calls == []
+
+
+class TestWaitForConsent:
+    @staticmethod
+    def _session():
+        return {"session_id": "s", "state": "awaiting_consent", "consent": None, "consent_event": threading.Event()}
+
+    def test_returns_the_recorded_decision(self):
+        session = self._session()
+        session["consent"] = False
+        session["consent_event"].set()
+        assert diagnose._wait_for_consent(session) is False
+
+    def test_timeout_is_none(self, monkeypatch):
+        monkeypatch.setattr(diagnose, "_CONSENT_TIMEOUT_S", 0.01)
+        assert diagnose._wait_for_consent(self._session()) is None
+
+
+class TestSessionEviction:
+    def test_old_finished_sessions_are_evicted_and_live_ones_kept(self, engine):
+        done_sid = engine.run()["session_id"]
+        live_sid = diagnose.start_diagnosis(CHROME_BLOB)["session_id"]
+        stale = time.time() - diagnose._SESSION_TTL_S - 1
+        diagnose._sessions[done_sid]["updated"] = stale
+        diagnose._sessions[live_sid]["updated"] = stale
+        diagnose.start_diagnosis(CHROME_BLOB)
+        assert done_sid not in diagnose._sessions
+        assert live_sid in diagnose._sessions
+
+    def test_fresh_finished_sessions_survive(self, engine):
+        sid = engine.run()["session_id"]
+        diagnose.start_diagnosis(CHROME_BLOB)
+        assert sid in diagnose._sessions
+
+    def test_session_count_is_bounded_oldest_finished_first(self, engine):
+        sids = [engine.run()["session_id"] for _ in range(diagnose._SESSIONS_MAX)]
+        now = time.time()
+        for i, sid in enumerate(reversed(sids)):
+            diagnose._sessions[sid]["updated"] = now - i  # sids[0] is the oldest
+        new = diagnose.start_diagnosis(CHROME_BLOB)["session_id"]
+        assert len(diagnose._sessions) == diagnose._SESSIONS_MAX
+        assert sids[0] not in diagnose._sessions
+        assert new in diagnose._sessions
+        assert sids[1] in diagnose._sessions
+
+
+class TestHistory:
+    def test_entry_records_what_was_sent(self, engine, monkeypatch):
+        monkeypatch.setenv("USERNAME", "Zed")
+        status = engine.run(r"hynote.ai won't load, see C:\Users\Zed\log.txt")
+        (entry,) = diagnose.load_history()
+        assert set(entry) == {
+            "ts",
+            "session_id",
+            "symptom",
+            "symptom_class",
+            "target_host",
+            "state",
+            "reason",
+            "verdict",
+            "sent",
+            "model",
+        }
+        assert entry["session_id"] == status["session_id"]
+        assert entry["symptom"] == r"hynote.ai won't load, see C:\Users\<user>\log.txt"
+        assert entry["symptom_class"] == "network_dns"
+        assert entry["target_host"] == "hynote.ai"
+        assert entry["state"] == "done"
+        assert entry["verdict"] == status["verdict"]
+        assert entry["sent"] == engine.previews
+        assert entry["model"] == diagnose.DIAGNOSE_MODEL
+
+    def test_nothing_sent_records_no_model(self, engine):
+        engine.answer(False)
+        engine.run()
+        assert diagnose.load_history()[0]["model"] is None
+
+    def test_newest_first_and_capped(self, engine, monkeypatch, _isolated_history):
+        monkeypatch.setattr(diagnose, "_HISTORY_MAX", 3)
+        engine.answer(False)
+        sids = [engine.run()["session_id"] for _ in range(5)]
+        assert [e["session_id"] for e in diagnose.load_history()] == sids[:1:-1]
+        on_disk = json.loads(_isolated_history.read_text(encoding="utf-8"))
+        assert [e["session_id"] for e in on_disk] == sids[2:]  # newest last on disk
+
+    def test_write_is_atomic(self, engine, _isolated_history):
+        engine.run()
+        assert _isolated_history.exists()
+        assert not Path(str(_isolated_history) + ".tmp").exists()
+
+    def test_missing_file_is_empty(self):
+        assert diagnose.load_history() == []
+
+    @pytest.mark.parametrize("content", ["{not json", '{"a": 1}', ""])
+    def test_corrupt_file_is_empty(self, _isolated_history, content):
+        _isolated_history.write_text(content, encoding="utf-8")
+        assert diagnose.load_history() == []
+
+    def test_corrupt_file_is_replaced_on_the_next_append(self, engine, _isolated_history):
+        _isolated_history.write_text("{not json", encoding="utf-8")
+        engine.run()
+        assert len(diagnose.load_history()) == 1
+
+
+class TestRealThreads:
+    def test_model_is_not_called_until_consent_then_exactly_once(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        monkeypatch.setattr(diagnose, "anthropic", types.SimpleNamespace())
+        monkeypatch.setattr(diagnose, "_CONSENT_TIMEOUT_S", 3)
+        monkeypatch.setattr(diagnose.dp, "run_probes", FakeProbes())
+        model = FakeModel(REPLY)
+        monkeypatch.setattr(diagnose, "_call_model", model)
+
+        def poll(sid, states, timeout=5.0):
+            deadline = time.monotonic() + timeout
+            status = diagnose.get_status(sid)
+            while status["state"] not in states and time.monotonic() < deadline:
+                time.sleep(0.02)
+                status = diagnose.get_status(sid)
+            return status
+
+        sid = diagnose.start_diagnosis(CHROME_BLOB)["session_id"]
+        try:
+            status = poll(sid, ("awaiting_consent", *_TERMINAL))
+            assert status["state"] == "awaiting_consent"
+            preview = status["preview"]
+            assert model.calls == []
+            assert diagnose.submit_consent(sid, True) == {"ok": True}
+            status = poll(sid, _TERMINAL)
+        finally:
+            # Never leave a worker behind to write history after monkeypatch is undone.
+            diagnose.submit_consent(sid, False)
+            poll(sid, _TERMINAL)
+        assert status["state"] == "done"
+        assert model.calls == [preview]
