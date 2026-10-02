@@ -20,3 +20,8 @@ mac-vendor-lookup>=0.1.13
 # HomeKit accessories, and most modern IoT that advertises via mDNS.
 # Python-first alternative to shelling out to ``avahi-browse`` / ``dns-sd``.
 zeroconf>=0.132.0
+# DNS probes for the Diagnose tab: query specific resolvers / authoritative
+# servers directly and read rcode + AA flag. stdlib ``socket`` only exposes
+# the OS resolver (no rcode, no choice of server), so it cannot tell NXDOMAIN
+# from SERVFAIL or compare resolvers (spec §4.1).
+dnspython>=2.6
