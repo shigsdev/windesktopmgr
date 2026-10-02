@@ -3125,6 +3125,24 @@ class TestDiagnoseTab:
         assert note.startswith("The AI suggested a different cause (<i>local</i>);"), note
         assert page.evaluate("document.querySelectorAll('#dx-result .dx-note i').length") == 0
 
+    def test_evidence_opens_for_evidence_only_and_resets_for_a_new_diagnosis(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        ev = "[{key:'dns.interception', label:'l', ok:true, data:{intercepted:true}, elapsed_ms:3}]"
+        page.evaluate(
+            "dx_resetView(); dx_renderResult({state:'evidence_only', reason:'declined', rule_verdict:{status:"
+            "'inconclusive', locus:'unknown', headline:'h', reasoning:'r', evidence_refs:[], suggested_actions:[],"
+            f" no_local_fix_reason:''}}, evidence:{ev}, actions:[]}})"
+        )
+        assert page.evaluate("document.getElementById('dx-evidence').open") is True
+        page.evaluate("dx_resetView()")
+        assert page.evaluate("document.getElementById('dx-evidence').open") is False
+        page.evaluate(
+            "dx_renderResult({state:'done', verdict:{status:'likely', locus:'local', headline:'h', reasoning:'r',"
+            f" evidence_refs:[], suggested_actions:[], no_local_fix_reason:''}}, evidence:{ev}, actions:[]}})"
+        )
+        assert page.evaluate("document.getElementById('dx-evidence').open") is False
+
     def test_submit_reaches_preview_or_evidence_only_and_sends_nothing(self, loaded_page):
         page, _ = loaded_page
         self._open(page)

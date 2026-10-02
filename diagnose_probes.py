@@ -50,7 +50,8 @@ except ImportError:  # pragma: no cover -- exercised by patching HAVE_DNSPYTHON
     dns = None  # type: ignore[assignment]
     HAVE_DNSPYTHON = False
 
-_MAX_WORKERS = 8
+# One worker per wave-1 probe (10), so none queues behind a slow one and loses its timeout budget.
+_MAX_WORKERS = 10
 
 # A known-good, always-up site: tells "this PC is offline" from "the target is down".
 CONTROL_DOMAIN = "www.microsoft.com"

@@ -2013,6 +2013,11 @@ class TestRegistryInvariants:
     def test_snapshot_is_the_full_registry(self):
         assert len(_REGISTERED) == 15
 
+    def test_wave_one_runs_in_a_single_batch_of_workers(self):
+        # Fewer workers than wave-1 probes would queue some behind the slow ones and eat their timeouts.
+        assert dp._MAX_WORKERS == 10
+        assert all(len(cls["wave1"]) <= dp._MAX_WORKERS for cls in diagnose.SYMPTOM_CLASSES.values())
+
     def test_every_referenced_probe_is_registered(self):
         referenced = _referenced_probes()
         assert referenced

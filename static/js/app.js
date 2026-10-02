@@ -10193,6 +10193,9 @@ function dx_resetView() {
   dx_show("dx-preview", false);
   dx_show("dx-result", false);
   dx_show("dx-evidence", false);
+  // A new diagnosis starts collapsed; dx_renderResult re-opens it where needed.
+  const ev = dx_el("dx-evidence");
+  if (ev) ev.open = false;
   _dxPreviewKey = null;
   _dxAutoKey = null;
 }
@@ -10449,7 +10452,8 @@ function dx_renderResult(status) {
   // A conclusive external_cause must never offer a fix, whatever the server sent.
   _dxActions = conclusive && v.locus !== "external_cause" && Array.isArray(status.actions) ? status.actions : [];
   let html = "";
-  let evidenceOpen = false;
+  // With no AI verdict the evidence is the main content, so show it open.
+  let evidenceOpen = state === "evidence_only";
 
   if (state === "error") {
     html = `<div class="dx-error">${escHtml(status.error || "The diagnosis failed.")}</div>`;
