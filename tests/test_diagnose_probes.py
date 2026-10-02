@@ -975,41 +975,75 @@ class TestLocalConfigRegistration:
 # ── Connectivity probes (control domain, gateway, TCP, TLS, traceroute) ──────
 
 
+_INFO = (2, 1, 6, "", ("23.1.2.3", 443))
+
+
+def _fake_net(mocker, *, infos=None, resolve_error=None, connect_error=None):
+    """Patch ``getaddrinfo`` and ``socket.socket``; return ``(getaddrinfo mock, socket factory mock)``."""
+    gai = mocker.patch.object(
+        dp.socket, "getaddrinfo", return_value=[_INFO] if infos is None else infos, side_effect=resolve_error
+    )
+    factory = mocker.patch.object(dp.socket, "socket")
+    if connect_error is not None:
+        factory.return_value.connect.side_effect = connect_error
+    return gai, factory
+
+
 class TestControlDomain:
     def test_constant(self):
         assert dp.CONTROL_DOMAIN == "www.microsoft.com"
 
     def test_resolved_and_connected(self, mocker):
-        mocker.patch.object(dp.socket, "getaddrinfo", return_value=[(2, 1, 6, "", ("23.1.2.3", 443))])
-        conn = mocker.patch.object(dp.socket, "create_connection")
+        gai, factory = _fake_net(mocker)
         d = dp._p_control_domain({})
         assert d["host"] == "www.microsoft.com"
         assert d["resolved"] is True
+        assert d["address"] == "23.1.2.3"
         assert d["connected"] is True
         assert isinstance(d["connect_ms"], float)
         assert d["error"] is None
-        dp.socket.getaddrinfo.assert_called_once_with("www.microsoft.com", 443)
-        conn.assert_called_once_with(("www.microsoft.com", 443), timeout=3)
-        conn.return_value.close.assert_called_once()
+        gai.assert_called_once_with("www.microsoft.com", 443, type=socket.SOCK_STREAM)
+        factory.assert_called_once_with(2, 1, 6)
+        sock = factory.return_value
+        sock.settimeout.assert_called_once_with(3)
+        sock.connect.assert_called_once_with(("23.1.2.3", 443))
+        sock.close.assert_called_once()
 
     def test_resolve_failure_skips_connect(self, mocker):
-        mocker.patch.object(dp.socket, "getaddrinfo", side_effect=socket.gaierror(11001, "getaddrinfo failed"))
-        conn = mocker.patch.object(dp.socket, "create_connection")
+        gai, factory = _fake_net(mocker, resolve_error=socket.gaierror(11001, "getaddrinfo failed"))
         d = dp._p_control_domain({})
         assert d["resolved"] is False
+        assert d["address"] is None
         assert d["connected"] is False
         assert d["connect_ms"] is None
         assert "getaddrinfo failed" in d["error"]
-        conn.assert_not_called()
+        gai.assert_called_once()
+        factory.assert_not_called()
 
-    def test_connect_timeout_sets_error(self, mocker):
-        mocker.patch.object(dp.socket, "getaddrinfo", return_value=[(2, 1, 6, "", ("23.1.2.3", 443))])
-        mocker.patch.object(dp.socket, "create_connection", side_effect=TimeoutError())
+    def test_empty_resolution_is_a_resolve_failure(self, mocker):
+        _, factory = _fake_net(mocker, infos=[])
+        d = dp._p_control_domain({})
+        assert d["resolved"] is False
+        assert d["error"] == "no addresses returned"
+        factory.assert_not_called()
+
+    def test_connects_to_first_address_only(self, mocker):
+        second = (2, 1, 6, "", ("23.9.9.9", 443))
+        gai, factory = _fake_net(mocker, infos=[_INFO, second], connect_error=TimeoutError())
+        d = dp._p_control_domain({})
+        assert d["address"] == "23.1.2.3"
+        assert d["connected"] is False
+        gai.assert_called_once()
+        factory.return_value.connect.assert_called_once_with(("23.1.2.3", 443))
+
+    def test_connect_timeout_sets_error_and_closes_socket(self, mocker):
+        _, factory = _fake_net(mocker, connect_error=TimeoutError())
         d = dp._p_control_domain({})
         assert d["resolved"] is True
         assert d["connected"] is False
         assert d["connect_ms"] is None
         assert d["error"]  # a bare TimeoutError has an empty str(); the probe must still say something
+        factory.return_value.close.assert_called_once()
 
 
 def _gateway_registry(mocker, ifaces: dict):
@@ -1097,10 +1131,15 @@ class TestGateway:
         assert d["rtt_ms"] is None
         assert d["gateways"] == ["192.168.1.1"]
 
-    def test_missing_executable_is_unreachable(self, mocker):
+    def test_missing_executable_is_untested_not_unreachable(self, mocker):
+        # Not being able to launch ping means "could not test"; reporting False would feed a false dead-gateway verdict.
         _gateway_registry(mocker, {"{G1}": {"DefaultGateway": ["192.168.1.1"]}})
         _ping(mocker, side_effect=FileNotFoundError("ping"))
-        assert dp._p_gateway({})["reachable"] is False
+        d = dp._p_gateway({})
+        assert d["gateways"] == ["192.168.1.1"]
+        assert d["reachable"] is None
+        assert d["rtt_ms"] is None
+        assert "ping" in d["error"]
 
     def test_no_gateway_means_unknown_and_no_subprocess(self, mocker):
         _gateway_registry(mocker, {"{G1}": {"DefaultGateway": [], "DhcpDefaultGateway": ""}})
@@ -1143,37 +1182,66 @@ class TestGateway:
 
 
 class TestTcpConnect:
-    def test_both_ports_connect(self, mocker):
-        conn = mocker.patch.object(dp.socket, "create_connection")
+    def test_both_ports_connect_with_one_resolution(self, mocker):
+        gai, factory = _fake_net(mocker)
         d = dp._p_tcp_connect(SLOTS)
         assert [r["port"] for r in d["results"]] == [443, 80]
-        assert all(r["connected"] is True and isinstance(r["ms"], float) and r["error"] is None for r in d["results"])
-        assert [c.args for c in conn.call_args_list] == [(("hynote.ai", 443),), (("hynote.ai", 80),)]
-        assert all(c.kwargs == {"timeout": 3} for c in conn.call_args_list)
-        assert conn.return_value.close.call_count == 2
+        assert all(
+            r["connected"] is True and isinstance(r["ms"], float) and r["error"] is None and r["address"] == "23.1.2.3"
+            for r in d["results"]
+        )
+        gai.assert_called_once_with("hynote.ai", 443, type=socket.SOCK_STREAM)
+        assert [c.args for c in factory.call_args_list] == [(2, 1, 6), (2, 1, 6)]
+        sock = factory.return_value
+        assert [c.args for c in sock.settimeout.call_args_list] == [(3,), (3,)]
+        assert [c.args for c in sock.connect.call_args_list] == [(("23.1.2.3", 443),), (("23.1.2.3", 80),)]
+        assert sock.close.call_count == 2
+
+    def test_ipv6_sockaddr_keeps_flow_and_scope(self, mocker):
+        v6 = (23, 1, 6, "", ("2606:4700::1", 443, 0, 0))
+        _, factory = _fake_net(mocker, infos=[v6])
+        d = dp._p_tcp_connect(SLOTS)
+        assert d["results"][0]["address"] == "2606:4700::1"
+        assert [c.args for c in factory.return_value.connect.call_args_list] == [
+            (("2606:4700::1", 443, 0, 0),),
+            (("2606:4700::1", 80, 0, 0),),
+        ]
 
     def test_per_port_results_when_one_fails(self, mocker):
-        def fake(addr, timeout):
-            if addr[1] == 443:
+        def refuse_443(sockaddr):
+            if sockaddr[1] == 443:
                 raise ConnectionRefusedError(10061, "refused")
-            return mocker.MagicMock()
 
-        mocker.patch.object(dp.socket, "create_connection", side_effect=fake)
+        _, factory = _fake_net(mocker)
+        factory.return_value.connect.side_effect = refuse_443
         by_port = {r["port"]: r for r in dp._p_tcp_connect(SLOTS)["results"]}
         assert by_port[443]["connected"] is False
         assert by_port[443]["ms"] is None
         assert "refused" in by_port[443]["error"]
+        assert by_port[443]["address"] == "23.1.2.3"
         assert by_port[80]["connected"] is True
+        assert factory.return_value.close.call_count == 2  # the failed socket is closed too
 
     def test_timeout_has_nonempty_error(self, mocker):
-        mocker.patch.object(dp.socket, "create_connection", side_effect=TimeoutError())
+        _fake_net(mocker, connect_error=TimeoutError())
         r = dp._p_tcp_connect(SLOTS)["results"][0]
         assert r["connected"] is False
         assert r["error"]
 
+    def test_resolution_failure_fails_both_ports_without_connecting(self, mocker):
+        gai, factory = _fake_net(mocker, resolve_error=socket.gaierror(11001, "getaddrinfo failed"))
+        d = dp._p_tcp_connect(SLOTS)
+        assert [(r["port"], r["connected"], r["address"], r["ms"]) for r in d["results"]] == [
+            (443, False, None, None),
+            (80, False, None, None),
+        ]
+        assert all("getaddrinfo failed" in r["error"] for r in d["results"])
+        gai.assert_called_once()
+        factory.assert_not_called()
+
 
 def _fake_tls(mocker, *, version="TLSv1.3", cert=None, wrap_error=None):
-    """Patch ssl.create_default_context and socket.create_connection; return (ctx, raw_sock, tls_sock)."""
+    """Patch ssl.create_default_context, getaddrinfo and socket.socket; return (ctx, raw_sock, tls_sock)."""
     if cert is None:
         cert = {"subject": ((("commonName", "hynote.ai"),),), "notAfter": "Jan  1 00:00:00 2027 GMT"}
     tls_sock = mocker.MagicMock()
@@ -1185,8 +1253,8 @@ def _fake_tls(mocker, *, version="TLSv1.3", cert=None, wrap_error=None):
     else:
         ctx.wrap_socket.return_value = tls_sock
     mocker.patch.object(dp.ssl, "create_default_context", return_value=ctx)
-    raw = mocker.patch.object(dp.socket, "create_connection").return_value
-    return ctx, raw, tls_sock
+    _, factory = _fake_net(mocker)
+    return ctx, factory.return_value, tls_sock
 
 
 class TestTlsHandshake:
@@ -1195,12 +1263,16 @@ class TestTlsHandshake:
         d = dp._p_tls_handshake(SLOTS)
         assert d == {
             "handshake": True,
+            "address": "23.1.2.3",
             "protocol": "TLSv1.3",
             "cert_cn": "hynote.ai",
             "not_after": "Jan  1 00:00:00 2027 GMT",
             "error": None,
         }
-        dp.socket.create_connection.assert_called_once_with(("hynote.ai", 443), timeout=5)
+        dp.socket.getaddrinfo.assert_called_once_with("hynote.ai", 443, type=socket.SOCK_STREAM)
+        dp.socket.socket.assert_called_once_with(2, 1, 6)
+        raw.settimeout.assert_called_once_with(5)
+        raw.connect.assert_called_once_with(("23.1.2.3", 443))
         ctx.wrap_socket.assert_called_once_with(raw, server_hostname="hynote.ai")
         tls_sock.close.assert_called_once()
 
@@ -1209,22 +1281,35 @@ class TestTlsHandshake:
         _, raw, _ = _fake_tls(mocker, wrap_error=err)
         d = dp._p_tls_handshake(SLOTS)
         assert d["handshake"] is False
+        assert d["address"] == "23.1.2.3"
         assert "unable to get local issuer certificate" in d["error"]
         assert d["protocol"] is None
         assert d["cert_cn"] is None
         assert d["not_after"] is None
         raw.close.assert_called_once()
 
-    def test_connect_failure(self, mocker):
+    def test_resolution_failure_does_not_connect(self, mocker):
         mocker.patch.object(dp.ssl, "create_default_context")
-        mocker.patch.object(dp.socket, "create_connection", side_effect=ConnectionRefusedError(10061, "refused"))
+        gai, factory = _fake_net(mocker, resolve_error=socket.gaierror(11001, "getaddrinfo failed"))
         d = dp._p_tls_handshake(SLOTS)
         assert d["handshake"] is False
+        assert d["address"] is None
+        assert "getaddrinfo failed" in d["error"]
+        gai.assert_called_once()
+        factory.assert_not_called()
+
+    def test_connect_failure(self, mocker):
+        mocker.patch.object(dp.ssl, "create_default_context")
+        _, factory = _fake_net(mocker, connect_error=ConnectionRefusedError(10061, "refused"))
+        d = dp._p_tls_handshake(SLOTS)
+        assert d["handshake"] is False
+        assert d["address"] == "23.1.2.3"
         assert "refused" in d["error"]
+        factory.return_value.close.assert_called_once()
 
     def test_timeout_has_nonempty_error(self, mocker):
         mocker.patch.object(dp.ssl, "create_default_context")
-        mocker.patch.object(dp.socket, "create_connection", side_effect=TimeoutError())
+        _fake_net(mocker, connect_error=TimeoutError())
         d = dp._p_tls_handshake(SLOTS)
         assert d["handshake"] is False
         assert d["error"]
@@ -1287,6 +1372,30 @@ class TestTraceroute:
 
     def test_not_reached_when_last_hop_timed_out(self, mocker):
         _tracert(mocker, "  1     *        *        *     Request timed out.\n\nTrace complete.\n")
+        assert dp._p_traceroute(SLOTS)["reached"] is False
+
+    def test_hop_limit_with_trace_complete_is_not_reached(self, mocker):
+        # tracert prints "Trace complete." even when it only ran out of hops.
+        _tracert(
+            mocker,
+            "Tracing route to hynote.ai [104.16.0.1]\nover a maximum of 15 hops:\n\n"
+            "  1    <1 ms    <1 ms    <1 ms  192.168.1.1\n"
+            " 15    30 ms    31 ms    29 ms  10.9.9.9\n\nTrace complete.\n",
+        )
+        d = dp._p_traceroute(SLOTS)
+        assert len(d["hops"]) == 2
+        assert d["reached"] is False
+
+    def test_ip_literal_target_without_brackets_compares_to_target(self, mocker):
+        out = "Tracing route to 8.8.8.8 over a maximum of 15 hops\n\n  1    <1 ms  <1 ms  <1 ms  192.168.1.1\n"
+        _tracert(mocker, out + "  2    9 ms     9 ms     9 ms  8.8.8.8\n\nTrace complete.\n")
+        assert dp._p_traceroute({"target_host": "8.8.8.8"})["reached"] is True
+        _tracert(mocker, out + "  2    9 ms     9 ms     9 ms  8.8.4.4\n\nTrace complete.\n")
+        assert dp._p_traceroute({"target_host": "8.8.8.8"})["reached"] is False
+
+    def test_unknown_destination_is_not_reached(self, mocker):
+        # A hostname target and no parseable "[ip]" in the header: nothing to compare against.
+        _tracert(mocker, "  1    <1 ms    <1 ms    <1 ms  192.168.1.1\n\nTrace complete.\n")
         assert dp._p_traceroute(SLOTS)["reached"] is False
 
     def test_partial_stars_with_ip_is_not_a_timeout(self, mocker):
@@ -1353,7 +1462,7 @@ class TestConnectivityRegistration:
             ("net.control_domain", "Reach a known-good site", (), (), 8, "_p_control_domain"),
             ("net.gateway", "Ping the default gateway", (), ("mac",), 8, "_p_gateway"),
             ("net.tcp_connect", "Connect to the site's ports", ("target_host",), (), 10, "_p_tcp_connect"),
-            ("net.tls_handshake", "Check the site's TLS certificate", ("target_host",), (), 10, "_p_tls_handshake"),
+            ("net.tls_handshake", "Check the site's TLS certificate", ("target_host",), (), 12, "_p_tls_handshake"),
             ("net.traceroute", "Trace the route to the site", ("target_host",), (), 50, "_p_traceroute"),
         ],
     )

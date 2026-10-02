@@ -570,6 +570,7 @@ def _p_proxy_config(slots: dict) -> dict:
 
 _PING_RTT_RE = re.compile(r"time([=<])\s*(\d+)\s*ms", re.IGNORECASE)
 _HOP_RE = re.compile(r"^\s*(\d+)\s+(.*\S)\s*$")
+_TRACE_HEADER_RE = re.compile(r"Tracing route to\s+\S+\s+\[([^\]\s]+)\]", re.IGNORECASE)
 
 
 def _err_text(exc: BaseException) -> str:
@@ -577,11 +578,38 @@ def _err_text(exc: BaseException) -> str:
     return str(exc) or type(exc).__name__
 
 
-def _connect_ms(host: str, port: int, timeout: float) -> tuple[float | None, str | None]:
-    """Open and close a TCP connection; return ``(elapsed_ms, None)`` or ``(None, error)``."""
+def _resolve_stream(host: str, port: int) -> tuple:
+    """Resolve ``host`` once and return the first ``getaddrinfo`` entry (raises ``OSError``).
+
+    Probes connect to this one address only: ``socket.create_connection`` re-resolves
+    and applies its timeout per address, and name lookups have no timeout of their
+    own, so a probe built on it can outlive its runner budget exactly when DNS is
+    broken.
+    """
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    if not infos:
+        raise OSError("no addresses returned")
+    return infos[0]
+
+
+def _open_socket(info: tuple, timeout: float) -> socket.socket:
+    """Connect a fresh socket to a ``getaddrinfo`` entry; the socket is closed if the connect fails."""
+    family, socktype, proto, _canon, sockaddr = info
+    sock = socket.socket(family, socktype, proto)
+    try:
+        sock.settimeout(timeout)
+        sock.connect(sockaddr)
+    except OSError:
+        sock.close()
+        raise
+    return sock
+
+
+def _connect_ms(info: tuple, timeout: float) -> tuple[float | None, str | None]:
+    """Open and close a TCP connection; return ``(connect_ms, None)`` or ``(None, error)``."""
     t0 = time.perf_counter()
     try:
-        sock = socket.create_connection((host, port), timeout=timeout)
+        sock = _open_socket(info, timeout)
     except OSError as exc:
         return None, _err_text(exc)
     ms = _elapsed_ms(t0)
@@ -592,17 +620,25 @@ def _connect_ms(host: str, port: int, timeout: float) -> tuple[float | None, str
 def _p_control_domain(slots: dict) -> dict:
     """Can this PC resolve and reach a known-good site? Separates 'we are offline' from 'the target is down'."""
     try:
-        socket.getaddrinfo(CONTROL_DOMAIN, 443)
+        info = _resolve_stream(CONTROL_DOMAIN, 443)
     except OSError as exc:  # socket.gaierror is an OSError
         return {
             "host": CONTROL_DOMAIN,
             "resolved": False,
+            "address": None,
             "connected": False,
             "connect_ms": None,
             "error": _err_text(exc),
         }
-    ms, error = _connect_ms(CONTROL_DOMAIN, 443, timeout=3)
-    return {"host": CONTROL_DOMAIN, "resolved": True, "connected": ms is not None, "connect_ms": ms, "error": error}
+    ms, error = _connect_ms(info, timeout=3)
+    return {
+        "host": CONTROL_DOMAIN,
+        "resolved": True,
+        "address": info[4][0],
+        "connected": ms is not None,
+        "connect_ms": ms,
+        "error": error,
+    }
 
 
 def _default_gateways() -> list[str]:
@@ -642,8 +678,10 @@ def _p_gateway(slots: dict) -> dict:
             timeout=5,
             creationflags=_NO_WINDOW,
         )
-    except (subprocess.TimeoutExpired, OSError):
+    except subprocess.TimeoutExpired:
         return {"gateways": gateways, "reachable": False, "rtt_ms": None}
+    except OSError as exc:  # ping could not be launched: we could not test, which is not "unreachable"
+        return {"gateways": gateways, "reachable": None, "rtt_ms": None, "error": _err_text(exc)}
     stdout = proc.stdout or ""
     # Some "Destination host unreachable" replies exit 0; only a real echo reply carries a TTL.
     reachable = proc.returncode == 0 and "TTL=" in stdout
@@ -655,11 +693,20 @@ def _p_gateway(slots: dict) -> dict:
 
 def _p_tcp_connect(slots: dict) -> dict:
     """Try a TCP connection to ports 443 and 80 on the target."""
-    host = slots["target_host"]
+    ports = (443, 80)
+    try:
+        info = _resolve_stream(slots["target_host"], ports[0])  # resolved once, reused for every port
+    except OSError as exc:
+        error = _err_text(exc)
+        return {
+            "results": [{"port": p, "address": None, "connected": False, "ms": None, "error": error} for p in ports]
+        }
+    family, socktype, proto, canon, sockaddr = info
+    address = sockaddr[0]
     results = []
-    for port in (443, 80):
-        ms, error = _connect_ms(host, port, timeout=3)
-        results.append({"port": port, "connected": ms is not None, "ms": ms, "error": error})
+    for port in ports:
+        ms, error = _connect_ms((family, socktype, proto, canon, (address, port, *sockaddr[2:])), timeout=3)
+        results.append({"port": port, "address": address, "connected": ms is not None, "ms": ms, "error": error})
     return {"results": results}
 
 
@@ -675,20 +722,31 @@ def _p_tls_handshake(slots: dict) -> dict:
     """Complete a verified TLS handshake on port 443 and report the certificate."""
     host = slots["target_host"]
     sock = tls = None
+    address = None
     try:
         ctx = ssl.create_default_context()
-        sock = socket.create_connection((host, 443), timeout=5)
+        info = _resolve_stream(host, 443)
+        address = info[4][0]
+        sock = _open_socket(info, timeout=5)  # the 5 s timeout also bounds the handshake on this socket
         tls = ctx.wrap_socket(sock, server_hostname=host)
         cert = tls.getpeercert() or {}
         return {
             "handshake": True,
+            "address": address,
             "protocol": tls.version(),
             "cert_cn": _cert_common_name(cert),
             "not_after": cert.get("notAfter"),
             "error": None,
         }
     except OSError as exc:  # ssl.SSLError (including certificate verification failures) is an OSError
-        return {"handshake": False, "protocol": None, "cert_cn": None, "not_after": None, "error": _err_text(exc)}
+        return {
+            "handshake": False,
+            "address": address,
+            "protocol": None,
+            "cert_cn": None,
+            "not_after": None,
+            "error": _err_text(exc),
+        }
     finally:
         for s in (tls, sock):
             if s is not None:
@@ -710,6 +768,17 @@ def _parse_tracert(stdout: str) -> list[dict]:
     return hops
 
 
+def _tracert_destination(stdout: str, host: str) -> str | None:
+    """The destination IP: from the "Tracing route to <name> [<ip>]" header, else the target if it is an IP."""
+    m = _TRACE_HEADER_RE.search(stdout)
+    for candidate in ([m.group(1)] if m else []) + [host]:
+        try:
+            return str(ipaddress.ip_address(candidate))
+        except ValueError:
+            continue
+    return None
+
+
 def _p_traceroute(slots: dict) -> dict:
     """Trace the route to the target (no name lookups, 15 hops, 500 ms per hop)."""
     # Re-validate here even though the engine already did: this value goes to a subprocess.
@@ -728,7 +797,11 @@ def _p_traceroute(slots: dict) -> dict:
         return {"hops": [], "reached": False, "error": _err_text(exc)}
     stdout = proc.stdout or ""
     hops = _parse_tracert(stdout)
-    result = {"hops": hops, "reached": bool(hops) and hops[-1]["ip"] is not None and "Trace complete." in stdout}
+    # tracert also prints "Trace complete." when it merely hits the hop limit, so the
+    # last hop must be the destination itself.
+    dest = _tracert_destination(stdout, host)
+    reached = bool(hops) and dest is not None and hops[-1]["ip"] == dest and "Trace complete." in stdout
+    result = {"hops": hops, "reached": reached}
     if proc.returncode != 0:
         result["error"] = (proc.stderr or "").strip() or f"tracert exited with code {proc.returncode}"
     return result
@@ -814,7 +887,7 @@ register(
         category="network",
         fn=_p_tls_handshake,
         needs=("target_host",),
-        timeout_s=10,
+        timeout_s=12,
     )
 )
 register(
