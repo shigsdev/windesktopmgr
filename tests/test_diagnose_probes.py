@@ -4,6 +4,12 @@ from __future__ import annotations
 
 import time
 
+import dns.exception
+import dns.flags
+import dns.message
+import dns.rcode
+import dns.rdatatype
+import dns.rrset
 import pytest
 
 import diagnose_probes as dp
@@ -122,3 +128,165 @@ class TestRunProbes:
         _probe("t.ok", fn=lambda s: {"x": 1})
         out = dp.run_probes(["t.ok", "t.ok"], {})
         assert [r["ok"] for r in out] == [True, True]
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("hynote.ai", "hynote.ai"),
+        ("https://WWW.Hynote.ai:443/login?x=1#y", "www.hynote.ai"),
+        ("hynote.ai.", "hynote.ai"),
+        ("hynote.ai’s", "hynote.ai"),
+        ("hynote.ai's", "hynote.ai"),
+        ("münchen.de", "xn--mnchen-3ya.de"),
+        ("8.8.8.8", "8.8.8.8"),
+        ("foo", None),
+        ("..", None),
+        ("a b.com", None),
+        ("", None),
+        ("a" * 250 + ".com", None),
+        ("hynote.ai;rm -rf", None),
+        ("2001:db8::1", "2001:db8::1"),
+        ("[2001:db8::1]:443", "2001:db8::1"),
+        ("hynote.ai:8443", "hynote.ai"),
+    ],
+)
+def test_normalize_host(raw, expected):
+    assert dp.normalize_host(raw) == expected
+
+
+def test_normalize_host_non_string_is_none():
+    assert dp.normalize_host(None) is None
+
+
+def _reply(rcode="NOERROR", answers=(), flags=0, rdtype="A", name="example.com"):
+    """Build a real dnspython response so the wrapper parses genuine objects."""
+    resp = dns.message.make_response(dns.message.make_query(name, rdtype))
+    resp.set_rcode(dns.rcode.from_text(rcode))
+    resp.flags |= flags
+    if answers:
+        resp.answer.append(dns.rrset.from_text_list(name, 300, "IN", rdtype, list(answers)))
+    return resp
+
+
+class TestDnsQuery:
+    def test_noerror_with_answer(self, mocker):
+        mocker.patch("diagnose_probes.dns.query.udp", return_value=_reply(answers=["93.184.216.34"]))
+        r = dp._dns_query("1.1.1.1", "example.com", "A")
+        assert r == {
+            "server": "1.1.1.1",
+            "rcode": "NOERROR",
+            "nodata": False,
+            "answers": ["93.184.216.34"],
+            "aa": False,
+            "ad": False,
+            "error": None,
+        }
+
+    def test_noerror_empty_is_nodata(self, mocker):
+        mocker.patch("diagnose_probes.dns.query.udp", return_value=_reply())
+        r = dp._dns_query("1.1.1.1", "example.com", "A")
+        assert r["rcode"] == "NOERROR"
+        assert r["nodata"] is True
+        assert r["answers"] == []
+
+    def test_nxdomain(self, mocker):
+        mocker.patch("diagnose_probes.dns.query.udp", return_value=_reply(rcode="NXDOMAIN"))
+        r = dp._dns_query("1.1.1.1", "nope.example.com", "A")
+        assert r["rcode"] == "NXDOMAIN"
+        assert r["answers"] == []
+        assert r["nodata"] is False
+
+    @pytest.mark.parametrize("rc", ["SERVFAIL", "REFUSED"])
+    def test_other_rcodes_pass_through(self, mocker, rc):
+        mocker.patch("diagnose_probes.dns.query.udp", return_value=_reply(rcode=rc))
+        assert dp._dns_query("8.8.8.8", "example.com", "A")["rcode"] == rc
+
+    def test_aa_and_ad_flags(self, mocker):
+        mocker.patch("diagnose_probes.dns.query.udp", return_value=_reply(flags=dns.flags.AA | dns.flags.AD))
+        r = dp._dns_query("1.1.1.1", "example.com", "A")
+        assert r["aa"] is True
+        assert r["ad"] is True
+
+    def test_only_matching_rdtype_answers_returned(self, mocker):
+        resp = _reply(rdtype="A", answers=["93.184.216.34"])
+        resp.answer.append(dns.rrset.from_text("example.com", 300, "IN", "CNAME", "alias.example.net."))
+        mocker.patch("diagnose_probes.dns.query.udp", return_value=resp)
+        assert dp._dns_query("1.1.1.1", "example.com", "A")["answers"] == ["93.184.216.34"]
+
+    def test_timeout(self, mocker):
+        mocker.patch("diagnose_probes.dns.query.udp", side_effect=dns.exception.Timeout())
+        r = dp._dns_query("1.1.1.1", "example.com", "A")
+        assert r["rcode"] == "TIMEOUT"
+        assert r["answers"] == []
+        assert r["nodata"] is False
+
+    def test_oserror_becomes_error(self, mocker):
+        mocker.patch("diagnose_probes.dns.query.udp", side_effect=OSError("unreachable"))
+        r = dp._dns_query("1.1.1.1", "example.com", "A")
+        assert r["rcode"] == "ERROR"
+        assert "unreachable" in r["error"]
+
+    def test_unexpected_exception_never_raises(self, mocker):
+        mocker.patch("diagnose_probes.dns.query.udp", side_effect=ValueError("boom"))
+        r = dp._dns_query("1.1.1.1", "example.com", "A")
+        assert r["rcode"] == "ERROR"
+        assert r["error"] == "boom"
+
+    def test_tc_falls_back_to_tcp(self, mocker):
+        mocker.patch("diagnose_probes.dns.query.udp", return_value=_reply(flags=dns.flags.TC))
+        tcp = mocker.patch("diagnose_probes.dns.query.tcp", return_value=_reply(answers=["93.184.216.34"]))
+        r = dp._dns_query("1.1.1.1", "example.com", "A")
+        tcp.assert_called_once()
+        assert r["answers"] == ["93.184.216.34"]
+
+    def test_no_tcp_when_not_truncated(self, mocker):
+        mocker.patch("diagnose_probes.dns.query.udp", return_value=_reply())
+        tcp = mocker.patch("diagnose_probes.dns.query.tcp")
+        dp._dns_query("1.1.1.1", "example.com", "A")
+        tcp.assert_not_called()
+
+    def test_cd_flag_set_on_query(self, mocker):
+        udp = mocker.patch("diagnose_probes.dns.query.udp", return_value=_reply())
+        dp._dns_query("1.1.1.1", "example.com", "A", cd=True)
+        assert udp.call_args.args[0].flags & dns.flags.CD
+
+    def test_cd_flag_clear_by_default(self, mocker):
+        udp = mocker.patch("diagnose_probes.dns.query.udp", return_value=_reply())
+        dp._dns_query("1.1.1.1", "example.com", "A")
+        assert not udp.call_args.args[0].flags & dns.flags.CD
+
+    def test_want_dnssec_sets_do_bit(self, mocker):
+        udp = mocker.patch("diagnose_probes.dns.query.udp", return_value=_reply())
+        dp._dns_query("1.1.1.1", "example.com", "A", want_dnssec=True)
+        assert udp.call_args.args[0].ednsflags & dns.flags.DO
+
+    def test_timeout_passed_through(self, mocker):
+        udp = mocker.patch("diagnose_probes.dns.query.udp", return_value=_reply())
+        dp._dns_query("1.1.1.1", "example.com", "A", timeout=1.5)
+        assert udp.call_args.kwargs["timeout"] == 1.5
+
+    def test_without_dnspython(self, mocker):
+        mocker.patch("diagnose_probes.HAVE_DNSPYTHON", False)
+        r = dp._dns_query("1.1.1.1", "example.com", "A")
+        assert r["rcode"] == "ERROR"
+        assert r["error"] == "dnspython not installed"
+        assert r["answers"] == []
+
+
+class TestSystemNameservers:
+    def test_returns_resolver_nameservers(self, mocker):
+        mocker.patch("diagnose_probes.dns.resolver.Resolver").return_value.nameservers = ["192.168.1.1"]
+        assert dp._system_nameservers() == ["192.168.1.1"]
+
+    def test_error_returns_empty(self, mocker):
+        mocker.patch("diagnose_probes.dns.resolver.Resolver", side_effect=OSError("no config"))
+        assert dp._system_nameservers() == []
+
+    def test_without_dnspython_returns_empty(self, mocker):
+        mocker.patch("diagnose_probes.HAVE_DNSPYTHON", False)
+        assert dp._system_nameservers() == []
+
+
+def test_public_resolvers_constant():
+    assert dp.PUBLIC_RESOLVERS == (("cloudflare", "1.1.1.1"), ("google", "8.8.8.8"))

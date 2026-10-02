@@ -21,11 +21,39 @@ bad probe cannot sink the whole diagnosis.
 from __future__ import annotations
 
 import concurrent.futures
+import ipaddress
+import re
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+# dnspython is a hard requirement (requirements.txt) but import-guarded so a
+# broken install degrades the DNS probes to a clear error instead of taking
+# the whole app down at import time.
+try:
+    import dns.exception
+    import dns.flags
+    import dns.message
+    import dns.query
+    import dns.rcode
+    import dns.rdatatype
+    import dns.resolver
+
+    HAVE_DNSPYTHON = True
+except ImportError:  # pragma: no cover -- exercised by patching HAVE_DNSPYTHON
+    dns = None  # type: ignore[assignment]
+    HAVE_DNSPYTHON = False
+
 _MAX_WORKERS = 8
+
+# Public recursive resolvers used to cross-check the system resolver (name, ip).
+PUBLIC_RESOLVERS = (("cloudflare", "1.1.1.1"), ("google", "8.8.8.8"))
+
+_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
+_BRACKETED_V6_RE = re.compile(r"^\[([^\]]+)\](?::\d+)?$")
+_HOSTNAME_RE = re.compile(
+    r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$"
+)
 
 
 @dataclass(frozen=True)
@@ -120,3 +148,100 @@ def run_probes(keys: Sequence[str], slots: dict) -> list[dict]:
             ex.shutdown(wait=False, cancel_futures=True)
 
     return [r for r in results if r is not None]
+
+
+def normalize_host(raw: str) -> str | None:
+    """Reduce what the user typed to a bare lowercase ASCII hostname or IP literal.
+
+    Accepts a URL, ``host:port``, a trailing dot, a trailing possessive
+    ("hynote.ai's") and IDN names (returned as punycode). Returns ``None``
+    for anything that is not a plausible FQDN or IP, which also keeps shell
+    metacharacters and spaces away from the ``ping``/``tracert`` probes.
+    """
+    if not isinstance(raw, str):
+        return None
+    h = _SCHEME_RE.sub("", raw.strip())
+    for sep in "/?#":
+        h = h.split(sep, 1)[0]
+    bracketed = _BRACKETED_V6_RE.match(h)
+    if bracketed:
+        h = bracketed.group(1)
+    elif h.count(":") == 1:  # host:port; two or more colons is a bare IPv6 literal
+        h = h.split(":", 1)[0]
+    for possessive in ("’s", "'s"):
+        if h.endswith(possessive):
+            h = h[: -len(possessive)]
+    h = h.rstrip(".")
+    if not h:
+        return None
+    try:
+        return str(ipaddress.ip_address(h))
+    except ValueError:
+        pass
+    try:
+        h = h.encode("idna").decode("ascii").lower()
+    except UnicodeError:
+        return None
+    return h if _HOSTNAME_RE.match(h) else None
+
+
+def _dns_result(server: str, rcode: str, *, answers: list[str] | None = None, aa=False, ad=False, error=None) -> dict:
+    answers = answers or []
+    return {
+        "server": server,
+        "rcode": rcode,
+        "nodata": rcode == "NOERROR" and not answers,
+        "answers": answers,
+        "aa": aa,
+        "ad": ad,
+        "error": error,
+    }
+
+
+def _dns_query(
+    server: str,
+    name: str,
+    rdtype: str,
+    *,
+    timeout: float = 3.0,
+    want_dnssec: bool = False,
+    cd: bool = False,
+) -> dict:
+    """Ask ``server`` directly for ``name``/``rdtype`` and summarise the reply.
+
+    Returns ``{server, rcode, nodata, answers, aa, ad, error}``. ``rcode`` is
+    the response code text, or ``"TIMEOUT"`` / ``"ERROR"`` when no usable
+    reply arrived. Never raises: any failure becomes an ``ERROR`` result.
+    """
+    if not HAVE_DNSPYTHON:
+        return _dns_result(server, "ERROR", error="dnspython not installed")
+    try:
+        q = dns.message.make_query(name, rdtype, want_dnssec=want_dnssec)
+        if cd:
+            q.flags |= dns.flags.CD
+        r = dns.query.udp(q, server, timeout=timeout)
+        if r.flags & dns.flags.TC:
+            r = dns.query.tcp(q, server, timeout=timeout)
+        want = dns.rdatatype.from_text(rdtype)
+        answers = [rd.to_text() for rrset in r.answer if rrset.rdtype == want for rd in rrset]
+        return _dns_result(
+            server,
+            dns.rcode.to_text(r.rcode()),
+            answers=answers,
+            aa=bool(r.flags & dns.flags.AA),
+            ad=bool(r.flags & dns.flags.AD),
+        )
+    except dns.exception.Timeout:
+        return _dns_result(server, "TIMEOUT")
+    except Exception as exc:  # noqa: BLE001 -- a probe helper must never raise
+        return _dns_result(server, "ERROR", error=str(exc))
+
+
+def _system_nameservers() -> list[str]:
+    """The nameservers the OS is configured with, or ``[]`` if unavailable."""
+    if not HAVE_DNSPYTHON:
+        return []
+    try:
+        return list(dns.resolver.Resolver().nameservers)
+    except Exception:  # noqa: BLE001 -- no resolver config is a normal condition
+        return []
