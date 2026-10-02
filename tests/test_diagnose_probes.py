@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import re
 import socket
+import struct
 import time
+import winreg
 
 import dns.exception
 import dns.flags
@@ -593,3 +596,281 @@ class TestRecordSweep:
         d = dp._p_record_sweep(SLOTS)
         assert d["rcode"] == "ERROR"
         assert d["records"] == {t: [] for t in self.TYPES}
+
+
+# ── Local configuration probes (hosts, DNS client, proxy) ────────────────────
+
+
+def _hosts_file(mocker, tmp_path, text: str | bytes):
+    f = tmp_path / "hosts"
+    if isinstance(text, bytes):
+        f.write_bytes(text)
+    else:
+        f.write_text(text, encoding="utf-8")
+    mocker.patch.object(dp, "HOSTS_PATH", str(f))
+    return f
+
+
+class TestHostsFile:
+    def test_comments_and_blank_lines_ignored(self, mocker, tmp_path):
+        _hosts_file(mocker, tmp_path, "# a comment about hynote.ai\n\n   \n127.0.0.1 localhost\n")
+        d = dp._p_hosts_file(SLOTS)
+        assert d["readable"] is True
+        assert d["matches"] == []
+
+    def test_blocking_line_matches_with_line_no_and_lowercased_names(self, mocker, tmp_path):
+        f = _hosts_file(mocker, tmp_path, "# header\n127.0.0.1 localhost\n0.0.0.0 Hynote.AI www.hynote.ai  # block\n")
+        d = dp._p_hosts_file(SLOTS)
+        assert d["path"] == str(f)
+        assert d["matches"] == [{"line_no": 3, "ip": "0.0.0.0", "names": ["hynote.ai", "www.hynote.ai"]}]
+
+    def test_match_is_case_insensitive_and_ignores_trailing_dot(self, mocker, tmp_path):
+        _hosts_file(mocker, tmp_path, "10.0.0.5 HYNOTE.AI.\n")
+        d = dp._p_hosts_file({"target_host": "HyNote.ai."})
+        assert [m["line_no"] for m in d["matches"]] == [1]
+
+    def test_substring_name_does_not_match(self, mocker, tmp_path):
+        _hosts_file(mocker, tmp_path, "0.0.0.0 myhynote.ai\n0.0.0.0 hynote.ai.evil.com\n")
+        assert dp._p_hosts_file(SLOTS)["matches"] == []
+
+    def test_every_matching_line_is_reported(self, mocker, tmp_path):
+        _hosts_file(mocker, tmp_path, "1.1.1.1 hynote.ai\n2.2.2.2 other\n::1 hynote.ai\n")
+        d = dp._p_hosts_file(SLOTS)
+        assert [(m["line_no"], m["ip"]) for m in d["matches"]] == [(1, "1.1.1.1"), (3, "::1")]
+
+    def test_line_with_only_an_ip_is_skipped(self, mocker, tmp_path):
+        _hosts_file(mocker, tmp_path, "1.2.3.4\n1.2.3.4 # nothing\n")
+        assert dp._p_hosts_file(SLOTS)["matches"] == []
+
+    def test_missing_file_is_unreadable(self, mocker, tmp_path):
+        missing = tmp_path / "nope"
+        mocker.patch.object(dp, "HOSTS_PATH", str(missing))
+        d = dp._p_hosts_file(SLOTS)
+        assert d == {"path": str(missing), "readable": False, "matches": []}
+
+    def test_non_utf8_byte_does_not_raise(self, mocker, tmp_path):
+        _hosts_file(mocker, tmp_path, b"127.0.0.1 caf\xe9\n0.0.0.0 hynote.ai\n")
+        d = dp._p_hosts_file(SLOTS)
+        assert d["readable"] is True
+        assert [m["line_no"] for m in d["matches"]] == [2]
+
+    def test_default_path_is_the_system32_hosts_file(self):
+        assert dp.HOSTS_PATH.lower().endswith(os.path.join("system32", "drivers", "etc", "hosts"))
+
+
+_IFACES = r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces"
+_TCPIP = r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"
+_DNSCACHE = r"SYSTEM\CurrentControlSet\Services\Dnscache\Parameters"
+
+
+def _patch_registry(mocker, subkeys=(), values=None):
+    """Patch the two registry helpers; ``values`` maps (hive, path) -> dict."""
+    values = values or {}
+    mocker.patch.object(dp, "_reg_subkeys", return_value=list(subkeys))
+    return mocker.patch.object(dp, "_reg_values", side_effect=lambda hive, path: dict(values.get((hive, path), {})))
+
+
+class TestClientConfig:
+    HKLM = winreg.HKEY_LOCAL_MACHINE
+
+    def test_splits_commas_and_whitespace_and_omits_empty_adapters(self, mocker):
+        _patch_registry(
+            mocker,
+            subkeys=["{G1}", "{G2}", "{G3}"],
+            values={
+                (self.HKLM, _IFACES + "\\{G1}"): {"NameServer": "1.1.1.1,8.8.8.8"},
+                (self.HKLM, _IFACES + "\\{G2}"): {"DhcpNameServer": "192.168.1.1 192.168.1.2"},
+                (self.HKLM, _IFACES + "\\{G3}"): {"NameServer": "", "DhcpNameServer": ""},
+                (self.HKLM, _TCPIP): {"SearchList": "corp.local,example.com"},
+                (self.HKLM, _DNSCACHE): {"EnableAutoDoh": 2},
+            },
+        )
+        d = dp._p_client_config({})
+        assert d["adapters"] == [
+            {"guid": "{G1}", "dns_servers": ["1.1.1.1", "8.8.8.8"]},
+            {"guid": "{G2}", "dns_servers": ["192.168.1.1", "192.168.1.2"]},
+        ]
+        assert d["search_list"] == ["corp.local", "example.com"]
+        assert d["enable_auto_doh"] == 2
+
+    def test_static_servers_win_over_dhcp(self, mocker):
+        _patch_registry(
+            mocker,
+            subkeys=["{G1}"],
+            values={(self.HKLM, _IFACES + "\\{G1}"): {"NameServer": "9.9.9.9", "DhcpNameServer": "192.168.1.1"}},
+        )
+        assert dp._p_client_config({})["adapters"][0]["dns_servers"] == ["9.9.9.9"]
+
+    def test_multi_sz_list_values_accepted(self, mocker):
+        _patch_registry(
+            mocker,
+            subkeys=["{G1}"],
+            values={
+                (self.HKLM, _IFACES + "\\{G1}"): {"NameServer": ["1.1.1.1", "8.8.8.8,9.9.9.9"]},
+                (self.HKLM, _TCPIP): {"SearchList": ["a.local", "b.local"]},
+            },
+        )
+        d = dp._p_client_config({})
+        assert d["adapters"][0]["dns_servers"] == ["1.1.1.1", "8.8.8.8", "9.9.9.9"]
+        assert d["search_list"] == ["a.local", "b.local"]
+
+    def test_missing_keys_give_empty_results(self, mocker):
+        _patch_registry(mocker)
+        assert dp._p_client_config({}) == {"adapters": [], "search_list": [], "enable_auto_doh": None}
+
+    def test_non_text_value_is_ignored(self, mocker):
+        _patch_registry(
+            mocker,
+            subkeys=["{G1}"],
+            values={(self.HKLM, _IFACES + "\\{G1}"): {"NameServer": 5}, (self.HKLM, _TCPIP): {"SearchList": None}},
+        )
+        d = dp._p_client_config({})
+        assert d["adapters"] == []
+        assert d["search_list"] == []
+
+    def test_enumerates_the_interfaces_key(self, mocker):
+        _patch_registry(mocker)
+        dp._p_client_config({})
+        dp._reg_subkeys.assert_called_once_with(self.HKLM, _IFACES)
+
+
+def _winhttp_blob(flags: int, proxy: str = "", bypass: str = "") -> bytes:
+    p, b = proxy.encode("ascii"), bypass.encode("ascii")
+    return struct.pack("<IIII", 0x28, 0, flags, len(p)) + p + struct.pack("<I", len(b)) + b
+
+
+_INET = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+_CONNS = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Connections"
+
+
+class TestParseWinhttpBlob:
+    def test_direct_access(self):
+        assert dp._parse_winhttp_blob(_winhttp_blob(1)) == {"direct": True, "proxy_server": "", "bypass": ""}
+
+    def test_proxy_and_bypass(self):
+        d = dp._parse_winhttp_blob(_winhttp_blob(3, "proxy:8080", "<local>;*.corp"))
+        assert d == {"direct": False, "proxy_server": "proxy:8080", "bypass": "<local>;*.corp"}
+
+    def test_trailing_bytes_after_bypass_are_ignored(self):
+        assert dp._parse_winhttp_blob(_winhttp_blob(1) + b"\x00" * 4)["direct"] is True
+
+    @pytest.mark.parametrize("cut", [0, 8, 15, 20, 28, 30])
+    def test_truncated_blob_is_a_parse_error(self, cut):
+        blob = _winhttp_blob(3, "proxy:8080", "<local>")[:cut]
+        d = dp._parse_winhttp_blob(blob)
+        assert set(d) == {"parse_error"}
+        assert d["parse_error"]
+
+    def test_non_ascii_proxy_is_a_parse_error(self):
+        blob = struct.pack("<IIII", 0x28, 0, 3, 2) + b"\xff\xfe" + struct.pack("<I", 0)
+        assert "parse_error" in dp._parse_winhttp_blob(blob)
+
+
+class TestProxyConfig:
+    HKCU = winreg.HKEY_CURRENT_USER
+    HKLM = winreg.HKEY_LOCAL_MACHINE
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, mocker):
+        mocker.patch.dict(os.environ)
+        for k in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"):
+            os.environ.pop(k, None)
+
+    def test_reads_wininet_winhttp_and_env(self, mocker):
+        _patch_registry(
+            mocker,
+            values={
+                (self.HKCU, _INET): {
+                    "ProxyEnable": 1,
+                    "ProxyServer": "proxy.corp:3128",
+                    "ProxyOverride": "<local>",
+                    "AutoConfigURL": "http://wpad/wpad.dat",
+                    "AutoDetect": 0,
+                },
+                (self.HKLM, _CONNS): {"WinHttpSettings": _winhttp_blob(3, "proxy:8080", "*.corp")},
+            },
+        )
+        mocker.patch.dict(os.environ, {"HTTP_PROXY": "http://envproxy:1", "NO_PROXY": "localhost"})
+        d = dp._p_proxy_config({})
+        assert d["wininet"] == {
+            "proxy_enable": 1,
+            "proxy_server": "proxy.corp:3128",
+            "proxy_override": "<local>",
+            "auto_config_url": "http://wpad/wpad.dat",
+            "auto_detect": 0,
+        }
+        assert d["winhttp"] == {"direct": False, "proxy_server": "proxy:8080", "bypass": "*.corp"}
+        assert d["env"] == {"HTTP_PROXY": "http://envproxy:1", "HTTPS_PROXY": None, "NO_PROXY": "localhost"}
+
+    def test_missing_registry_keys_give_none_and_empty(self, mocker):
+        _patch_registry(mocker)
+        d = dp._p_proxy_config({})
+        assert d["wininet"] == {
+            "proxy_enable": None,
+            "proxy_server": None,
+            "proxy_override": None,
+            "auto_config_url": None,
+            "auto_detect": None,
+        }
+        assert d["winhttp"] == {}
+        assert d["env"] == {"HTTP_PROXY": None, "HTTPS_PROXY": None, "NO_PROXY": None}
+
+    def test_non_bytes_winhttp_value_is_ignored(self, mocker):
+        _patch_registry(mocker, values={(self.HKLM, _CONNS): {"WinHttpSettings": "oops"}})
+        assert dp._p_proxy_config({})["winhttp"] == {}
+
+    def test_corrupt_winhttp_blob_reports_parse_error(self, mocker):
+        _patch_registry(mocker, values={(self.HKLM, _CONNS): {"WinHttpSettings": b"\x01\x02"}})
+        assert "parse_error" in dp._p_proxy_config({})["winhttp"]
+
+    def test_lowercase_env_var_is_used_when_upper_is_unset(self, mocker):
+        _patch_registry(mocker)
+        mocker.patch.object(dp.os, "environ", {"https_proxy": "http://lower:9"})
+        assert dp._p_proxy_config({})["env"]["HTTPS_PROXY"] == "http://lower:9"
+
+    def test_uppercase_env_var_is_preferred(self, mocker):
+        _patch_registry(mocker)
+        mocker.patch.object(dp.os, "environ", {"HTTP_PROXY": "http://upper:1", "http_proxy": "http://lower:2"})
+        assert dp._p_proxy_config({})["env"]["HTTP_PROXY"] == "http://upper:1"
+
+
+class TestRegHelpers:
+    def test_reg_values_enumerates_until_oserror(self, mocker):
+        mocker.patch.object(dp.winreg, "OpenKey")
+        mocker.patch.object(
+            dp.winreg,
+            "EnumValue",
+            side_effect=[("A", 1, winreg.REG_DWORD), ("B", "x", winreg.REG_SZ), OSError(259, "no more")],
+        )
+        assert dp._reg_values(winreg.HKEY_LOCAL_MACHINE, "Some\\Path") == {"A": 1, "B": "x"}
+
+    def test_reg_values_missing_key_is_empty(self, mocker):
+        mocker.patch.object(dp.winreg, "OpenKey", side_effect=FileNotFoundError(2, "nope"))
+        assert dp._reg_values(winreg.HKEY_LOCAL_MACHINE, "Missing") == {}
+
+    def test_reg_subkeys_enumerates_until_oserror(self, mocker):
+        mocker.patch.object(dp.winreg, "OpenKey")
+        mocker.patch.object(dp.winreg, "EnumKey", side_effect=["{G1}", "{G2}", OSError(259, "no more")])
+        assert dp._reg_subkeys(winreg.HKEY_LOCAL_MACHINE, "Some\\Path") == ["{G1}", "{G2}"]
+
+    def test_reg_subkeys_missing_key_is_empty(self, mocker):
+        mocker.patch.object(dp.winreg, "OpenKey", side_effect=FileNotFoundError(2, "nope"))
+        assert dp._reg_subkeys(winreg.HKEY_LOCAL_MACHINE, "Missing") == []
+
+
+class TestLocalConfigRegistration:
+    @pytest.mark.parametrize(
+        ("key", "label", "needs", "redact", "fn"),
+        [
+            ("dns.hosts_file", "Check the hosts file", ("target_host",), ("username",), "_p_hosts_file"),
+            ("dns.client_config", "This PC's DNS settings", (), ("username", "mac"), "_p_client_config"),
+            ("net.proxy_config", "Proxy settings", (), ("username",), "_p_proxy_config"),
+        ],
+    )
+    def test_registered_with_contract_metadata(self, key, label, needs, redact, fn):
+        p = _REGISTERED[key]
+        assert p.label == label
+        assert p.category == "network"
+        assert p.needs == needs
+        assert p.redact == redact
+        assert p.fn is getattr(dp, fn)

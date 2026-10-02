@@ -22,9 +22,12 @@ from __future__ import annotations
 
 import concurrent.futures
 import ipaddress
+import os
 import re
 import socket
+import struct
 import time
+import winreg
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -350,6 +353,149 @@ def _p_record_sweep(slots: dict) -> dict:
     return {"records": records, "rcode": rcode}
 
 
+# ── Local configuration probes (hosts file, DNS client, proxy) ───────────────
+# These read Windows configuration directly (no PowerShell). All registry
+# access goes through _reg_values / _reg_subkeys so tests can patch them.
+
+HOSTS_PATH = os.path.join(os.environ.get("SYSTEMROOT", r"C:\Windows"), "System32", "drivers", "etc", "hosts")
+
+_TCPIP_PARAMS = r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"
+_TCPIP_IFACES = _TCPIP_PARAMS + r"\Interfaces"
+_DNSCACHE_PARAMS = r"SYSTEM\CurrentControlSet\Services\Dnscache\Parameters"
+_INET_SETTINGS = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+_INET_CONNECTIONS = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Connections"
+
+_WINHTTP_PROXY_FLAG = 0x2  # flags bit set when a named proxy is configured
+
+
+def _reg_values(hive: int, path: str) -> dict[str, object]:
+    """All values of one registry key as ``{name: data}``; ``{}`` if the key is missing."""
+    values: dict[str, object] = {}
+    try:
+        with winreg.OpenKey(hive, path) as key:
+            index = 0
+            while True:
+                try:
+                    name, data, _type = winreg.EnumValue(key, index)
+                except OSError:  # ERROR_NO_MORE_ITEMS ends the enumeration
+                    break
+                values[name] = data
+                index += 1
+    except OSError:
+        return {}
+    return values
+
+
+def _reg_subkeys(hive: int, path: str) -> list[str]:
+    """Names of a registry key's subkeys; ``[]`` if the key is missing."""
+    names: list[str] = []
+    try:
+        with winreg.OpenKey(hive, path) as key:
+            index = 0
+            while True:
+                try:
+                    names.append(winreg.EnumKey(key, index))
+                except OSError:  # ERROR_NO_MORE_ITEMS ends the enumeration
+                    break
+                index += 1
+    except OSError:
+        return []
+    return names
+
+
+def _split_list(value: object) -> list[str]:
+    """Split a registry list value (REG_SZ "a,b c" or REG_MULTI_SZ list) into items."""
+    if isinstance(value, list):
+        value = " ".join(str(v) for v in value)
+    if not isinstance(value, str):
+        return []
+    return [item for item in re.split(r"[,\s]+", value) if item]
+
+
+def _p_hosts_file(slots: dict) -> dict:
+    """Report hosts-file lines that name the target host (a classic silent override)."""
+    target = slots["target_host"].lower().rstrip(".")
+    matches: list[dict] = []
+    try:
+        with open(HOSTS_PATH, encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return {"path": HOSTS_PATH, "readable": False, "matches": []}
+    for line_no, line in enumerate(lines, start=1):
+        fields = line.split("#", 1)[0].split()
+        if len(fields) < 2:
+            continue
+        names = [n.lower() for n in fields[1:]]
+        if target in (n.rstrip(".") for n in names):
+            matches.append({"line_no": line_no, "ip": fields[0], "names": names})
+    return {"path": HOSTS_PATH, "readable": True, "matches": matches}
+
+
+def _p_client_config(slots: dict) -> dict:
+    """Per-adapter DNS servers, the DNS suffix search list and the DoH policy."""
+    hklm = winreg.HKEY_LOCAL_MACHINE
+    adapters = []
+    for guid in _reg_subkeys(hklm, _TCPIP_IFACES):
+        vals = _reg_values(hklm, f"{_TCPIP_IFACES}\\{guid}")
+        # A statically configured server list overrides the DHCP-assigned one.
+        servers = _split_list(vals.get("NameServer")) or _split_list(vals.get("DhcpNameServer"))
+        if servers:
+            adapters.append({"guid": guid, "dns_servers": servers})
+    return {
+        "adapters": adapters,
+        "search_list": _split_list(_reg_values(hklm, _TCPIP_PARAMS).get("SearchList")),
+        "enable_auto_doh": _reg_values(hklm, _DNSCACHE_PARAMS).get("EnableAutoDoh"),
+    }
+
+
+def _parse_winhttp_blob(blob: bytes) -> dict:
+    """Decode the ``WinHttpSettings`` registry blob (little-endian uint32 header).
+
+    Layout: size/version, counter, flags, proxy length N, N proxy bytes, bypass
+    length M, M bypass bytes. Flag bit 0x2 means a named proxy is in use.
+    Returns ``{direct, proxy_server, bypass}`` or ``{parse_error}``.
+    """
+    try:
+        if len(blob) < 16:
+            raise ValueError("blob shorter than the 16-byte header")
+        _size, _counter, flags, proxy_len = struct.unpack_from("<IIII", blob, 0)
+        pos = 16
+        if len(blob) < pos + proxy_len + 4:
+            raise ValueError("blob truncated in the proxy field")
+        proxy = blob[pos : pos + proxy_len].decode("ascii")
+        pos += proxy_len
+        (bypass_len,) = struct.unpack_from("<I", blob, pos)
+        pos += 4
+        if len(blob) < pos + bypass_len:
+            raise ValueError("blob truncated in the bypass field")
+        bypass = blob[pos : pos + bypass_len].decode("ascii")
+    except (ValueError, struct.error) as exc:  # UnicodeDecodeError is a ValueError
+        return {"parse_error": str(exc)}
+    return {"direct": not (flags & _WINHTTP_PROXY_FLAG), "proxy_server": proxy, "bypass": bypass}
+
+
+def _env_proxy(name: str) -> str | None:
+    value = os.environ.get(name)
+    return value if value is not None else os.environ.get(name.lower())
+
+
+def _p_proxy_config(slots: dict) -> dict:
+    """WinINET (per-user), WinHTTP (machine) and environment proxy settings."""
+    inet = _reg_values(winreg.HKEY_CURRENT_USER, _INET_SETTINGS)
+    blob = _reg_values(winreg.HKEY_LOCAL_MACHINE, _INET_CONNECTIONS).get("WinHttpSettings")
+    return {
+        "wininet": {
+            "proxy_enable": inet.get("ProxyEnable"),
+            "proxy_server": inet.get("ProxyServer"),
+            "proxy_override": inet.get("ProxyOverride"),
+            "auto_config_url": inet.get("AutoConfigURL"),
+            "auto_detect": inet.get("AutoDetect"),
+        },
+        "winhttp": _parse_winhttp_blob(blob) if isinstance(blob, bytes) else {},
+        "env": {name: _env_proxy(name) for name in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")},
+    }
+
+
 for _key, _label, _fn, _timeout in (
     ("dns.resolve_cached", "Resolve through Windows (uses the DNS cache)", _p_resolve_cached, 8),
     ("dns.resolve_direct", "Ask DNS servers directly (bypasses the cache)", _p_resolve_direct, 8),
@@ -367,3 +513,32 @@ for _key, _label, _fn, _timeout in (
             timeout_s=_timeout,
         )
     )
+
+register(
+    Probe(
+        key="dns.hosts_file",
+        label="Check the hosts file",
+        category="network",
+        fn=_p_hosts_file,
+        needs=("target_host",),
+        redact=("username",),
+    )
+)
+register(
+    Probe(
+        key="dns.client_config",
+        label="This PC's DNS settings",
+        category="network",
+        fn=_p_client_config,
+        redact=("username", "mac"),
+    )
+)
+register(
+    Probe(
+        key="net.proxy_config",
+        label="Proxy settings",
+        category="network",
+        fn=_p_proxy_config,
+        redact=("username",),
+    )
+)
