@@ -67,6 +67,7 @@ TAB_IDS = [
     "utilities",
     "maintenance",
     "docs",
+    "diagnose",
 ]
 
 
@@ -2854,3 +2855,105 @@ class TestMaintenanceTabSpaceAnalysis:
         text = page.evaluate("document.getElementById('page-maintenance').textContent")
         assert "Analyze Space" in text
         assert "WinSxS" in text
+
+
+# ── Diagnose tab ───────────────────────────────────────────────────
+
+
+class TestDiagnoseTab:
+    """Diagnose tab: symptom -> read-only probes -> payload preview -> verdict.
+
+    The invariants worth a browser: a missing host is asked for rather than
+    guessed, an inconclusive answer never renders as a diagnosis, an external
+    cause offers no fix button, and the smoke run never sends anything to the
+    model (it declines the preview).
+    """
+
+    @staticmethod
+    def _open(page):
+        page.evaluate("document.querySelector('[data-page=\"diagnose\"]').click()")
+
+    def test_tab_renders_input(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        assert page.is_visible("#dx-symptom")
+        assert page.is_visible("#dx-run")
+
+    def test_missing_host_asks_instead_of_guessing(self, loaded_page):
+        page, _ = loaded_page
+        status_requests: list[str] = []
+        page.on("request", lambda req: status_requests.append(req.url) if "/api/diagnose/status" in req.url else None)
+        self._open(page)
+        page.fill("#dx-symptom", "the internet is broken")
+        page.click("#dx-run")
+        page.wait_for_selector("#dx-host-row", state="visible", timeout=10_000)
+        page.wait_for_timeout(1500)
+        assert status_requests == [], f"polled a session that should not exist: {status_requests}"
+
+    def test_inconclusive_never_renders_as_verdict(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        page.evaluate(
+            "dx_renderResult({state:'done', verdict:{status:'inconclusive', locus:'unknown', headline:'h',"
+            " reasoning:'r', evidence_refs:[], suggested_actions:[], no_local_fix_reason:''}, evidence:[], actions:[]})"
+        )
+        verdicts = page.evaluate("document.querySelectorAll('#dx-result .dx-verdict').length")
+        text = page.evaluate("document.getElementById('dx-result').textContent")
+        assert verdicts == 0
+        assert "Couldn't determine this" in text
+
+    def test_external_cause_shows_no_action_buttons(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        page.evaluate(
+            "dx_renderResult({state:'done', verdict:{status:'confident', locus:'external_cause', headline:'h',"
+            " reasoning:'r', evidence_refs:[], suggested_actions:[], no_local_fix_reason:'zone has no A record'},"
+            " evidence:[], actions:[]})"
+        )
+        buttons = page.evaluate("document.querySelectorAll('#dx-result button[data-action]').length")
+        text = page.evaluate("document.getElementById('dx-result').textContent")
+        assert buttons == 0
+        assert "zone has no A record" in text
+        assert "Nothing to fix on this PC" in text
+
+    def test_local_verdict_renders_escaped_action_buttons(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        page.evaluate(
+            "dx_renderResult({state:'done', verdict:{status:'likely', locus:'local', headline:'<b>x</b>',"
+            " reasoning:'r', evidence_refs:[], suggested_actions:['flush_dns'], no_local_fix_reason:''},"
+            " evidence:[], actions:[{id:'flush_dns', label:'Flush DNS', description:'d', risk:'low',"
+            " reboot:false, icon:'F'}]})"
+        )
+        assert page.evaluate("document.querySelectorAll('#dx-result button[data-action=\"flush_dns\"]').length") == 1
+        # The headline is data, not markup.
+        assert page.evaluate("document.querySelectorAll('#dx-result .dx-headline b').length") == 0
+        assert page.evaluate("document.getElementById('dx-result').dataset.locus") == "local"
+
+    def test_submit_reaches_preview_or_evidence_only_and_sends_nothing(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        page.fill("#dx-symptom", "ERR_NAME_NOT_RESOLVED example.com")
+        page.click("#dx-run")
+        page.wait_for_function(
+            """
+            () => {
+                const p = document.getElementById('dx-preview');
+                const r = document.getElementById('dx-result');
+                return (p && p.style.display !== 'none') || (r && r.dataset.state === 'evidence_only');
+            }
+            """,
+            timeout=60_000,
+        )
+        if page.is_visible("#dx-preview"):
+            assert '"target_host": "example.com"' in page.inner_text("#dx-preview-text")
+            # Never click Send: the smoke test must not send data to Anthropic.
+            page.click("#dx-nosend")
+            page.wait_for_selector("#dx-result[data-state=evidence_only]", timeout=30_000)
+
+    def test_no_console_errors_on_tab(self, loaded_page):
+        page, errors = loaded_page
+        self._open(page)
+        page.wait_for_timeout(1000)
+        actionable = [e for e in errors if "favicon" not in e.lower()]
+        assert not actionable, f"console errors on the Diagnose tab: {actionable}"

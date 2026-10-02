@@ -386,6 +386,7 @@ Prefix all tab-specific functions with tab abbreviation to prevent global scope 
 `bl` = Baseline, `bk` = Backup, `cc` = CloudCopy (Backup §3), `util` = Utilities (code-health scanners),
 `mnt` = Cleanup/Maintenance (junk cleanup + system maintenance, maintenance.py).
 `doc` = Documentation tab (hardware/recovery procedures; reuses live data + `dkLoadTopology` rather than screenshots).
+`dx` = Diagnose (diagnose.py; symptom → probes → verdict).
 
 ---
 
