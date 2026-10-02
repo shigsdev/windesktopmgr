@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import re
@@ -19,7 +20,9 @@ import dns.rdatatype
 import dns.rrset
 import pytest
 
+import diagnose
 import diagnose_probes as dp
+import remediation
 
 # Snapshot before the autouse fixture empties PROBES: the real wave-one registrations.
 _REGISTERED = dict(dp.PROBES)
@@ -1653,3 +1656,56 @@ class TestEscalationRegistration:
         assert p.redact == ("username",)
         assert p.timeout_s == timeout
         assert p.fn is getattr(dp, fn)
+
+
+# Probes allowed to shell out (ping.exe / tracert.exe, list args, validated host).
+_SUBPROCESS_ALLOWED = {"_p_gateway", "_p_traceroute"}
+
+
+def _referenced_probes():
+    """(class name, probe key) for every probe any symptom class lists."""
+    return [(name, key) for name, cls in diagnose.SYMPTOM_CLASSES.items() for key in (*cls["wave1"], *cls["escalate"])]
+
+
+class TestRegistryInvariants:
+    """Checked against the import-time snapshot: the autouse fixture empties dp.PROBES."""
+
+    def test_snapshot_is_the_full_registry(self):
+        assert len(_REGISTERED) == 14
+
+    def test_every_referenced_probe_is_registered(self):
+        referenced = _referenced_probes()
+        assert referenced
+        missing = [key for _, key in referenced if key not in _REGISTERED]
+        assert missing == []
+
+    def test_every_registered_probe_is_referenced(self):
+        assert {key for _, key in _referenced_probes()} == set(_REGISTERED)
+
+    def test_probes_never_share_a_function_with_remediation(self):
+        probe_fns = {p.fn for p in _REGISTERED.values()}
+        assert probe_fns.isdisjoint(set(remediation._REMEDIATION_DISPATCH.values()))
+
+    def test_probe_function_names_are_disjoint_from_remediation_names(self):
+        probe_names = {p.fn.__name__ for p in _REGISTERED.values()}
+        assert probe_names.isdisjoint({f.__name__ for f in remediation._REMEDIATION_DISPATCH.values()})
+
+    def test_probe_needs_are_slots_of_every_class_that_uses_them(self):
+        for name, key in _referenced_probes():
+            slots = set(diagnose.SYMPTOM_CLASSES[name]["slots"])
+            assert set(_REGISTERED[key].needs) <= slots, key
+
+    def test_categories_are_known(self):
+        assert {p.category for p in _REGISTERED.values()} <= {"network", "crash", "storage", "perf"}
+
+    def test_subprocess_run_only_in_allow_listed_probes(self):
+        for key, p in _REGISTERED.items():
+            if p.fn.__name__ not in _SUBPROCESS_ALLOWED:
+                assert "subprocess.run(" not in inspect.getsource(p.fn), key
+
+    def test_allow_listed_probes_do_use_subprocess_run(self):
+        # Guards the allow-list: if a probe stops shelling out, shrink the list.
+        by_name = {p.fn.__name__: p for p in _REGISTERED.values()}
+        assert set(by_name) >= _SUBPROCESS_ALLOWED
+        for name in _SUBPROCESS_ALLOWED:
+            assert "subprocess.run(" in inspect.getsource(by_name[name].fn), name
