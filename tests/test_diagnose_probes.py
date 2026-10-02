@@ -854,6 +854,53 @@ class TestScrubUserinfo:
     def test_password_containing_at_sign_does_not_leak(self):
         assert "s3cret" not in dp._scrub_userinfo("http://alice:p@s3cret@proxy:8080")
 
+    @pytest.mark.parametrize(
+        ("raw", "secret", "expected"),
+        [
+            ("http://svc:dGVzdA==@proxy:3128", "dGVzdA", "http://<credentials>@proxy:3128"),
+            ("svc:abc=@proxy", "abc", "<credentials>@proxy"),
+            ("http://user:ab=cd@proxy", "ab=cd", "http://<credentials>@proxy"),
+            ("http://user:pa/ss@proxy", "pa/ss", "http://<credentials>@proxy"),
+            ("http://user:p;w@proxy", "p;w", "http://<credentials>@proxy"),
+            ("http=u:p=@h:1;https=b:2", "u:p", "http=<credentials>@h:1;https=b:2"),
+            ("http=u:pw@a:1;https=v:qq@b:2", "pw", "http=<credentials>@a:1;https=<credentials>@b:2"),
+            ("http=http://u:pw@a:1 https=b:2", "pw", "http=http://<credentials>@a:1 https=b:2"),
+        ],
+    )
+    def test_awkward_passwords_are_fully_scrubbed(self, raw, secret, expected):
+        out = dp._scrub_userinfo(raw)
+        assert secret not in out
+        assert out == expected
+
+    @pytest.mark.parametrize("raw", ["proxy:8080", "http=a:1;https=b:2", "http://proxy:3128/", "a:1;b:2"])
+    def test_values_without_userinfo_are_unchanged(self, raw):
+        assert dp._scrub_userinfo(raw) == raw
+
+
+class TestScrubPacUrl:
+    def test_query_and_fragment_stripped_path_kept(self):
+        out = dp._scrub_pac_url("http://pac.example/dir/x.pac?token=abc123#frag")
+        assert out == "http://pac.example/dir/x.pac"
+
+    def test_fragment_only_stripped(self):
+        assert dp._scrub_pac_url("http://pac.example/x.pac#frag") == "http://pac.example/x.pac"
+
+    def test_userinfo_scrubbed_too(self):
+        out = dp._scrub_pac_url("http://carol:s3cret@pac.example/x.pac?token=abc123")
+        assert out == "http://<credentials>@pac.example/x.pac"
+
+    def test_at_sign_only_in_query_is_over_redacted_not_leaked(self):
+        out = dp._scrub_pac_url("http://pac.example/x.pac?mail=a@b.example")
+        assert "mail" not in out
+        assert "a@" not in out
+
+    def test_password_with_question_mark_does_not_leak(self):
+        assert "s3cret" not in dp._scrub_pac_url("http://carol:s3?cret@pac.example/x.pac")
+
+    def test_plain_url_and_non_string_pass_through(self):
+        assert dp._scrub_pac_url("http://wpad/wpad.dat") == "http://wpad/wpad.dat"
+        assert dp._scrub_pac_url(None) is None
+
     def test_non_string_passes_through(self):
         assert dp._scrub_userinfo(1) == 1
 
@@ -865,7 +912,7 @@ class TestProxyConfigCredentials:
             values={
                 (winreg.HKEY_CURRENT_USER, _INET): {
                     "ProxyServer": "http=bob:s3cret@a:1;https=b:2",
-                    "AutoConfigURL": "http://carol:s3cret@wpad/wpad.dat",
+                    "AutoConfigURL": "http://carol:s3cret@wpad/wpad.dat?token=abc123#frag",
                 },
                 (winreg.HKEY_LOCAL_MACHINE, _CONNS): {"WinHttpSettings": _winhttp_blob(3, "dave:s3cret@proxy:8080")},
             },
@@ -875,6 +922,7 @@ class TestProxyConfigCredentials:
         )
         d = dp._p_proxy_config({})
         assert "s3cret" not in json.dumps(d)
+        assert "abc123" not in json.dumps(d)
         assert d["wininet"]["proxy_server"] == "http=<credentials>@a:1;https=b:2"
         assert d["wininet"]["auto_config_url"] == "http://<credentials>@wpad/wpad.dat"
         assert d["winhttp"]["proxy_server"] == "<credentials>@proxy:8080"

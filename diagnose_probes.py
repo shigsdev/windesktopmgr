@@ -479,19 +479,53 @@ def _env_proxy(name: str) -> str | None:
     return value if value is not None else os.environ.get(name.lower())
 
 
-_USERINFO_RE = re.compile(r"[^\s/@;=]+@")
+# A new WinINET entry starts after ";" / whitespace only when it begins "proto=" or "scheme://".
+# Anything else after a ";" is treated as part of the same entry, because ";" can occur in a password.
+_ENTRY_SPLIT_RE = re.compile(r"([;\s]+(?=[A-Za-z][A-Za-z0-9+.-]*(?:=|://)))")
+_ENTRY_PREFIX_RE = re.compile(r"(?:[A-Za-z]+=)?(?:[A-Za-z][A-Za-z0-9+.-]*://)?")
+
+
+def _scrub_entry(entry: str) -> str:
+    """Scrub one proxy entry: ``[proto=][scheme://][userinfo@]host[:port][/path]``."""
+    prefix = _ENTRY_PREFIX_RE.match(entry).group(0)
+    rest = entry[len(prefix) :]
+    # Userinfo is everything before the LAST "@": passwords may themselves contain
+    # "@", "/", ";" or "=", so nothing short of the last "@" is a safe boundary.
+    # Over-redacting is acceptable; leaking part of a credential is not.
+    at = rest.rfind("@")
+    if at < 0:
+        return entry
+    return prefix + "<credentials>" + rest[at:]
 
 
 def _scrub_userinfo(value):
     """Replace URL userinfo (``user:pass@`` / ``user@``) with ``<credentials>@``.
 
     Proxy settings can embed credentials and this data leaves the machine, so
-    they are scrubbed at collection time. Non-strings and hosts without an
-    ``@`` pass through unchanged.
+    they are scrubbed at collection time. Handles a bare ``host:port``, a scheme
+    URL and WinINET per-protocol lists (``http=a:1;https=b:2``). Non-strings and
+    values without an ``@`` pass through unchanged.
+    """
+    if not isinstance(value, str) or "@" not in value:
+        return value
+    parts = _ENTRY_SPLIT_RE.split(value)  # [entry, separator, entry, ...]
+    return "".join(_scrub_entry(p) if i % 2 == 0 else p for i, p in enumerate(parts))
+
+
+def _scrub_pac_url(value):
+    """Scrub a PAC (auto-config) URL: drop its query and fragment, then its userinfo.
+
+    The query can carry tokens, so only scheme, host and path survive. If an
+    ``@`` appears only after the first ``?``/``#`` it is ambiguous (a password
+    containing ``?`` or just a query value), so the full string is scrubbed
+    first; that over-redacts rather than risk leaking a credential.
     """
     if not isinstance(value, str):
         return value
-    return _USERINFO_RE.sub("<credentials>@", value)
+    base = re.split(r"[?#]", value, maxsplit=1)[0]
+    if "@" in value and "@" not in base:
+        return re.split(r"[?#]", _scrub_userinfo(value), maxsplit=1)[0]
+    return _scrub_userinfo(base)
 
 
 def _p_proxy_config(slots: dict) -> dict:
@@ -512,7 +546,7 @@ def _p_proxy_config(slots: dict) -> dict:
             "proxy_enable": inet.get("ProxyEnable"),
             "proxy_server": _scrub_userinfo(inet.get("ProxyServer")),
             "proxy_override": inet.get("ProxyOverride"),
-            "auto_config_url": _scrub_userinfo(inet.get("AutoConfigURL")),
+            "auto_config_url": _scrub_pac_url(inet.get("AutoConfigURL")),
             "auto_detect": inet.get("AutoDetect"),
         },
         "winhttp": winhttp,
