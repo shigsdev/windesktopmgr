@@ -450,21 +450,37 @@ def _redact_private_ip(match: re.Match) -> str:
     return "<private-ip>" if any(addr in net for net in _PRIVATE_NETS) else token
 
 
-def _username_pattern() -> re.Pattern | None:
-    """Pattern for the current Windows user name, read at call time (None if unset)."""
+def _username_pattern(protect: str | None = None) -> re.Pattern | None:
+    """Pattern for the current Windows user name, read at call time (None if unset).
+
+    Two alternatives are matched only to be left as they are: our own
+    placeholders (so a second pass is a no-op) and ``protect``, the host being
+    diagnosed (spec §7: hostnames are not redacted, even when a label equals
+    the user name). A single-label host, or one equal to the user name, gets
+    no exemption so a bare "al" in a profile path is still scrubbed.
+    """
     name = os.environ.get("USERNAME", "").strip()
     if not name:
         return None
-    return re.compile(rf"({_PLACEHOLDER})|(?<![A-Za-z0-9]){re.escape(name)}(?![A-Za-z0-9])", re.IGNORECASE)
+    keep = [_PLACEHOLDER]
+    if isinstance(protect, str) and "." in protect and protect.lower() != name.lower():
+        keep.append(rf"(?<![A-Za-z0-9-])(?:[A-Za-z0-9-]+\.)*{re.escape(protect)}\.?(?![A-Za-z0-9-])")
+    return re.compile(
+        rf"(?P<keep>{'|'.join(keep)})|(?<![A-Za-z0-9]){re.escape(name)}(?![A-Za-z0-9])",
+        re.IGNORECASE,
+    )
 
 
 def _redact_string(text: str, classes: frozenset[str], user_re: re.Pattern | None) -> str:
-    if user_re is not None:
-        text = user_re.sub(lambda m: m.group(1) or "<user>", text)
+    # The user name goes last: running it first would eat hex pairs of a MAC
+    # ("3c:ed:12..." for user Ed), and the placeholders it leaves alone then
+    # protect <mac> / <private-ip>.
     if "mac" in classes:
         text = _MAC_RE.sub("<mac>", text)
     if "local_ip" in classes:
         text = _IPV4_RE.sub(_redact_private_ip, text)
+    if user_re is not None:
+        text = user_re.sub(lambda m: m.group("keep") or "<user>", text)
     return text
 
 
@@ -478,7 +494,8 @@ def _redact_walk(obj: Any, classes: frozenset[str], user_re: re.Pattern | None) 
                 value = "<serial>"
             else:
                 value = _redact_walk(value, classes, user_re)
-            out[_redact_string(key, classes, user_re) if isinstance(key, str) else key] = value
+            # Keys are authored by our code, so the user name is never applied to them.
+            out[_redact_string(key, classes, None) if isinstance(key, str) else key] = value
         return out
     if isinstance(obj, list):
         return [_redact_walk(v, classes, user_re) for v in obj]
@@ -487,40 +504,58 @@ def _redact_walk(obj: Any, classes: frozenset[str], user_re: re.Pattern | None) 
     return copy.deepcopy(obj)
 
 
-def redact(obj: Any, classes: Iterable[str]) -> Any:
+def redact(obj: Any, classes: Iterable[str], protect: str | None = None) -> Any:
     """Deep copy of ``obj`` with the named PII ``classes`` scrubbed from every string.
 
     ``username``: the Windows user name, whole-word and case-insensitive, so
     "local alpha" survives a user called Al. ``mac``: MAC addresses with ``:``
     or ``-`` separators. ``serial``: the whole value of any dict key containing
-    "serial". ``local_ip``: RFC1918 IPv4 addresses. Dict keys are scrubbed
-    like values; unknown classes are ignored; non-string scalars pass through.
-    The input is never mutated.
+    "serial". ``local_ip``: RFC1918 IPv4 addresses. ``protect`` is a hostname
+    the ``username`` class must leave intact. Dict keys are never touched by
+    ``username``; unknown classes are ignored; non-string scalars pass
+    through. The input is never mutated.
     """
     wanted = frozenset(classes)
-    user_re = _username_pattern() if "username" in wanted else None
+    user_re = _username_pattern(protect) if "username" in wanted else None
     return _redact_walk(obj, wanted, user_re)
 
 
 def build_payload(session: dict) -> str:
     """The exact JSON text previewed to the user and then sent to the model.
 
-    Each evidence entry is redacted by its probe's own classes; ``username``
-    is then applied to the whole object, symptom included.
+    Each evidence entry is redacted by its probe's own classes. The ``username``
+    class is then applied only to what the user or the system supplied (the
+    symptom, slots, evidence data and errors, the rule headline), never to our
+    own structure (keys, labels, probe keys, locus), and never to the target
+    host being diagnosed.
     """
+    raw_evidence = list(session.get("evidence") or [])
+    seen = {item.get("key") for item in raw_evidence if isinstance(item, dict)}
+    slots = dict(session.get("slots") or {})
+    target = slots.get("target_host")
+    host = dp.normalize_host(target) if isinstance(target, str) else None
+
+    def scrub(value: Any) -> Any:
+        return redact(value, ["username"], protect=host)
+
     evidence = []
-    for item in session.get("evidence") or []:
+    for item in raw_evidence:
         probe = dp.PROBES.get(item.get("key")) if isinstance(item, dict) else None
-        evidence.append(redact(item, probe.redact if probe else ()))
-    seen = {item.get("key") for item in evidence if isinstance(item, dict)}
+        # ``username`` (also listed by most probes) is applied below, selectively.
+        item = redact(item, [c for c in probe.redact if c != "username"] if probe else ())
+        if isinstance(item, dict):
+            item = {k: v if k in ("key", "label") else scrub(v) for k, v in item.items()}
+        else:
+            item = scrub(item)
+        evidence.append(item)
     escalate = SYMPTOM_CLASSES.get(session.get("symptom_class"), {}).get("escalate", ())
     verdict = session.get("rule_verdict") or {}
     rnd = session.get("round", 0)
     payload = {
         "schema_version": 1,
-        "symptom": session.get("symptom", ""),
+        "symptom": scrub(session.get("symptom", "")),
         "symptom_class": session.get("symptom_class"),
-        "slots": dict(session.get("slots") or {}),
+        "slots": scrub(slots),
         "round": rnd,
         "rounds_remaining": MAX_ROUNDS - rnd,
         "capabilities": {"dnspython": dp.HAVE_DNSPYTHON},
@@ -528,7 +563,7 @@ def build_payload(session: dict) -> str:
         "rule_finding": {
             "status": verdict.get("status"),
             "locus": verdict.get("locus"),
-            "headline": verdict.get("headline"),
+            "headline": scrub(verdict.get("headline")),
             "rule_hits": list(verdict.get("rule_hits") or []),
         },
         "available_probes": [{"key": k, "label": dp.PROBES[k].label} for k in escalate if k not in seen],
@@ -537,4 +572,4 @@ def build_payload(session: dict) -> str:
             for k, v in sorted(remediation.REMEDIATION_REGISTRY.items())
         ],
     }
-    return json.dumps(redact(payload, ["username"]), indent=2, sort_keys=True, ensure_ascii=False)
+    return json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False)

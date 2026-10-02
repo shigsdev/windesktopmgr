@@ -482,8 +482,31 @@ class TestRedact:
         assert out == {"p": ["<user>", ("<mac>", {"n": "<user>"})], "n": 5, "f": 1.5, "b": True, "z": None}
         assert isinstance(out["p"][1], tuple)
 
-    def test_dict_keys_are_scrubbed_too(self):
-        assert diagnose.redact({r"C:\Users\Al": 1}, ["username"]) == {r"C:\Users\<user>": 1}
+    def test_username_never_rewrites_dict_keys(self):
+        assert diagnose.redact({"Al": "Al"}, ["username"]) == {"Al": "<user>"}
+
+    def test_mac_still_scrubs_dict_keys(self):
+        assert diagnose.redact({"aa:bb:cc:dd:ee:ff": 1}, ["mac"]) == {"<mac>": 1}
+
+    def test_username_applied_last_so_it_cannot_eat_mac_octets(self, monkeypatch):
+        monkeypatch.setenv("USERNAME", "Ed")
+        assert diagnose.redact("3c:ed:12:34:56:78", ["username", "mac"]) == "<mac>"
+        assert diagnose.redact("10.0.0.5 and 3C-ED-12-34-56-78", ["username", "mac", "local_ip"]) == (
+            "<private-ip> and <mac>"
+        )
+        assert diagnose.redact("Ed at 3c:ed:12:34:56:78", ["username", "mac"]) == "<user> at <mac>"
+
+    def test_protect_keeps_host_but_not_profile_path(self, monkeypatch):
+        monkeypatch.setenv("USERNAME", "al")
+        text = r"al.example.com sub.al.example.com. AL.EXAMPLE.COM C:\Users\al\x al"
+        out = diagnose.redact(text, ["username"], protect="al.example.com")
+        assert out == r"al.example.com sub.al.example.com. AL.EXAMPLE.COM C:\Users\<user>\x <user>"
+
+    def test_protect_gives_no_exemption_for_single_label_or_username_itself(self, monkeypatch):
+        monkeypatch.setenv("USERNAME", "al")
+        assert diagnose.redact("al", ["username"], protect="al") == "<user>"
+        assert diagnose.redact("al", ["username"], protect="AL") == "<user>"
+        assert diagnose.redact("al.example.com", ["username"], protect=None) == "<user>.example.com"
 
     def test_unknown_class_is_ignored(self):
         assert diagnose.redact("Al", ["nonsense"]) == "Al"
@@ -632,3 +655,74 @@ class TestBuildPayload:
         payload = json.loads(diagnose.build_payload({}))
         assert payload["evidence"] == []
         assert payload["rule_finding"]["rule_hits"] == []
+
+    def test_mac_octets_survive_username_that_is_a_hex_pair(self, monkeypatch):
+        monkeypatch.setenv("USERNAME", "Ed")
+        ev = [{"key": "dns.client_config", "label": "L", "ok": True, "data": {"mac": "3C-ED-12-34-56-78"}}]
+        text = diagnose.build_payload(_session(evidence=ev))
+        assert "3C" not in text
+        assert "12-34" not in text
+        assert "<mac>" in text
+
+    def test_target_host_containing_username_is_not_rewritten(self, monkeypatch):
+        monkeypatch.setenv("USERNAME", "al")
+        host = "al.example.com"
+        session = _session(
+            symptom=rf"{host} won't load, see C:\Users\al\x",
+            slots={"target_host": host},
+            evidence=[
+                {
+                    "key": "dns.resolve_direct",
+                    "label": "L",
+                    "ok": False,
+                    "error": "timeout resolving sub.al.example.com. for al",
+                }
+            ],
+            rule_verdict={"status": "confident", "locus": "local", "headline": f"{host} is blocked", "rule_hits": []},
+        )
+        payload = json.loads(diagnose.build_payload(session))
+        assert payload["slots"] == {"target_host": host}
+        assert payload["symptom"] == rf"{host} won't load, see C:\Users\<user>\x"
+        assert payload["evidence"][0]["error"] == "timeout resolving sub.al.example.com. for <user>"
+        assert payload["rule_finding"]["headline"] == f"{host} is blocked"
+
+    def test_single_label_target_equal_to_username_gets_no_exemption(self, monkeypatch):
+        monkeypatch.setenv("USERNAME", "al")
+        payload = json.loads(diagnose.build_payload(_session(symptom="al is down", slots={"target_host": "al"})))
+        assert payload["symptom"] == "<user> is down"
+        assert payload["slots"] == {"target_host": "<user>"}
+
+    @pytest.mark.parametrize("name", ["dns", "local", "data"])
+    def test_username_equal_to_our_vocabulary_leaves_structure_alone(self, monkeypatch, name):
+        monkeypatch.setenv("USERNAME", name)
+        ev = [
+            {
+                "key": "dns.trace_delegation",
+                "label": "Follow the dns delegation chain from the local data",
+                "ok": True,
+                "data": {"data": f"{name} says hi", "local": [name], "dns": {"who": name}},
+                "elapsed_ms": 1.0,
+            }
+        ]
+        verdict = {"status": "confident", "locus": "local", "headline": f"{name} h", "rule_hits": ["stale_cache"]}
+        payload = json.loads(diagnose.build_payload(_session(evidence=ev, rule_verdict=verdict)))
+        item = payload["evidence"][0]
+        assert item["key"] == "dns.trace_delegation"
+        assert item["label"] == ev[0]["label"]
+        assert set(item["data"]) == {"data", "local", "dns"}
+        assert item["data"] == {"data": "<user> says hi", "local": ["<user>"], "dns": {"who": "<user>"}}
+        assert payload["rule_finding"]["locus"] == "local"
+        assert payload["rule_finding"]["headline"] == "<user> h"
+        assert payload["rule_finding"]["rule_hits"] == ["stale_cache"]
+        assert payload["symptom_class"] == "network_dns"
+        assert [p["key"] for p in payload["available_probes"]] == [
+            k for k in diagnose.SYMPTOM_CLASSES["network_dns"]["escalate"] if k != "dns.trace_delegation"
+        ]
+        assert all(a["label"] and a["key"] for a in payload["available_actions"])
+
+    def test_username_dns_keeps_wave1_probe_keys_and_labels(self, monkeypatch):
+        monkeypatch.setenv("USERNAME", "dns")
+        ev = [{"key": "dns.resolve_cached", "label": "DNS cache", "ok": True, "data": {"resolved": True}}]
+        item = json.loads(diagnose.build_payload(_session(evidence=ev)))["evidence"][0]
+        assert item["key"] == "dns.resolve_cached"
+        assert item["label"] == "DNS cache"
