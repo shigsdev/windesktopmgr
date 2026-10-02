@@ -147,6 +147,12 @@ only worth keeping if it is never silently skipped. If a change genuinely
 warrants no entry (e.g. a pure CLAUDE.md typo fix), mark Phase 9 `Backlog`
 as ⏭️ Skipped with a one-line reason — never skip silently.
 
+**Readable view:** after updating the backlog, regenerate the HTML page —
+`python scripts/backlog_html.py` writes `backlog.html` (gitignored) at the
+repo root: open items by priority on top, every closed item in one
+collapsed section at the bottom. ✅ in a Backlog row's Feature cell closes
+it; a partly shipped item uses ⏳ so it stays in the open list.
+
 ---
 
 ## Python First, PowerShell Secondary (MANDATORY)
