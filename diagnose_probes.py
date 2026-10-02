@@ -28,6 +28,7 @@ import socket
 import ssl
 import struct
 import subprocess
+import sys
 import time
 import winreg
 from collections.abc import Callable, Sequence
@@ -49,6 +50,32 @@ try:
 except ImportError:  # pragma: no cover -- exercised by patching HAVE_DNSPYTHON
     dns = None  # type: ignore[assignment]
     HAVE_DNSPYTHON = False
+
+
+def _use_win32_resolver_config() -> bool:
+    """Make dnspython read the system resolver config via the Win32 API, not WMI.
+
+    dnspython's Windows default queries WMI Win32_NetworkAdapterConfiguration
+    on a helper thread and joins it with no timeout. Inside the tray, where
+    other collectors also hold WMI, those queries hung: dns.resolve_direct,
+    dns.authoritative and dns.record_sweep all hit their probe timeouts, and
+    the stuck threads left the baseline service collector timing out too
+    ("service subsystem degraded"). GetAdaptersAddresses gives the same
+    nameservers in ~16 ms with no COM at all. Nothing else here uses dnspython,
+    so changing its process-wide config method is safe.
+    """
+    if not HAVE_DNSPYTHON or sys.platform != "win32":
+        return False
+    try:
+        import dns.win32util
+
+        dns.win32util.set_config_method(dns.win32util.ConfigMethod.Win32)
+        return True
+    except Exception:  # noqa: BLE001 -- an older dnspython keeps its default; probes still bound by timeouts
+        return False
+
+
+_use_win32_resolver_config()
 
 # One worker per wave-1 probe (10), so none queues behind a slow one and loses its timeout budget.
 _MAX_WORKERS = 10
