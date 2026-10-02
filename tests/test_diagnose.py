@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
+import types
 from pathlib import Path
 
 import pytest
 
 import diagnose
+import remediation
 
 CHROME_BLOB = (
     "This site can’t be reached\n"
@@ -726,3 +729,336 @@ class TestBuildPayload:
         item = json.loads(diagnose.build_payload(_session(evidence=ev)))["evidence"][0]
         assert item["key"] == "dns.resolve_cached"
         assert item["label"] == "DNS cache"
+
+
+# ---------------------------------------------------------------------------
+# Model call, reply validation, guards (Task 10)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def model_env(monkeypatch):
+    """A fake API key and a zeroed call counter, restored after the test."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(diagnose, "_model_calls", 0)
+
+
+def _fake_client(content=None, stop_reason="end_turn", raises=None):
+    calls = []
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        if raises is not None:
+            raise raises
+        return types.SimpleNamespace(content=content, stop_reason=stop_reason)
+
+    client = types.SimpleNamespace(beta=types.SimpleNamespace(messages=types.SimpleNamespace(create=create)))
+    client.calls = calls
+    return client
+
+
+def _text(obj):
+    return types.SimpleNamespace(type="text", text=obj if isinstance(obj, str) else json.dumps(obj))
+
+
+REPLY = {
+    "kind": "verdict",
+    "need_probes": [],
+    "status": "likely",
+    "locus": "local",
+    "headline": "h",
+    "reasoning": "r",
+    "evidence_refs": ["dns.resolve_cached"],
+    "suggested_actions": ["flush_dns"],
+    "no_local_fix_reason": "",
+}
+
+
+class TestModelUnavailableReason:
+    def test_sdk_missing(self, monkeypatch):
+        monkeypatch.setattr(diagnose, "anthropic", None)
+        assert diagnose.model_unavailable_reason() == "sdk_missing"
+
+    def test_no_api_key(self, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        assert diagnose.model_unavailable_reason() == "no_api_key"
+
+    def test_call_cap(self, model_env, monkeypatch):
+        monkeypatch.setattr(diagnose, "_model_calls", diagnose.MAX_DIAGNOSE_CALLS)
+        assert diagnose.model_unavailable_reason() == "call_cap"
+
+    def test_available(self, model_env):
+        assert diagnose.model_unavailable_reason() is None
+
+
+class TestCallModel:
+    def test_happy_path_returns_dict_and_counts_the_call(self, model_env, mocker):
+        fake = _fake_client([_text(REPLY)])
+        mocker.patch.object(diagnose, "_get_client", return_value=fake)
+        assert diagnose._call_model("payload", "network_dns") == REPLY
+        assert diagnose._model_calls == 1
+
+    def test_create_kwargs(self, model_env, mocker):
+        fake = _fake_client([_text(REPLY)])
+        mocker.patch.object(diagnose, "_get_client", return_value=fake)
+        diagnose._call_model("the payload text", "network_dns")
+        kw = fake.calls[0]
+        if "DIAGNOSE_MODEL" not in os.environ:
+            assert diagnose.DIAGNOSE_MODEL == "claude-sonnet-5-5"
+        assert kw["model"] == diagnose.DIAGNOSE_MODEL
+        assert kw["messages"][0]["content"] == "the payload text"
+        assert kw["system"] == diagnose._SYSTEM_PROMPT
+        assert kw["max_tokens"] == 16000
+        assert kw["output_config"]["format"]["type"] == "json_schema"
+        assert kw["output_config"]["format"]["schema"] == diagnose.reply_schema("network_dns")
+        assert "server-side-fallback-2026-07-01" in kw["betas"]
+        assert kw["extra_body"] == {"fallbacks": "default"}
+        assert "thinking" not in kw
+
+    def test_reads_the_text_block_among_thinking_and_fallback_blocks(self, model_env, mocker):
+        content = [
+            types.SimpleNamespace(type="thinking", thinking="hmm"),
+            types.SimpleNamespace(type="fallback", reason="declined"),
+            _text(REPLY),
+        ]
+        mocker.patch.object(diagnose, "_get_client", return_value=_fake_client(content))
+        assert diagnose._call_model("p", "network_dns") == REPLY
+
+    @pytest.mark.parametrize("stop_reason", ["refusal", "max_tokens"])
+    def test_refusal_or_truncation_is_none_and_refunded(self, model_env, mocker, stop_reason):
+        fake = _fake_client([_text(REPLY)], stop_reason=stop_reason)
+        mocker.patch.object(diagnose, "_get_client", return_value=fake)
+        assert diagnose._call_model("p", "network_dns") is None
+        assert diagnose._model_calls == 0
+
+    def test_api_connection_error_is_none_and_refunded(self, model_env, mocker, capsys):
+        import anthropic
+
+        err = anthropic.APIConnectionError(request=mocker.Mock())
+        mocker.patch.object(diagnose, "_get_client", return_value=_fake_client(raises=err))
+        assert diagnose._call_model("secret payload", "network_dns") is None
+        assert diagnose._model_calls == 0
+        out = capsys.readouterr().out
+        assert "[Diagnose] model call failed: APIConnectionError" in out
+        assert "secret payload" not in out
+        assert "test-key" not in out
+
+    def test_unexpected_exception_is_none(self, model_env, mocker):
+        mocker.patch.object(diagnose, "_get_client", return_value=_fake_client(raises=RuntimeError("boom")))
+        assert diagnose._call_model("p", "network_dns") is None
+        assert diagnose._model_calls == 0
+
+    @pytest.mark.parametrize("text", ["not json {", "[1, 2]", ""])
+    def test_bad_text_is_none_and_refunded(self, model_env, mocker, text):
+        mocker.patch.object(diagnose, "_get_client", return_value=_fake_client([_text(text)]))
+        assert diagnose._call_model("p", "network_dns") is None
+        assert diagnose._model_calls == 0
+
+    def test_no_text_block_is_none(self, model_env, mocker):
+        content = [types.SimpleNamespace(type="thinking", thinking="hmm")]
+        mocker.patch.object(diagnose, "_get_client", return_value=_fake_client(content))
+        assert diagnose._call_model("p", "network_dns") is None
+        assert diagnose._model_calls == 0
+
+    def test_unavailable_never_builds_a_client(self, monkeypatch, mocker):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        get = mocker.patch.object(diagnose, "_get_client")
+        assert diagnose._call_model("p", "network_dns") is None
+        get.assert_not_called()
+
+    def test_cap_reached_never_calls(self, model_env, monkeypatch, mocker):
+        monkeypatch.setattr(diagnose, "_model_calls", diagnose.MAX_DIAGNOSE_CALLS)
+        get = mocker.patch.object(diagnose, "_get_client")
+        assert diagnose._call_model("p", "network_dns") is None
+        get.assert_not_called()
+        assert diagnose._model_calls == diagnose.MAX_DIAGNOSE_CALLS
+
+    def test_get_client_is_built_once_with_the_timeout(self, monkeypatch, mocker):
+        monkeypatch.setattr(diagnose, "_client", None)
+        ctor = mocker.patch.object(diagnose, "anthropic")
+        first = diagnose._get_client("k")
+        assert diagnose._get_client("k") is first
+        ctor.Anthropic.assert_called_once_with(api_key="k", timeout=diagnose.DIAGNOSE_TIMEOUT_S)
+
+
+class TestReplySchema:
+    def test_action_enum_matches_registry_and_probes_match_class(self):
+        schema = diagnose.reply_schema("network_dns")
+        props = schema["properties"]
+        assert props["suggested_actions"]["items"]["enum"] == sorted(remediation.REMEDIATION_REGISTRY)
+        assert props["need_probes"]["items"]["enum"] == list(diagnose.SYMPTOM_CLASSES["network_dns"]["escalate"])
+        assert props["kind"]["enum"] == ["verdict", "need_probes"]
+        assert props["status"]["enum"] == ["confident", "likely", "inconclusive"]
+        assert props["locus"]["enum"] == ["local", "external_cause", "unknown"]
+
+    def test_flat_strict_and_every_field_required(self):
+        schema = diagnose.reply_schema("network_dns")
+        assert schema["additionalProperties"] is False
+        assert set(schema["required"]) == set(schema["properties"])
+
+        def objects(node):
+            if isinstance(node, dict):
+                if node.get("type") == "object":
+                    yield node
+                for v in node.values():
+                    yield from objects(v)
+            elif isinstance(node, list):
+                for v in node:
+                    yield from objects(v)
+
+        assert all(o["additionalProperties"] is False for o in objects(schema))
+
+
+class TestParseReply:
+    def test_verdict_has_exactly_the_model_keys(self):
+        kind, verdict = diagnose.parse_reply(dict(REPLY), "network_dns")
+        assert kind == "verdict"
+        assert set(verdict) == {
+            "status",
+            "locus",
+            "headline",
+            "reasoning",
+            "evidence_refs",
+            "suggested_actions",
+            "no_local_fix_reason",
+        }
+        assert verdict["suggested_actions"] == ["flush_dns"]
+
+    def test_unknown_action_dropped_and_logged_once(self, capsys):
+        reply = {**REPLY, "suggested_actions": ["flush_dns", "format_c", "format_c", "reset_winsock"]}
+        _, verdict = diagnose.parse_reply(reply, "network_dns")
+        assert verdict["suggested_actions"] == ["flush_dns", "reset_winsock"]
+        assert capsys.readouterr().out.count("[Diagnose] dropped unknown action") == 1
+
+    def test_non_string_action_entry_is_dropped(self):
+        _, verdict = diagnose.parse_reply(
+            {**REPLY, "suggested_actions": [["flush_dns"], None, "flush_dns"]}, "network_dns"
+        )
+        assert verdict["suggested_actions"] == ["flush_dns"]
+
+    def test_unknown_probe_dropped(self, capsys):
+        reply = {**REPLY, "kind": "need_probes", "need_probes": ["net.tcp_connect", "dns.resolve_cached", "bogus"]}
+        # dns.resolve_cached is a wave-1 probe, not an escalation probe: also dropped.
+        assert diagnose.parse_reply(reply, "network_dns") == ("need_probes", ["net.tcp_connect"])
+        assert "[Diagnose] dropped unknown probe" in capsys.readouterr().out
+
+    def test_probe_requests_are_capped_at_four(self):
+        escalate = list(diagnose.SYMPTOM_CLASSES["network_dns"]["escalate"])
+        reply = {**REPLY, "kind": "need_probes", "need_probes": escalate}
+        assert diagnose.parse_reply(reply, "network_dns") == ("need_probes", escalate[:4])
+
+    def test_evidence_refs_coerced_to_strings(self):
+        _, verdict = diagnose.parse_reply({**REPLY, "evidence_refs": ["a", 2]}, "network_dns")
+        assert verdict["evidence_refs"] == ["a", "2"]
+
+    @pytest.mark.parametrize(
+        "patch",
+        [
+            {"status": "certain"},
+            {"locus": "cloud"},
+            {"kind": "other"},
+            {"headline": None},
+            {"reasoning": 5},
+            {"no_local_fix_reason": None},
+            {"evidence_refs": "dns.resolve_cached"},
+            {"suggested_actions": "flush_dns"},
+        ],
+    )
+    def test_wrong_types_or_values_are_none(self, patch):
+        assert diagnose.parse_reply({**REPLY, **patch}, "network_dns") is None
+
+    def test_need_probes_not_a_list_is_none(self):
+        assert diagnose.parse_reply({**REPLY, "kind": "need_probes", "need_probes": "x"}, "network_dns") is None
+
+    def test_non_dict_is_none(self):
+        assert diagnose.parse_reply([REPLY], "network_dns") is None
+
+
+def _model_verdict(**over):
+    return {
+        "status": "likely",
+        "locus": "local",
+        "headline": "h",
+        "reasoning": "r",
+        "evidence_refs": ["dns.resolve_cached"],
+        "suggested_actions": ["flush_dns"],
+        "no_local_fix_reason": "",
+        **over,
+    }
+
+
+def _agreeing_evidence():
+    return _cache_ev(True, _res("NOERROR", "1.2.3.4"), addresses=["1.2.3.4"])
+
+
+class TestApplyGuards:
+    def test_s1_model_says_local_flush_dns_but_rules_say_external(self):
+        evidence = _fixture_evidence("hynote_zone_missing_a")
+        rule = diagnose.evaluate_rules(evidence, "hynote.ai")
+        assert (rule["status"], rule["locus"]) == ("confident", "external_cause")
+        out = diagnose.apply_guards(_model_verdict(), evidence, rule)
+        assert out["locus"] == "external_cause"
+        assert out["suggested_actions"] == []
+        assert out["no_local_fix_reason"] == rule["no_local_fix_reason"]
+        assert out["source"] == "model"
+        assert out["rule_hits"] == rule["rule_hits"]
+
+    def test_models_own_no_local_fix_reason_is_kept(self):
+        evidence = _fixture_evidence("hynote_zone_missing_a")
+        rule = diagnose.evaluate_rules(evidence, "hynote.ai")
+        out = diagnose.apply_guards(_model_verdict(no_local_fix_reason="mine"), evidence, rule)
+        assert out["no_local_fix_reason"] == "mine"
+
+    def test_cache_agrees_drops_flush_dns_keeps_other_actions(self):
+        verdict = _model_verdict(suggested_actions=["flush_dns", "reset_winsock"])
+        out = diagnose.apply_guards(verdict, _agreeing_evidence(), {"rule_hits": ["cache_agrees"]})
+        assert out["suggested_actions"] == ["reset_winsock"]
+
+    def test_flush_dns_kept_when_cache_disagrees(self):
+        evidence = _cache_ev(False, _res("NOERROR", "1.2.3.4"))
+        out = diagnose.apply_guards(_model_verdict(), evidence, {"rule_hits": []})
+        assert out["suggested_actions"] == ["flush_dns"]
+
+    def test_unknown_actions_dropped(self):
+        verdict = _model_verdict(suggested_actions=["format_c", "reset_winsock", 7])
+        out = diagnose.apply_guards(verdict, {}, {})
+        assert out["suggested_actions"] == ["reset_winsock"]
+
+    def test_inconclusive_carries_no_actions(self):
+        out = diagnose.apply_guards(_model_verdict(status="inconclusive", locus="unknown"), {}, {})
+        assert out["suggested_actions"] == []
+
+    def test_model_external_cause_carries_no_actions(self):
+        out = diagnose.apply_guards(_model_verdict(locus="external_cause"), {}, {})
+        assert out["suggested_actions"] == []
+
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            {"status": "likely", "locus": "external_cause", "rule_hits": ["stale_cache_external"]},
+            {"status": "confident", "locus": "local", "rule_hits": ["hosts_override"]},
+        ],
+    )
+    def test_rule_that_is_not_confident_external_leaves_locus_alone(self, rule):
+        out = diagnose.apply_guards(_model_verdict(locus="local"), {}, rule)
+        assert out["locus"] == "local"
+        assert out["suggested_actions"] == ["flush_dns"]
+        assert out["rule_hits"] == rule["rule_hits"]
+
+    def test_inputs_are_not_mutated_and_all_keys_present(self):
+        verdict = _model_verdict(suggested_actions=["flush_dns", "bogus"])
+        rule = {"status": "confident", "locus": "external_cause", "rule_hits": ["x"], "no_local_fix_reason": "why"}
+        v0, r0 = copy.deepcopy(verdict), copy.deepcopy(rule)
+        out = diagnose.apply_guards(verdict, _agreeing_evidence(), rule)
+        assert verdict == v0
+        assert rule == r0
+        assert set(out) == VERDICT_KEYS
+        out["rule_hits"].append("y")
+        assert rule["rule_hits"] == ["x"]
+
+    def test_tolerates_a_sparse_verdict(self):
+        out = diagnose.apply_guards({"status": "likely", "locus": "local"}, {}, None)
+        assert out["suggested_actions"] == []
+        assert out["evidence_refs"] == []
+        assert out["no_local_fix_reason"] == ""
+        assert out["rule_hits"] == []
