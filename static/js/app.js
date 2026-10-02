@@ -10251,8 +10251,9 @@ async function dx_start() {
 
   _dxStarting = true;
   dx_el("dx-run").disabled = true;
-  dx_forget();
-  dx_resetView();
+  // The session being followed is replaced only once a new session_id
+  // arrives: a 429 or an awaiting_slots answer must not strand a parked preview.
+  dx_say("");
   try {
     const r = await fetch("/api/diagnose/start", {
       method: "POST",
@@ -10270,6 +10271,8 @@ async function dx_start() {
     } else if (d.state === "awaiting_slots") {
       await dx_showAsk(d);
     } else if (d.session_id) {
+      dx_forget();
+      dx_resetView();
       dx_clearAsk();
       _dxSid = d.session_id;
       dx_store("dx_sid", d.session_id);
@@ -10421,7 +10424,7 @@ function dx_verdictHtml(v, status) {
     <div class="dx-headline">${escHtml(v.headline)}</div>
     <div class="dx-reasoning">${escHtml(v.reasoning)}</div>`;
   if (v.overridden_model_locus) {
-    html += `<div class="dx-note">${escHtml("The AI suggested a local cause; the DNS measurements show otherwise, so the measured finding is shown.")}</div>`;
+    html += `<div class="dx-note">${escHtml("The AI suggested a different cause (" + v.overridden_model_locus + "); the DNS measurements show otherwise, so the measured finding is shown.")}</div>`;
   }
   if (v.locus === "external_cause") {
     html += `<div class="dx-nofix"><b>Nothing to fix on this PC</b>
