@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import ipaddress
 import json
 import os
 import re
@@ -351,6 +352,27 @@ class TestDnsQuery:
         assert r["error"] == "dnspython not installed"
         assert r["answers"] == []
 
+    def test_tls_hostname_uses_dns_over_tls_not_udp(self, mocker):
+        udp = mocker.patch("diagnose_probes.dns.query.udp")
+        tls = mocker.patch("diagnose_probes.dns.query.tls", return_value=_reply(answers=["34.110.213.225"]))
+        r = dp._dns_query("1.1.1.1", "hynote.ai", "A", timeout=2.5, tls_hostname="cloudflare-dns.com")
+        udp.assert_not_called()
+        assert tls.call_args.args[1] == "1.1.1.1"
+        assert tls.call_args.kwargs == {"timeout": 2.5, "server_hostname": "cloudflare-dns.com"}
+        assert r["rcode"] == "NOERROR"
+        assert r["answers"] == ["34.110.213.225"]
+
+    def test_tls_timeout_is_timeout(self, mocker):
+        mocker.patch("diagnose_probes.dns.query.tls", side_effect=dns.exception.Timeout())
+        assert dp._dns_query("1.1.1.1", "hynote.ai", "A", tls_hostname="cloudflare-dns.com")["rcode"] == "TIMEOUT"
+
+    def test_tls_failure_never_raises(self, mocker):
+        # e.g. a certificate that does not match the resolver's name (an interceptor on :853)
+        mocker.patch("diagnose_probes.dns.query.tls", side_effect=dp.ssl.SSLCertVerificationError("bad cert"))
+        r = dp._dns_query("1.1.1.1", "hynote.ai", "A", tls_hostname="cloudflare-dns.com")
+        assert r["rcode"] == "ERROR"
+        assert "bad cert" in r["error"]
+
 
 class TestSystemNameservers:
     def test_returns_resolver_nameservers(self, mocker):
@@ -370,12 +392,17 @@ def test_public_resolvers_constant():
     assert dp.PUBLIC_RESOLVERS == (("cloudflare", "1.1.1.1"), ("google", "8.8.8.8"))
 
 
+def test_public_resolver_tls_names_cover_every_public_resolver():
+    assert dp.PUBLIC_RESOLVER_TLS_NAMES == {"cloudflare": "cloudflare-dns.com", "google": "dns.google"}
+    assert set(dp.PUBLIC_RESOLVER_TLS_NAMES) == {name for name, _ in dp.PUBLIC_RESOLVERS}
+
+
 class TestWaveOneRegistration:
     @pytest.mark.parametrize(
         ("key", "label", "timeout"),
         [
             ("dns.resolve_cached", "Resolve through Windows (uses the DNS cache)", 8),
-            ("dns.resolve_direct", "Ask DNS servers directly (bypasses the cache)", 8),
+            ("dns.resolve_direct", "Ask public DNS servers directly over encrypted DNS (bypasses the cache)", 8),
             ("dns.authoritative", "Ask the domain's own nameservers", 12),
             ("dns.record_sweep", "List every DNS record type for the name", 10),
         ],
@@ -465,12 +492,51 @@ class TestResolveDirect:
         assert d["resolvers"][0] == {
             "name": "system",
             "server": "192.168.1.1",
+            "transport": "udp",
             "rcode": "NOERROR",
             "nodata": False,
             "answers": ["1.2.3.4"],
         }
+        assert [r["transport"] for r in d["resolvers"]] == ["udp", "tls", "tls"]
         assert d["resolvers"][2]["nodata"] is True
         assert all(c.args[1] == "hynote.ai" and c.args[2] == "A" for c in q.call_args_list)
+
+    def test_public_resolvers_are_asked_over_tls_with_their_names(self, mocker):
+        mocker.patch.object(dp, "_system_nameservers", return_value=["192.168.1.1"])
+        q = mocker.patch.object(dp, "_dns_query", side_effect=lambda server, *a, **k: _fake_reply(server))
+        dp._p_resolve_direct(SLOTS)
+        tls_names = {c.args[0]: c.kwargs.get("tls_hostname") for c in q.call_args_list}
+        assert tls_names == {"192.168.1.1": None, "1.1.1.1": "cloudflare-dns.com", "8.8.8.8": "dns.google"}
+
+    @pytest.mark.parametrize("rcode", ["TIMEOUT", "ERROR"])
+    def test_tls_failure_falls_back_to_udp(self, mocker, rcode):
+        mocker.patch.object(dp, "_system_nameservers", return_value=[])
+
+        def fake(server, name, rdtype, **kw):
+            if kw.get("tls_hostname"):
+                return _fake_reply(server, rcode=rcode)
+            return _fake_reply(server, rcode="NXDOMAIN")
+
+        q = mocker.patch.object(dp, "_dns_query", side_effect=fake)
+        d = dp._p_resolve_direct(SLOTS)
+        assert [(r["name"], r["transport"], r["rcode"]) for r in d["resolvers"]] == [
+            ("cloudflare", "udp", "NXDOMAIN"),
+            ("google", "udp", "NXDOMAIN"),
+        ]
+        assert q.call_count == 4
+
+    @pytest.mark.parametrize("rcode", ["NXDOMAIN", "SERVFAIL", "REFUSED"])
+    def test_a_tls_answer_of_any_rcode_is_kept_without_fallback(self, mocker, rcode):
+        mocker.patch.object(dp, "_system_nameservers", return_value=[])
+        q = mocker.patch.object(dp, "_dns_query", side_effect=lambda server, *a, **k: _fake_reply(server, rcode=rcode))
+        d = dp._p_resolve_direct(SLOTS)
+        assert [(r["transport"], r["rcode"]) for r in d["resolvers"]] == [("tls", rcode), ("tls", rcode)]
+        assert q.call_count == 2
+
+    def test_worst_case_fits_the_probe_timeout(self):
+        # The resolvers are asked side by side; the slowest chain is one TLS try plus one UDP fallback.
+        budget = _REGISTERED["dns.resolve_direct"].timeout_s
+        assert budget > dp._DOT_TIMEOUT_S + dp._DIRECT_UDP_TIMEOUT_S
 
     def test_no_system_nameserver_omits_system(self, mocker):
         mocker.patch.object(dp, "_system_nameservers", return_value=[])
@@ -494,6 +560,43 @@ class TestResolveDirect:
     def test_without_dnspython(self, mocker):
         mocker.patch.object(dp, "HAVE_DNSPYTHON", False)
         assert dp._p_resolve_direct(SLOTS) == {"dnspython": False, "resolvers": []}
+
+
+class TestInterception:
+    def test_any_reply_from_test_net_means_intercepted(self, mocker):
+        q = mocker.patch.object(dp, "_dns_query", return_value=_fake_reply("192.0.2.1", answers=["23.1.2.3"]))
+        assert dp._p_interception({}) == {"intercepted": True, "probe_server": "192.0.2.1", "answered_rcode": "NOERROR"}
+        q.assert_called_once_with("192.0.2.1", "www.microsoft.com", "A", timeout=2)
+
+    @pytest.mark.parametrize("rcode", ["NXDOMAIN", "SERVFAIL", "REFUSED"])
+    def test_an_error_reply_is_still_a_reply(self, mocker, rcode):
+        mocker.patch.object(dp, "_dns_query", return_value=_fake_reply("192.0.2.1", rcode=rcode))
+        d = dp._p_interception({})
+        assert d["intercepted"] is True
+        assert d["answered_rcode"] == rcode
+
+    @pytest.mark.parametrize("rcode", ["TIMEOUT", "ERROR"])
+    def test_no_reply_means_not_intercepted(self, mocker, rcode):
+        mocker.patch.object(dp, "_dns_query", return_value=_fake_reply("192.0.2.1", rcode=rcode))
+        assert dp._p_interception({}) == {"intercepted": False, "probe_server": "192.0.2.1", "answered_rcode": None}
+
+    def test_probe_server_is_rfc5737_test_net_1(self):
+        assert ipaddress.ip_address(dp.INTERCEPTION_PROBE_SERVER) in ipaddress.ip_network("192.0.2.0/24")
+
+    def test_without_dnspython(self, mocker):
+        mocker.patch.object(dp, "HAVE_DNSPYTHON", False)
+        q = mocker.patch.object(dp, "_dns_query")
+        assert dp._p_interception({}) == {"intercepted": None, "error": "dnspython not installed"}
+        q.assert_not_called()
+
+    def test_registered_with_contract_metadata(self):
+        p = _REGISTERED["dns.interception"]
+        assert p.label == "Check whether something on the network answers DNS itself"
+        assert p.category == "network"
+        assert p.needs == ()
+        assert p.redact == ("username",)
+        assert p.timeout_s == 4
+        assert p.fn is dp._p_interception
 
 
 class TestAuthoritative:
@@ -1671,7 +1774,7 @@ class TestRegistryInvariants:
     """Checked against the import-time snapshot: the autouse fixture empties dp.PROBES."""
 
     def test_snapshot_is_the_full_registry(self):
-        assert len(_REGISTERED) == 14
+        assert len(_REGISTERED) == 15
 
     def test_every_referenced_probe_is_registered(self):
         referenced = _referenced_probes()

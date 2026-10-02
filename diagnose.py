@@ -59,6 +59,7 @@ SYMPTOM_CLASSES = {
         "label": "Website or network unreachable",
         "slots": ("target_host",),
         "wave1": (
+            "dns.interception",
             "dns.resolve_cached",
             "dns.resolve_direct",
             "dns.authoritative",
@@ -203,8 +204,32 @@ def _resolvers(evidence: dict) -> list[dict]:
     return [r for r in direct.get("resolvers") or [] if isinstance(r, dict)]
 
 
-def _direct_view(evidence: dict) -> tuple[bool, set[str]]:
-    """``(definitive, addresses)`` from the direct resolvers (R13).
+def _intercepted(evidence: dict) -> bool:
+    """True only when dns.interception ran and saw a reply from a never-routed address.
+
+    Then every plain-DNS (UDP) answer may be the interceptor's, not the named
+    server's. A missing or failed probe counts as not intercepted (R5).
+    """
+    return (_data(evidence, "dns.interception") or {}).get("intercepted") is True
+
+
+def _trusted_resolvers(evidence: dict) -> list[dict]:
+    """The direct resolvers whose answers are measurements: all of them, or only
+    the DNS-over-TLS ones when the network intercepts plain DNS."""
+    resolvers = _resolvers(evidence)
+    if _intercepted(evidence):
+        return [r for r in resolvers if r.get("transport") == "tls"]
+    return resolvers
+
+
+def _no_address(r: dict) -> bool:
+    """A definitive "no address": NXDOMAIN, or NOERROR flagged ``nodata``."""
+    rcode = r.get("rcode")
+    return not r.get("answers") and (rcode == "NXDOMAIN" or (rcode == "NOERROR" and r.get("nodata") is True))
+
+
+def _definitive_view(resolvers: list[dict]) -> tuple[bool, set[str]]:
+    """``(definitive, addresses)`` over ``resolvers`` (R13).
 
     NOERROR with answers contributes its addresses; NXDOMAIN, or NOERROR with
     ``nodata``, is a definitive "no address". TIMEOUT/ERROR/SERVFAIL/REFUSED
@@ -212,15 +237,23 @@ def _direct_view(evidence: dict) -> tuple[bool, set[str]]:
     """
     addresses: set[str] = set()
     definitive = False
-    for r in _resolvers(evidence):
+    for r in resolvers:
         answers = r.get("answers") or []
-        rcode = r.get("rcode")
-        if rcode == "NOERROR" and answers:
+        if r.get("rcode") == "NOERROR" and answers:
             definitive = True
             addresses.update(answers)
-        elif rcode == "NXDOMAIN" or (rcode == "NOERROR" and r.get("nodata") is True):
+        elif _no_address(r):
             definitive = True
     return definitive, addresses
+
+
+def _direct_view(evidence: dict) -> tuple[bool, set[str]]:
+    """``_definitive_view`` over the trusted direct resolvers."""
+    return _definitive_view(_trusted_resolvers(evidence))
+
+
+def _system_resolver(evidence: dict) -> dict | None:
+    return next((r for r in _resolvers(evidence) if r.get("name") == "system"), None)
 
 
 def _authoritative_view(evidence: dict) -> tuple[list[dict], bool]:
@@ -241,14 +274,22 @@ def cache_agrees(evidence: dict[str, dict]) -> bool | None:
     Only definitive direct answers count (R13): NOERROR with answers means
     resolved; NXDOMAIN, or NOERROR with ``nodata``, means not resolved.
     TIMEOUT/ERROR/SERVFAIL/REFUSED are ignored, so a blocked UDP/53 cannot
-    make a working cache look stale. None when the cached probe is
+    make a working cache look stale. When the network intercepts plain DNS
+    only DNS-over-TLS resolvers count (R30). None when the cached probe is
     missing/failed or no resolver gave a definitive answer. Otherwise True iff
     both sides agree on resolved-ness and, when both resolved, their address
     sets intersect.
     """
     cached = _data(evidence, "dns.resolve_cached")
-    definitive, direct_addrs = _direct_view(evidence)
-    if cached is None or not definitive:
+    if cached is None:
+        return None
+    return _cache_matches(cached, _trusted_resolvers(evidence))
+
+
+def _cache_matches(cached: dict, resolvers: list[dict]) -> bool | None:
+    """``cache_agrees`` for an explicit resolver list (see there)."""
+    definitive, direct_addrs = _definitive_view(resolvers)
+    if not definitive:
         return None
     cached_resolved = cached.get("resolved") is True
     if cached_resolved != bool(direct_addrs):
@@ -292,7 +333,33 @@ def _rule_hosts_override(evidence: dict, host: str) -> dict | None:
     )
 
 
+def _rule_dns_filtered(evidence: dict, host: str) -> dict | None:
+    """This network's own DNS says no address while encrypted public DNS has one."""
+    if not _intercepted(evidence):
+        return None
+    system = _system_resolver(evidence)
+    if system is None or not _no_address(system):
+        return None
+    tls = [r for r in _resolvers(evidence) if r.get("transport") == "tls"]
+    if not any(r.get("rcode") == "NOERROR" and r.get("answers") for r in tls):
+        return None
+    return _verdict(
+        "likely",
+        "local",
+        f"Your network's DNS is blocking {host}",
+        f"Public DNS servers asked over encrypted DNS return an address for {host}, but this network's own DNS "
+        "(a VPN, router or DNS filter that answers DNS queries itself) says it has none. The block is on this "
+        "network, not at the site, so flushing this PC's DNS cache will not help.",
+        evidence_refs=["dns.interception", "dns.resolve_direct"],
+        rule_hits=["dns_filtered"],
+    )
+
+
 def _rule_external_no_address(evidence: dict, host: str) -> dict | None:
+    # Every input below is plain DNS; on an intercepting network it is the
+    # interceptor's answer, so it can never prove a fault outside this network.
+    if _intercepted(evidence):
+        return None
     cached = _data(evidence, "dns.resolve_cached")
     if cached is None or cached.get("resolved") is not False:
         return None
@@ -349,6 +416,13 @@ def _rule_stale_cache(evidence: dict, host: str) -> dict | None:
     if cache_agrees(evidence) is not False:
         return None
     cached = _data(evidence, "dns.resolve_cached") or {}
+    intercepted = _intercepted(evidence)
+    if intercepted:
+        # The cache was filled through the interceptor. While this network's DNS
+        # still gives the cached answer, a flush just fetches it again.
+        system = _system_resolver(evidence)
+        if system is None or _cache_matches(cached, [system]) is not False:
+            return None
     _, live_addrs = _direct_view(evidence)
     refs = ["dns.resolve_cached", "dns.resolve_direct"]
     if live_addrs and cached.get("resolved") is not True:
@@ -374,8 +448,9 @@ def _rule_stale_cache(evidence: dict, host: str) -> dict | None:
             rule_hits=["stale_cache"],
         )
     # The cache resolves but live DNS definitively says there is no address.
+    # The authoritative answers are plain DNS: unusable when intercepted.
     none_answering, any_answers = _authoritative_view(evidence)
-    if none_answering and not any_answers:
+    if none_answering and not any_answers and not intercepted:
         return _verdict(
             "likely",
             "external_cause",
@@ -417,16 +492,41 @@ def _rule_dead_gateway(evidence: dict, host: str) -> dict | None:
     )
 
 
+def _rule_dns_intercepted(evidence: dict, host: str) -> dict | None:
+    """Fallback: plain DNS is intercepted and nothing more specific fired."""
+    if not _intercepted(evidence):
+        return None
+    return _verdict(
+        "inconclusive",
+        "unknown",
+        "Something on this network answers DNS queries itself",
+        "A DNS query sent to an address where no DNS server exists was answered, so a VPN, router or DNS "
+        "filter on this network answers DNS queries itself. The plain DNS answers (authoritative servers, "
+        "record sweep, delegation trace, DNSSEC) come from that interceptor and cannot be trusted; only the "
+        "encrypted DNS lookups reflect the real servers.",
+        evidence_refs=["dns.interception"],
+        rule_hits=["dns_intercepted"],
+    )
+
+
 # First match wins (spec §9). Each rule names itself in the verdict's rule_hits.
-_RULES = (_rule_hosts_override, _rule_external_no_address, _rule_stale_cache, _rule_dead_gateway)
+_RULES = (
+    _rule_hosts_override,
+    _rule_dns_filtered,
+    _rule_external_no_address,
+    _rule_stale_cache,
+    _rule_dead_gateway,
+    _rule_dns_intercepted,
+)
 
 
 def evaluate_rules(evidence: dict[str, dict], target_host: str) -> dict:
     """Evidence-only verdict for the network_dns class; always a full verdict.
 
     Runs the rules in order and returns the first that fires. ``rule_hits``
-    names that rule, plus ``"cache_agrees"`` whenever the cache and the live
-    resolvers agree, whichever rule fired.
+    names that rule, plus ``"dns_intercepted"`` whenever the network intercepts
+    plain DNS and ``"cache_agrees"`` whenever the cache and the live resolvers
+    agree, whichever rule fired.
     """
     host = target_host or "this host"
     verdict = next((v for v in (rule(evidence, host) for rule in _RULES) if v is not None), None)
@@ -437,6 +537,8 @@ def evaluate_rules(evidence: dict[str, dict], target_host: str) -> dict:
             "No rule matched this evidence",
             "None of the built-in checks found a clear cause in the evidence collected.",
         )
+    if _intercepted(evidence) and "dns_intercepted" not in verdict["rule_hits"]:
+        verdict["rule_hits"].append("dns_intercepted")
     if cache_agrees(evidence) is True:
         verdict["rule_hits"].append("cache_agrees")
     return verdict
@@ -620,6 +722,9 @@ _SYSTEM_PROMPT = (
     "actions and explain in no_local_fix_reason. "
     "Suggest actions only from available_actions, and only when the evidence shows they would help. "
     "A DNS cache flush cannot help when dns.resolve_cached and dns.resolve_direct agree. "
+    "If dns.interception reports intercepted true, plain-DNS (UDP) results, including dns.authoritative, "
+    'dns.record_sweep, dns.trace_delegation, dns.dnssec_check and any resolver with transport "udp", come '
+    'from a local interceptor, not the named servers, so trust only transport "tls" results. '
     'Use kind "need_probes" to request up to 4 keys from available_probes when the evidence cannot yet '
     "distinguish the causes. When rounds_remaining is 0 you must return a verdict. "
     "Say inconclusive rather than guess."
@@ -784,7 +889,7 @@ def apply_guards(verdict: dict, evidence: dict, rule_verdict: dict) -> dict:
     """The model's verdict with the server-side guards applied; inputs are not mutated.
 
     Order: unknown actions dropped; ``flush_dns`` dropped when the cache and
-    live DNS agree; a confident rule-based ``external_cause`` overrides the
+    live DNS agree or the rules found the network's DNS filtering the name; a confident rule-based ``external_cause`` overrides the
     model's locus; actions survive only on a ``confident``/``likely`` verdict
     whose locus is ``local``/``unknown``.
 
@@ -801,7 +906,9 @@ def apply_guards(verdict: dict, evidence: dict, rule_verdict: dict) -> dict:
     out["suggested_actions"] = _keep_known(
         actions if isinstance(actions, list) else [], remediation.REMEDIATION_REGISTRY, "action"
     )
-    if cache_agrees(evidence) is True:
+    # A flush cannot help when the cache already agrees with live DNS, nor when
+    # this network's DNS itself withholds the address (it would refill the same answer).
+    if cache_agrees(evidence) is True or "dns_filtered" in (rule_verdict.get("rule_hits") or []):
         out["suggested_actions"] = [a for a in out["suggested_actions"] if a != "flush_dns"]
     source = "model"
     if rule_verdict.get("status") == "confident" and rule_verdict.get("locus") == "external_cause":

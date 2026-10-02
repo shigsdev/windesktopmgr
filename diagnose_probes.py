@@ -62,6 +62,15 @@ _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # Public recursive resolvers used to cross-check the system resolver (name, ip).
 PUBLIC_RESOLVERS = (("cloudflare", "1.1.1.1"), ("google", "8.8.8.8"))
 
+# The name on each public resolver's DNS-over-TLS certificate. Plain port-53 DNS
+# can be answered by anything on the path (a VPN, router or DNS filter); a
+# verified TLS session on port 853 can only be answered by the named resolver.
+PUBLIC_RESOLVER_TLS_NAMES = {"cloudflare": "cloudflare-dns.com", "google": "dns.google"}
+
+# RFC 5737 TEST-NET-1: documentation space that is never routed, so no real DNS
+# server can answer there. Any reply means something on the path answers DNS itself.
+INTERCEPTION_PROBE_SERVER = "192.0.2.1"
+
 _SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
 _BRACKETED_V6_RE = re.compile(r"^\[([^\]]+)\](?::\d+)?$")
 _HOSTNAME_RE = re.compile(
@@ -222,8 +231,13 @@ def _dns_query(
     timeout: float = 3.0,
     want_dnssec: bool = False,
     cd: bool = False,
+    tls_hostname: str | None = None,
 ) -> dict:
     """Ask ``server`` directly for ``name``/``rdtype`` and summarise the reply.
+
+    Plain DNS (UDP, TCP on truncation) by default. With ``tls_hostname`` the
+    query goes over DNS-over-TLS (port 853) and the server's certificate must
+    match that name, so a local interceptor cannot answer in its place.
 
     Returns ``{server, rcode, nodata, answers, aa, ad, error}``. ``rcode`` is
     the response code text, or ``"TIMEOUT"`` / ``"ERROR"`` when no usable
@@ -235,9 +249,12 @@ def _dns_query(
         q = dns.message.make_query(name, rdtype, want_dnssec=want_dnssec)
         if cd:
             q.flags |= dns.flags.CD
-        r = dns.query.udp(q, server, timeout=timeout)
-        if r.flags & dns.flags.TC:
-            r = dns.query.tcp(q, server, timeout=timeout)
+        if tls_hostname:
+            r = dns.query.tls(q, server, timeout=timeout, server_hostname=tls_hostname)
+        else:
+            r = dns.query.udp(q, server, timeout=timeout)
+            if r.flags & dns.flags.TC:
+                r = dns.query.tcp(q, server, timeout=timeout)
         want = dns.rdatatype.from_text(rdtype)
         answers = [rd.to_text() for rrset in r.answer if rrset.rdtype == want for rd in rrset]
         return _dns_result(
@@ -290,8 +307,58 @@ def _p_resolve_cached(slots: dict) -> dict:
     return {"resolved": True, "addresses": addresses, "error": None}
 
 
+# Per-query timeouts for dns.resolve_direct. The resolvers are asked side by
+# side, so the worst case is one TLS try plus one UDP fallback (5 s), safely
+# under the probe's 8 s budget.
+_DOT_TIMEOUT_S = 3.0
+_DIRECT_UDP_TIMEOUT_S = 2.0
+
+
+def _p_interception(slots: dict) -> dict:
+    """Ask a never-routed address for a name: any reply means local DNS interception.
+
+    Some VPNs, routers and DNS filters answer every port-53 query themselves,
+    whatever server it was addressed to. Then plain-DNS evidence (the system
+    resolver, authoritative servers, record sweep, delegation trace, DNSSEC)
+    reflects the interceptor, not the servers it names.
+    """
+    if not HAVE_DNSPYTHON:
+        return {"intercepted": None, "error": "dnspython not installed"}
+    r = _dns_query(INTERCEPTION_PROBE_SERVER, CONTROL_DOMAIN, "A", timeout=2)
+    answered = r["rcode"] not in ("TIMEOUT", "ERROR")
+    return {
+        "intercepted": answered,
+        "probe_server": INTERCEPTION_PROBE_SERVER,
+        "answered_rcode": r["rcode"] if answered else None,
+    }
+
+
+def _direct_lookup(name: str, server: str, host: str) -> dict:
+    """One dns.resolve_direct entry. Public resolvers are asked over DNS-over-TLS
+    first, falling back to plain UDP when port 853 gives no usable reply; the
+    system resolver is plain UDP. ``transport`` records which answer is kept."""
+    tls_name = PUBLIC_RESOLVER_TLS_NAMES.get(name) if name != "system" else None
+    r, transport = None, "udp"
+    if tls_name:
+        r = _dns_query(server, host, "A", timeout=_DOT_TIMEOUT_S, tls_hostname=tls_name)
+        transport = "tls"
+        if r["rcode"] in ("TIMEOUT", "ERROR"):
+            r = None
+    if r is None:
+        r = _dns_query(server, host, "A", timeout=_DIRECT_UDP_TIMEOUT_S)
+        transport = "udp"
+    return {
+        "name": name,
+        "server": r["server"],
+        "transport": transport,
+        "rcode": r["rcode"],
+        "nodata": r["nodata"],
+        "answers": r["answers"],
+    }
+
+
 def _p_resolve_direct(slots: dict) -> dict:
-    """Ask the system, Cloudflare and Google resolvers for A records directly."""
+    """Ask the system resolver (UDP) and Cloudflare/Google (DNS-over-TLS) for A records directly."""
     if not HAVE_DNSPYTHON:
         return {"dnspython": False, "resolvers": []}
     host = slots["target_host"]
@@ -300,18 +367,10 @@ def _p_resolve_direct(slots: dict) -> dict:
     if system:
         targets.append(("system", system[0]))
     targets.extend(PUBLIC_RESOLVERS)
-    resolvers = []
-    for name, server in targets:
-        r = _dns_query(server, host, "A")
-        resolvers.append(
-            {
-                "name": name,
-                "server": r["server"],
-                "rcode": r["rcode"],
-                "nodata": r["nodata"],
-                "answers": r["answers"],
-            }
-        )
+    # Each lookup is bounded by its own dnspython timeouts, so the `with` block's
+    # wait is bounded too (unlike run_probes, which guards against hung OS calls).
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(targets)) as ex:
+        resolvers = list(ex.map(lambda t: _direct_lookup(t[0], t[1], host), targets))
     return {"dnspython": True, "resolvers": resolvers}
 
 
@@ -866,7 +925,12 @@ def _p_dnssec_check(slots: dict) -> dict:
 
 for _key, _label, _fn, _timeout in (
     ("dns.resolve_cached", "Resolve through Windows (uses the DNS cache)", _p_resolve_cached, 8),
-    ("dns.resolve_direct", "Ask DNS servers directly (bypasses the cache)", _p_resolve_direct, 8),
+    (
+        "dns.resolve_direct",
+        "Ask public DNS servers directly over encrypted DNS (bypasses the cache)",
+        _p_resolve_direct,
+        8,
+    ),
     ("dns.authoritative", "Ask the domain's own nameservers", _p_authoritative, 12),
     ("dns.record_sweep", "List every DNS record type for the name", _p_record_sweep, 10),
 ):
@@ -882,6 +946,16 @@ for _key, _label, _fn, _timeout in (
         )
     )
 
+register(
+    Probe(
+        key="dns.interception",
+        label="Check whether something on the network answers DNS itself",
+        category="network",
+        fn=_p_interception,
+        redact=("username",),
+        timeout_s=4,
+    )
+)
 register(
     Probe(
         key="dns.hosts_file",

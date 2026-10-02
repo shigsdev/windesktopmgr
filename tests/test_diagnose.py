@@ -122,7 +122,8 @@ class TestSymptomClassesShape:
         c = diagnose.SYMPTOM_CLASSES["network_dns"]
         assert c["label"] == "Website or network unreachable"
         assert c["slots"] == ("target_host",)
-        assert len(c["wave1"]) == 9
+        assert len(c["wave1"]) == 10
+        assert c["wave1"][0] == "dns.interception"
         assert len(c["escalate"]) == 5
         assert set(c["wave1"]).isdisjoint(c["escalate"])
 
@@ -135,8 +136,24 @@ def _ok(data):
     return {"ok": True, "data": data}
 
 
-def _res(rcode, *answers, nodata=False):
-    return {"name": "r", "server": "x", "rcode": rcode, "nodata": nodata, "answers": list(answers)}
+def _res(rcode, *answers, nodata=False, name="r", transport="udp"):
+    return {
+        "name": name,
+        "server": "x",
+        "transport": transport,
+        "rcode": rcode,
+        "nodata": nodata,
+        "answers": list(answers),
+    }
+
+
+def _tls(rcode, *answers, nodata=False):
+    return _res(rcode, *answers, nodata=nodata, transport="tls")
+
+
+def _intercepted(ev, value=True):
+    ev["dns.interception"] = _ok({"intercepted": value, "probe_server": "192.0.2.1", "answered_rcode": "NOERROR"})
+    return ev
 
 
 def _cache_ev(cached_resolved, *resolvers, addresses=()):
@@ -194,10 +211,41 @@ class TestCacheAgrees:
     def test_noerror_without_answers_or_nodata_flag_is_not_definitive(self):
         assert diagnose.cache_agrees(_cache_ev(True, _res("NOERROR"), addresses=["1.1.1.1"])) is None
 
+    def test_intercepted_counts_only_tls_resolvers(self):
+        # The UDP answer comes from the interceptor; only the encrypted lookup is a measurement.
+        ev = _cache_ev(
+            True,
+            _res("NOERROR", "10.9.9.9", name="system"),
+            _tls("NOERROR", "34.110.213.225"),
+            addresses=["10.9.9.9"],
+        )
+        assert diagnose.cache_agrees(ev) is True  # not intercepted: the system answer intersects the cache
+        assert diagnose.cache_agrees(_intercepted(ev)) is False
+
+    def test_intercepted_without_a_definitive_tls_answer_is_none(self):
+        ev = _cache_ev(
+            True,
+            _res("NOERROR", "1.1.1.1", name="system"),
+            _tls("TIMEOUT"),
+            _res("NOERROR", "1.1.1.1"),
+            addresses=["1.1.1.1"],
+        )
+        assert diagnose.cache_agrees(_intercepted(ev)) is None
+
+    @pytest.mark.parametrize("value", [False, None])
+    def test_interception_false_or_unknown_counts_every_resolver(self, value):
+        ev = _cache_ev(True, _res("NOERROR", "1.1.1.1"), addresses=["1.1.1.1"])
+        assert diagnose.cache_agrees(_intercepted(ev, value)) is True
+
+    def test_failed_interception_probe_counts_every_resolver(self):
+        ev = _cache_ev(True, _res("NOERROR", "1.1.1.1"), addresses=["1.1.1.1"])
+        ev["dns.interception"] = {"ok": False, "error": "timed out after 4s"}
+        assert diagnose.cache_agrees(ev) is True
+
 
 class TestRuleFixtures:
     def test_fixture_dir_is_populated(self):
-        assert len(FIXTURES) >= 6
+        assert len(FIXTURES) >= 8
 
     @pytest.mark.parametrize("path", FIXTURES, ids=lambda p: p.stem)
     def test_rule_fixture(self, path):
@@ -403,6 +451,145 @@ class TestEvaluateRulesVerdicts:
             "net.gateway": {"ok": True, "data": None},
         }
         assert diagnose.evaluate_rules(ev, None)["status"] == "inconclusive"
+
+
+class TestInterceptionRules:
+    def test_dns_filtered_verdict(self):
+        v = diagnose.evaluate_rules(_fixture_evidence("dns_filtered_by_network"), "hynote.ai")
+        assert set(v) == VERDICT_KEYS
+        assert v["status"] == "likely"
+        assert v["locus"] == "local"
+        assert v["headline"] == "Your network's DNS is blocking hynote.ai"
+        assert "encrypted DNS" in v["reasoning"]
+        assert v["suggested_actions"] == []
+        assert v["no_local_fix_reason"] == ""
+        assert v["rule_hits"] == ["dns_filtered", "dns_intercepted"]
+        assert v["evidence_refs"] == ["dns.interception", "dns.resolve_direct"]
+
+    def test_dns_filtered_never_becomes_external_on_aa_false_nxdomain(self):
+        # Today's real shape: the "authoritative" NXDOMAIN came from the interceptor (aa false).
+        v = diagnose.evaluate_rules(_fixture_evidence("dns_filtered_by_network"), "hynote.ai")
+        assert "external_no_address" not in v["rule_hits"]
+        assert "stale_cache" not in v["rule_hits"]
+
+    def test_hosts_override_still_wins(self):
+        ev = _fixture_evidence("dns_filtered_by_network")
+        ev["dns.hosts_file"]["data"]["matches"] = [{"line_no": 3, "ip": "0.0.0.0", "names": ["hynote.ai"]}]
+        assert diagnose.evaluate_rules(ev, "hynote.ai")["rule_hits"][0] == "hosts_override"
+
+    def test_dns_filtered_needs_interception(self):
+        ev = _fixture_evidence("dns_filtered_by_network")
+        del ev["dns.interception"]
+        assert "dns_filtered" not in diagnose.evaluate_rules(ev, "hynote.ai")["rule_hits"]
+
+    @pytest.mark.parametrize(
+        "system",
+        [
+            {"name": "system", "transport": "udp", "rcode": "TIMEOUT", "nodata": False, "answers": []},
+            {"name": "system", "transport": "udp", "rcode": "NOERROR", "nodata": False, "answers": ["10.0.0.9"]},
+            None,
+        ],
+    )
+    def test_dns_filtered_needs_a_definitive_no_address_from_the_system_resolver(self, system):
+        ev = _fixture_evidence("dns_filtered_by_network")
+        resolvers = [r for r in ev["dns.resolve_direct"]["data"]["resolvers"] if r["name"] != "system"]
+        if system is not None:
+            resolvers.insert(0, system)
+        ev["dns.resolve_direct"]["data"]["resolvers"] = resolvers
+        assert "dns_filtered" not in diagnose.evaluate_rules(ev, "hynote.ai")["rule_hits"]
+
+    def test_system_nodata_counts_as_no_address(self):
+        ev = _fixture_evidence("dns_filtered_by_network")
+        ev["dns.resolve_direct"]["data"]["resolvers"][0].update(rcode="NOERROR", nodata=True, answers=[])
+        assert diagnose.evaluate_rules(ev, "hynote.ai")["rule_hits"][0] == "dns_filtered"
+
+    def test_dns_filtered_needs_a_tls_resolver_with_an_address(self):
+        ev = _fixture_evidence("dns_filtered_by_network")
+        for r in ev["dns.resolve_direct"]["data"]["resolvers"][1:]:
+            r["transport"] = "udp"  # port 853 blocked: the fallback answers are the interceptor's too
+        v = diagnose.evaluate_rules(ev, "hynote.ai")
+        assert "dns_filtered" not in v["rule_hits"]
+        assert v["rule_hits"] == ["dns_intercepted"]
+        assert v["status"] == "inconclusive"
+
+    def test_external_no_address_never_fires_when_intercepted(self):
+        ev = _intercepted(_fixture_evidence("hynote_zone_missing_a"))
+        v = diagnose.evaluate_rules(ev, "hynote.ai")
+        assert v["locus"] != "external_cause"
+        assert "external_no_address" not in v["rule_hits"]
+
+    def test_intercepted_with_nothing_else_is_inconclusive(self):
+        v = diagnose.evaluate_rules(_fixture_evidence("network_intercepts_everything"), "example.com")
+        assert set(v) == VERDICT_KEYS
+        assert v["status"] == "inconclusive"
+        assert v["locus"] == "unknown"
+        assert v["suggested_actions"] == []
+        assert v["headline"] == "Something on this network answers DNS queries itself"
+        assert "cannot be trusted" in v["reasoning"]
+        assert v["rule_hits"] == ["dns_intercepted", "cache_agrees"]
+
+    def test_dns_intercepted_hit_is_added_once_whichever_rule_fires(self):
+        ev = _intercepted(_fixture_evidence("dead_gateway"))
+        v = diagnose.evaluate_rules(ev, "example.com")
+        assert v["rule_hits"][0] == "dead_gateway"
+        assert v["rule_hits"].count("dns_intercepted") == 1
+
+    def test_dead_gateway_still_wins_over_the_interception_fallback(self):
+        v = diagnose.evaluate_rules(_intercepted(_fixture_evidence("dead_gateway")), "example.com")
+        assert v["suggested_actions"] == ["reset_network_adapter"]
+
+    def test_intercepted_cache_that_matches_the_network_dns_is_not_stale(self):
+        # A DNS filter that sinkholes: the cache holds what this network's DNS still returns,
+        # so flushing changes nothing even though encrypted DNS returns the real address.
+        ev = _intercepted(
+            _cache_ev(
+                True,
+                _res("NOERROR", "10.9.9.9", name="system"),
+                _tls("NOERROR", "34.110.213.225"),
+                addresses=["10.9.9.9"],
+            )
+        )
+        v = diagnose.evaluate_rules(ev, "hynote.ai")
+        assert "stale_cache" not in v["rule_hits"]
+        assert "flush_dns" not in v["suggested_actions"]
+
+    def test_intercepted_cache_that_differs_from_the_network_dns_is_still_stale(self):
+        ev = _intercepted(
+            _cache_ev(
+                True,
+                _res("NOERROR", "34.110.213.225", name="system"),
+                _tls("NOERROR", "34.110.213.225"),
+                addresses=["10.1.1.1"],
+            )
+        )
+        v = diagnose.evaluate_rules(ev, "hynote.ai")
+        assert v["rule_hits"][0] == "stale_cache"
+        assert v["suggested_actions"] == ["flush_dns"]
+
+    def test_flush_dns_from_the_model_is_dropped_when_the_network_filters_the_name(self):
+        ev = _fixture_evidence("dns_filtered_by_network")
+        rule = diagnose.evaluate_rules(ev, "hynote.ai")
+        out = diagnose.apply_guards(
+            {
+                "status": "likely",
+                "locus": "local",
+                "headline": "h",
+                "reasoning": "r",
+                "evidence_refs": [],
+                "suggested_actions": ["flush_dns", "reset_network_adapter"],
+                "no_local_fix_reason": "",
+            },
+            ev,
+            rule,
+        )
+        assert out["suggested_actions"] == ["reset_network_adapter"]
+
+    def test_system_prompt_tells_the_model_to_trust_only_tls_when_intercepted(self):
+        prompt = diagnose._SYSTEM_PROMPT
+        assert "dns.interception" in prompt
+        assert 'transport "tls"' in prompt
+        for key in ("dns.authoritative", "dns.record_sweep", "dns.trace_delegation", "dns.dnssec_check"):
+            assert key in prompt
 
 
 class TestRedact:
