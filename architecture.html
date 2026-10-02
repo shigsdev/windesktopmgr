@@ -193,7 +193,7 @@
       <button type="button" onclick="exportPDF()" title="Open the browser print dialog — choose 'Save as PDF'" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--yellow);border:none;cursor:pointer;border-right:1px solid var(--border)">Export PDF</button>
       <button type="button" onclick="exportHTML()" title="Download a self-contained copy of this diagram" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--blue);border:none;cursor:pointer">Export HTML</button>
     </div>
-    <div class="badge" style="color:var(--green);border-color:#00e67633">4,080 tests · 90% coverage</div>
+    <div class="badge" style="color:var(--green);border-color:#00e67633">4,099 tests · 90% coverage</div>
     <div class="badge">
       <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
     </div>
@@ -867,6 +867,10 @@
             <div class="fs-title">scripts/post_restart_check.py</div>
             <div class="fs-sub">Restart + /api/selftest + dashboard/idle-poll/CPU-thread-budget checks + log scan · ~440 lines · dev.py verify target · waits for background lookup queues to drain before sampling CPU</div>
           </div>
+          <div class="fs-chip">
+            <div class="fs-title">scripts/backlog_html.py</div>
+            <div class="fs-sub">Readable backlog page · ~335 lines · reads memory/project_backlog.md (same path + WINDESKTOPMGR_BACKLOG_PATH override as codehealth) &rarr; writes gitignored backlog.html: open items by priority on top, all closed items in one collapsed section (newest first, each expandable) + live filter · run after every backlog update</div>
+          </div>
           <div class="fs-chip" style="border-color:#ffd74033">
             <div class="fs-title" style="color:#ffd740">scripts/repair_storage_pool.ps1</div>
             <div class="fs-sub">Storage Spaces drive-replacement runner · ~205 lines · run ELEVATED after a physical swap: add new disk &rarr; Repair-VirtualDisk &rarr; poll Get-StorageJob &rarr; VERIFY space Healthy/OK &rarr; only then Remove-PhysicalDisk of the old entry. Removal hard-gated on the verify (redundancy=1); refuses on ambiguity (&gt;1 retired, &gt;1 poolable, USB or undersized replacement). -Preview plans without changing anything.</div>
@@ -919,7 +923,7 @@
 
   <!-- ── LAYER 7: TEST SUITE ──────────────────────────────────── -->
   <div class="row row-tests" id="layer-tests">
-    <div class="row-label">🧪 Test Suite — 4,080 tests · pytest · 90% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
+    <div class="row-label">🧪 Test Suite — 4,099 tests · pytest · 90% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
       <div class="test-chip">
         <div class="test-title">test_routes.py</div>
@@ -1018,6 +1022,10 @@
       <div class="test-chip">
         <div class="test-title">test_cloudcopy.py</div>
         <div class="test-sub">109 tests · DEFAULT_RULES + schedule default-OFF guard · load_rules / validate_rules / save round-trip · is_excluded · walk_source · preview · _rules_hash (stable across key order) · _atomic_copy (happy + rename-failure-cleans-tmp + parent-dir-creation) · _needs_copy (size+mtime skip with tolerance) · full copy session against synthetic tree · 5-file plan completes / re-runs skip / source-wins overwrite · session lifecycle (start/status/cancel/refused-concurrent) · wait_for_idle completion signal (idle set only after the history row lands; worker-thread-start failure releases the session claim) · resume from cursor / refuse-on-rules-change / refuse-on-source-missing / discard-crashed · resume-state route distinguishes active vs crashed · 10 PR-2 routes</div>
+      </div>
+      <div class="test-chip">
+        <div class="test-title">test_backlog_html.py</div>
+        <div class="test-sub">19 tests · Done rows (pipes inside prose survive) · every real Backlog row shape (5 cells / value folded into Feature / no effort+priority) · ✅ closes, ⏳ stays open · priority then newest-first ordering · HTML escaping · closed section collapsed · main() exit codes</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_check_repo_secrets.py</div>
@@ -1297,7 +1305,7 @@
           <div style="flex:0 0 auto;min-width:120px;background:#ff80ab0a;border:1px solid #ff80ab44;border-radius:8px;padding:10px 12px;text-align:center">
             <div style="font-size:16px;margin-bottom:4px">🧪</div>
             <div style="color:var(--pink);font-weight:700;font-size:10px">3. PYTEST</div>
-            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">4,080 tests · 90% cov · ~60s</div>
+            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">4,099 tests · 90% cov · ~60s</div>
           </div>
           <div style="display:flex;align-items:center;padding:0 4px;color:var(--pink);font-size:14px">→</div>
 
@@ -1445,7 +1453,7 @@
        this number by changing what it measures. Regenerate with:
          python -c "import pathlib;S={'.git','.claude','.pytest_cache','.ruff_cache','__pycache__'};print(sum(sum(1 for _ in p.open(encoding='utf-8',errors='replace')) for p in pathlib.Path('.').rglob('*.py') if p.is_file() and not set(p.parts)&S and 'tests' not in p.parts))"
   -->
-  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 4,080 tests · ~41,452 lines</span>
+  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 4,099 tests · ~41,452 lines</span>
   <span>github.com/shigsdev/windesktopmgr · Updated 2026-10-02</span>
 </div>
 
