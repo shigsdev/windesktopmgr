@@ -305,7 +305,28 @@ Per CLAUDE.md's three layers, plus:
 - **Probe level:** happy / empty / malformed / timeout per probe.
 - **Registry invariants:** bundle keys exist; no write-capable probes; all
   probes declare slots.
-- **Classifier:** table-driven, including the user's verbatim Chrome error.
+- **Classifier:** one JSON fixture per scenario in a new
+  `tests/fixtures/diagnose/` directory. Each file holds a synthetic
+  evidence bundle plus the verdict it must produce; a single parametrized
+  test discovers the directory and asserts fixture-by-fixture, so adding a
+  scenario means adding a file, not writing a test function.
+
+  ```
+  tests/fixtures/diagnose/
+    hynote_zone_missing_a.json        -> external_cause, no flush_dns (S1)
+    stale_cache_direct_resolves.json  -> local, flush_dns
+    hosts_file_override.json          -> local, edit_hosts
+  ```
+
+  Each fixture is `{"symptom": ..., "evidence": {<probe key>: ...},
+  "expect": {"locus": ..., "must_include": [...], "must_exclude":
+  [...]}}`. The test asserts on `locus` and on action keys present and
+  absent — never on `headline` or `reasoning` prose, which the model is
+  free to word however it likes.
+
+  Scenarios to add as the probes land: NXDOMAIN vs NODATA, captive portal,
+  proxy misconfig, dead gateway. The S1 fixture carries the user's
+  verbatim Chrome error string as its `symptom` input.
 - **Engine:** mocked model — escalation capped at 2 rounds; unknown probe
   keys rejected; unknown action keys dropped; `external_cause` forces empty
   actions.
@@ -316,8 +337,9 @@ Per CLAUDE.md's three layers, plus:
 - **Playwright:** tab renders; submit → preview appears; `inconclusive` does
   not render as a verdict.
 
-**Golden regression case (S1).** A fixture built from today's real evidence —
-`MX` + `SPF` + `google-site-verification` present, `A`/`AAAA`/`CNAME` absent,
+**Golden regression case (S1).** `hynote_zone_missing_a.json` above, built
+from today's real evidence — `MX` + `SPF` + `google-site-verification`
+present, `A`/`AAAA`/`CNAME` absent,
 `SOA` answering, all resolvers agreeing — asserting `locus ==
 "external_cause"` and `"flush_dns" not in suggested_actions`. This is the
 test that would have prevented the hour the user spent flushing a cache.
