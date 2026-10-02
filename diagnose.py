@@ -159,6 +159,7 @@ _NO_LOCAL_FIX_NODATA = (
 )
 _NO_LOCAL_FIX_NXDOMAIN = "The domain's own nameservers say this name does not exist."
 _SWEEP_TYPES = ("MX", "TXT", "SOA", "NS")
+_ADDRESS_TYPES = ("A", "AAAA", "CNAME")
 
 
 def _data(evidence: dict, key: str) -> dict | None:
@@ -175,6 +176,38 @@ def _resolvers(evidence: dict) -> list[dict]:
     return [r for r in direct.get("resolvers") or [] if isinstance(r, dict)]
 
 
+def _direct_view(evidence: dict) -> tuple[bool, set[str]]:
+    """``(definitive, addresses)`` from the direct resolvers (R13).
+
+    NOERROR with answers contributes its addresses; NXDOMAIN, or NOERROR with
+    ``nodata``, is a definitive "no address". TIMEOUT/ERROR/SERVFAIL/REFUSED
+    are ignored. ``definitive`` is False when no resolver gave a usable answer.
+    """
+    addresses: set[str] = set()
+    definitive = False
+    for r in _resolvers(evidence):
+        answers = r.get("answers") or []
+        rcode = r.get("rcode")
+        if rcode == "NOERROR" and answers:
+            definitive = True
+            addresses.update(answers)
+        elif rcode == "NXDOMAIN" or (rcode == "NOERROR" and r.get("nodata") is True):
+            definitive = True
+    return definitive, addresses
+
+
+def _authoritative_view(evidence: dict) -> tuple[list[dict], bool]:
+    """``(no_address_servers, any_answers)`` over the authoritative (aa) servers.
+
+    ``no_address_servers`` are aa nameservers saying NXDOMAIN or nodata;
+    ``any_answers`` is True when some aa nameserver returned an address.
+    """
+    authoritative = _data(evidence, "dns.authoritative") or {}
+    aa = [ns for ns in authoritative.get("nameservers") or [] if isinstance(ns, dict) and ns.get("aa") is True]
+    none = [ns for ns in aa if not ns.get("answers") and (ns.get("rcode") == "NXDOMAIN" or ns.get("nodata") is True)]
+    return none, any(ns.get("answers") for ns in aa)
+
+
 def cache_agrees(evidence: dict[str, dict]) -> bool | None:
     """Whether the Windows resolver cache and the live resolvers agree.
 
@@ -187,19 +220,8 @@ def cache_agrees(evidence: dict[str, dict]) -> bool | None:
     sets intersect.
     """
     cached = _data(evidence, "dns.resolve_cached")
-    if cached is None:
-        return None
-    direct_addrs: set[str] = set()
-    definitive = False
-    for r in _resolvers(evidence):
-        answers = r.get("answers") or []
-        rcode = r.get("rcode")
-        if rcode == "NOERROR" and answers:
-            definitive = True
-            direct_addrs.update(answers)
-        elif rcode == "NXDOMAIN" or (rcode == "NOERROR" and r.get("nodata") is True):
-            definitive = True
-    if not definitive:
+    definitive, direct_addrs = _direct_view(evidence)
+    if cached is None or not definitive:
         return None
     cached_resolved = cached.get("resolved") is True
     if cached_resolved != bool(direct_addrs):
@@ -239,6 +261,7 @@ def _rule_hosts_override(evidence: dict, host: str) -> dict | None:
         f"The hosts file on this PC (line {line}) maps {host} to {ip}, which overrides DNS. "
         "Remove or fix that line to restore normal lookups.",
         evidence_refs=["dns.hosts_file"],
+        rule_hits=["hosts_override"],
     )
 
 
@@ -249,13 +272,13 @@ def _rule_external_no_address(evidence: dict, host: str) -> dict | None:
     resolvers = _resolvers(evidence)
     if len(resolvers) < 2 or not all(r.get("rcode") == "NXDOMAIN" or r.get("nodata") is True for r in resolvers):
         return None
-    authoritative = _data(evidence, "dns.authoritative") or {}
-    answering = [
-        ns
-        for ns in authoritative.get("nameservers") or []
-        if isinstance(ns, dict) and ns.get("aa") is True and (ns.get("rcode") == "NXDOMAIN" or ns.get("nodata") is True)
-    ]
-    if not answering:
+    answering, any_answers = _authoritative_view(evidence)
+    if not answering or any_answers:
+        return None
+    sweep = _data(evidence, "dns.record_sweep")
+    records = (sweep or {}).get("records") or {}
+    # external_cause hides every fix, so any contrary address evidence vetoes it.
+    if any(records.get(t) for t in _ADDRESS_TYPES):
         return None
     refs = ["dns.resolve_cached", "dns.resolve_direct", "dns.authoritative"]
     if any(ns.get("rcode") == "NXDOMAIN" for ns in answering):
@@ -267,11 +290,10 @@ def _rule_external_no_address(evidence: dict, host: str) -> dict | None:
             "does not exist.",
             evidence_refs=refs,
             no_local_fix_reason=_NO_LOCAL_FIX_NXDOMAIN,
+            rule_hits=["external_no_address"],
         )
-    sweep = _data(evidence, "dns.record_sweep")
     if sweep is not None:
         refs.append("dns.record_sweep")
-    records = (sweep or {}).get("records") or {}
     if any(records.get(t) for t in _SWEEP_TYPES):
         return _verdict(
             "confident",
@@ -281,6 +303,7 @@ def _rule_external_no_address(evidence: dict, host: str) -> dict | None:
             "with no address record, although it publishes other records such as mail or text records.",
             evidence_refs=refs,
             no_local_fix_reason=_NO_LOCAL_FIX_NODATA,
+            rule_hits=["external_no_address"],
         )
     return _verdict(
         "confident",
@@ -290,20 +313,63 @@ def _rule_external_no_address(evidence: dict, host: str) -> dict | None:
         f"record for {host}.",
         evidence_refs=refs,
         no_local_fix_reason=_NO_LOCAL_FIX_NODATA,
+        rule_hits=["external_no_address"],
     )
 
 
 def _rule_stale_cache(evidence: dict, host: str) -> dict | None:
+    """The PC's cache disagrees with live DNS; the wording depends on which side resolves."""
     if cache_agrees(evidence) is not False:
         return None
+    cached = _data(evidence, "dns.resolve_cached") or {}
+    _, live_addrs = _direct_view(evidence)
+    refs = ["dns.resolve_cached", "dns.resolve_direct"]
+    if live_addrs and cached.get("resolved") is not True:
+        return _verdict(
+            "confident",
+            "local",
+            f"This PC's DNS cache disagrees with live DNS for {host}",
+            f"Live resolvers resolve {host} but the Windows DNS cache on this PC does not return a matching "
+            "answer, so the cached entry is stale. Flushing the DNS cache should clear it.",
+            evidence_refs=refs,
+            suggested_actions=["flush_dns"],
+            rule_hits=["stale_cache"],
+        )
+    if live_addrs:
+        return _verdict(
+            "confident",
+            "local",
+            f"This PC's DNS cache returns a different address for {host} than live DNS",
+            f"The Windows DNS cache on this PC and the live resolvers return different addresses for {host}, "
+            "so the cached entry is stale. Flushing the DNS cache should clear it.",
+            evidence_refs=refs,
+            suggested_actions=["flush_dns"],
+            rule_hits=["stale_cache"],
+        )
+    # The cache resolves but live DNS definitively says there is no address.
+    none_answering, any_answers = _authoritative_view(evidence)
+    if none_answering and not any_answers:
+        return _verdict(
+            "likely",
+            "external_cause",
+            f"{host} no longer has a web address at its DNS provider",
+            f"This PC's DNS cache still holds an address for {host}, but live resolvers and the domain's own "
+            "nameservers no longer return one.",
+            evidence_refs=[*refs, "dns.authoritative"],
+            no_local_fix_reason=(
+                "The domain's own nameservers no longer publish an address for it; this PC is only "
+                "holding an old cached copy. Only whoever manages the domain's DNS can restore it."
+            ),
+            rule_hits=["stale_cache_external"],
+        )
     return _verdict(
-        "confident",
+        "likely",
         "local",
-        f"This PC's DNS cache disagrees with live DNS for {host}",
-        f"Live resolvers resolve {host} but the Windows DNS cache on this PC does not return a matching "
-        "answer, so the cached entry is stale. Flushing the DNS cache should clear it.",
-        evidence_refs=["dns.resolve_cached", "dns.resolve_direct"],
+        f"This PC's DNS cache holds an address for {host} that live DNS no longer returns",
+        f"This PC's DNS cache still holds an address for {host} that the live DNS servers no longer return.",
+        evidence_refs=refs,
         suggested_actions=["flush_dns"],
+        rule_hits=["stale_cache"],
     )
 
 
@@ -320,16 +386,12 @@ def _rule_dead_gateway(evidence: dict, host: str) -> dict | None:
         f"reached, so {host} is unreachable because this PC has lost its network path.",
         evidence_refs=["net.gateway", "net.control_domain"],
         suggested_actions=["reset_network_adapter"],
+        rule_hits=["dead_gateway"],
     )
 
 
-# First match wins (spec §9).
-_RULES = (
-    ("hosts_override", _rule_hosts_override),
-    ("external_no_address", _rule_external_no_address),
-    ("stale_cache", _rule_stale_cache),
-    ("dead_gateway", _rule_dead_gateway),
-)
+# First match wins (spec §9). Each rule names itself in the verdict's rule_hits.
+_RULES = (_rule_hosts_override, _rule_external_no_address, _rule_stale_cache, _rule_dead_gateway)
 
 
 def evaluate_rules(evidence: dict[str, dict], target_host: str) -> dict:
@@ -340,13 +402,7 @@ def evaluate_rules(evidence: dict[str, dict], target_host: str) -> dict:
     resolvers agree, whichever rule fired.
     """
     host = target_host or "this host"
-    verdict = None
-    hit = None
-    for name, rule in _RULES:
-        verdict = rule(evidence, host)
-        if verdict is not None:
-            hit = name
-            break
+    verdict = next((v for v in (rule(evidence, host) for rule in _RULES) if v is not None), None)
     if verdict is None:
         verdict = _verdict(
             "inconclusive",
@@ -354,5 +410,6 @@ def evaluate_rules(evidence: dict[str, dict], target_host: str) -> dict:
             "No rule matched this evidence",
             "None of the built-in checks found a clear cause in the evidence collected.",
         )
-    verdict["rule_hits"] = ([hit] if hit else []) + (["cache_agrees"] if cache_agrees(evidence) is True else [])
+    if cache_agrees(evidence) is True:
+        verdict["rule_hits"].append("cache_agrees")
     return verdict

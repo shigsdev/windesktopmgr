@@ -289,6 +289,78 @@ class TestEvaluateRulesVerdicts:
         assert v["suggested_actions"] == ["reset_network_adapter"]
         assert v["rule_hits"] == ["dead_gateway"]
 
+    def test_aaaa_in_the_sweep_vetoes_external_cause(self):
+        ev = _fixture_evidence("hynote_zone_missing_a")
+        ev["dns.record_sweep"]["data"]["records"]["AAAA"] = ["2606:4700::1"]
+        v = diagnose.evaluate_rules(ev, "hynote.ai")
+        assert v["locus"] != "external_cause"
+        assert "external_no_address" not in v["rule_hits"]
+
+    @pytest.mark.parametrize("rtype", ["A", "CNAME"])
+    def test_any_address_record_in_the_sweep_vetoes_external_cause(self, rtype):
+        ev = _fixture_evidence("nxdomain_nonexistent_domain")
+        ev["dns.record_sweep"]["data"]["records"][rtype] = ["x.example."]
+        assert diagnose.evaluate_rules(ev, "no-such-name-zq7.ai")["locus"] != "external_cause"
+
+    def test_a_second_authoritative_server_with_an_address_vetoes_external_cause(self):
+        ev = _fixture_evidence("hynote_zone_missing_a")
+        ev["dns.authoritative"]["data"]["nameservers"].append(
+            {
+                "name": "ns2",
+                "ip": "198.51.100.54",
+                "rcode": "NOERROR",
+                "nodata": False,
+                "aa": True,
+                "answers": ["104.21.0.1"],
+            }
+        )
+        v = diagnose.evaluate_rules(ev, "hynote.ai")
+        assert v["locus"] != "external_cause"
+        assert "external_no_address" not in v["rule_hits"]
+
+    def test_cache_resolves_live_has_no_address_and_authority_agrees_is_external(self):
+        ev = _fixture_evidence("nxdomain_nonexistent_domain")
+        ev["dns.resolve_cached"]["data"] = {"resolved": True, "addresses": ["104.21.0.9"], "error": None}
+        v = diagnose.evaluate_rules(ev, "no-such-name-zq7.ai")
+        assert v["locus"] == "external_cause"
+        assert v["status"] == "likely"
+        assert v["suggested_actions"] == []
+        assert v["headline"] == "no-such-name-zq7.ai no longer has a web address at its DNS provider"
+        assert "old cached copy" in v["no_local_fix_reason"]
+        assert v["rule_hits"] == ["stale_cache_external"]
+        assert "dns.authoritative" in v["evidence_refs"]
+
+    def test_cache_resolves_live_has_no_address_without_authority_is_local_flush(self):
+        ev = _fixture_evidence("nxdomain_nonexistent_domain")
+        ev["dns.resolve_cached"]["data"] = {"resolved": True, "addresses": ["104.21.0.9"], "error": None}
+        del ev["dns.authoritative"]
+        v = diagnose.evaluate_rules(ev, "no-such-name-zq7.ai")
+        assert v["locus"] == "local"
+        assert v["status"] == "likely"
+        assert v["suggested_actions"] == ["flush_dns"]
+        assert v["reasoning"] == (
+            "This PC's DNS cache still holds an address for no-such-name-zq7.ai that the live DNS servers "
+            "no longer return."
+        )
+        assert v["rule_hits"] == ["stale_cache"]
+
+    def test_cache_resolves_live_has_no_address_and_authority_has_answers_is_local_flush(self):
+        ev = _fixture_evidence("nxdomain_nonexistent_domain")
+        ev["dns.resolve_cached"]["data"] = {"resolved": True, "addresses": ["104.21.0.9"], "error": None}
+        ev["dns.authoritative"]["data"]["nameservers"][0].update(rcode="NOERROR", nodata=False, answers=["1.2.3.4"])
+        v = diagnose.evaluate_rules(ev, "no-such-name-zq7.ai")
+        assert v["locus"] == "local"
+        assert v["suggested_actions"] == ["flush_dns"]
+
+    def test_cached_and_live_addresses_that_differ_are_a_confident_local_flush(self):
+        ev = _cache_ev(True, _res("NOERROR", "104.21.0.1"), _res("NOERROR", "104.21.0.1"), addresses=["0.0.0.0"])
+        v = diagnose.evaluate_rules(ev, "hynote.ai")
+        assert v["status"] == "confident"
+        assert v["locus"] == "local"
+        assert v["suggested_actions"] == ["flush_dns"]
+        assert "different addresses" in v["reasoning"]
+        assert v["rule_hits"] == ["stale_cache"]
+
     def test_blocked_udp53_does_not_make_a_working_cache_stale(self):
         ev = _cache_ev(True, _res("TIMEOUT"), _res("TIMEOUT"), _res("TIMEOUT"), addresses=["1.1.1.1"])
         v = diagnose.evaluate_rules(ev, "example.com")
