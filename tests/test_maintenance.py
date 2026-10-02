@@ -639,6 +639,16 @@ class TestFindDuplicates:
         assert os.path.exists(a) and os.path.exists(b)  # analysis is read-only
 
 
+def _clock(mocker, *, wall, cpu):
+    """Fake clocks for one _scan_worker run: the first read is 0, every later
+    read is the end value. ``maintenance.time`` is the global time module, so a
+    fixed-length side_effect list would raise StopIteration on any extra call."""
+    ends = {"monotonic": wall, "thread_time": cpu}
+    for name, end in ends.items():
+        reads = iter([0.0])
+        mocker.patch(f"maintenance.time.{name}", side_effect=lambda r=reads, e=end: next(r, e))
+
+
 class TestGenericScanRegistry:
     @pytest.fixture(autouse=True)
     def _reset(self):
@@ -662,6 +672,27 @@ class TestGenericScanRegistry:
         assert maintenance._scans["unit"]["result"]["ok"] is False
         assert "boom" in maintenance._scans["unit"]["result"]["error"]
         assert maintenance._scans["unit"]["running"] is False
+
+    def test_slow_scan_logs_wall_and_cpu_time(self, mocker):
+        """A scan that runs long logs wall vs thread-CPU time, so the next slow
+        episode says whether the worker was busy (CPU, e.g. 2026-10-02: 504 s
+        mostly kernel time) or waiting (I/O, locks)."""
+        _clock(mocker, wall=300.0, cpu=290.0)
+        warn = mocker.patch.object(maintenance._log, "warning")
+        maintenance._scan_worker("unit", lambda: {"ok": True})
+        msg = warn.call_args.args[0] % warn.call_args.args[1:]
+        assert "unit" in msg and "300" in msg and "290" in msg and "busy" in msg
+
+    def test_slow_scan_that_mostly_waited_says_so(self, mocker):
+        _clock(mocker, wall=300.0, cpu=3.0)
+        warn = mocker.patch.object(maintenance._log, "warning")
+        maintenance._scan_worker("unit", lambda: {"ok": True})
+        assert "waiting" in warn.call_args.args[0] % warn.call_args.args[1:]
+
+    def test_fast_scan_logs_nothing(self, mocker):
+        warn = mocker.patch.object(maintenance._log, "warning")
+        maintenance._scan_worker("unit", lambda: {"ok": True})
+        warn.assert_not_called()
 
     def test_thread_start_failure_rolls_back(self, mocker):
         mocker.patch("maintenance.threading.Thread", side_effect=RuntimeError("nope"))

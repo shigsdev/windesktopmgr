@@ -1172,8 +1172,14 @@ class TestThermalsRedesign:
         spinning-blade class so the cooling state is visible at a glance."""
         page, _ = loaded_page
         self._goto(page)
+        # Compare against the payload the page RENDERED (_thermalsData), read in
+        # the same tick as the DOM. A second fetch raced the first: fans come
+        # from a WMI query bounded at 8 s that falls back to [] on timeout, so
+        # with a slow WMI the page honestly rendered "no fans" while a later,
+        # warmer fetch returned 4 and the test failed on a correct page.
         state = page.evaluate(
-            """() => fetch('/api/thermals/data').then(r => r.json()).then(d => {
+            """() => {
+                const d = _thermalsData || {};
                 const fans = Array.isArray(d.fans) ? d.fans : [];
                 const sec = document.getElementById('th-fans-section');
                 return {
@@ -1182,7 +1188,7 @@ class TestThermalsRedesign:
                     spinning: document.querySelectorAll('#th-fans .th-fan-blade.spin').length,
                     secShown: !!sec && getComputedStyle(sec).display !== 'none',
                 };
-            })"""
+            }"""
         )
         if state["apiFans"]:
             assert state["secShown"], "API reported fans but the cooling-devices section is hidden"
@@ -2469,23 +2475,29 @@ class TestDocsTab:
     def test_export_cleans_up_after_itself(self, loaded_page):
         page, _ = loaded_page
         page.evaluate("document.querySelector('[data-page=\"docs\"]').click()")
-        left_behind = page.evaluate(
+        result = page.evaluate(
             """
             async () => {
                 document.querySelectorAll('iframe').forEach(f => f.remove());
-                doc_exportPdf(null);
+                // Awaited: doc_exportPdf builds the iframe only after the live
+                // reads land. Without the await this found no iframe whenever
+                // the topology read was slower than ~450 ms (a loaded tray),
+                // and the late iframe was then counted as "left behind".
+                await doc_exportPdf(null);
                 const f = [...document.querySelectorAll('iframe')].pop();
-                if (f) f.contentWindow.print = () => {};
+                if (!f) return {built: false};
+                f.contentWindow.print = () => {};
                 await new Promise(r => setTimeout(r, 400));
-                if (f) { f.contentWindow.dispatchEvent(new Event('afterprint')); }
+                f.contentWindow.dispatchEvent(new Event('afterprint'));
                 await new Promise(r => setTimeout(r, 50));
                 const remaining = document.querySelectorAll('iframe').length;
                 document.querySelectorAll('iframe').forEach(x => x.remove());
-                return remaining;
+                return {built: true, remaining};
             }
             """
         )
-        assert left_behind == 0, "the export iframe was left in the page"
+        assert result["built"] is True, "no export iframe was created"
+        assert result["remaining"] == 0, "the export iframe was left in the page"
 
     def test_export_waits_for_live_data_before_cloning(self, loaded_page):
         """Regression: the export could capture the loading placeholder.
@@ -2512,10 +2524,12 @@ class TestDocsTab:
                 await new Promise(r => setTimeout(r, 400));
                 const text = f ? f.contentDocument.body.textContent : '';
                 if (f) f.remove();
-                return {text: text.replace(/\\s+/g, ' ')};
+                return {built: !!f, text: text.replace(/\\s+/g, ' ')};
             }
             """
         )
+        # Without this, a missing iframe would pass on empty text.
+        assert result["built"] is True, "no export iframe was created"
         assert "Reading the card layout" not in result["text"], "the export captured the loading placeholder"
         assert "Reading pool state" not in result["text"], "the export captured the pool-state placeholder"
 

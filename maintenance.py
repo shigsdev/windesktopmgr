@@ -40,6 +40,15 @@ from flask import Blueprint, jsonify, request
 
 from disk import _validate_analyze_path  # drive-rooted / no-UNC / exists guard
 
+try:
+    from applogging import get_logger
+
+    _log = get_logger("maintenance")
+except Exception:  # noqa: BLE001
+    import logging
+
+    _log = logging.getLogger("windesktopmgr.maintenance")
+
 maintenance_bp = Blueprint("maintenance", __name__)
 
 # Every scan here walks a lot of filesystem (a %TEMP% walk alone is 100k+ files),
@@ -51,6 +60,11 @@ maintenance_bp = Blueprint("maintenance", __name__)
 # subtle enough that three hand-rolled copies would drift.
 _SCAN_TTL_S = 90
 _SCANS_MAX = 24  # registry ceiling — see _evict_stale()
+# A junk scan of a 146k-file %TEMP% takes ~15-30 s. On 2026-10-02 the same scan
+# took 504 s inside the tray for about an hour (mostly kernel CPU, not
+# reproducible on demand, gone without a restart). Scans past this log wall vs
+# thread-CPU time so the next episode leaves evidence.
+_SLOW_SCAN_S = 120
 _scans_lock = threading.Lock()
 _scans: dict[str, dict] = {"junk": {"running": False, "result": None, "ts": 0.0}}
 # Legacy aliases: the junk scan predates the registry and callers/tests reference
@@ -372,10 +386,22 @@ def _evict_stale() -> None:
 
 def _scan_worker(key: str, fn) -> None:
     """Background worker: run ``fn`` and cache its result under ``key``."""
+    t0, cpu0 = time.monotonic(), time.thread_time()
     try:
         result = fn()
     except Exception as e:  # noqa: BLE001 -- a scan failure must not wedge the tab
         result = {"ok": False, "error": str(e)}
+    wall, cpu = time.monotonic() - t0, time.thread_time() - cpu0
+    if wall >= _SLOW_SCAN_S:
+        # Busy (CPU ~ wall) points at the work or per-call OS cost; waiting
+        # (CPU << wall) points at I/O, locks or a starved thread.
+        _log.warning(
+            "slow scan %s: %.0f s wall, %.0f s thread CPU (%s)",
+            key,
+            wall,
+            cpu,
+            "busy" if cpu >= wall / 2 else "waiting",
+        )
     with _scans_lock:
         st = _slot(key)
         st["result"] = result
