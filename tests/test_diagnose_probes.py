@@ -1474,3 +1474,147 @@ class TestConnectivityRegistration:
         assert p.redact == redact
         assert p.timeout_s == timeout
         assert p.fn is getattr(dp, fn)
+
+
+# ── DNS escalation probes (delegation trace, DNSSEC) ─────────────────────────
+
+
+class TestTraceDelegation:
+    @staticmethod
+    def _fake(replies):
+        """_dns_query stand-in: ``replies`` maps zone -> (rcode, answers)."""
+
+        def fake(server, name, rdtype, **kw):
+            rcode, answers = replies.get(name, ("NOERROR", []))
+            return _fake_reply(server, rcode=rcode, answers=answers)
+
+        return fake
+
+    def test_queries_zones_from_tld_down_in_order(self, mocker):
+        q = mocker.patch.object(dp, "_dns_query", side_effect=self._fake({}))
+        dp._p_trace_delegation({"target_host": "www.hynote.ai"})
+        assert [(c.args[0], c.args[1], c.args[2]) for c in q.call_args_list] == [
+            ("1.1.1.1", "ai.", "NS"),
+            ("1.1.1.1", "hynote.ai.", "NS"),
+            ("1.1.1.1", "www.hynote.ai.", "NS"),
+        ]
+
+    def test_chain_carries_rcode_and_ns_without_trailing_dots(self, mocker):
+        mocker.patch.object(
+            dp,
+            "_dns_query",
+            side_effect=self._fake(
+                {
+                    "ai.": ("NOERROR", ["a.nic.ai.", "b.nic.ai."]),
+                    "hynote.ai.": ("NOERROR", ["ns1.cloudflare.com."]),
+                }
+            ),
+        )
+        d = dp._p_trace_delegation(SLOTS)
+        assert d == {
+            "chain": [
+                {"zone": "ai", "rcode": "NOERROR", "ns": ["a.nic.ai", "b.nic.ai"]},
+                {"zone": "hynote.ai", "rcode": "NOERROR", "ns": ["ns1.cloudflare.com"]},
+            ]
+        }
+
+    def test_stops_after_first_nxdomain_and_includes_it(self, mocker):
+        q = mocker.patch.object(
+            dp,
+            "_dns_query",
+            side_effect=self._fake({"ai.": ("NOERROR", ["a.nic.ai."]), "hynote.ai.": ("NXDOMAIN", [])}),
+        )
+        d = dp._p_trace_delegation({"target_host": "www.hynote.ai"})
+        assert [c.args[1] for c in q.call_args_list] == ["ai.", "hynote.ai."]  # no www.hynote.ai. query
+        assert [e["zone"] for e in d["chain"]] == ["ai", "hynote.ai"]
+        assert d["chain"][-1] == {"zone": "hynote.ai", "rcode": "NXDOMAIN", "ns": []}
+
+    def test_non_nxdomain_failures_do_not_stop_the_walk(self, mocker):
+        q = mocker.patch.object(dp, "_dns_query", side_effect=self._fake({"ai.": ("SERVFAIL", [])}))
+        d = dp._p_trace_delegation({"target_host": "www.hynote.ai"})
+        assert len(q.call_args_list) == 3
+        assert d["chain"][0]["rcode"] == "SERVFAIL"
+
+    @pytest.mark.parametrize("literal", ["192.0.2.7", "2001:db8::1"])
+    def test_ip_literal_has_no_chain_and_no_queries(self, mocker, literal):
+        q = mocker.patch.object(dp, "_dns_query")
+        assert dp._p_trace_delegation({"target_host": literal}) == {"chain": []}
+        q.assert_not_called()
+
+    def test_without_dnspython(self, mocker):
+        mocker.patch.object(dp, "HAVE_DNSPYTHON", False)
+        q = mocker.patch.object(dp, "_dns_query")
+        assert dp._p_trace_delegation(SLOTS) == {"chain": [], "error": "dnspython not installed"}
+        q.assert_not_called()
+
+
+class TestDnssecCheck:
+    @staticmethod
+    def _fake(validating, cd):
+        """``validating`` / ``cd`` are (rcode, ad) pairs for the two queries."""
+
+        def fake(server, name, rdtype, **kw):
+            rcode, ad = cd if kw.get("cd") else validating
+            r = _fake_reply(server, rcode=rcode)
+            r["ad"] = ad
+            return r
+
+        return fake
+
+    def test_two_queries_second_with_checking_disabled(self, mocker):
+        q = mocker.patch.object(dp, "_dns_query", side_effect=self._fake(("NOERROR", True), ("NOERROR", False)))
+        dp._p_dnssec_check(SLOTS)
+        assert len(q.call_args_list) == 2
+        first, second = q.call_args_list
+        assert first.args == ("1.1.1.1", "hynote.ai", "A")
+        assert first.kwargs == {"want_dnssec": True}
+        assert second.args == ("1.1.1.1", "hynote.ai", "A")
+        assert second.kwargs == {"want_dnssec": True, "cd": True}
+
+    def test_servfail_that_clears_with_cd_is_a_validation_failure(self, mocker):
+        mocker.patch.object(dp, "_dns_query", side_effect=self._fake(("SERVFAIL", False), ("NOERROR", False)))
+        assert dp._p_dnssec_check(SLOTS) == {
+            "rcode_validating": "SERVFAIL",
+            "rcode_cd": "NOERROR",
+            "ad": False,
+            "validation_failure": True,
+        }
+
+    def test_servfail_with_cd_nxdomain_is_a_validation_failure(self, mocker):
+        mocker.patch.object(dp, "_dns_query", side_effect=self._fake(("SERVFAIL", False), ("NXDOMAIN", False)))
+        assert dp._p_dnssec_check(SLOTS)["validation_failure"] is True
+
+    def test_both_noerror_with_ad_is_not_a_failure(self, mocker):
+        mocker.patch.object(dp, "_dns_query", side_effect=self._fake(("NOERROR", True), ("NOERROR", False)))
+        assert dp._p_dnssec_check(SLOTS) == {
+            "rcode_validating": "NOERROR",
+            "rcode_cd": "NOERROR",
+            "ad": True,
+            "validation_failure": False,
+        }
+
+    def test_servfail_with_cd_also_servfail_is_a_broken_zone_not_dnssec(self, mocker):
+        mocker.patch.object(dp, "_dns_query", side_effect=self._fake(("SERVFAIL", False), ("SERVFAIL", False)))
+        assert dp._p_dnssec_check(SLOTS)["validation_failure"] is False
+
+    def test_ad_comes_from_the_validating_query(self, mocker):
+        mocker.patch.object(dp, "_dns_query", side_effect=self._fake(("NOERROR", False), ("NOERROR", True)))
+        assert dp._p_dnssec_check(SLOTS)["ad"] is False
+
+
+class TestEscalationRegistration:
+    @pytest.mark.parametrize(
+        ("key", "label", "timeout", "fn"),
+        [
+            ("dns.trace_delegation", "Follow the delegation chain from the TLD", 12, "_p_trace_delegation"),
+            ("dns.dnssec_check", "Check DNSSEC validation", 8, "_p_dnssec_check"),
+        ],
+    )
+    def test_registered_with_contract_metadata(self, key, label, timeout, fn):
+        p = _REGISTERED[key]
+        assert p.label == label
+        assert p.category == "network"
+        assert p.needs == ("target_host",)
+        assert p.redact == ("username",)
+        assert p.timeout_s == timeout
+        assert p.fn is getattr(dp, fn)

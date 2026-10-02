@@ -807,6 +807,54 @@ def _p_traceroute(slots: dict) -> dict:
     return result
 
 
+# ── DNS escalation probes (run only when the model asks for more evidence) ───
+
+
+def _p_trace_delegation(slots: dict) -> dict:
+    """Ask for each zone's NS records from the TLD down to the full name.
+
+    Shows where the delegation chain breaks (e.g. the domain does not exist
+    at its parent). The walk stops after the first NXDOMAIN, since nothing
+    below a non-existent name can exist.
+    """
+    if not HAVE_DNSPYTHON:
+        return {"chain": [], "error": "dnspython not installed"}
+    host = slots["target_host"]
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:  # an IP literal has no delegation chain
+        return {"chain": []}
+    labels = host.split(".")
+    chain = []
+    for i in range(len(labels) - 1, -1, -1):
+        zone = ".".join(labels[i:]) + "."
+        r = _dns_query(PUBLIC_RESOLVERS[0][1], zone, "NS")
+        chain.append({"zone": zone.rstrip("."), "rcode": r["rcode"], "ns": [a.rstrip(".") for a in r["answers"]]})
+        if r["rcode"] == "NXDOMAIN":
+            break
+    return {"chain": chain}
+
+
+def _p_dnssec_check(slots: dict) -> dict:
+    """Compare a validating lookup against one with DNSSEC checking disabled.
+
+    A SERVFAIL that disappears when checking is disabled (CD flag) means the
+    zone's DNSSEC signatures are broken, not that the name is unreachable.
+    """
+    host = slots["target_host"]
+    server = PUBLIC_RESOLVERS[0][1]
+    validating = _dns_query(server, host, "A", want_dnssec=True)
+    unchecked = _dns_query(server, host, "A", want_dnssec=True, cd=True)
+    return {
+        "rcode_validating": validating["rcode"],
+        "rcode_cd": unchecked["rcode"],
+        "ad": validating["ad"],
+        "validation_failure": validating["rcode"] == "SERVFAIL" and unchecked["rcode"] in ("NOERROR", "NXDOMAIN"),
+    }
+
+
 for _key, _label, _fn, _timeout in (
     ("dns.resolve_cached", "Resolve through Windows (uses the DNS cache)", _p_resolve_cached, 8),
     ("dns.resolve_direct", "Ask DNS servers directly (bypasses the cache)", _p_resolve_direct, 8),
@@ -898,5 +946,26 @@ register(
         fn=_p_traceroute,
         needs=("target_host",),
         timeout_s=50,
+    )
+)
+register(
+    Probe(
+        key="dns.trace_delegation",
+        label="Follow the delegation chain from the TLD",
+        category="network",
+        fn=_p_trace_delegation,
+        needs=("target_host",),
+        redact=("username",),
+        timeout_s=12,
+    )
+)
+register(
+    Probe(
+        key="dns.dnssec_check",
+        label="Check DNSSEC validation",
+        category="network",
+        fn=_p_dnssec_check,
+        needs=("target_host",),
+        redact=("username",),
     )
 )
