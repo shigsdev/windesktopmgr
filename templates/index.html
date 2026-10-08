@@ -620,7 +620,7 @@
         <tbody id="dk-tbody"></tbody>
       </table>
       <div id="dk-card-section" style="display:none">
-        <h2 style="margin:24px 0 12px">Add-in Card — Physical Layout <span style="font-size:12px;color:var(--muted);font-weight:400">· which M.2 socket holds a failed drive, for a swap — confirm by the serial on the drive label</span></h2>
+        <h2 style="margin:24px 0 12px">Add-in Card — Physical Layout <span style="font-size:12px;color:var(--muted);font-weight:400">· which drive to replace in a swap — find it by the serial printed on its label, not by position</span></h2>
         <div id="dk-card"></div>
       </div>
       <div id="dk-nas-section" style="display:none">
@@ -2389,8 +2389,13 @@
       <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
         <div style="font-weight:700;font-size:13px;margin-bottom:4px">Step 1 &mdash; Identify the failed drive</div>
         <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:10px">
-          The card has four M.2 sockets. The diagram below is drawn in <b>PCIe bus order</b>, which is the physical top-to-bottom order of the sockets on the card, so the highlighted row is the socket to open.
-          <b style="color:var(--amber)">Confirm by the serial printed on the drive label before you pull anything</b> &mdash; socket order is inferred from the bus topology, and the label is ground truth.
+          The card has four M.2 sockets. The highlighted row below is the drive to remove, identified by the <b>serial printed on its label</b> and its model.
+          <b style="color:var(--amber)">Do not pick the drive by its position.</b> The rows are in the order Windows lists the drives, which is <b>not</b> the order of the sockets &mdash; on this card it runs the opposite way.
+          <br><br>
+          <b>Read the label of each drive on the card and remove only the one whose serial and model both match the highlighted row.</b> If none match, stop and re-check here &mdash; do not guess. (The long <code>0025_&hellip;</code> number in grey is an internal Windows ID; it is not printed on the drive.)
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:10px;padding:8px 10px;border-left:2px solid var(--amber)">
+          <b>Learned the hard way (2026-10-08):</b> an earlier version of this page claimed the first row was the socket nearest the bracket and showed only the internal Windows ID. Following it, the socket counted as first was opened &mdash; and it held a <i>healthy</i> 970 EVO Plus, the drive Windows lists <i>last</i>. The bad drive was physically in the last socket.
         </div>
         <div id="doc-card-section" style="display:none">
           <div id="doc-card"></div>
@@ -2404,10 +2409,14 @@
         <ol style="font-size:12px;color:var(--muted);line-height:1.8;margin:0;padding-left:20px">
           <li>Shut down fully (not sleep) and unplug the power cable.</li>
           <li>Open the case and locate the SABRENT EC-P3X4 card in the PCIe slot.</li>
-          <li><b>Pull the failed drive first.</b> All four card sockets and both onboard M.2 slots are occupied, so there is nowhere to put the replacement until the dead one is out.</li>
+          <li><b>Check each card drive's label</b> until you find the serial and model shown in the highlighted row above.</li>
+          <li><b>Pull that drive first.</b> All four card sockets and both onboard M.2 slots are occupied, so there is nowhere to put the replacement until the dead one is out.</li>
           <li>Fit the new blank 2&nbsp;TB NVMe drive in the socket you just emptied and secure the standoff screw.</li>
           <li>Close up, reconnect power, and boot.</li>
         </ol>
+        <div style="font-size:12px;color:var(--muted);margin-top:10px;padding:8px 10px;border-left:2px solid var(--red);line-height:1.6">
+          <b style="color:var(--red)">If you pulled the wrong drive:</b> do not run the script. After booting, the drive you pulled appears above as <i>put back (holds data)</i>, and the pool cannot rebuild without it. Shut down, take the failed drive (the highlighted label serial) out, and put the drive you pulled by mistake into that socket. Boot and check that this page no longer asks you to put a drive back before going on to Step 3. (After a <i>correct</i> swap the failed drive shows as &ldquo;removed (expected)&rdquo; &mdash; that one is fine.)
+        </div>
         <div style="font-size:11px;color:var(--muted);margin-top:10px;padding:8px 10px;border-left:2px solid var(--border)">
           The pool runs with <b>no redundancy</b> from the moment the drive dies until the rebuild finishes. On this machine the data is backup storage and File History only &mdash; disposable &mdash; so that risk was accepted deliberately.
         </div>

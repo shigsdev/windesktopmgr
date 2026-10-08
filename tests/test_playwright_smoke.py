@@ -2557,6 +2557,89 @@ class TestDocsTab:
         )
         assert calls >= 2, f"doc_load ran {calls}x across two visits — stale after the first"
 
+    def test_swap_view_leads_with_label_serial_not_position(self, loaded_page):
+        """Regression (2026-10-08): the diagram said "Socket 1 ... REMOVE THIS
+        ONE", the page said that was the socket nearest the bracket, and the only
+        serial shown was the EUI, which is not printed on the drive. The socket
+        counted as first held a HEALTHY drive. Rendered from a fixed payload of
+        that exact machine state so the assertion does not depend on live disks."""
+        page, _ = loaded_page
+        page.evaluate("document.querySelector('[data-page=\"docs\"]').click()")
+        result = page.evaluate(
+            """
+            async () => {
+                const t = {
+                    ok: true, has_card: true, card_switch: '',
+                    note: "Rows are in Windows' order (PCIe bus), which is NOT the physical socket order.",
+                    failed_serial: '0025_384C_3145_20C4', failed_label_serial: 'S7KHNJ0WC85693P',
+                    card_drives: [
+                        {socket: 1, slot: 'PCI Slot 1', bus: 6, model: 'Samsung SSD 990 PRO 2TB', size_gb: 1863,
+                         serial: '0025_384C_3145_20C4', label_serial: 'S7KHNJ0WC85693P', serial_short: '20C4',
+                         health: 'Healthy', usage: 'Retired', retired: true, flag: 'retired'},
+                        {socket: 2, slot: 'PCI Slot 5', bus: 9, model: 'Samsung SSD 990 PRO 2TB', size_gb: 1863,
+                         serial: '0025_384C_3145_29B7', label_serial: 'S7KHNJ0WC87984N', serial_short: '29B7',
+                         health: 'Healthy', usage: 'Auto-Select', retired: false, flag: 'ok'},
+                    ],
+                    onboard: [],
+                    missing: [{model: 'Samsung SSD 970 EVO Plus 2TB', serial: '0025_385A_2141_9E72',
+                               label_serial: 'S6S2NS0TA41838Z', serial_short: '9E72', usage: 'Auto-Select',
+                               flag: 'missing'}],
+                };
+                await dkLoadTopology('doc-card-section', 'doc-card', t);
+                await doc_loadPoolState(t);
+                const svg = document.querySelector('#doc-card svg');
+                return {
+                    svgText: svg ? svg.textContent : '',
+                    failedLabel: svg ? svg.getAttribute('data-dk-failed-label') : null,
+                    card: document.getElementById('doc-card').textContent,
+                    state: document.getElementById('doc-pool-state').textContent,
+                    page: document.getElementById('page-docs').textContent,
+                };
+            }
+            """
+        )
+        assert result["failedLabel"] == "S7KHNJ0WC85693P"
+        assert "label S/N S7KHNJ0WC85693P" in result["svgText"]
+        assert "Socket 1" not in result["svgText"], "rows must not be presented as physical sockets"
+        assert "S7KHNJ0WC85693P" in result["state"]
+        assert "Socket" not in result["state"]
+        # The pulled-by-mistake drive is called out as not detected, by label.
+        assert "S6S2NS0TA41838Z" in result["card"]
+        assert "not detected" in result["state"].lower()
+        # The old position claim must be gone from the procedure text.
+        assert "physical top-to-bottom order" not in result["page"]
+        assert "If you pulled the wrong drive" in result["page"]
+        assert "put it back" in result["state"].lower()
+
+    def test_correct_swap_is_not_reported_as_a_mistake(self, loaded_page):
+        """After a CORRECT swap the failed drive is gone but Windows keeps its
+        pool entry (Usage=Retired) until the script removes it, so it shows up
+        in `missing`. That must read as expected, not as "put it back" --
+        otherwise the page blocks the very step that finishes the repair."""
+        page, _ = loaded_page
+        page.evaluate("document.querySelector('[data-page=\"docs\"]').click()")
+        state = page.evaluate(
+            """
+            async () => {
+                const t = {
+                    ok: true, has_card: true, card_drives: [
+                        {socket: 1, slot: 'PCI Slot 1', bus: 6, model: 'Samsung SSD 990 PRO 2TB',
+                         serial: 'NEW', label_serial: 'S7L9NS0L407163R', health: 'Healthy',
+                         usage: '', retired: false, flag: 'ok'},
+                    ],
+                    onboard: [],
+                    missing: [{model: 'Samsung SSD 990 PRO 2TB', serial: '0025_384C_3145_20C4',
+                               label_serial: 'S7KHNJ0WC85693P', usage: 'Retired', flag: 'missing'}],
+                };
+                await doc_loadPoolState(t);
+                return document.getElementById('doc-pool-state').textContent;
+            }
+            """
+        )
+        assert "ready for Step 3" in state
+        assert "put it back" not in state.lower()
+        assert "S7KHNJ0WC85693P" in state
+
     def test_manual_refresh_control_exists(self, loaded_page):
         page, _ = loaded_page
         page.evaluate("document.querySelector('[data-page=\"docs\"]').click()")

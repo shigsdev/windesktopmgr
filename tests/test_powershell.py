@@ -680,6 +680,13 @@ class TestGetDiskHealth:
         phys_cmd = m.call_args_list[0][0][0][-1]
         assert "Get-PhysicalDisk" in phys_cmd
 
+    def test_command_reads_label_serial(self, mocker):
+        """AdapterSerialNumber is the serial printed on the drive label; the
+        swap diagram depends on it (SerialNumber is the EUI, not on the label)."""
+        m = self._make_mock(mocker)
+        wdm.get_disk_health()
+        assert "AdapterSerialNumber" in m.call_args_list[0][0][0][-1]
+
     def test_io_populated_from_psutil_samples(self, mocker):
         """Two psutil samples ~1 s apart → rate in KB/s per disk, both read + write."""
         import types

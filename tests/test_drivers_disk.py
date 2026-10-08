@@ -1599,17 +1599,47 @@ class TestDescribeDiskLocation:
         assert info["bus"] is None
         assert info["hint"]  # non-empty, doesn't guess a slot
 
+    def test_card_hint_makes_no_physical_position_claim(self):
+        """Regression (2026-10-08): the hint said the lowest-bus drive was the
+        first socket, nearest the bracket. On this card that is backwards, and
+        it got a healthy drive pulled. The hint must point at the label serial
+        and say nothing about which socket is which."""
+        info = disk.describe_disk_location("PCI Slot 1 : Bus 6 : Device 0 : Function 0 : Adapter 1", "NVMe")
+        hint = info["hint"].lower()
+        assert "bracket" not in hint
+        assert "first socket" not in hint
+        assert "label" in hint
+
+
+class TestLabelSerial:
+    """The serial printed on the drive, from Get-PhysicalDisk AdapterSerialNumber."""
+
+    def test_strips_namespace_suffix(self):
+        assert disk._label_serial("S7KHNJ0WC85693P     _0001") == "S7KHNJ0WC85693P"
+
+    def test_plain_serial_unchanged(self):
+        assert disk._label_serial("S6S2NS0TA41838Z") == "S6S2NS0TA41838Z"
+
+    def test_empty_and_none(self):
+        assert disk._label_serial("") == ""
+        assert disk._label_serial(None) == ""
+
+    def test_suffix_only_is_not_a_serial(self):
+        assert disk._label_serial("   _0001") == ""
+
 
 class TestBuildPcieCardTopology:
     """Group disks into add-in-card sockets vs onboard M.2 + flag the failed one.
     Modelled on this machine: 2 onboard M.2 + a 4x M.2 switch card whose ...20C4
     drive is pool-Retired while SMART still reads Healthy."""
 
-    def _phys(self, name, serial, health, location):
+    def _phys(self, name, serial, health, location, label="", status="OK"):
         return {
             "Name": name,
             "SerialNumber": serial,
+            "LabelSerial": label,
             "Health": health,
+            "Status": status,
             "SizeGB": 1863.0,
             "LocationInfo": disk.describe_disk_location(location, "NVMe"),
         }
@@ -1729,6 +1759,73 @@ class TestBuildPcieCardTopology:
         d = topo["card_drives"][0]
         assert d["serial_short"] == "20C4"  # last 4 real chars, no '_' or '.'
         assert d["serial"] == "0025_384C_3145_20C4"  # full serial, trailing '.' stripped
+
+    def test_label_serial_carried_for_the_failed_drive(self):
+        """The diagram must show the serial printed on the drive. The EUI in
+        `serial` is not on the label, so "confirm by the label" was impossible
+        when that was all the view offered (the 2026-10-08 wrong-drive pull)."""
+        physical = [
+            self._phys(
+                "Samsung 990 PRO 2TB",
+                "0025_384C_3145_20C4.",
+                "Healthy",
+                "PCI Slot 1 : Bus 6",
+                label="S7KHNJ0WC85693P     _0001",
+            ),
+        ]
+        members = [{"Serial": "0025_384C_3145_20C4.", "Usage": "Retired"}]
+        topo = disk.build_pcie_card_topology(physical, members)
+        assert topo["card_drives"][0]["label_serial"] == "S7KHNJ0WC85693P"
+        assert topo["failed_label_serial"] == "S7KHNJ0WC85693P"
+
+    def test_lost_communication_member_is_missing_not_onboard(self):
+        """Regression (2026-10-08): the healthy drive pulled by mistake still
+        appears in Get-PhysicalDisk, with a blank location and "Lost
+        Communication". It was listed under "not on the card", which reads as
+        a motherboard drive. A pool member Windows can't reach is missing."""
+        physical = [
+            self._phys(
+                "Samsung 970 EVO Plus 2TB",
+                "0025_385A_2141_9E72.",
+                "Warning",
+                "",
+                label="S6S2NS0TA41838Z     _0006",
+                status="Lost Communication",
+            ),
+            self._phys("Samsung 990 PRO 2TB", "29B7.", "Healthy", "PCI Slot 5 : Bus 9"),
+        ]
+        members = [
+            {
+                "Serial": "0025_385A_2141_9E72.",
+                "Usage": "Auto-Select",
+                "Name": "Samsung 970 EVO Plus 2TB",
+                "LabelSerial": "S6S2NS0TA41838Z     _0006",
+            },
+            {"Serial": "29B7.", "Usage": "Auto-Select"},
+        ]
+        topo = disk.build_pcie_card_topology(physical, members)
+        assert topo["onboard"] == []
+        assert [m["label_serial"] for m in topo["missing"]] == ["S6S2NS0TA41838Z"]
+        assert topo["failed_label_serial"] == "S6S2NS0TA41838Z"
+
+    def test_lost_communication_status_as_list(self):
+        physical = [self._phys("X", "LOST.", "Warning", "", status=["Lost Communication"])]
+        topo = disk.build_pcie_card_topology(physical, [{"Serial": "LOST.", "Usage": "Auto-Select"}])
+        assert [m["serial_short"] for m in topo["missing"]] == ["LOST"]
+
+    def test_lost_communication_non_member_stays_listed(self):
+        """Only POOL members become 'missing'. A non-pool disk with a bad status
+        is still shown (as onboard) rather than silently dropped."""
+        physical = [self._phys("USB stick", "USB9.", "Warning", "", status="Lost Communication")]
+        topo = disk.build_pcie_card_topology(physical, members=[])
+        assert [d["serial_short"] for d in topo["onboard"]] == ["USB9"]
+        assert topo["missing"] == []
+
+    def test_note_disowns_physical_order(self):
+        physical, members = self._machine()
+        note = disk.build_pcie_card_topology(physical, members)["note"].lower()
+        assert "not the physical socket order" in note
+        assert "label" in note
 
 
 class TestDetectPcieSwitch:
@@ -1935,6 +2032,11 @@ class TestGetStorageSpaces:
         assert "Get-StoragePool" in joined
         assert "Get-VirtualDisk" in joined
         assert "Get-StorageJob" in joined
+
+    def test_command_reads_label_serial(self, mocker):
+        m = self._mock(mocker, {})
+        disk.get_storage_spaces()
+        assert "AdapterSerialNumber" in " ".join(m.call_args[0][0])
 
 
 class TestDiskSnooze:

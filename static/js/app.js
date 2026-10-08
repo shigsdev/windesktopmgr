@@ -1112,10 +1112,14 @@ async function dkLoadSpaces() {
 }
 
 // Physical card view (dk = Storage tab). Draws the add-in PCIe M.2 card's
-// sockets top-to-bottom in PCIe-bus (switch-port) order, highlighting a
-// failed/retired drive for a hardware swap, and lists the onboard M.2 drives
-// as "do not touch". Built with DOM APIs + textContent (no innerHTML) so the
-// live drive model/serial strings can't inject markup. Shown only when the
+// drives in Windows' (PCIe-bus) order, highlighting a failed/retired drive
+// for a hardware swap, and lists the onboard M.2 drives as "do not touch".
+// The rows are NOT physical socket positions -- on this machine's card the bus
+// order runs opposite to the sockets, and drawing it as "Socket 1" got a
+// healthy drive pulled on 2026-10-08. Each row therefore leads with the serial
+// printed on the drive label; the EUI Windows uses is shown second.
+// Built with DOM APIs + textContent (no innerHTML) so the live drive
+// model/serial strings can't inject markup. Shown only when the
 // machine actually has an add-in card (has_card).
 // sectionId/hostId are parameters so the Docs tab can render the SAME live
 // diagram instead of shipping a screenshot that goes stale the moment a drive
@@ -1170,14 +1174,17 @@ async function dkLoadTopology(sectionId, hostId, prefetched) {
       const failed = d.flag !== 'ok';
       rect(80, y, W - 110, rowH - 12, failed ? {fill: '#2d1416', stroke: '#ff4d4f', sw: 2.5} : {fill: '#0d1117', stroke: '#30363d'});
       const c = flagColor(d.flag);
+      const tag = failed ? (d.retired ? '✖ RETIRED — REMOVE THE DRIVE WITH THIS LABEL' : '⚠ unhealthy — check this drive') : '✓ healthy';
+      // Label serial first: it is the only thing printed on the drive.
+      const lbl = d.label_serial ? `label S/N ${d.label_serial}` : 'label S/N not reported — match by model';
+      text(96, y + 23, `${lbl}    ${tag}`, {fill: c, size: 13, mono: true, weight: '700'});
+      text(96, y + 43, `${d.model || ''}${d.size_gb ? ' · ' + Math.round(d.size_gb) + ' GB' : ''}`, {size: 13});
       const slotTxt = d.slot ? ` · ${d.slot}` : '';
       const busTxt = (d.bus !== null && d.bus !== undefined) ? ` · bus ${d.bus}` : '';
-      const tag = failed ? (d.retired ? '✖ RETIRED — REMOVE THIS ONE' : '⚠ unhealthy — check this drive') : '✓ healthy';
-      text(96, y + 23, `Socket ${d.socket}${slotTxt}${busTxt}    ${tag}`, {fill: c, size: 12, mono: true, weight: '700'});
-      text(96, y + 43, `${d.model || ''}${d.size_gb ? ' · ' + Math.round(d.size_gb) + ' GB' : ''}`, {size: 13});
-      // Full serial is the foolproof anchor — show it in full, not just last-4.
-      text(96, y + 61, `serial ${d.serial || ('…' + (d.serial_short || '????'))}`, {fill: c, size: 12, mono: true, weight: failed ? '700' : '400'});
+      text(96, y + 61, `Windows #${d.socket}${slotTxt}${busTxt} · ID ${d.serial || ('…' + (d.serial_short || '????'))} (not on label)`, {fill: '#8b949e', size: 11, mono: true});
     });
+    // The failed drive's label serial, for tests and the Docs state line.
+    svg.setAttribute('data-dk-failed-label', t.failed_label_serial || '');
     host.appendChild(svg);
 
     const note = document.createElement('div');
@@ -1191,12 +1198,16 @@ async function dkLoadTopology(sectionId, hostId, prefetched) {
     if ((t.missing || []).length) {
       const mv = document.createElement('div');
       mv.style.cssText = 'font-size:12px;color:#ff4d4f;margin-top:10px;font-weight:700';
-      mv.textContent = 'Dropped / not detected (pool member no longer visible to Windows):';
+      mv.textContent = 'Pulled or dropped (pool member Windows can no longer reach):';
       host.appendChild(mv);
       t.missing.forEach(d => {
         const line = document.createElement('div');
         line.style.cssText = 'font-size:12px;color:#ff4d4f';
-        line.textContent = `✖ ${d.model || ''} · serial ${d.serial || ('…' + (d.serial_short || '????'))} · ${d.usage || 'dropped'}`;
+        const lbl = d.label_serial ? `label S/N ${d.label_serial}` : `ID ${d.serial || ('…' + (d.serial_short || '????'))}`;
+        const why = String(d.usage || '').toLowerCase() === 'retired'
+          ? 'failed drive, removed (expected)'
+          : 'HOLDS DATA — put it back';
+        line.textContent = `✖ ${d.model || ''} · ${lbl} · ${why}`;
         host.appendChild(line);
       });
     }
@@ -1213,7 +1224,8 @@ async function dkLoadTopology(sectionId, hostId, prefetched) {
         const line = document.createElement('div');
         if (bad) line.style.cssText = 'color:#ff4d4f;font-weight:700';
         const tag = bad ? (d.retired ? '  ✖ RETIRED — but this one is NOT on the card' : '  ⚠ unhealthy — NOT on the card') : '';
-        line.textContent = `• ${d.model || ''} · serial ${d.serial || ('…' + (d.serial_short || '????'))}${tag}`;
+        const lbl = d.label_serial ? `label S/N ${d.label_serial}` : `ID ${d.serial || ('…' + (d.serial_short || '????'))}`;
+        line.textContent = `• ${d.model || ''} · ${lbl}${tag}`;
         ob.appendChild(line);
       });
       host.appendChild(ob);
@@ -9886,15 +9898,28 @@ async function doc_loadPoolState(prefetched) {
     const drives = t.card_drives || [];
     const retired = drives.filter(d => d.retired || d.flag === "retired");
     const unhealthy = drives.filter(d => !d.retired && d.flag === "unhealthy");
+    // A missing RETIRED drive is the expected result of a correct swap (its
+    // pool entry stays until the script removes it). A missing drive that is
+    // NOT retired holds data -- it was pulled by mistake and must go back.
+    const missing = t.missing || [];
+    const isRetired = d => String(d.usage || "").toLowerCase() === "retired";
+    const lostData = missing.filter(d => !isRetired(d));
+    const removedFailed = missing.filter(isRetired);
 
     const line = doc_el("div", "display:flex;align-items:center;gap:10px;flex-wrap:wrap");
     line.appendChild(doc_el("span", "font-size:12px;font-weight:700", "Current drive state:"));
-    if (retired.length) {
+    if (lostData.length) {
+      line.appendChild(doc_el("span", "font-size:12px;font-weight:700;color:var(--red)",
+        `${lostData.length} data drive${lostData.length === 1 ? "" : "s"} not detected — put it back before running the script`));
+    } else if (retired.length) {
       line.appendChild(doc_el("span", "font-size:12px;font-weight:700;color:var(--amber)",
         `${retired.length} drive${retired.length === 1 ? "" : "s"} retired — this procedure applies`));
     } else if (unhealthy.length) {
       line.appendChild(doc_el("span", "font-size:12px;font-weight:700;color:var(--amber)",
         `${unhealthy.length} drive${unhealthy.length === 1 ? "" : "s"} reporting a warning`));
+    } else if (removedFailed.length) {
+      line.appendChild(doc_el("span", "font-size:12px;font-weight:700;color:var(--green)",
+        "Failed drive removed — ready for Step 3"));
     } else if (drives.length) {
       line.appendChild(doc_el("span", "font-size:12px;font-weight:700;color:var(--green)",
         `All ${drives.length} card drives healthy — reference only, nothing to do`));
@@ -9903,11 +9928,22 @@ async function doc_loadPoolState(prefetched) {
     }
     host.appendChild(line);
 
+    // No socket number here: Windows' order is not the physical order on this
+    // card. The label serial + model are what the user can actually check.
     retired.concat(unhealthy).forEach(d => {
-      const where = d.socket ? `Socket ${d.socket}` : "";
-      const slot = d.slot ? ` (${d.slot})` : "";
-      host.appendChild(doc_el("div", "font-size:11px;color:var(--amber);margin-top:6px",
-        `${where}${slot}: ${d.model || "unknown drive"} · serial ${d.serial || "unknown"} · ${d.usage || d.health || ""}`.trim()));
+      const lbl = d.label_serial ? `label S/N ${d.label_serial}` : `Windows ID ${d.serial || "unknown"} (label serial not reported)`;
+      host.appendChild(doc_el("div", "font-size:12px;font-weight:700;color:var(--amber);margin-top:6px",
+        `Remove: ${d.model || "unknown drive"} · ${lbl} · ${d.usage || d.health || ""}`.trim()));
+    });
+    lostData.forEach(d => {
+      const lbl = d.label_serial ? `label S/N ${d.label_serial}` : `Windows ID ${d.serial || "unknown"}`;
+      host.appendChild(doc_el("div", "font-size:12px;font-weight:700;color:var(--red);margin-top:6px",
+        `Put back (holds data, not detected): ${d.model || "unknown drive"} · ${lbl}`));
+    });
+    removedFailed.forEach(d => {
+      const lbl = d.label_serial ? `label S/N ${d.label_serial}` : `Windows ID ${d.serial || "unknown"}`;
+      host.appendChild(doc_el("div", "font-size:11px;color:var(--muted);margin-top:6px",
+        `Removed failed drive (expected; the script deletes its pool entry): ${d.model || "unknown drive"} · ${lbl}`));
     });
     if (t.note) {
       host.appendChild(doc_el("div", "font-size:11px;color:var(--muted);margin-top:6px", t.note));
