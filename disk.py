@@ -57,6 +57,21 @@ def _short_serial(serial: str) -> str:
     return clean[-4:].upper()
 
 
+def _label_serial(adapter_serial: str) -> str:
+    """The serial PRINTED ON THE DRIVE LABEL, from Get-PhysicalDisk's
+    AdapterSerialNumber (e.g. "S7KHNJ0WC85693P     _0001" -> "S7KHNJ0WC85693P").
+
+    Get-PhysicalDisk's SerialNumber on NVMe is the EUI-64/NGUID
+    ("0025_384C_3145_20C4."), which appears nowhere on the drive. Telling the
+    user to "confirm by the serial on the label" while showing that ID is what
+    let the wrong drive get pulled on 2026-10-08. The trailing "_000N" is a
+    namespace suffix, not part of the label, so only the first token is kept.
+    """
+    first = str(adapter_serial or "").strip().split()
+    token = first[0] if first else ""
+    return "" if token.startswith("_") else token
+
+
 def _load_disk_snoozes() -> dict:
     """Return ``{serial_key: expiry_iso}`` with expired entries dropped."""
     with _disk_snooze_lock:
@@ -337,6 +352,7 @@ $physical = Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {
         Status       = $_.OperationalStatus
         BusType      = $_.BusType
         SerialNumber = "$($_.SerialNumber)".Trim()
+        LabelSerial  = "$($_.AdapterSerialNumber)".Trim()
         Location     = "$($_.PhysicalLocation)"
         Firmware     = "$($_.FirmwareVersion)"
         DeviceId     = "$($_.DeviceId)"
@@ -398,10 +414,13 @@ def describe_disk_location(location: str, bus_type: str = "") -> dict:
         hint = "On the motherboard (integrated M.2 / SATA), not an add-in card."
     elif slot:
         bus_txt = f" (PCIe bus {bus})" if bus is not None else ""
+        # Deliberately no claim about WHICH physical socket this is: the bus
+        # order on the SABRENT card here runs opposite to the socket order, and
+        # an earlier "lowest bus = nearest the bracket" hint got a healthy drive
+        # pulled on 2026-10-08. The label serial is the only safe anchor.
         hint = (
-            f"On an add-in PCIe card{bus_txt}. Across the card's M.2 sockets the PCIe bus "
-            "number increases with socket order, so the lowest-bus drive is the first socket "
-            "(usually nearest the bracket). Match the drive by SERIAL to be certain."
+            f"On an add-in PCIe card{bus_txt}. Windows cannot tell which physical socket "
+            "that is, so find the drive by the serial printed on its label."
         )
     else:
         bus_txt = f"PCIe bus {bus}" if bus is not None else "unknown location"
@@ -421,10 +440,11 @@ def build_pcie_card_topology(physical: list[dict], members: list[dict] | None = 
     A drive is an add-in-card socket ONLY when Windows reports a real "PCI Slot"
     location; integrated M.2 / SATA / USB / unknown-location drives go to
     ``onboard`` ("not on the card") so a non-card drive is never drawn as a
-    socket that doesn't exist. Card drives are sorted by PCIe bus, which
-    increases with socket order on a bifurcation/switch card, so the lowest-bus
-    drive is socket 1 (usually nearest the bracket). Each entry carries the drive
-    SERIAL as the foolproof physical anchor plus a ``flag``: ``retired`` (dropped
+    socket that doesn't exist. Card drives are sorted by PCIe bus and numbered
+    in that order (``socket``), but that is WINDOWS' order, not a physical
+    position: on this machine's card it runs the opposite way to the sockets.
+    Each entry carries ``label_serial`` (printed on the drive) as the physical
+    anchor, the EUI ``serial`` Windows uses internally, and a ``flag``: ``retired`` (dropped
     from a Storage Spaces pool — the definitive "dead one" marker even when SMART
     still reads Healthy) beats ``unhealthy`` (HealthStatus != Healthy) beats
     ``ok``. Pool members with no matching physical disk (fully dropped off the
@@ -444,6 +464,15 @@ def build_pcie_card_topology(physical: list[dict], members: list[dict] | None = 
         loc = p.get("LocationInfo") or {}
         serial = str(p.get("SerialNumber", "")).strip()
         norm = _normalize_serial(serial)
+        status = p.get("Status", "")
+        status = ", ".join(map(str, status)) if isinstance(status, list) else str(status or "")
+        # A pool member Windows still lists but can no longer reach has been
+        # pulled or has dropped off the bus. Leave it out of seen_serials so it
+        # lands in `missing` below, instead of being drawn under "not on the
+        # card" -- which is where the healthy drive pulled by mistake on
+        # 2026-10-08 showed up, looking like a motherboard drive.
+        if norm in usage_by_serial and "lost communication" in status.lower():
+            continue
         if norm:
             seen_serials.add(norm)
         usage = usage_by_serial.get(norm, "")
@@ -455,6 +484,7 @@ def build_pcie_card_topology(physical: list[dict], members: list[dict] | None = 
             "model": p.get("Name", ""),
             "size_gb": p.get("SizeGB"),
             "serial": serial.rstrip("."),
+            "label_serial": _label_serial(p.get("LabelSerial", "")),
             "serial_short": _short_serial(serial),
             "health": health or "Unknown",
             "usage": usage,
@@ -473,7 +503,7 @@ def build_pcie_card_topology(physical: list[dict], members: list[dict] | None = 
         else:
             onboard.append(entry)
 
-    # PCIe bus increases with socket order; unknown-bus drives sort last.
+    # Windows' order (PCIe bus), NOT physical socket order; unknown-bus last.
     card.sort(key=lambda e: (e["bus"] is None, e["bus"] if e["bus"] is not None else 0))
     for i, e in enumerate(card):
         e["socket"] = i + 1
@@ -490,6 +520,7 @@ def build_pcie_card_topology(physical: list[dict], members: list[dict] | None = 
                 {
                     "model": m.get("Name", ""),
                     "serial": s.rstrip("."),
+                    "label_serial": _label_serial(m.get("LabelSerial", "")),
                     "serial_short": _short_serial(s),
                     "usage": str(m.get("Usage", "")).strip(),
                     "flag": "missing",
@@ -508,10 +539,11 @@ def build_pcie_card_topology(physical: list[dict], members: list[dict] | None = 
         "missing": missing,
         "failed_serial": failed["serial"] if failed else "",
         "failed_serial_short": failed["serial_short"] if failed else "",
+        "failed_label_serial": failed["label_serial"] if failed else "",
         "note": (
-            "Socket order follows the PCIe bus / switch-port order; the silk-screen "
-            "numbering on your card may run the other way. Always confirm the drive by "
-            "the full serial printed on its label before removing it."
+            "Rows are in Windows' order (PCIe bus), which is NOT the physical socket "
+            "order -- on this card it runs the opposite way. Find the drive by the label "
+            "serial and model printed on it, and do not pull anything that doesn't match."
         ),
     }
 
@@ -662,6 +694,7 @@ foreach ($p in $nonPrim) {
     foreach ($d in ($p | Get-PhysicalDisk -ErrorAction SilentlyContinue)) {
         $members += [PSCustomObject]@{
             Pool=$p.FriendlyName; Name=$d.FriendlyName; Serial="$($d.SerialNumber)".Trim()
+            LabelSerial="$($d.AdapterSerialNumber)".Trim()
             Health="$($d.HealthStatus)"; Operational=($d.OperationalStatus -join ', ')
             Usage="$($d.Usage)"; Location="$($d.PhysicalLocation)"; SizeGB=[math]::Round($d.Size/1GB,1)
         }
