@@ -10202,8 +10202,51 @@ async function dx_loadClasses() {
   if (sel) {
     sel.innerHTML = '<option value="">Choose one&hellip;</option>' +
       _dxClasses.map(c => `<option value="${escHtml(c.key)}">${escHtml(c.label)}</option>`).join("");
+    // Only ask for a site once a class that needs one is picked.
+    sel.addEventListener("change", () => dx_show("dx-host-row", dx_classNeedsHost(sel.value)));
   }
   return _dxClasses;
+}
+
+function dx_classNeedsHost(key) {
+  const c = (_dxClasses || []).find(x => x.key === key);
+  return !!(c && Array.isArray(c.slots) && c.slots.includes("target_host"));
+}
+
+// What to say when the engine could not place the symptom. It must name what
+// Diagnose CAN look into: "Pick one below" over a one-item list (network only)
+// asked a user reporting a crash to name a website. Built with DOM nodes and
+// textContent so the class labels can't inject markup.
+function dx_fillUnclassified(box, classes) {
+  while (box.firstChild) box.removeChild(box.firstChild);
+  const add = (tag, txt) => { const n = document.createElement(tag); n.textContent = txt; box.appendChild(n); return n; };
+  if (!classes.length) {
+    // The classes fetch failed; don't claim Diagnose covers nothing.
+    box.textContent = "I couldn't load the list of problems Diagnose can check. Try again in a moment.";
+    return;
+  }
+  box.appendChild(document.createTextNode("This doesn't look like a problem Diagnose can check yet. It currently covers: "));
+  add("b", classes.map(c => c.label).join(", "));
+  box.appendChild(document.createTextNode(". If it is one of those, pick it below."));
+  // The crash pointer is only true while no crash class exists. The planned
+  // crash bundle (backlog #63 PR 2) registers as "crashes", which retires it.
+  if (classes.some(c => c.key === "crashes")) return;
+  box.appendChild(document.createElement("br"));
+  box.appendChild(document.createTextNode("For a crash, freeze or unexpected restart, look at the "));
+  const link = (page, txt) => {
+    const b = add("button", txt);
+    b.type = "button";
+    b.className = "dx-link";
+    b.dataset.goto = page;
+    b.addEventListener("click", () => {
+      const tab = document.querySelector(`[data-page="${page}"]`);
+      if (tab) tab.click();
+    });
+  };
+  link("bsod", "Blue Screens");
+  box.appendChild(document.createTextNode(" and "));
+  link("events", "Event Log");
+  box.appendChild(document.createTextNode(" tabs."));
 }
 
 async function dx_loadHistory() {
@@ -10243,16 +10286,17 @@ async function dx_showAsk(res) {
   const need = Array.isArray(res.need) ? res.need : [];
   const wantClass = need.includes("symptom_class");
   const wantHost = need.includes("target_host");
+  const classes = wantClass ? await dx_loadClasses() : [];
   const ask = dx_el("dx-ask");
   if (ask) {
-    ask.innerHTML = escHtml(wantClass
-      ? "I couldn't tell what kind of problem this is. Pick one below, and name the affected site if there is one."
-      : "Which site or host is affected? I won't guess; name it below.");
+    if (wantClass) dx_fillUnclassified(ask, classes);
+    else ask.textContent = "Which site or host is affected? I won't guess; name it below.";
     ask.style.display = "";
   }
-  if (wantClass) await dx_loadClasses();
   dx_show("dx-class-row", wantClass);
-  dx_show("dx-host-row", wantHost || wantClass);
+  // When the class is unknown the site box waits until a class needing one is picked.
+  const sel = dx_el("dx-class");
+  dx_show("dx-host-row", wantHost || (wantClass && !!sel && dx_classNeedsHost(sel.value)));
   const chips = dx_el("dx-candidates");
   if (chips) {
     const cands = Array.isArray(res.candidates) ? res.candidates : [];
