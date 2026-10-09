@@ -399,7 +399,7 @@ test that would have prevented the hour the user spent flushing a cache.
 | PR | Contents |
 |---|---|
 | **1** | Engine, probe registry, redaction, egress gate, evidence-only mode, Network & DNS bundle, tab, tests, `architecture.html` |
-| 2 | Crashes & instability bundle |
+| 2 | Crashes & instability bundle — designed in [`2026-10-09-diagnose-crash-bundle-design.md`](2026-10-09-diagnose-crash-bundle-design.md) (one `crashes` class; adds optional slots and per-class rules/prompt to the engine) |
 | 3 | Storage & disk bundle |
 | 4 | Performance & thermals bundle |
 
