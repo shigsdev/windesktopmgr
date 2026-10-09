@@ -66,7 +66,8 @@ class TestClassify:
     def test_driver_file_in_a_crash_report_is_not_a_host(self):
         r = diagnose.classify("nvlddmkm.sys crashed with a BSOD")
         assert r["candidates"] == []
-        assert r["symptom_class"] is None
+        # Not a host, so not a network question; since PR 2 it is a crash report.
+        assert r["symptom_class"] == "crashes"
 
     def test_dump_file_is_not_a_host(self):
         assert diagnose.classify("memory.dmp was written")["candidates"] == []
@@ -1150,6 +1151,7 @@ class TestBuildPayload:
             "rule_finding",
             "available_probes",
             "available_actions",
+            "local_utc_offset",
         }
         assert payload["schema_version"] == 1
         assert payload["round"] == 1
@@ -1809,6 +1811,81 @@ class TestOptionalSlots:
     def test_slot_outside_the_class_is_still_dropped(self, engine):
         r = diagnose.start_diagnosis("x", slots={"target_host": "a.com"}, symptom_class="t_opt")
         assert diagnose._sessions[r["session_id"]]["slots"] == {}
+
+
+class TestCrashClassify:
+    """Spec 2026-10-09 §8: crash words pick the crashes class; a crash plus a
+    site is a question, never a guess."""
+
+    @pytest.mark.parametrize(
+        ("text", "cls", "expected_app"),
+        [
+            ("the computer crashed last evening - cna you investigate?", "crashes", None),
+            ("Chrome keeps crashing", "crashes", "Chrome"),
+            ("Microsoft Teams keeps crashing", "crashes", "Microsoft Teams"),
+            ('"Chrome" crashed!', "crashes", "Chrome"),
+            ("My computer keeps crashing", "crashes", None),
+            ("Today Spotify froze again", "crashes", "Spotify"),
+            ("blue screen this morning", "crashes", None),
+            ("PC won't boot sometimes", "crashes", None),
+            ("it won’t start", "crashes", None),
+            ("the screen went black and it shut down", "crashes", None),
+            ("I need to change my DNS", "network_dns", None),
+        ],
+    )
+    def test_table(self, text, cls, expected_app):
+        r = diagnose.classify(text)
+        assert r["symptom_class"] == cls
+        assert r["slots"].get("app_name") == expected_app
+        if cls == "crashes":
+            assert r["missing"] == []
+
+    def test_crash_plus_site_asks(self):
+        r = diagnose.classify("Chrome crashed loading example.com")
+        assert r["symptom_class"] is None
+        assert r["candidates"] == ["example.com"]
+
+    def test_crash_plus_network_word_asks(self):
+        assert diagnose.classify("the internet crashed")["symptom_class"] is None
+
+    def test_hang_is_a_whole_word(self):
+        assert diagnose.classify("please change the wallpaper")["symptom_class"] is None
+        assert diagnose.classify("my hungry cat")["symptom_class"] is None
+
+
+class TestCrashClass:
+    def test_registered_with_spec_values(self):
+        spec = diagnose.SYMPTOM_CLASSES["crashes"]
+        assert spec["label"] == "Crashes, freezes & startup problems"
+        assert spec["slots"] == ()
+        assert spec["optional_slots"] == ("app_name",)
+        assert len(spec["wave1"]) == 10
+        assert set(spec["escalate"]) == {"crash.window_30d", "crash.app_detail", "crash.event_context"}
+
+    def test_rules_are_the_crash_rules(self):
+        import diagnose_crash_rules as dcr
+
+        ev = json.loads((FIXTURE_DIR / "crash_power_loss.json").read_text(encoding="utf-8"))["evidence"]
+        assert diagnose.SYMPTOM_CLASSES["crashes"]["rules"](ev, None) == dcr.evaluate_crash_rules(ev)
+
+    def test_prompt_mentions_local_time_and_repair_image(self):
+        prompt = diagnose._system_prompt("crashes")
+        assert "local_utc_offset" in prompt
+        assert "repair_image" in prompt
+        assert "dns" not in diagnose.SYMPTOM_CLASSES["crashes"]["prompt"].lower()
+
+    def test_c1_sentence_starts_a_session_without_asking(self, engine):
+        r = diagnose.start_diagnosis("the computer crashed last evening - cna you investigate?")
+        assert r["state"] == "probing_wave1"
+        assert diagnose._sessions[r["session_id"]]["symptom_class"] == "crashes"
+
+    def test_named_app_is_kept_as_a_slot(self, engine):
+        r = diagnose.start_diagnosis("Chrome keeps crashing")
+        assert diagnose._sessions[r["session_id"]]["slots"] == {"app_name": "Chrome"}
+
+    def test_payload_carries_the_local_utc_offset(self):
+        payload = json.loads(diagnose.build_payload(_session()))
+        assert re.fullmatch(r"[+-]\d\d:\d\d", payload["local_utc_offset"])
 
 
 class TestStartDiagnosis:

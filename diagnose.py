@@ -34,6 +34,8 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request
 
+import diagnose_crash_probes  # noqa: F401 -- registers the crash probes into dp.PROBES
+import diagnose_crash_rules as dcr
 import diagnose_probes as dp
 import remediation
 
@@ -62,6 +64,15 @@ _NETWORK_PROMPT = (
     "hops, or none, means a router or a device beyond it."
 )
 
+
+# The crash class's model hint.
+_CRASH_PROMPT = (
+    "The evidence comes from this PC's event logs and settings over the last 7 days (crash.* probes); its times "
+    "are UTC. When you mention a time, convert it with local_utc_offset and write it as local time. "
+    "Hardware errors (crash.whea) outrank everything else. A rule_hits entry of nothing_found means no cause was "
+    "recorded: say inconclusive rather than invent one. Suggest repair_image only when rule_hits includes "
+    "system_modules (several different apps crashing inside Windows' own files)."
+)
 
 # What the engine can diagnose. ``wave1`` runs for every diagnosis of the
 # class; ``escalate`` holds the deeper probes a follow-up round may request.
@@ -96,6 +107,27 @@ SYMPTOM_CLASSES = {
         # Looked up at call time: evaluate_rules is defined further down.
         "rules": lambda evidence, host: evaluate_rules(evidence, host),
         "prompt": _NETWORK_PROMPT,
+    },
+    "crashes": {
+        "label": "Crashes, freezes & startup problems",
+        "slots": (),
+        "optional_slots": ("app_name",),
+        "wave1": (
+            "crash.power_timeline",
+            "crash.unexpected_shutdowns",
+            "crash.bugchecks",
+            "crash.whea",
+            "crash.boot_health",
+            "crash.app_crashes",
+            "crash.storage_errors",
+            "crash.recent_changes",
+            "crash.hw_changes",
+            "crash.power_config",
+        ),
+        "escalate": ("crash.window_30d", "crash.app_detail", "crash.event_context"),
+        # Looked up at call time: the two diagnose modules import each other.
+        "rules": lambda evidence, host: dcr.evaluate_crash_rules(evidence),
+        "prompt": _CRASH_PROMPT,
     },
 }
 
@@ -229,7 +261,14 @@ def classify(symptom: str) -> dict:
     text = symptom if isinstance(symptom, str) else ""
     candidates = _extract_candidates(text)
     lowered = text.lower()
-    if not (candidates or any(k in lowered for k in _NETWORK_KEYWORDS)):
+    network = bool(candidates) or any(k in lowered for k in _NETWORK_KEYWORDS)
+    if dcr.CRASH_RE.search(text):
+        # A crash AND a site ("Chrome crashed loading example.com"): ask, never guess.
+        if network:
+            return {"symptom_class": None, "slots": {}, "candidates": candidates, "missing": []}
+        app = dcr.extract_app_name(text)
+        return {"symptom_class": "crashes", "slots": {"app_name": app} if app else {}, "candidates": [], "missing": []}
+    if not network:
         return {"symptom_class": None, "slots": {}, "candidates": [], "missing": []}
     if len(candidates) == 1:
         return {
@@ -931,6 +970,12 @@ def redact(obj: Any, classes: Iterable[str], protect: str | None = None) -> Any:
     return _redact_walk(obj, wanted, user_re, host_re)
 
 
+def _local_utc_offset() -> str:
+    """This PC's current UTC offset, e.g. "-04:00", so the model can state times locally."""
+    raw = datetime.now().astimezone().strftime("%z") or "+0000"
+    return f"{raw[:3]}:{raw[3:]}"
+
+
 def build_payload(session: dict) -> str:
     """The exact JSON text previewed to the user and then sent to the model.
 
@@ -970,6 +1015,7 @@ def build_payload(session: dict) -> str:
         "round": rnd,
         "rounds_remaining": MAX_ROUNDS - rnd,
         "capabilities": {"dnspython": dp.HAVE_DNSPYTHON},
+        "local_utc_offset": _local_utc_offset(),
         "evidence": evidence,
         "rule_finding": {
             "status": verdict.get("status"),

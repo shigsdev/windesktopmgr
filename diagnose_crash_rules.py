@@ -13,6 +13,7 @@ functions, so either module can be imported first.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 
 import diagnose as dg
@@ -26,6 +27,79 @@ APP_REPEAT_THRESHOLD = 3
 SYSTEM_MODULE_APPS = 3
 _ISO = "%Y-%m-%dT%H:%M:%SZ"
 _COMPONENT_TEXT = {"processor": "processor", "memory": "memory", "pcie": "PCIe", "other": "other hardware"}
+
+
+# ── classifier helpers (spec §8; used by diagnose.classify) ──────────────
+
+# Whole words only: "hang" must not fire on "change", nor "hung" on "hungry".
+CRASH_RE = re.compile(
+    r"\b(?:crash\w*|blue\s+screen\w*|bsod\w*|froze|freez\w*|hung|hang(?:s|ing)?|stopped\s+responding|"
+    r"not\s+responding|restarted\s+by\s+itself|reboot\w*|shut\s*down|won[’']?t\s+(?:boot|start)|"
+    r"black\s+screen|keeps\s+closing|power(?:ed)?\s+off|turned\s+off)\b",
+    re.IGNORECASE,
+)
+
+_APP_VERB_RE = re.compile(
+    r"(?P<name>(?:[\w\"“”'.+-]+\s+){0,2}[\w\"“”'.+-]+)\s+"
+    r"(?:keeps?\s+crashing|crashe[sd]|froze|freezes|stopped\s+responding|keeps\s+closing|is\s+not\s+responding)\b",
+    re.IGNORECASE,
+)
+_LEADING_FILLER = frozenset(
+    {
+        "the",
+        "my",
+        "a",
+        "an",
+        "our",
+        "this",
+        "that",
+        "today",
+        "yesterday",
+        "again",
+        "and",
+        "then",
+        "so",
+        "why",
+        "when",
+        "suddenly",
+        "now",
+        "also",
+        "just",
+    }
+)
+_GENERIC = frozenset(
+    {
+        "computer",
+        "pc",
+        "laptop",
+        "system",
+        "it",
+        "windows",
+        "machine",
+        "screen",
+        "desktop",
+        "everything",
+        "something",
+        "the",
+        "my",
+        "a",
+    }
+)
+
+
+def extract_app_name(text: str) -> str | None:
+    """The app a sentence says crashed ("Microsoft Teams keeps crashing" ->
+    "Microsoft Teams"), or None for the PC itself or no app at all."""
+    m = _APP_VERB_RE.search(text if isinstance(text, str) else "")
+    if not m:
+        return None
+    words = [w.strip("\"“”'.,!?") for w in m.group("name").split()]
+    words = [w for w in words if w]
+    while words and words[0].lower() in _LEADING_FILLER:
+        words.pop(0)
+    if not words or words[-1].lower() in _GENERIC:
+        return None
+    return " ".join(words)
 
 
 # ── time helpers ──────────────────────────────────────────────────────────

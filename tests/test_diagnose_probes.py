@@ -2191,7 +2191,6 @@ class TestRegistryInvariants:
         missing = [key for _, key in referenced if key not in _REGISTERED]
         assert missing == []
 
-    @pytest.mark.xfail(strict=True, reason="crash probes join a symptom class in plan Task 8; remove this marker then")
     def test_every_registered_probe_is_referenced(self):
         assert {key for _, key in _referenced_probes()} == set(_REGISTERED)
 
@@ -2205,8 +2204,10 @@ class TestRegistryInvariants:
 
     def test_probe_needs_are_slots_of_every_class_that_uses_them(self):
         for name, key in _referenced_probes():
-            slots = set(diagnose.SYMPTOM_CLASSES[name]["slots"])
-            assert set(_REGISTERED[key].needs) <= slots, key
+            cls = diagnose.SYMPTOM_CLASSES[name]
+            optional = set(cls.get("optional_slots", ()))
+            assert set(_REGISTERED[key].needs) <= set(cls["slots"]) | optional, key
+            assert set(_REGISTERED[key].needs_optional) <= optional, key
 
     def test_categories_are_known(self):
         assert {p.category for p in _REGISTERED.values()} <= {"network", "crash", "storage", "perf"}
