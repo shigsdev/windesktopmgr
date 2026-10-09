@@ -647,7 +647,7 @@ class TestInterceptionRules:
         assert out["suggested_actions"] == ["reset_network_adapter"]
 
     def test_system_prompt_tells_the_model_to_trust_only_tls_when_intercepted(self):
-        prompt = diagnose._SYSTEM_PROMPT
+        prompt = diagnose._system_prompt("network_dns")
         assert "dns.interception" in prompt
         assert 'transport "tls"' in prompt
         for key in ("dns.authoritative", "dns.record_sweep", "dns.trace_delegation", "dns.dnssec_check"):
@@ -806,9 +806,40 @@ class TestManualStepsFromModel:
         assert schema["properties"]["manual_steps"] == {"type": "array", "items": {"type": "string"}}
 
     def test_prompt_asks_for_steps_and_explains_the_hop_test(self):
-        assert "manual_steps" in diagnose._SYSTEM_PROMPT
-        assert "never run" in diagnose._SYSTEM_PROMPT
-        assert "hop" in diagnose._SYSTEM_PROMPT
+        prompt = diagnose._system_prompt("network_dns")
+        assert "manual_steps" in prompt
+        assert "never run" in prompt
+        assert "hop" in prompt
+
+    def test_system_prompt_is_base_plus_class_hint(self):
+        prompt = diagnose._system_prompt("network_dns")
+        assert prompt.startswith(diagnose._BASE_PROMPT)
+        assert diagnose.SYMPTOM_CLASSES["network_dns"]["prompt"] in prompt
+
+    def test_base_prompt_is_class_neutral(self):
+        assert "dns" not in diagnose._BASE_PROMPT.lower()
+        assert "hop" not in diagnose._BASE_PROMPT.lower()
+
+    def test_drive_uses_the_class_rules(self, engine, monkeypatch):
+        sentinel = diagnose._verdict("likely", "local", "SENTINEL", "r", rule_hits=["sentinel"])
+        monkeypatch.setitem(
+            diagnose.SYMPTOM_CLASSES,
+            "t_rules",
+            {"label": "T", "slots": (), "wave1": (), "escalate": (), "prompt": "", "rules": lambda ev, host: sentinel},
+        )
+        monkeypatch.setattr(diagnose, "model_unavailable_reason", lambda: "no_api_key")
+        started = diagnose.start_diagnosis("x", symptom_class="t_rules")
+        diagnose._run_session(started["session_id"])
+        assert diagnose._sessions[started["session_id"]]["rule_verdict"]["headline"] == "SENTINEL"
+
+    def test_repair_image_needs_the_system_modules_hit(self):
+        v = {"status": "likely", "locus": "local", "suggested_actions": ["repair_image"], "manual_steps": []}
+        dropped = diagnose.apply_guards(v, {}, {"rule_hits": ["app_crash_repeat"]})
+        assert dropped["suggested_actions"] == []
+        kept = diagnose.apply_guards(
+            v, {}, {"rule_hits": ["app_crash_repeat", "system_modules"], "status": "likely", "locus": "local"}
+        )
+        assert kept["suggested_actions"] == ["repair_image"]
 
     def test_parse_reply_cleans_steps(self):
         _, v = diagnose.parse_reply({**REPLY, "manual_steps": ["  Do X ", "Do X", 3]}, "network_dns")
@@ -1258,7 +1289,7 @@ class TestCallModel:
             assert diagnose.DIAGNOSE_MODEL == "claude-opus-5-5"
         assert kw["model"] == diagnose.DIAGNOSE_MODEL
         assert kw["messages"][0]["content"] == "the payload text"
-        assert kw["system"] == diagnose._SYSTEM_PROMPT
+        assert kw["system"] == diagnose._system_prompt("network_dns")
         assert kw["max_tokens"] == 16000
         # Opus 5.5 defaults to medium effort; a diagnosis is reasoning work.
         assert kw["output_config"]["effort"] == "high"
