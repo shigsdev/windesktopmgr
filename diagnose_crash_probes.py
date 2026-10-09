@@ -14,8 +14,12 @@ All times are UTC ISO strings ending in ``Z``.
 from __future__ import annotations
 
 import concurrent.futures
+import os
 import xml.etree.ElementTree as ET  # noqa: S405 -- parses Event Log service XML, not user input
 from collections.abc import Iterable
+from datetime import datetime, timezone
+
+import diagnose_probes as dp
 
 try:
     import win32evtlog
@@ -167,8 +171,6 @@ _BOOT_REPORT_WINDOW_S = 600
 
 
 def _seconds_between(a: str, b: str) -> float:
-    from datetime import datetime
-
     fmt = "%Y-%m-%dT%H:%M:%SZ"
     return (datetime.strptime(b, fmt) - datetime.strptime(a, fmt)).total_seconds()
 
@@ -239,3 +241,217 @@ def activity_between(start: str, end: str, cap: int = 500) -> tuple[int, str | N
             if ev["time"] and (last is None or ev["time"] > last):
                 last = ev["time"]
     return count, last
+
+
+# ---------------------------------------------------------------------------
+# Probes. Each queries by id/provider AND re-checks both in Python, so an id
+# reused by another provider never leaks in. Spec §5.1 / plan Tasks 5-6.
+# ---------------------------------------------------------------------------
+
+_REDACT = ("username", "serial", "mac", "self_host")
+REGISTERED: dict[str, dp.Probe] = {}
+
+# The local zone that 6008's "last alive" time is written in. None = this
+# machine's zone (tests pin it).
+_LOCAL_TZ = None
+
+STARTUP_REPAIR_CHANNEL = "Microsoft-Windows-StartupRepair/Operational"
+BOOT_PERF_CHANNEL = "Microsoft-Windows-Diagnostics-Performance/Operational"
+MAX_TIMELINE_EVENTS = 50
+MAX_MINIDUMPS = 10
+
+
+def _crash_probe(key: str, label: str, fn, timeout_s: float = 10.0, **kw) -> dp.Probe:
+    probe = dp.register(dp.Probe(key, label, "crash", fn, redact=_REDACT, timeout_s=timeout_s, **kw))
+    REGISTERED[key] = probe
+    return probe
+
+
+def _iso_utc(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _local_to_utc(time_str: str, date_str: str) -> str | None:
+    """6008 writes the last-alive time as local, locale-formatted text
+    ("4:45:35 AM", "10/9/2026" wrapped in direction marks). UTC ISO, or None."""
+    clean = " ".join(s.replace("\u200e", "").replace("\u200f", "").strip() for s in (time_str, date_str))
+    for fmt in ("%I:%M:%S %p %m/%d/%Y", "%H:%M:%S %m/%d/%Y"):
+        try:
+            naive = datetime.strptime(clean, fmt)
+        except ValueError:
+            continue
+        local = naive.replace(tzinfo=_LOCAL_TZ) if _LOCAL_TZ is not None else naive.astimezone()
+        return _iso_utc(local)
+    return None
+
+
+def _query(channel: str, xpath: str, unavailable: list[str] | None = None, **kw) -> list[dict]:
+    """evt_query that records an unreadable channel instead of raising."""
+    try:
+        return evt_query(channel, xpath, **kw)
+    except EvtUnavailable:
+        if unavailable is not None:
+            unavailable.append(channel)
+        return []
+
+
+# (provider, id) -> timeline kind
+_TIMELINE_KINDS = {
+    ("Microsoft-Windows-Kernel-General", 12): "boot",
+    ("Microsoft-Windows-Kernel-General", 13): "shutdown_started",
+    ("Microsoft-Windows-Kernel-Power", 109): "shutdown_started",
+    ("Microsoft-Windows-Kernel-Power", 41): "unexpected",
+    ("User32", 1074): "shutdown_requested",
+    ("EventLog", 6005): "eventlog_start",
+    ("EventLog", 6006): "eventlog_stop",
+    ("EventLog", 6008): "dirty_noted",
+}
+
+
+def _p_power_timeline(slots: dict, days: int = WINDOW_DAYS) -> dict:
+    unavailable: list[str] = []
+    ids = sorted({eid for _, eid in _TIMELINE_KINDS})
+    raw = _query("System", window_xpath(ids=ids, days=days), unavailable, max_events=400)
+    events = []
+    for ev in raw:
+        kind = _TIMELINE_KINDS.get((ev["provider"], ev["id"]))
+        if kind is None or not ev["time"]:
+            continue
+        item = {"time": ev["time"], "kind": kind, "id": ev["id"]}
+        if kind == "dirty_noted":
+            parts = ev["data_list"]
+            item["last_alive"] = _local_to_utc(parts[0], parts[1]) if len(parts) >= 2 else None
+        events.append(item)
+    events.sort(key=lambda e: e["time"])
+    episodes = derive_episodes(events)
+    for ep in episodes:
+        if ep["next_boot_unexpected"] and ep["shutdown_started_at"] and ep["next_boot"]:
+            count, last = activity_between(ep["shutdown_started_at"], ep["next_boot"])
+            ep["activity_after_shutdown_start"] = count
+            ep["last_activity"] = last
+    trimmed = [{k: e[k] for k in ("time", "kind", "id")} for e in events[-MAX_TIMELINE_EVENTS:]]
+    return {"window_days": days, "events": trimmed, "episodes": episodes, "unavailable": unavailable}
+
+
+def _int(value, default: int = 0) -> int:
+    try:
+        return int(str(value).strip(), 0)
+    except (TypeError, ValueError):
+        return default
+
+
+def _p_unexpected_shutdowns(slots: dict) -> dict:
+    kp = "Microsoft-Windows-Kernel-Power"
+    out = []
+    for ev in _query("System", window_xpath(ids=[41], providers=[kp])):
+        if ev["id"] != 41 or ev["provider"] != kp:
+            continue
+        d = ev["data"]
+        out.append(
+            {
+                "time": ev["time"],
+                "bugcheck_code": _int(d.get("BugcheckCode", "0")),
+                "power_button": _int(d.get("PowerButtonTimestamp", "0")) != 0,
+                "long_press": str(d.get("LongPowerButtonPressDetected", "")).lower() == "true",
+                "sleep_in_progress": _int(d.get("SleepInProgress", "0")) != 0,
+            }
+        )
+    return {"events": out}
+
+
+def _stop_code(raw: str) -> tuple[str, str | None]:
+    """'0x0000009f (0x3, ...)' -> ('0x0000009f', 'DRIVER_POWER_STATE_FAILURE').
+
+    Uses only bsod's static table: get_stop_code_info can queue a web lookup."""
+    import bsod
+
+    token = (raw or "").strip().split(" ", 1)[0]
+    code = bsod._normalise_stop_code(token)
+    return code, bsod.BUGCHECK_CODES.get(code)
+
+
+def _file_time(mtime: float) -> str:
+    return _iso_utc(datetime.fromtimestamp(mtime, timezone.utc))
+
+
+def _p_bugchecks(slots: dict) -> dict:
+    wer = "Microsoft-Windows-WER-SystemErrorReporting"
+    bugchecks = []
+    for ev in _query("System", window_xpath(ids=[1001], providers=[wer])):
+        if ev["id"] != 1001 or ev["provider"] != wer or not ev["data_list"]:
+            continue
+        code, name = _stop_code(ev["data_list"][0])
+        bugchecks.append({"time": ev["time"], "code": code, "name": name})
+    root = os.environ.get("SYSTEMROOT", r"C:\Windows")
+    minidumps = []
+    try:
+        with os.scandir(os.path.join(root, "Minidump")) as it:
+            dumps = [(e.name, e.stat()) for e in it if e.is_file() and e.name.lower().endswith(".dmp")]
+        dumps.sort(key=lambda d: d[1].st_mtime, reverse=True)
+        minidumps = [
+            {"name": n, "time": _file_time(st.st_mtime), "size": st.st_size} for n, st in dumps[:MAX_MINIDUMPS]
+        ]
+    except OSError:
+        pass
+    memory = None
+    try:
+        st = os.stat(os.path.join(root, "MEMORY.DMP"))
+        memory = {"time": _file_time(st.st_mtime), "size": st.st_size}
+    except OSError:
+        pass
+    return {"bugchecks": bugchecks, "minidumps": minidumps, "memory_dmp": memory}
+
+
+_WHEA_COMPONENT = {17: "pcie", 20: "pcie", 18: "processor", 19: "processor", 46: "memory", 47: "memory"}
+
+
+def _p_whea(slots: dict) -> dict:
+    provider = "Microsoft-Windows-WHEA-Logger"
+    fatal = corrected = 0
+    by_component = {"processor": 0, "memory": 0, "pcie": 0, "other": 0}
+    times = []
+    for ev in _query("System", window_xpath(providers=[provider]), max_events=500):
+        if ev["provider"] != provider:
+            continue
+        if ev["level"] in (1, 2):
+            fatal += 1
+        else:
+            corrected += 1
+        by_component[_WHEA_COMPONENT.get(ev["id"], "other")] += 1
+        times.append(ev["time"])
+    return {
+        "fatal": fatal,
+        "corrected": corrected,
+        "by_component": by_component,
+        "first": min(times) if times else None,
+        "last": max(times) if times else None,
+    }
+
+
+def _p_boot_health(slots: dict) -> dict:
+    unavailable: list[str] = []
+    kb = "Microsoft-Windows-Kernel-Boot"
+    failures = [
+        ev["time"]
+        for ev in _query("System", window_xpath(ids=[20], providers=[kb]), unavailable)
+        if ev["id"] == 20 and ev["provider"] == kb and str(ev["data"].get("LastBootGood", "")).lower() == "false"
+    ]
+    repairs = len(_query(STARTUP_REPAIR_CHANNEL, window_xpath(), unavailable))
+    durations = [
+        _int(ev["data"].get("BootTime", ""), -1)
+        for ev in _query(BOOT_PERF_CHANNEL, window_xpath(ids=[100]), unavailable)
+        if ev["id"] == 100
+    ]
+    return {
+        "boot_failures": failures,
+        "startup_repair_runs": repairs,
+        "boot_durations_ms": [d for d in durations if d >= 0],
+        "unavailable": unavailable,
+    }
+
+
+_crash_probe("crash.power_timeline", "Startups and shutdowns (7 days)", _p_power_timeline, timeout_s=15.0)
+_crash_probe("crash.unexpected_shutdowns", "Unexpected shutdown details", _p_unexpected_shutdowns)
+_crash_probe("crash.bugchecks", "Blue screens and crash dumps", _p_bugchecks)
+_crash_probe("crash.whea", "Hardware error reports (WHEA)", _p_whea)
+_crash_probe("crash.boot_health", "Startup health", _p_boot_health)

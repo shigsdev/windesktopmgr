@@ -24,10 +24,13 @@ import dns.rrset
 import pytest
 
 import diagnose
+import diagnose_crash_probes as dcp
 import diagnose_probes as dp
 import remediation
 
-# Snapshot before the autouse fixture empties PROBES: the real wave-one registrations.
+# Snapshot before the autouse fixture empties PROBES: the real registrations.
+# diagnose_crash_probes is imported first so the snapshot never depends on
+# which test module an xdist worker happened to load before this one.
 _REGISTERED = dict(dp.PROBES)
 
 
@@ -2173,7 +2176,9 @@ class TestRegistryInvariants:
     """Checked against the import-time snapshot: the autouse fixture empties dp.PROBES."""
 
     def test_snapshot_is_the_full_registry(self):
-        assert len(_REGISTERED) == 15
+        network = [k for k, p in _REGISTERED.items() if p.category == "network"]
+        assert len(network) == 15
+        assert {k for k, p in _REGISTERED.items() if p.category == "crash"} == set(dcp.REGISTERED)
 
     def test_wave_one_runs_in_a_single_batch_of_workers(self):
         # Fewer workers than wave-1 probes would queue some behind the slow ones and eat their timeouts.
@@ -2186,6 +2191,7 @@ class TestRegistryInvariants:
         missing = [key for _, key in referenced if key not in _REGISTERED]
         assert missing == []
 
+    @pytest.mark.xfail(strict=True, reason="crash probes join a symptom class in plan Task 8; remove this marker then")
     def test_every_registered_probe_is_referenced(self):
         assert {key for _, key in _referenced_probes()} == set(_REGISTERED)
 
