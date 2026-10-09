@@ -29,6 +29,7 @@ import diagnose
 import disk
 import events
 import homenet
+import maintenance
 import network
 import processes
 import windesktopmgr as wdm
@@ -220,6 +221,18 @@ def reset_globals():
         diagnose._sessions.clear()
     diagnose._model_calls = 0
     diagnose._client = None
+
+    # Cleanup-tab scan registry (maintenance.py). A test that mocks
+    # threading.Thread and starts a scan leaves its slot at running=True
+    # forever (the worker never runs to clear it); under xdist the next test
+    # on that worker then sees a "running" junk scan (flaky 2026-10-09).
+    # Reset the junk slot IN PLACE -- the legacy _scan_state alias must stay
+    # bound to it -- and drop every other key.
+    with maintenance._scans_lock:
+        junk = maintenance._scans["junk"]
+        junk.update({"running": False, "result": None, "ts": 0.0})
+        maintenance._scans.clear()
+        maintenance._scans["junk"] = junk
 
     yield  # run the test
 
