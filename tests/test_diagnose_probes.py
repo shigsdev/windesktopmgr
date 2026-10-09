@@ -445,6 +445,21 @@ class TestWaveOneRegistration:
         assert _REGISTERED["dns.record_sweep"].fn is dp._p_record_sweep
 
 
+class TestOptionalNeeds:
+    def test_missing_optional_slot_does_not_refuse_the_probe(self):
+        seen = []
+        dp.register(dp.Probe("t.opt", "T", "crash", lambda s: seen.append(dict(s)) or {}, needs_optional=("app_name",)))
+        [res] = dp.run_probes(["t.opt"], {})
+        assert res["ok"] is True
+        assert seen == [{}]
+
+    def test_present_optional_slot_is_passed_through(self):
+        seen = []
+        dp.register(dp.Probe("t.opt", "T", "crash", lambda s: seen.append(dict(s)) or {}, needs_optional=("app_name",)))
+        dp.run_probes(["t.opt"], {"app_name": "Chrome"})
+        assert seen == [{"app_name": "Chrome"}]
+
+
 SLOTS = {"target_host": "hynote.ai"}
 
 

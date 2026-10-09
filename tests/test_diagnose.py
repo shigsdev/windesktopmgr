@@ -1684,6 +1684,33 @@ def engine(monkeypatch):
     return eng
 
 
+class TestOptionalSlots:
+    """Spec 2026-10-09 §4: a class may declare optional slots, which are kept
+    when given but never asked for."""
+
+    @pytest.fixture(autouse=True)
+    def _opt_class(self, monkeypatch):
+        monkeypatch.setitem(
+            diagnose.SYMPTOM_CLASSES,
+            "t_opt",
+            {"label": "T", "slots": (), "optional_slots": ("app_name",), "wave1": (), "escalate": ()},
+        )
+
+    def test_optional_slot_is_kept_when_given(self, engine):
+        r = diagnose.start_diagnosis("x", slots={"app_name": "Chrome"}, symptom_class="t_opt")
+        assert r["state"] == "probing_wave1"
+        assert diagnose._sessions[r["session_id"]]["slots"] == {"app_name": "Chrome"}
+
+    def test_optional_slot_is_never_asked_for(self, engine):
+        r = diagnose.start_diagnosis("x", symptom_class="t_opt")
+        assert r["state"] == "probing_wave1"
+        assert diagnose._sessions[r["session_id"]]["slots"] == {}
+
+    def test_slot_outside_the_class_is_still_dropped(self, engine):
+        r = diagnose.start_diagnosis("x", slots={"target_host": "a.com"}, symptom_class="t_opt")
+        assert diagnose._sessions[r["session_id"]]["slots"] == {}
+
+
 class TestStartDiagnosis:
     def test_no_host_asks_for_one_and_creates_no_session(self, engine):
         r = diagnose.start_diagnosis("the internet is broken")
@@ -2470,6 +2497,7 @@ class TestRoutes:
         net = data[0]
         assert net["label"] == diagnose.SYMPTOM_CLASSES["network_dns"]["label"]
         assert net["slots"] == ["target_host"]
+        assert net["optional_slots"] == []
 
     # --- POST /api/diagnose/start ---
     def test_start_returns_session_id(self, client):

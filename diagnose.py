@@ -1309,8 +1309,11 @@ def start_diagnosis(symptom: str, slots: dict | None = None, symptom_class: str 
         }
     merged = {**found["slots"], **given}
     # Only the class's own slots are kept: they are all its probes may read.
-    names = SYMPTOM_CLASSES[class_key]["slots"]
-    filled = {name: merged[name] for name in names if merged.get(name)}
+    # Optional slots are kept when given but never asked for.
+    spec = SYMPTOM_CLASSES[class_key]
+    names = spec["slots"]
+    kept = (*names, *spec.get("optional_slots", ()))
+    filled = {name: merged[name] for name in kept if merged.get(name)}
     need = [name for name in names if name not in filled]
     if need:
         return {
@@ -1642,7 +1645,15 @@ def _valid_session_id(value: Any) -> bool:
 def diagnose_classes_route():
     """The symptom classes the engine can diagnose, for the symptom-type picker."""
     return jsonify(
-        [{"key": key, "label": spec["label"], "slots": list(spec["slots"])} for key, spec in SYMPTOM_CLASSES.items()]
+        [
+            {
+                "key": key,
+                "label": spec["label"],
+                "slots": list(spec["slots"]),
+                "optional_slots": list(spec.get("optional_slots", ())),
+            }
+            for key, spec in SYMPTOM_CLASSES.items()
+        ]
     )
 
 
