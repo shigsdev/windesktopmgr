@@ -2998,6 +2998,33 @@ class TestDiagnoseTab:
         page.wait_for_timeout(1500)
         assert status_requests == [], f"polled a session that should not exist: {status_requests}"
 
+    def test_unrecognised_symptom_says_what_is_covered_not_asks_for_a_site(self, loaded_page):
+        """Regression (2026-10-09): "the computer crashed last evening" got "Pick
+        one below" over a list holding only the network class, plus a site box.
+        It must name what Diagnose covers, point crashes at the BSOD / Event Log
+        tabs, and keep the site box hidden until a class that needs it is picked."""
+        page, _ = loaded_page
+        self._open(page)
+        page.fill("#dx-symptom", "the computer crashed last evening - can you investigate?")
+        page.click("#dx-run")
+        page.wait_for_selector("#dx-class-row", state="visible", timeout=10_000)
+        ask = page.text_content("#dx-ask")
+        assert "Pick one below" not in ask
+        assert "Website or network unreachable" in ask  # names what IS covered
+        assert page.evaluate("[...document.querySelectorAll('#dx-ask .dx-link')].map(b => b.dataset.goto)") == [
+            "bsod",
+            "events",
+        ]
+        assert not page.is_visible("#dx-host-row"), "asked a crash report for a website"
+        page.select_option("#dx-class", "network_dns")
+        assert page.is_visible("#dx-host-row")
+        page.select_option("#dx-class", "")
+        assert not page.is_visible("#dx-host-row")
+        page.click("#dx-ask .dx-link[data-goto='bsod']")
+        assert page.evaluate(
+            "document.getElementById('page-bsod').classList.contains('active') || getComputedStyle(document.getElementById('page-bsod')).display !== 'none'"
+        )
+
     def test_inconclusive_never_renders_as_verdict(self, loaded_page):
         page, _ = loaded_page
         self._open(page)
