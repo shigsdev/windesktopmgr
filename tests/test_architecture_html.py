@@ -84,6 +84,7 @@ TEST_FILES = [
     "test_maintenance.py",
     "test_diagnose.py",
     "test_diagnose_probes.py",
+    "test_diagnose_crash_probes.py",
 ]
 
 
