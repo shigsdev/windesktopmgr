@@ -46,6 +46,16 @@ _APP_VERB_RE = re.compile(
     r"not\s+responding)\b",
     re.IGNORECASE,
 )
+# Crash words that only ever describe the PC or an app. The rest (hang,
+# reboot, not responding, shut down...) also describe a slow website or a
+# timing ("since I rebooted"), so next to a site or network word they defer
+# to the network class.
+STRONG_CRASH_RE = re.compile(
+    r"\b(?:crash\w*|blue\s+screen\w*|bsod\w*|froze(?:n)?|freez\w*|stopped\s+responding|"
+    r"won[’']?t\s+(?:boot|start)|black\s+screen|keeps\s+closing)\b",
+    re.IGNORECASE,
+)
+
 # Helper words that may sit between the app and the verb ("Spotify has just crashed").
 _AUXILIARY = frozenset({"has", "have", "had", "just", "always", "also", "now", "again", "is", "was"})
 # "Word, Excel and Outlook keep crashing" names several apps: no one app to focus on.
@@ -335,6 +345,15 @@ def _rule_power_loss(evidence: dict):
         "blue screen and no power-button press recorded. That pattern means the power was cut or the PC froze so "
         "hard it could not record anything."
     )
+    unchecked = any(
+        isinstance(ep, dict) and ep.get("next_boot_unexpected") and ep.get("activity_unreadable")
+        for ep in _list(_d(evidence, "crash.power_timeline"), "episodes")
+    )
+    if unchecked:
+        reasoning += (
+            " Whether Windows was stuck shutting down first could not be checked: part of the event log could not "
+            "be read (crash.power_timeline)."
+        )
     verdict = dg._verdict("likely", "unknown", "The PC lost power or froze completely", reasoning)
     return "power_loss_or_freeze", verdict, t, ["crash.unexpected_shutdowns", "crash.power_timeline"]
 

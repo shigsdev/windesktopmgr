@@ -265,7 +265,9 @@ def classify(symptom: str) -> dict:
     candidates = _extract_candidates(text)
     lowered = text.lower()
     network = bool(candidates) or any(k in lowered for k in _NETWORK_KEYWORDS)
-    if dcr.CRASH_RE.search(text):
+    # A site or network word next to a weak crash word ("example.com is not
+    # responding", "since I rebooted") is a network problem.
+    if dcr.CRASH_RE.search(text) and not (network and not dcr.STRONG_CRASH_RE.search(text)):
         # A crash AND a site ("Chrome crashed loading example.com"): ask, never guess.
         if network:
             return {"symptom_class": None, "slots": {}, "candidates": candidates, "missing": []}
@@ -1379,7 +1381,10 @@ def _given_slots(slots: Any) -> dict:
         app = out["app_name"]
         if not isinstance(app, str) or len(app.strip()) > MAX_APP_NAME_CHARS:
             raise ValueError(f"app_name must be text of at most {MAX_APP_NAME_CHARS} characters")
-        out["app_name"] = app.strip()
+        if app.strip():
+            out["app_name"] = app.strip()
+        else:
+            del out["app_name"]  # blank: keep the app the sentence named, if any
     return out
 
 

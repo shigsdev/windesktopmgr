@@ -2936,3 +2936,25 @@ class TestCrashReviewFixes:
         monkeypatch.setattr(diagnose.socket, "gethostname", lambda: "shigs78-pc24")
         session = _session(symptom="shigs78-pc24 won't resolve", slots={"target_host": "shigs78-pc24"})
         assert json.loads(diagnose.build_payload(session))["symptom"] == "shigs78-pc24 won't resolve"
+
+
+class TestCrashCodeReviewFixes:
+    """/code-review findings on the crash bundle (2026-10-09)."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "dns lookup hangs",
+            "example.com is not responding",
+            "google.com keeps timing out since I rebooted",
+        ],
+    )
+    def test_a_timing_word_does_not_pull_a_network_problem_away(self, text):
+        assert diagnose.classify(text)["symptom_class"] == "network_dns"
+
+    @pytest.mark.parametrize("text", ["Chrome crashed loading example.com", "the internet crashed"])
+    def test_a_real_crash_plus_a_network_word_still_asks(self, text):
+        assert diagnose.classify(text)["symptom_class"] is None
+
+    def test_blank_app_name_does_not_erase_the_one_in_the_sentence(self):
+        assert diagnose._given_slots({"app_name": "   "}) == {}

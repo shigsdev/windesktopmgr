@@ -310,3 +310,35 @@ class TestFinalReviewFixes:
 
     def test_nothing_found_reads_cleanly_when_everything_was_read(self):
         assert "could not be read" not in dcr.evaluate_crash_rules(quiet())["reasoning"]
+
+
+class TestCodeReviewFixes:
+    """/code-review findings on the crash bundle (2026-10-09)."""
+
+    def test_power_loss_says_when_the_stuck_shutdown_check_could_not_run(self):
+        ev = put(
+            quiet(),
+            "crash.power_timeline",
+            {
+                "window_days": 7,
+                "events": [],
+                "unavailable": ["Application"],
+                "episodes": [
+                    {
+                        "boot": "2026-10-08T10:00:00Z",
+                        "next_boot": "2026-10-09T12:17:48Z",
+                        "shutdown_requested_at": None,
+                        "shutdown_started_at": "2026-10-09T03:37:02Z",
+                        "next_boot_unexpected": True,
+                        "last_alive": None,
+                        "activity_after_shutdown_start": 0,
+                        "last_activity": None,
+                        "activity_unreadable": True,
+                    }
+                ],
+            },
+        )
+        put(ev, "crash.unexpected_shutdowns", {"events": [unexpected("2026-10-09T12:17:51Z")]})
+        v = dcr.evaluate_crash_rules(ev)
+        assert v["rule_hits"][0] == "power_loss_or_freeze"
+        assert "could not be checked" in v["reasoning"]

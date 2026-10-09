@@ -280,7 +280,9 @@ def edt(monkeypatch):
 class TestPowerTimeline:
     def test_real_incident_episode_with_activity(self, fake_evt, monkeypatch, edt):
         fake_evt({"System": _real_system_log()})
-        monkeypatch.setattr(dcp, "activity_between", lambda s, e, cap=500: (13, "2026-10-09T08:11:08Z"))
+        monkeypatch.setattr(
+            dcp, "activity_between", lambda s, e, cap=500, unavailable=None: (13, "2026-10-09T08:11:08Z")
+        )
         d = dcp._p_power_timeline({})
         assert d["window_days"] == 7
         assert d["unavailable"] == []
@@ -317,7 +319,7 @@ class TestPowerTimeline:
         log = _real_system_log()
         log[1] = evt_xml(6008, "2026-10-09T12:18:04Z", "EventLog", 2, data_list=["garbage"])
         fake_evt({"System": log})
-        monkeypatch.setattr(dcp, "activity_between", lambda s, e, cap=500: (0, None))
+        monkeypatch.setattr(dcp, "activity_between", lambda s, e, cap=500, unavailable=None: (0, None))
         ep = dcp._p_power_timeline({})["episodes"][0]
         assert ep["next_boot_unexpected"] is True
         assert ep["last_alive"] is None
@@ -837,7 +839,9 @@ class TestFinalReviewFixes:
                 ]
             }
         )
-        monkeypatch.setattr(dcp, "activity_between", lambda s, e, cap=500: (40, "2026-10-06T16:59:00Z"))
+        monkeypatch.setattr(
+            dcp, "activity_between", lambda s, e, cap=500, unavailable=None: (40, "2026-10-06T16:59:00Z")
+        )
         eps = dcp._p_power_timeline({})["episodes"]
         # 27 + 12 in the same second is one start, not two.
         assert [e["boot"] for e in eps] == ["2026-10-05T08:00:00Z", "2026-10-06T08:00:00Z", "2026-10-07T08:00:01Z"]
@@ -855,7 +859,9 @@ class TestFinalReviewFixes:
         """The shutdown's own 109/13/6006 records are not 'activity after it began'."""
         fake_evt({"System": _real_system_log()})
         seen = []
-        monkeypatch.setattr(dcp, "activity_between", lambda s, e, cap=500: seen.append((s, e)) or (0, None))
+        monkeypatch.setattr(
+            dcp, "activity_between", lambda s, e, cap=500, unavailable=None: seen.append((s, e)) or (0, None)
+        )
         dcp._p_power_timeline({})
         assert seen == [("2026-10-09T03:39:02Z", "2026-10-09T12:17:48Z")]
 
@@ -906,3 +912,86 @@ class TestFinalReviewFixes:
         [install] = dcp._p_recent_changes({})["installs"]
         assert "SERIAL123" not in install["name"]
         assert install["name"] == "an unnamed driver"
+
+
+class TestCodeReviewFixes:
+    """/code-review findings on the crash bundle (2026-10-09)."""
+
+    SCM = "Service Control Manager"
+    WU = "Microsoft-Windows-WindowsUpdateClient"
+    PNP = "Microsoft-Windows-UserPnp"
+
+    def test_a_driver_installed_for_three_devices_at_once_is_kept(self, fake_evt):
+        """One install that logs once per device is a change, not a routine."""
+        fake_evt(
+            {
+                "System": [
+                    evt_xml(7045, "2026-10-09T08:00:00Z", self.SCM, data={"ServiceName": "McAfee Task"}),
+                    evt_xml(7045, "2026-10-09T04:00:00Z", self.SCM, data={"ServiceName": "McAfee Task"}),
+                    evt_xml(20003, "2026-10-09T03:30:13Z", self.PNP, user={"ServiceName": "HidUsb"}),
+                    evt_xml(20003, "2026-10-09T03:30:13Z", self.PNP, user={"ServiceName": "HidUsb"}),
+                    evt_xml(20003, "2026-10-09T03:30:12Z", self.PNP, user={"ServiceName": "HidUsb"}),
+                    evt_xml(7045, "2026-10-08T23:00:00Z", self.SCM, data={"ServiceName": "McAfee Task"}),
+                ]
+            }
+        )
+        names = [i["name"] for i in dcp._p_recent_changes({})["installs"]]
+        assert names == ["HidUsb", "HidUsb", "HidUsb"]
+
+    def test_versioned_update_titles_count_as_one_routine_update(self, fake_evt):
+        title = "Security Intelligence Update for Microsoft Defender Antivirus - KB2267602 (Version 1.421.{}.0)"
+        fake_evt(
+            {
+                "System": [
+                    evt_xml(19, f"2026-10-09T{h:02d}:00:00Z", self.WU, data={"updateTitle": title.format(h)})
+                    for h in (12, 8, 4)
+                ]
+                + [evt_xml(19, "2026-10-08T10:00:00Z", self.WU, data={"updateTitle": "2026-10 Update (KB5050001)"})]
+            }
+        )
+        names = [i["name"] for i in dcp._p_recent_changes({})["installs"]]
+        assert names == ["2026-10 Update (KB5050001)"]
+
+    def test_activity_is_measured_only_for_the_newest_qualifying_episode(self, fake_evt, monkeypatch, edt):
+        older = [
+            evt_xml(6008, "2026-10-06T12:00:30Z", "EventLog", 2, data_list=["‎8:00:00 AM", "‎10/‎6/‎2026"]),
+            evt_xml(41, "2026-10-06T12:00:20Z", data={"BugcheckCode": "0"}, level=1),
+            evt_xml(12, "2026-10-06T12:00:00Z", KG),
+            evt_xml(109, "2026-10-05T22:00:00Z"),
+            evt_xml(12, "2026-10-05T08:00:00Z", KG),
+        ]
+        fake_evt({"System": _real_system_log() + older})
+        seen = []
+        monkeypatch.setattr(
+            dcp, "activity_between", lambda s, e, cap=500, unavailable=None: seen.append((s, e)) or (5, e)
+        )
+        dcp._p_power_timeline({})
+        assert seen == [("2026-10-09T03:39:02Z", "2026-10-09T12:17:48Z")]
+
+    def test_unreadable_activity_check_is_reported_not_zero(self, fake_evt, monkeypatch):
+        fake_evt({"System": _real_system_log()})
+
+        def unread(s, e, cap=500, unavailable=None):
+            unavailable.append("Application")
+            return 0, None
+
+        monkeypatch.setattr(dcp, "activity_between", unread)
+        d = dcp._p_power_timeline({})
+        assert d["unavailable"] == ["Application"]
+        assert d["episodes"][0]["activity_unreadable"] is True
+
+    def test_activity_between_lists_the_log_it_could_not_read(self, fake_evt):
+        fake_evt({"System": [evt_xml(16, "2026-10-09T05:00:00Z", "X")], "Application": OSError("denied")})
+        unavailable = []
+        result = dcp.activity_between("2026-10-09T03:00:00Z", "2026-10-09T06:00:00Z", unavailable=unavailable)
+        assert result == (1, "2026-10-09T05:00:00Z")
+        assert unavailable == ["Application"]
+
+    def test_event_without_a_time_is_skipped(self, fake_evt):
+        no_time = (
+            f'<Event xmlns="{NS}"><System><Provider Name="Microsoft-Windows-Kernel-Boot"/>'
+            "<EventID>20</EventID><Level>2</Level></System>"
+            '<EventData><Data Name="LastBootGood">false</Data></EventData></Event>'
+        )
+        fake_evt({"System": [no_time, evt_xml(12, "2026-10-08T10:00:00Z", KG)]})
+        assert [e["id"] for e in dcp.evt_query("System", "*")] == [12]

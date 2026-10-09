@@ -75,6 +75,9 @@ def _parse_event(xml_str: str) -> dict | None:
         level = int(level_el.text) if level_el is not None and level_el.text else 0
     except ValueError:
         level = 0
+    when = _norm_time(time_el.get("SystemTime", "") if time_el is not None else "")
+    if not when:
+        return None  # every rule places events in time; a timeless record is unusable
     data: dict[str, str] = {}
     data_list: list[str] = []
     event_data = root.find(f"{_EVT_NS}EventData")
@@ -92,7 +95,7 @@ def _parse_event(xml_str: str) -> dict | None:
                 data[_local_name(item.tag)] = (item.text or "").strip()
     return {
         "id": eid,
-        "time": _norm_time(time_el.get("SystemTime", "") if time_el is not None else ""),
+        "time": when,
         "provider": prov_el.get("Name", "") if prov_el is not None else "",
         "level": level,
         "data": data,
@@ -234,15 +237,20 @@ def derive_episodes(events: list[dict]) -> list[dict]:
     return episodes
 
 
-def activity_between(start: str, end: str, cap: int = 500) -> tuple[int, str | None]:
+def activity_between(
+    start: str, end: str, cap: int = 500, unavailable: list[str] | None = None
+) -> tuple[int, str | None]:
     """How many System + Application events fall between ``start`` and ``end``,
-    and the latest of their times. An unreadable log counts as none."""
+    and the latest of their times. An unreadable log counts as none and is
+    added to ``unavailable``."""
     xpath = window_xpath(start=start, end=end)
     count, last = 0, None
     for channel in ("System", "Application"):
         try:
             events = evt_query(channel, xpath, max_events=cap)
         except EvtUnavailable:
+            if unavailable is not None:
+                unavailable.append(channel)
             continue
         count += len(events)
         for ev in events:
@@ -345,12 +353,20 @@ def _p_power_timeline(slots: dict, days: int = WINDOW_DAYS) -> dict:
         events.append(item)
     events.sort(key=lambda e: e["time"])
     episodes = derive_episodes(events)
-    for ep in episodes:
-        if ep["next_boot_unexpected"] and ep["shutdown_started_at"] and ep["next_boot"]:
-            start = _shift(ep["shutdown_started_at"], _SHUTDOWN_OWN_RECORDS_S)
-            count, last = activity_between(start, ep["next_boot"]) if start < ep["next_boot"] else (0, None)
-            ep["activity_after_shutdown_start"] = count
-            ep["last_activity"] = last
+    # Only the newest such episode is ever reported, so only it is measured:
+    # each measurement is two log queries inside this probe's time budget.
+    candidates = [ep for ep in episodes if ep["next_boot_unexpected"] and ep["shutdown_started_at"] and ep["next_boot"]]
+    if candidates:
+        ep = max(candidates, key=lambda e: e["shutdown_started_at"])
+        start = _shift(ep["shutdown_started_at"], _SHUTDOWN_OWN_RECORDS_S)
+        unread: list[str] = []
+        count, last = (
+            activity_between(start, ep["next_boot"], unavailable=unread) if start < ep["next_boot"] else (0, None)
+        )
+        ep["activity_after_shutdown_start"] = count
+        ep["last_activity"] = last
+        ep["activity_unreadable"] = bool(unread)
+        unavailable += [c for c in unread if c not in unavailable]
     trimmed = [{k: e[k] for k in ("time", "kind", "id")} for e in events[-MAX_TIMELINE_EVENTS:]]
     return {"window_days": days, "events": trimmed, "episodes": episodes, "unavailable": unavailable}
 
@@ -634,9 +650,12 @@ def _install_name(kind: str, ev: dict) -> str:
 
 # Microsoft Store app updates are titled "<12-char product id>-<package>".
 _STORE_UPDATE_RE = re.compile(r"^[0-9A-Z]{12}-")
-# A name installed this many times in the window is routine (a service that
-# re-registers at every start or every few hours), not a change.
-_ROUTINE_REPEATS = 3
+# A name installed in this many different hours of the window is routine (a
+# service that re-registers at every start or every few hours), not a change.
+# Hours, not events: one driver install logs once per device, all at once.
+_ROUTINE_HOURS = 3
+# Defender's definition updates differ only by this suffix.
+_VERSION_SUFFIX_RE = re.compile(r"\s*\(Version [^)]*\)\s*$", re.IGNORECASE)
 
 
 def _p_recent_changes(slots: dict) -> dict:
@@ -650,8 +669,12 @@ def _p_recent_changes(slots: dict) -> dict:
         if kind == "update" and _STORE_UPDATE_RE.match(name):
             continue
         installs.append({"time": ev["time"], "kind": kind, "name": name})
-    repeats = Counter((i["kind"], i["name"]) for i in installs)
-    installs = [i for i in installs if repeats[(i["kind"], i["name"])] < _ROUTINE_REPEATS]
+
+    def routine_key(i: dict) -> tuple[str, str]:
+        return i["kind"], _VERSION_SUFFIX_RE.sub("", i["name"])
+
+    hours = Counter(routine_key(i) for i in {(i["kind"], i["name"], i["time"][:13]): i for i in installs}.values())
+    installs = [i for i in installs if hours[routine_key(i)] < _ROUTINE_HOURS]
     installs.sort(key=lambda i: i["time"], reverse=True)
     return {"installs": installs[:MAX_INSTALLS]}
 
@@ -764,9 +787,7 @@ def _p_event_context(slots: dict) -> dict:
     if not anchors:
         return {"anchor": None, "events": []}
     anchor = max(anchors)
-    start = _iso_utc(
-        datetime.strptime(anchor, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) - timedelta(minutes=10)
-    )
+    start = _shift(anchor, -600)
     xpath = window_xpath(levels=[1, 2, 3], start=start, end=anchor)
     events = []
     for channel in ("System", "Application"):
