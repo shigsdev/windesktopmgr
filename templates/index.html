@@ -2461,6 +2461,72 @@
         </div>
       </div>
     </div>
+
+    <!-- ── Procedure: turn Secure Boot back on (e.g. after a motherboard swap) ── -->
+    <div id="doc-secureboot" style="background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-top:20px">
+      <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+        <h3 style="margin:0;font-family:var(--font-head);font-size:16px">Turning Secure Boot back on</h3>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">Dell XPS 8960 BIOS setup. Needed after a motherboard replacement: a new board starts on factory settings, where Secure Boot is <b>Disabled</b>.</div>
+      </div>
+
+      <!-- Live Secure Boot state, from the BIOS audit's elevated check -->
+      <div id="doc-sb-state" style="padding:12px 16px;border-bottom:1px solid var(--border)">
+        <div style="font-size:12px;color:var(--muted)">Reading Secure Boot state&hellip;</div>
+      </div>
+
+      <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+        <div style="font-weight:700;font-size:13px;margin-bottom:6px">What it is, and why it matters here</div>
+        <div style="font-size:12px;color:var(--muted);line-height:1.6">
+          Secure Boot is a firmware check that only lets signed, trusted software start the computer, so malware cannot load before Windows does. Windows 11 expects it on. On 2026-10-08 the motherboard on this PC was replaced and the app's BIOS audit recorded <b>Secure Boot: enabled &rarr; disabled</b> the same morning &mdash; the replacement board came up on Dell's defaults.
+        </div>
+      </div>
+
+      <!-- Step 1: BitLocker -->
+      <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+        <div style="font-weight:700;font-size:13px;margin-bottom:6px">Step 1 &mdash; Before you restart: BitLocker</div>
+        <ol style="font-size:12px;color:var(--muted);line-height:1.8;margin:0;padding-left:20px">
+          <li>Turning Secure Boot on changes what BitLocker checks at startup, so if drive encryption is on, Windows may ask for the <b>BitLocker recovery key</b> on the next boot.</li>
+          <li>Find the key first: sign in at <code>aka.ms/myrecoverykey</code> with your Microsoft account, or use the copy you saved or printed. Keep it where you can read it while the PC is restarting (for example, on your phone).</li>
+          <li>To avoid the prompt, open <b>Control Panel &rarr; BitLocker Drive Encryption</b> and click <b>Suspend protection</b> on C:. Windows resumes it by itself after the next restart. If that page says BitLocker is off, skip this step.</li>
+        </ol>
+      </div>
+
+      <!-- Step 2: BIOS -->
+      <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+        <div style="font-weight:700;font-size:13px;margin-bottom:6px">Step 2 &mdash; Turn it on in BIOS setup</div>
+        <ol style="font-size:12px;color:var(--muted);line-height:1.8;margin:0;padding-left:20px">
+          <li>Restart and tap <b>F2</b> repeatedly as soon as the Dell logo appears, until BIOS setup opens.</li>
+          <li>Open the <b>Boot</b> menu and check that <b>Boot List Option</b> is <b>UEFI</b> and Boot Option #1 is <b>Windows Boot Manager</b>. (These are the defaults. If it says Legacy, stop &mdash; do not change it; switching would leave Windows unable to start.)</li>
+          <li>Open the <b>Security</b> menu and set <b>Secure Boot</b> to <b>Enabled</b>.</li>
+          <li>Check that <b>Secure Boot Mode</b> is <b>Deployed Mode</b> (the default).</li>
+          <li>Leave <b>Firmware TPM</b> as <b>Enabled</b> &mdash; BitLocker and Windows 11 rely on it.</li>
+          <li>Save and exit (the Save &amp; Exit option, or F10), and let Windows start. Enter the BitLocker recovery key if asked.</li>
+        </ol>
+        <div style="font-size:11px;color:var(--muted);margin-top:10px;padding:8px 10px;border-left:2px solid var(--border)">
+          Menu names come from Dell's XPS 8960 service manual. If your screen is laid out differently, look for the same option names rather than the same positions.
+        </div>
+      </div>
+
+      <!-- Step 3: verify -->
+      <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+        <div style="font-weight:700;font-size:13px;margin-bottom:6px">Step 3 &mdash; Check it worked</div>
+        <ol style="font-size:12px;color:var(--muted);line-height:1.8;margin:0;padding-left:20px">
+          <li>Press the Windows key, type <code>msinfo32</code> and open <b>System Information</b>.</li>
+          <li>On the summary page, <b>BIOS Mode</b> should read <b>UEFI</b> and <b>Secure Boot State</b> should read <b>On</b>.</li>
+          <li>This page updates too, but only after the app's daily elevated BIOS check runs, so it can lag by up to a day. msinfo32 is the instant answer.</li>
+        </ol>
+      </div>
+
+      <!-- If it goes wrong -->
+      <div style="padding:14px 16px">
+        <div style="font-weight:700;font-size:13px;margin-bottom:6px">If Secure Boot will not turn on, or Windows will not start</div>
+        <div style="font-size:12px;color:var(--muted);line-height:1.6">
+          <b>Windows will not start:</b> go back into BIOS setup (F2), set <b>Secure Boot</b> back to <b>Disabled</b>, save and exit. Windows starts as it did before; then ask for help before trying again.
+          <br><br>
+          <b>The option is greyed out or refuses to enable:</b> a replacement board can arrive with its security keys cleared. In <b>Security &rarr; Expert Key Management</b>, check that <b>Custom Mode</b> is <b>Disabled</b>, choose <b>Reset all Keys</b> to restore Dell's factory keys, save, and try Step 2 again. Never choose <b>Delete all Keys</b>.
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- ══════════════════════════════════════════

@@ -2532,6 +2532,7 @@ class TestDocsTab:
         assert result["built"] is True, "no export iframe was created"
         assert "Reading the card layout" not in result["text"], "the export captured the loading placeholder"
         assert "Reading pool state" not in result["text"], "the export captured the pool-state placeholder"
+        assert "Reading Secure Boot state" not in result["text"], "the export captured the Secure Boot placeholder"
 
     def test_tab_reloads_on_every_visit(self, loaded_page):
         """The page promises live values. The documented workflow is: open this
@@ -2639,6 +2640,50 @@ class TestDocsTab:
         assert "ready for Step 3" in state
         assert "put it back" not in state.lower()
         assert "S7KHNJ0WC85693P" in state
+
+    def test_secure_boot_procedure_present(self, loaded_page):
+        """Added 2026-10-09 after the motherboard swap left Secure Boot off.
+        Pins the XPS 8960 option names and the two safety points (BitLocker
+        key first; never Delete all Keys)."""
+        page, _ = loaded_page
+        page.evaluate("document.querySelector('[data-page=\"docs\"]').click()")
+        text = page.text_content("#doc-secureboot")
+        for needle in (
+            "F2",
+            "Security",
+            "Secure Boot",
+            "Deployed Mode",
+            "Boot List Option",
+            "msinfo32",
+            "BitLocker recovery key",
+            "Reset all Keys",
+            "Never choose",
+        ):
+            assert needle in text, needle
+
+    def test_secure_boot_state_uses_latest_elevated_snapshot(self, loaded_page):
+        """Only the elevated BIOS audit can read Secure Boot. A newer
+        user-context entry has no secure_boot and must not hide the answer,
+        and the newest elevated reading wins."""
+        page, _ = loaded_page
+        page.evaluate("document.querySelector('[data-page=\"docs\"]').click()")
+        got = page.evaluate(
+            """
+            () => doc_secureBootFrom([
+                {timestamp: '2026-09-01T08:00:00', context: 'elevated', snapshot: {secure_boot: 'enabled'}},
+                {timestamp: '2026-10-08T11:39:21', context: 'elevated', snapshot: {secure_boot: 'disabled'}},
+                {timestamp: '2026-10-09T09:00:00', context: 'user', snapshot: {bios_version: '2.24.0'}},
+            ])
+            """
+        )
+        assert got == {"state": "disabled", "when": "2026-10-08T11:39:21"}
+        assert page.evaluate("doc_secureBootFrom([{context: 'user', snapshot: {}}])") is None
+
+    def test_secure_boot_state_line_resolves(self, loaded_page):
+        page, _ = loaded_page
+        page.evaluate("document.querySelector('[data-page=\"docs\"]').click()")
+        page.wait_for_function("() => !!document.getElementById('doc-sb-state').dataset.sbState", timeout=30_000)
+        assert "Reading Secure Boot state" not in page.text_content("#doc-sb-state")
 
     def test_manual_refresh_control_exists(self, loaded_page):
         page, _ = loaded_page
