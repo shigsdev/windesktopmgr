@@ -1,0 +1,146 @@
+{
+  "symptom": "pc won't boot sometimes",
+  "symptom_class": "crashes",
+  "evidence": {
+    "crash.power_timeline": {
+      "key": "crash.power_timeline",
+      "label": "crash.power_timeline",
+      "ok": true,
+      "data": {
+        "window_days": 7,
+        "events": [
+          {
+            "time": "2026-10-08T10:00:00Z",
+            "kind": "boot",
+            "id": 12
+          }
+        ],
+        "episodes": [
+          {
+            "boot": "2026-10-08T10:00:00Z",
+            "next_boot": null,
+            "shutdown_requested_at": null,
+            "shutdown_started_at": null,
+            "next_boot_unexpected": false,
+            "last_alive": null
+          }
+        ],
+        "unavailable": []
+      },
+      "elapsed_ms": 1.0
+    },
+    "crash.unexpected_shutdowns": {
+      "key": "crash.unexpected_shutdowns",
+      "label": "crash.unexpected_shutdowns",
+      "ok": true,
+      "data": {
+        "events": []
+      },
+      "elapsed_ms": 1.0
+    },
+    "crash.bugchecks": {
+      "key": "crash.bugchecks",
+      "label": "crash.bugchecks",
+      "ok": true,
+      "data": {
+        "bugchecks": [],
+        "minidumps": [],
+        "memory_dmp": null
+      },
+      "elapsed_ms": 1.0
+    },
+    "crash.whea": {
+      "key": "crash.whea",
+      "label": "crash.whea",
+      "ok": true,
+      "data": {
+        "fatal": 0,
+        "corrected": 0,
+        "by_component": {
+          "processor": 0,
+          "memory": 0,
+          "pcie": 0,
+          "other": 0
+        },
+        "first": null,
+        "last": null
+      },
+      "elapsed_ms": 1.0
+    },
+    "crash.boot_health": {
+      "key": "crash.boot_health",
+      "label": "crash.boot_health",
+      "ok": true,
+      "data": {
+        "boot_failures": [
+          "2026-10-08T10:20:00Z",
+          "2026-10-08T10:05:00Z",
+          "2026-10-08T10:00:00Z"
+        ],
+        "startup_repair_runs": 0,
+        "boot_durations_ms": [],
+        "unavailable": []
+      },
+      "elapsed_ms": 1.0
+    },
+    "crash.app_crashes": {
+      "key": "crash.app_crashes",
+      "label": "crash.app_crashes",
+      "ok": true,
+      "data": {
+        "named": null,
+        "apps": []
+      },
+      "elapsed_ms": 1.0
+    },
+    "crash.storage_errors": {
+      "key": "crash.storage_errors",
+      "label": "crash.storage_errors",
+      "ok": true,
+      "data": {
+        "by_provider": {},
+        "pool_repair_failures": 0,
+        "pool_times": [],
+        "storage_service_faults": [],
+        "unavailable": []
+      },
+      "elapsed_ms": 1.0
+    },
+    "crash.recent_changes": {
+      "key": "crash.recent_changes",
+      "label": "crash.recent_changes",
+      "ok": true,
+      "data": {
+        "installs": []
+      },
+      "elapsed_ms": 1.0
+    },
+    "crash.hw_changes": {
+      "key": "crash.hw_changes",
+      "label": "crash.hw_changes",
+      "ok": true,
+      "data": {
+        "changes": []
+      },
+      "elapsed_ms": 1.0
+    },
+    "crash.power_config": {
+      "key": "crash.power_config",
+      "label": "crash.power_config",
+      "ok": true,
+      "data": {
+        "fast_startup": false,
+        "hibernate": false
+      },
+      "elapsed_ms": 1.0
+    }
+  },
+  "expect": {
+    "rule": "boot_failure",
+    "status": "likely",
+    "locus": "local",
+    "must_include": [],
+    "must_exclude": [],
+    "context": []
+  }
+}

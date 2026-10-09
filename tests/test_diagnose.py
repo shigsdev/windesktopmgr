@@ -282,6 +282,9 @@ class TestRuleFixtures:
     @pytest.mark.parametrize("path", FIXTURES, ids=lambda p: p.stem)
     def test_rule_fixture(self, path):
         fx = json.loads(path.read_text(encoding="utf-8"))
+        if fx.get("symptom_class") == "crashes":
+            self._check_crash_fixture(fx)
+            return
         cls = diagnose.classify(fx["symptom"])
         host = fx["expect"].get("target_host") or cls["slots"].get("target_host")
         if "target_host" in fx["expect"]:
@@ -294,6 +297,22 @@ class TestRuleFixtures:
             assert key not in verdict["suggested_actions"]
         if verdict["locus"] == "external_cause":
             assert verdict["suggested_actions"] == []
+
+    @staticmethod
+    def _check_crash_fixture(fx):
+        import diagnose_crash_rules as dcr
+
+        expect = fx["expect"]
+        verdict = dcr.evaluate_crash_rules(fx["evidence"])
+        assert verdict["rule_hits"][0] == expect["rule"]
+        assert (verdict["status"], verdict["locus"]) == (expect["status"], expect["locus"])
+        for key in expect["context"]:
+            assert key in verdict["rule_hits"], key
+        for key in expect["must_include"]:
+            assert key in verdict["suggested_actions"]
+        for key in expect["must_exclude"]:
+            assert key not in verdict["suggested_actions"]
+        assert 1 <= len(verdict["manual_steps"]) <= diagnose.MAX_MANUAL_STEPS or expect["rule"] == "nothing_found"
 
 
 def _fixture_evidence(name):
