@@ -112,7 +112,8 @@ class Probe:
 
     ``fn`` receives the slots dict and returns only its ``data`` dict.
     ``needs`` names slots that must be non-empty or the probe is refused
-    without being called. ``redact`` lists the PII classes ("mac",
+    without being called; ``needs_optional`` names slots it reads when present
+    and never refuses over. ``redact`` lists the PII classes ("mac",
     "serial", ...) the engine must scrub from this probe's data before it
     is sent anywhere. ``timeout_s`` bounds the probe's wall-clock time.
     """
@@ -122,6 +123,7 @@ class Probe:
     category: str
     fn: Callable[[dict], dict]
     needs: tuple[str, ...] = ()
+    needs_optional: tuple[str, ...] = ()
     redact: tuple[str, ...] = ()
     timeout_s: float = 8.0
 

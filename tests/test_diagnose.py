@@ -66,7 +66,8 @@ class TestClassify:
     def test_driver_file_in_a_crash_report_is_not_a_host(self):
         r = diagnose.classify("nvlddmkm.sys crashed with a BSOD")
         assert r["candidates"] == []
-        assert r["symptom_class"] is None
+        # Not a host, so not a network question; since PR 2 it is a crash report.
+        assert r["symptom_class"] == "crashes"
 
     def test_dump_file_is_not_a_host(self):
         assert diagnose.classify("memory.dmp was written")["candidates"] == []
@@ -282,6 +283,9 @@ class TestRuleFixtures:
     @pytest.mark.parametrize("path", FIXTURES, ids=lambda p: p.stem)
     def test_rule_fixture(self, path):
         fx = json.loads(path.read_text(encoding="utf-8"))
+        if fx.get("symptom_class") == "crashes":
+            self._check_crash_fixture(fx)
+            return
         cls = diagnose.classify(fx["symptom"])
         host = fx["expect"].get("target_host") or cls["slots"].get("target_host")
         if "target_host" in fx["expect"]:
@@ -294,6 +298,22 @@ class TestRuleFixtures:
             assert key not in verdict["suggested_actions"]
         if verdict["locus"] == "external_cause":
             assert verdict["suggested_actions"] == []
+
+    @staticmethod
+    def _check_crash_fixture(fx):
+        import diagnose_crash_rules as dcr
+
+        expect = fx["expect"]
+        verdict = dcr.evaluate_crash_rules(fx["evidence"])
+        assert verdict["rule_hits"][0] == expect["rule"]
+        assert (verdict["status"], verdict["locus"]) == (expect["status"], expect["locus"])
+        for key in expect["context"]:
+            assert key in verdict["rule_hits"], key
+        for key in expect["must_include"]:
+            assert key in verdict["suggested_actions"]
+        for key in expect["must_exclude"]:
+            assert key not in verdict["suggested_actions"]
+        assert 1 <= len(verdict["manual_steps"]) <= diagnose.MAX_MANUAL_STEPS or expect["rule"] == "nothing_found"
 
 
 def _fixture_evidence(name):
@@ -647,7 +667,7 @@ class TestInterceptionRules:
         assert out["suggested_actions"] == ["reset_network_adapter"]
 
     def test_system_prompt_tells_the_model_to_trust_only_tls_when_intercepted(self):
-        prompt = diagnose._SYSTEM_PROMPT
+        prompt = diagnose._system_prompt("network_dns")
         assert "dns.interception" in prompt
         assert 'transport "tls"' in prompt
         for key in ("dns.authoritative", "dns.record_sweep", "dns.trace_delegation", "dns.dnssec_check"):
@@ -806,9 +826,40 @@ class TestManualStepsFromModel:
         assert schema["properties"]["manual_steps"] == {"type": "array", "items": {"type": "string"}}
 
     def test_prompt_asks_for_steps_and_explains_the_hop_test(self):
-        assert "manual_steps" in diagnose._SYSTEM_PROMPT
-        assert "never run" in diagnose._SYSTEM_PROMPT
-        assert "hop" in diagnose._SYSTEM_PROMPT
+        prompt = diagnose._system_prompt("network_dns")
+        assert "manual_steps" in prompt
+        assert "never run" in prompt
+        assert "hop" in prompt
+
+    def test_system_prompt_is_base_plus_class_hint(self):
+        prompt = diagnose._system_prompt("network_dns")
+        assert prompt.startswith(diagnose._BASE_PROMPT)
+        assert diagnose.SYMPTOM_CLASSES["network_dns"]["prompt"] in prompt
+
+    def test_base_prompt_is_class_neutral(self):
+        assert "dns" not in diagnose._BASE_PROMPT.lower()
+        assert "hop" not in diagnose._BASE_PROMPT.lower()
+
+    def test_drive_uses_the_class_rules(self, engine, monkeypatch):
+        sentinel = diagnose._verdict("likely", "local", "SENTINEL", "r", rule_hits=["sentinel"])
+        monkeypatch.setitem(
+            diagnose.SYMPTOM_CLASSES,
+            "t_rules",
+            {"label": "T", "slots": (), "wave1": (), "escalate": (), "prompt": "", "rules": lambda ev, host: sentinel},
+        )
+        monkeypatch.setattr(diagnose, "model_unavailable_reason", lambda: "no_api_key")
+        started = diagnose.start_diagnosis("x", symptom_class="t_rules")
+        diagnose._run_session(started["session_id"])
+        assert diagnose._sessions[started["session_id"]]["rule_verdict"]["headline"] == "SENTINEL"
+
+    def test_repair_image_needs_the_system_modules_hit(self):
+        v = {"status": "likely", "locus": "local", "suggested_actions": ["repair_image"], "manual_steps": []}
+        dropped = diagnose.apply_guards(v, {}, {"rule_hits": ["app_crash_repeat"]})
+        assert dropped["suggested_actions"] == []
+        kept = diagnose.apply_guards(
+            v, {}, {"rule_hits": ["app_crash_repeat", "system_modules"], "status": "likely", "locus": "local"}
+        )
+        assert kept["suggested_actions"] == ["repair_image"]
 
     def test_parse_reply_cleans_steps(self):
         _, v = diagnose.parse_reply({**REPLY, "manual_steps": ["  Do X ", "Do X", 3]}, "network_dns")
@@ -867,6 +918,56 @@ class TestRedact:
 
     def test_username_plain_word(self):
         assert diagnose.redact("Al reported", ["username"]) == "<user> reported"
+
+    def test_self_host_is_replaced_whole_token_any_case(self, monkeypatch):
+        monkeypatch.setattr(diagnose.socket, "gethostname", lambda: "shigs78-pc24")
+        assert diagnose.redact({"m": "SHIGS78-PC24 restarted"}, ["self_host"]) == {"m": "<this-pc> restarted"}
+        assert diagnose.redact(r"\\shigs78-pc24\share", ["self_host"]) == r"\\<this-pc>\share"
+
+    def test_self_host_leaves_longer_tokens_alone(self, monkeypatch):
+        monkeypatch.setattr(diagnose.socket, "gethostname", lambda: "shigs78-pc24")
+        text = "myshigs78-pc24x and shigs78-pc245"
+        assert diagnose.redact(text, ["self_host"]) == text
+
+    def test_self_host_empty_hostname_is_a_no_op(self, monkeypatch):
+        monkeypatch.setattr(diagnose.socket, "gethostname", lambda: "")
+        assert diagnose.redact("anything", ["self_host"]) == "anything"
+
+    def test_self_host_placeholder_survives_username_pass(self, monkeypatch):
+        monkeypatch.setattr(diagnose.socket, "gethostname", lambda: "box")
+        assert diagnose.redact("box", ["self_host", "username"]) == "<this-pc>"
+
+    def test_crash_style_evidence_leaks_nothing_into_the_payload(self, monkeypatch):
+        """C4: planted user name, PC name, serial and MAC never reach the preview."""
+        monkeypatch.setattr(diagnose.socket, "gethostname", lambda: "SHIGS78-PC24")
+        monkeypatch.setitem(
+            diagnose.dp.PROBES,
+            "t.crash",
+            diagnose.dp.Probe("t.crash", "T", "crash", lambda s: {}, redact=("username", "serial", "mac", "self_host")),
+        )
+        session = {
+            "symptom": "the computer crashed",
+            "symptom_class": "network_dns",
+            "slots": {},
+            "evidence": [
+                {
+                    "key": "t.crash",
+                    "label": "T",
+                    "ok": True,
+                    "data": {
+                        "path": r"C:\Users\Al\AppData\x.dll",
+                        "host": "SHIGS78-PC24",
+                        "serialNumber": "S6S2NS0TA41838Z",
+                        "nic": "3c:ed:12:aa:bb:cc",
+                    },
+                }
+            ],
+        }
+        text = diagnose.build_payload(session)
+        for leak in ("\\\\Al\\\\", "SHIGS78-PC24", "S6S2NS0TA41838Z", "3c:ed:12:aa:bb:cc"):
+            assert leak not in text, leak
+        for placeholder in ("<this-pc>", "<serial>", "<mac>", "<user>"):
+            assert placeholder in text, placeholder
 
     @pytest.mark.parametrize("value", [None, "", "   "])
     def test_username_unset_or_blank_leaves_input(self, monkeypatch, value):
@@ -1050,6 +1151,7 @@ class TestBuildPayload:
             "rule_finding",
             "available_probes",
             "available_actions",
+            "local_utc_offset",
         }
         assert payload["schema_version"] == 1
         assert payload["round"] == 1
@@ -1258,7 +1360,7 @@ class TestCallModel:
             assert diagnose.DIAGNOSE_MODEL == "claude-opus-5-5"
         assert kw["model"] == diagnose.DIAGNOSE_MODEL
         assert kw["messages"][0]["content"] == "the payload text"
-        assert kw["system"] == diagnose._SYSTEM_PROMPT
+        assert kw["system"] == diagnose._system_prompt("network_dns")
         assert kw["max_tokens"] == 16000
         # Opus 5.5 defaults to medium effort; a diagnosis is reasoning work.
         assert kw["output_config"]["effort"] == "high"
@@ -1682,6 +1784,121 @@ def engine(monkeypatch):
     use_model(REPLY)
     answer(True)
     return eng
+
+
+class TestOptionalSlots:
+    """Spec 2026-10-09 §4: a class may declare optional slots, which are kept
+    when given but never asked for."""
+
+    @pytest.fixture(autouse=True)
+    def _opt_class(self, monkeypatch):
+        monkeypatch.setitem(
+            diagnose.SYMPTOM_CLASSES,
+            "t_opt",
+            {"label": "T", "slots": (), "optional_slots": ("app_name",), "wave1": (), "escalate": ()},
+        )
+
+    def test_optional_slot_is_kept_when_given(self, engine):
+        r = diagnose.start_diagnosis("x", slots={"app_name": "Chrome"}, symptom_class="t_opt")
+        assert r["state"] == "probing_wave1"
+        assert diagnose._sessions[r["session_id"]]["slots"] == {"app_name": "Chrome"}
+
+    def test_optional_slot_is_never_asked_for(self, engine):
+        r = diagnose.start_diagnosis("x", symptom_class="t_opt")
+        assert r["state"] == "probing_wave1"
+        assert diagnose._sessions[r["session_id"]]["slots"] == {}
+
+    def test_slot_outside_the_class_is_still_dropped(self, engine):
+        r = diagnose.start_diagnosis("x", slots={"target_host": "a.com"}, symptom_class="t_opt")
+        assert diagnose._sessions[r["session_id"]]["slots"] == {}
+
+
+class TestCrashClassify:
+    """Spec 2026-10-09 §8: crash words pick the crashes class; a crash plus a
+    site is a question, never a guess."""
+
+    @pytest.mark.parametrize(
+        ("text", "cls", "expected_app"),
+        [
+            ("the computer crashed last evening - cna you investigate?", "crashes", None),
+            ("Chrome keeps crashing", "crashes", "Chrome"),
+            ("Microsoft Teams keeps crashing", "crashes", "Microsoft Teams"),
+            ('"Chrome" crashed!', "crashes", "Chrome"),
+            ("My computer keeps crashing", "crashes", None),
+            ("Today Spotify froze again", "crashes", "Spotify"),
+            ("blue screen this morning", "crashes", None),
+            ("PC won't boot sometimes", "crashes", None),
+            ("it won’t start", "crashes", None),
+            ("the screen went black and it shut down", "crashes", None),
+            ("I need to change my DNS", "network_dns", None),
+        ],
+    )
+    def test_table(self, text, cls, expected_app):
+        r = diagnose.classify(text)
+        assert r["symptom_class"] == cls
+        assert r["slots"].get("app_name") == expected_app
+        if cls == "crashes":
+            assert r["missing"] == []
+
+    def test_crash_plus_site_asks(self):
+        r = diagnose.classify("Chrome crashed loading example.com")
+        assert r["symptom_class"] is None
+        assert r["candidates"] == ["example.com"]
+
+    def test_crash_plus_network_word_asks(self):
+        assert diagnose.classify("the internet crashed")["symptom_class"] is None
+
+    def test_hang_is_a_whole_word(self):
+        assert diagnose.classify("please change the wallpaper")["symptom_class"] is None
+        assert diagnose.classify("my hungry cat")["symptom_class"] is None
+
+
+class TestCrashClass:
+    def test_registered_with_spec_values(self):
+        spec = diagnose.SYMPTOM_CLASSES["crashes"]
+        assert spec["label"] == "Crashes, freezes & startup problems"
+        assert spec["slots"] == ()
+        assert spec["optional_slots"] == ("app_name",)
+        assert len(spec["wave1"]) == 10
+        assert set(spec["escalate"]) == {"crash.window_30d", "crash.app_detail", "crash.event_context"}
+
+    def test_rules_are_the_crash_rules(self):
+        import diagnose_crash_rules as dcr
+
+        ev = json.loads((FIXTURE_DIR / "crash_power_loss.json").read_text(encoding="utf-8"))["evidence"]
+        assert diagnose.SYMPTOM_CLASSES["crashes"]["rules"](ev, None) == dcr.evaluate_crash_rules(ev)
+
+    def test_prompt_mentions_local_time_and_repair_image(self):
+        prompt = diagnose._system_prompt("crashes")
+        assert "local_utc_offset" in prompt
+        assert "repair_image" in prompt
+        assert "dns" not in diagnose.SYMPTOM_CLASSES["crashes"]["prompt"].lower()
+
+    def test_c1_sentence_starts_a_session_without_asking(self, engine):
+        r = diagnose.start_diagnosis("the computer crashed last evening - cna you investigate?")
+        assert r["state"] == "probing_wave1"
+        assert diagnose._sessions[r["session_id"]]["symptom_class"] == "crashes"
+
+    def test_named_app_is_kept_as_a_slot(self, engine):
+        r = diagnose.start_diagnosis("Chrome keeps crashing")
+        assert diagnose._sessions[r["session_id"]]["slots"] == {"app_name": "Chrome"}
+
+    def test_typed_app_name_is_trimmed(self, engine):
+        r = diagnose.start_diagnosis("my pc froze", slots={"app_name": "  Spotify  "}, symptom_class="crashes")
+        assert diagnose._sessions[r["session_id"]]["slots"] == {"app_name": "Spotify"}
+
+    @pytest.mark.parametrize("bad", [42, ["Chrome"], "x" * 81])
+    def test_bad_app_name_is_rejected(self, engine, bad):
+        with pytest.raises(ValueError):
+            diagnose.start_diagnosis("my pc froze", slots={"app_name": bad}, symptom_class="crashes")
+
+    def test_blank_app_name_counts_as_not_given(self, engine):
+        r = diagnose.start_diagnosis("my pc froze", slots={"app_name": "   "}, symptom_class="crashes")
+        assert diagnose._sessions[r["session_id"]]["slots"] == {}
+
+    def test_payload_carries_the_local_utc_offset(self):
+        payload = json.loads(diagnose.build_payload(_session()))
+        assert re.fullmatch(r"[+-]\d\d:\d\d", payload["local_utc_offset"])
 
 
 class TestStartDiagnosis:
@@ -2470,6 +2687,7 @@ class TestRoutes:
         net = data[0]
         assert net["label"] == diagnose.SYMPTOM_CLASSES["network_dns"]["label"]
         assert net["slots"] == ["target_host"]
+        assert net["optional_slots"] == []
 
     # --- POST /api/diagnose/start ---
     def test_start_returns_session_id(self, client):
@@ -2652,3 +2870,91 @@ class TestRoutes:
         resp = client.get("/api/diagnose/history")
         assert resp.status_code == 200
         assert [e["session_id"] for e in resp.get_json()] == ["second", "first"]
+
+
+class TestCrashReviewFixes:
+    """Fixes from the whole-branch review of the crash bundle (2026-10-09)."""
+
+    @pytest.mark.parametrize(
+        ("text", "expected_app"),
+        [
+            ("Spotify has crashed", "Spotify"),
+            ("since yesterday Outlook keeps crashing", "Outlook"),
+            ("after the update Outlook keeps crashing", "Outlook"),
+            ("Chrome keeps freezing", "Chrome"),
+            ("Discord has just frozen", "Discord"),
+            ("I think the driver crashed", None),
+            ("it has crashed", None),
+            ("Word, Excel and Outlook keep crashing", None),
+        ],
+    )
+    def test_app_name_phrasings(self, text, expected_app):
+        r = diagnose.classify(text)
+        assert r["symptom_class"] == "crashes"
+        assert r["slots"].get("app_name") == expected_app
+
+    def test_crash_class_offers_only_repair_image(self):
+        session = _session(symptom="it crashed", symptom_class="crashes", slots={}, rule_verdict={})
+        actions = json.loads(diagnose.build_payload(session))["available_actions"]
+        assert [a["key"] for a in actions] == ["repair_image"]
+
+    def test_network_class_still_offers_the_whole_registry(self):
+        actions = json.loads(diagnose.build_payload(_session()))["available_actions"]
+        assert [a["key"] for a in actions] == sorted(remediation.REMEDIATION_REGISTRY)
+
+    def test_guard_drops_actions_outside_the_class_allowlist(self):
+        v = {
+            "status": "likely",
+            "locus": "local",
+            "suggested_actions": ["reboot_system", "clear_temp", "repair_image"],
+            "manual_steps": [],
+        }
+        rule = {"rule_hits": ["app_crash_repeat", "system_modules"], "status": "likely", "locus": "local"}
+        out = diagnose.apply_guards(v, {}, rule, class_key="crashes")
+        assert out["suggested_actions"] == ["repair_image"]
+        # No class given (or a class with no allowlist): the registry is the limit.
+        assert diagnose.apply_guards(v, {}, rule)["suggested_actions"] == [
+            "reboot_system",
+            "clear_temp",
+            "repair_image",
+        ]
+
+    def test_this_pc_name_typed_into_a_crash_symptom_is_hidden(self, monkeypatch):
+        monkeypatch.setattr(diagnose.socket, "gethostname", lambda: "shigs78-pc24")
+        session = _session(
+            symptom="shigs78-pc24 crashed",
+            symptom_class="crashes",
+            slots={"app_name": "shigs78-pc24 helper"},
+            rule_verdict={"headline": "shigs78-pc24 was fine"},
+        )
+        text = diagnose.build_payload(session)
+        assert "shigs78-pc24" not in text
+        assert "<this-pc> crashed" in text
+
+    def test_network_symptom_keeps_a_typed_pc_name(self, monkeypatch):
+        """The network class diagnoses a NAME; it may be this PC's own."""
+        monkeypatch.setattr(diagnose.socket, "gethostname", lambda: "shigs78-pc24")
+        session = _session(symptom="shigs78-pc24 won't resolve", slots={"target_host": "shigs78-pc24"})
+        assert json.loads(diagnose.build_payload(session))["symptom"] == "shigs78-pc24 won't resolve"
+
+
+class TestCrashCodeReviewFixes:
+    """/code-review findings on the crash bundle (2026-10-09)."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "dns lookup hangs",
+            "example.com is not responding",
+            "google.com keeps timing out since I rebooted",
+        ],
+    )
+    def test_a_timing_word_does_not_pull_a_network_problem_away(self, text):
+        assert diagnose.classify(text)["symptom_class"] == "network_dns"
+
+    @pytest.mark.parametrize("text", ["Chrome crashed loading example.com", "the internet crashed"])
+    def test_a_real_crash_plus_a_network_word_still_asks(self, text):
+        assert diagnose.classify(text)["symptom_class"] is None
+
+    def test_blank_app_name_does_not_erase_the_one_in_the_sentence(self):
+        assert diagnose._given_slots({"app_name": "   "}) == {}

@@ -24,10 +24,13 @@ import dns.rrset
 import pytest
 
 import diagnose
+import diagnose_crash_probes as dcp
 import diagnose_probes as dp
 import remediation
 
-# Snapshot before the autouse fixture empties PROBES: the real wave-one registrations.
+# Snapshot before the autouse fixture empties PROBES: the real registrations.
+# diagnose_crash_probes is imported first so the snapshot never depends on
+# which test module an xdist worker happened to load before this one.
 _REGISTERED = dict(dp.PROBES)
 
 
@@ -443,6 +446,21 @@ class TestWaveOneRegistration:
         assert _REGISTERED["dns.resolve_direct"].fn is dp._p_resolve_direct
         assert _REGISTERED["dns.authoritative"].fn is dp._p_authoritative
         assert _REGISTERED["dns.record_sweep"].fn is dp._p_record_sweep
+
+
+class TestOptionalNeeds:
+    def test_missing_optional_slot_does_not_refuse_the_probe(self):
+        seen = []
+        dp.register(dp.Probe("t.opt", "T", "crash", lambda s: seen.append(dict(s)) or {}, needs_optional=("app_name",)))
+        [res] = dp.run_probes(["t.opt"], {})
+        assert res["ok"] is True
+        assert seen == [{}]
+
+    def test_present_optional_slot_is_passed_through(self):
+        seen = []
+        dp.register(dp.Probe("t.opt", "T", "crash", lambda s: seen.append(dict(s)) or {}, needs_optional=("app_name",)))
+        dp.run_probes(["t.opt"], {"app_name": "Chrome"})
+        assert seen == [{"app_name": "Chrome"}]
 
 
 SLOTS = {"target_host": "hynote.ai"}
@@ -2158,7 +2176,9 @@ class TestRegistryInvariants:
     """Checked against the import-time snapshot: the autouse fixture empties dp.PROBES."""
 
     def test_snapshot_is_the_full_registry(self):
-        assert len(_REGISTERED) == 15
+        network = [k for k, p in _REGISTERED.items() if p.category == "network"]
+        assert len(network) == 15
+        assert {k for k, p in _REGISTERED.items() if p.category == "crash"} == set(dcp.REGISTERED)
 
     def test_wave_one_runs_in_a_single_batch_of_workers(self):
         # Fewer workers than wave-1 probes would queue some behind the slow ones and eat their timeouts.
@@ -2184,8 +2204,10 @@ class TestRegistryInvariants:
 
     def test_probe_needs_are_slots_of_every_class_that_uses_them(self):
         for name, key in _referenced_probes():
-            slots = set(diagnose.SYMPTOM_CLASSES[name]["slots"])
-            assert set(_REGISTERED[key].needs) <= slots, key
+            cls = diagnose.SYMPTOM_CLASSES[name]
+            optional = set(cls.get("optional_slots", ()))
+            assert set(_REGISTERED[key].needs) <= set(cls["slots"]) | optional, key
+            assert set(_REGISTERED[key].needs_optional) <= optional, key
 
     def test_categories_are_known(self):
         assert {p.category for p in _REGISTERED.values()} <= {"network", "crash", "storage", "perf"}

@@ -1,0 +1,222 @@
+{
+  "symptom": "the computer crashed last evening - cna you investigate?",
+  "symptom_class": "crashes",
+  "evidence": {
+    "crash.power_timeline": {
+      "key": "crash.power_timeline",
+      "label": "crash.power_timeline",
+      "ok": true,
+      "data": {
+        "window_days": 7,
+        "events": [
+          {
+            "time": "2026-10-09T03:36:24Z",
+            "kind": "boot",
+            "id": 12
+          },
+          {
+            "time": "2026-10-09T03:36:39Z",
+            "kind": "shutdown_requested",
+            "id": 1074
+          },
+          {
+            "time": "2026-10-09T03:37:02Z",
+            "kind": "shutdown_started",
+            "id": 109
+          },
+          {
+            "time": "2026-10-09T12:17:48Z",
+            "kind": "boot",
+            "id": 12
+          },
+          {
+            "time": "2026-10-09T12:17:51Z",
+            "kind": "unexpected",
+            "id": 41
+          }
+        ],
+        "episodes": [
+          {
+            "boot": "2026-10-09T03:36:24Z",
+            "next_boot": "2026-10-09T12:17:48Z",
+            "shutdown_requested_at": "2026-10-09T03:36:39Z",
+            "shutdown_started_at": "2026-10-09T03:37:02Z",
+            "next_boot_unexpected": true,
+            "last_alive": "2026-10-09T08:45:35Z",
+            "activity_after_shutdown_start": 13,
+            "last_activity": "2026-10-09T08:11:08Z"
+          },
+          {
+            "boot": "2026-10-09T12:17:48Z",
+            "next_boot": null,
+            "shutdown_requested_at": null,
+            "shutdown_started_at": null,
+            "next_boot_unexpected": false,
+            "last_alive": null
+          }
+        ],
+        "unavailable": []
+      },
+      "elapsed_ms": 1.0
+    },
+    "crash.unexpected_shutdowns": {
+      "key": "crash.unexpected_shutdowns",
+      "label": "crash.unexpected_shutdowns",
+      "ok": true,
+      "data": {
+        "events": [
+          {
+            "time": "2026-10-09T12:17:51Z",
+            "bugcheck_code": 0,
+            "power_button": false,
+            "long_press": false,
+            "sleep_in_progress": false
+          }
+        ]
+      },
+      "elapsed_ms": 1.0
+    },
+    "crash.bugchecks": {
+      "key": "crash.bugchecks",
+      "label": "crash.bugchecks",
+      "ok": true,
+      "data": {
+        "bugchecks": [],
+        "minidumps": [],
+        "memory_dmp": null
+      },
+      "elapsed_ms": 1.0
+    },
+    "crash.whea": {
+      "key": "crash.whea",
+      "label": "crash.whea",
+      "ok": true,
+      "data": {
+        "fatal": 0,
+        "corrected": 0,
+        "by_component": {
+          "processor": 0,
+          "memory": 0,
+          "pcie": 0,
+          "other": 0
+        },
+        "first": null,
+        "last": null
+      },
+      "elapsed_ms": 1.0
+    },
+    "crash.boot_health": {
+      "key": "crash.boot_health",
+      "label": "crash.boot_health",
+      "ok": true,
+      "data": {
+        "boot_failures": [],
+        "startup_repair_runs": 0,
+        "boot_durations_ms": [],
+        "unavailable": []
+      },
+      "elapsed_ms": 1.0
+    },
+    "crash.app_crashes": {
+      "key": "crash.app_crashes",
+      "label": "crash.app_crashes",
+      "ok": true,
+      "data": {
+        "named": null,
+        "apps": [
+          {
+            "app": "RstMwService.exe",
+            "crashes": 1,
+            "hangs": 0,
+            "last": "2026-10-09T03:36:24Z",
+            "modules": [
+              {
+                "module": "KERNELBASE.dll",
+                "count": 1
+              }
+            ],
+            "exception_codes": [
+              "0xc0000005"
+            ],
+            "system_module_crashes": 0
+          }
+        ]
+      },
+      "elapsed_ms": 1.0
+    },
+    "crash.storage_errors": {
+      "key": "crash.storage_errors",
+      "label": "crash.storage_errors",
+      "ok": true,
+      "data": {
+        "by_provider": {},
+        "pool_repair_failures": 1,
+        "pool_times": [
+          "2026-10-09T03:36:24Z"
+        ],
+        "storage_service_faults": [
+          {
+            "app": "RstMwService.exe",
+            "time": "2026-10-09T03:36:24Z"
+          }
+        ],
+        "unavailable": []
+      },
+      "elapsed_ms": 1.0
+    },
+    "crash.recent_changes": {
+      "key": "crash.recent_changes",
+      "label": "crash.recent_changes",
+      "ok": true,
+      "data": {
+        "installs": [
+          {
+            "time": "2026-10-09T04:11:05Z",
+            "kind": "service",
+            "name": "McAfee Scheduled Task"
+          }
+        ]
+      },
+      "elapsed_ms": 1.0
+    },
+    "crash.hw_changes": {
+      "key": "crash.hw_changes",
+      "label": "crash.hw_changes",
+      "ok": true,
+      "data": {
+        "changes": [
+          {
+            "time": "2026-10-08T15:39:21Z",
+            "field": "secure_boot",
+            "old": "enabled",
+            "new": "disabled"
+          }
+        ]
+      },
+      "elapsed_ms": 1.0
+    },
+    "crash.power_config": {
+      "key": "crash.power_config",
+      "label": "crash.power_config",
+      "ok": true,
+      "data": {
+        "fast_startup": false,
+        "hibernate": false
+      },
+      "elapsed_ms": 1.0
+    }
+  },
+  "expect": {
+    "rule": "hung_shutdown",
+    "status": "likely",
+    "locus": "local",
+    "must_include": [],
+    "must_exclude": [
+      "repair_image"
+    ],
+    "context": [
+      "hw_changed",
+      "storage_trouble"
+    ]
+  }
+}

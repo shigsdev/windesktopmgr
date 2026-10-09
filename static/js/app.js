@@ -10258,10 +10258,18 @@ async function dx_loadClasses() {
   if (sel) {
     sel.innerHTML = '<option value="">Choose one&hellip;</option>' +
       _dxClasses.map(c => `<option value="${escHtml(c.key)}">${escHtml(c.label)}</option>`).join("");
-    // Only ask for a site once a class that needs one is picked.
-    sel.addEventListener("change", () => dx_show("dx-host-row", dx_classNeedsHost(sel.value)));
+    // Only ask for a detail once a class that uses it is picked.
+    sel.addEventListener("change", () => {
+      dx_show("dx-host-row", dx_classNeedsHost(sel.value));
+      dx_show("dx-app-row", dx_classHasOptional(sel.value, "app_name"));
+    });
   }
   return _dxClasses;
+}
+
+function dx_classHasOptional(key, slot) {
+  const c = (_dxClasses || []).find(x => x.key === key);
+  return !!(c && Array.isArray(c.optional_slots) && c.optional_slots.includes(slot));
 }
 
 function dx_classNeedsHost(key) {
@@ -10353,6 +10361,7 @@ async function dx_showAsk(res) {
   // When the class is unknown the site box waits until a class needing one is picked.
   const sel = dx_el("dx-class");
   dx_show("dx-host-row", wantHost || (wantClass && !!sel && dx_classNeedsHost(sel.value)));
+  dx_show("dx-app-row", wantClass && !!sel && dx_classHasOptional(sel.value, "app_name"));
   const chips = dx_el("dx-candidates");
   if (chips) {
     const cands = Array.isArray(res.candidates) ? res.candidates : [];
@@ -10370,8 +10379,11 @@ function dx_clearAsk() {
   dx_show("dx-ask", false);
   dx_show("dx-class-row", false);
   dx_show("dx-host-row", false);
+  dx_show("dx-app-row", false);
   const host = dx_el("dx-host");
   if (host) host.value = "";
+  const appBox = dx_el("dx-app");
+  if (appBox) appBox.value = "";
   const sel = dx_el("dx-class");
   if (sel) sel.value = "";
   const chips = dx_el("dx-candidates");
@@ -10386,6 +10398,10 @@ async function dx_start() {
   // Omit what is empty: the server must never see "" or null for a slot.
   const host = (dx_el("dx-host").value || "").trim();
   if (host) body.slots = {target_host: host};
+  // The optional app name is sent only while its box is showing.
+  const appRow = dx_el("dx-app-row");
+  const appName = (dx_el("dx-app").value || "").trim();
+  if (appName && appRow && appRow.style.display !== "none") body.slots = {...(body.slots || {}), app_name: appName};
   const classRow = dx_el("dx-class-row");
   const cls = dx_el("dx-class").value;
   if (cls && classRow && classRow.style.display !== "none") body.symptom_class = cls;
