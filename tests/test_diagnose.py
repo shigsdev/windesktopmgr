@@ -1883,6 +1883,19 @@ class TestCrashClass:
         r = diagnose.start_diagnosis("Chrome keeps crashing")
         assert diagnose._sessions[r["session_id"]]["slots"] == {"app_name": "Chrome"}
 
+    def test_typed_app_name_is_trimmed(self, engine):
+        r = diagnose.start_diagnosis("my pc froze", slots={"app_name": "  Spotify  "}, symptom_class="crashes")
+        assert diagnose._sessions[r["session_id"]]["slots"] == {"app_name": "Spotify"}
+
+    @pytest.mark.parametrize("bad", [42, ["Chrome"], "x" * 81])
+    def test_bad_app_name_is_rejected(self, engine, bad):
+        with pytest.raises(ValueError):
+            diagnose.start_diagnosis("my pc froze", slots={"app_name": bad}, symptom_class="crashes")
+
+    def test_blank_app_name_counts_as_not_given(self, engine):
+        r = diagnose.start_diagnosis("my pc froze", slots={"app_name": "   "}, symptom_class="crashes")
+        assert diagnose._sessions[r["session_id"]]["slots"] == {}
+
     def test_payload_carries_the_local_utc_offset(self):
         payload = json.loads(diagnose.build_payload(_session()))
         assert re.fullmatch(r"[+-]\d\d:\d\d", payload["local_utc_offset"])

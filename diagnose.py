@@ -1320,6 +1320,7 @@ def apply_guards(verdict: dict, evidence: dict, rule_verdict: dict, target_host:
 # ---------------------------------------------------------------------------
 
 MAX_SYMPTOM_CHARS = 4000
+MAX_APP_NAME_CHARS = 80
 _SESSIONS_MAX = 20
 _SESSION_TTL_S = 1800
 _MAX_ACTIVE = 2
@@ -1334,7 +1335,8 @@ _history_lock = threading.Lock()
 
 
 def _given_slots(slots: Any) -> dict:
-    """The caller's ``slots`` with ``target_host`` normalised. Raises ValueError."""
+    """The caller's ``slots`` with ``target_host`` normalised and ``app_name``
+    trimmed (text, at most MAX_APP_NAME_CHARS). Raises ValueError."""
     if slots is None:
         return {}
     if not isinstance(slots, dict):
@@ -1346,6 +1348,11 @@ def _given_slots(slots: Any) -> dict:
         if host is None:
             raise ValueError("invalid host")
         out["target_host"] = host
+    if "app_name" in out:
+        app = out["app_name"]
+        if not isinstance(app, str) or len(app.strip()) > MAX_APP_NAME_CHARS:
+            raise ValueError(f"app_name must be text of at most {MAX_APP_NAME_CHARS} characters")
+        out["app_name"] = app.strip()
     return out
 
 

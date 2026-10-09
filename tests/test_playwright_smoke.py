@@ -3044,31 +3044,86 @@ class TestDiagnoseTab:
         assert status_requests == [], f"polled a session that should not exist: {status_requests}"
 
     def test_unrecognised_symptom_says_what_is_covered_not_asks_for_a_site(self, loaded_page):
-        """Regression (2026-10-09): "the computer crashed last evening" got "Pick
-        one below" over a list holding only the network class, plus a site box.
-        It must name what Diagnose covers, point crashes at the BSOD / Event Log
-        tabs, and keep the site box hidden until a class that needs it is picked."""
+        """Regression (2026-10-09, PR #184): an unrecognised symptom got "Pick
+        one below" plus a site box. It must name what Diagnose covers and keep
+        each detail box hidden until a class that uses it is picked. Since the
+        crash class exists (PR 2) the "look at the Blue Screens tab" pointer
+        is gone: Diagnose covers crashes itself."""
         page, _ = loaded_page
         self._open(page)
-        page.fill("#dx-symptom", "the computer crashed last evening - can you investigate?")
+        page.fill("#dx-symptom", "my printer jams")
         page.click("#dx-run")
         page.wait_for_selector("#dx-class-row", state="visible", timeout=10_000)
         ask = page.text_content("#dx-ask")
         assert "Pick one below" not in ask
         assert "Website or network unreachable" in ask  # names what IS covered
-        assert page.evaluate("[...document.querySelectorAll('#dx-ask .dx-link')].map(b => b.dataset.goto)") == [
-            "bsod",
-            "events",
-        ]
-        assert not page.is_visible("#dx-host-row"), "asked a crash report for a website"
+        assert "Crashes, freezes & startup problems" in ask
+        assert page.evaluate("document.querySelectorAll('#dx-ask .dx-link').length") == 0
+        assert not page.is_visible("#dx-host-row"), "asked for a website before a class was picked"
+        assert not page.is_visible("#dx-app-row")
+        page.select_option("#dx-class", "crashes")
+        assert page.is_visible("#dx-app-row")
+        assert not page.is_visible("#dx-host-row")
         page.select_option("#dx-class", "network_dns")
         assert page.is_visible("#dx-host-row")
+        assert not page.is_visible("#dx-app-row")
         page.select_option("#dx-class", "")
         assert not page.is_visible("#dx-host-row")
-        page.click("#dx-ask .dx-link[data-goto='bsod']")
-        assert page.evaluate(
-            "document.getElementById('page-bsod').classList.contains('active') || getComputedStyle(document.getElementById('page-bsod')).display !== 'none'"
+        assert not page.is_visible("#dx-app-row")
+
+    def test_crash_sentence_starts_a_diagnosis_without_asking(self, loaded_page):
+        """C1 (spec 2026-10-09): the user's own words go straight to the crash
+        check. Runs the real read-only probes; never sends anything (declines)."""
+        page, _ = loaded_page
+        self._open(page)
+        page.fill("#dx-symptom", "the computer crashed last evening - cna you investigate?")
+        page.click("#dx-run")
+        page.wait_for_function(
+            """
+            () => {
+                const p = document.getElementById('dx-preview');
+                const r = document.getElementById('dx-result');
+                return (p && p.style.display !== 'none') || (r && r.dataset.state === 'evidence_only');
+            }
+            """,
+            timeout=90_000,
         )
+        assert not page.is_visible("#dx-ask"), "a crash sentence must not be asked about"
+        if page.is_visible("#dx-preview"):
+            assert '"symptom_class": "crashes"' in page.inner_text("#dx-preview-text")
+            page.click("#dx-nosend")  # never send to Anthropic from a smoke test
+            page.wait_for_selector("#dx-result[data-state=evidence_only]", timeout=30_000)
+
+    def test_typed_app_name_is_sent_only_for_the_crash_class(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        bodies = []
+        page.on(
+            "request",
+            lambda req: bodies.append(req.post_data_json) if req.url.endswith("/api/diagnose/start") else None,
+        )
+        page.fill("#dx-symptom", "my printer jams")
+        page.click("#dx-run")
+        page.wait_for_selector("#dx-class-row", state="visible", timeout=10_000)
+        page.select_option("#dx-class", "crashes")
+        page.fill("#dx-app", "Spotify")
+        page.click("#dx-run")
+        page.wait_for_timeout(1500)
+        assert bodies[-1]["symptom_class"] == "crashes"
+        assert bodies[-1]["slots"] == {"app_name": "Spotify"}
+        # Leave nothing waiting on consent for the next test: decline, never send.
+        page.wait_for_function(
+            """
+            () => {
+                const p = document.getElementById('dx-preview');
+                const r = document.getElementById('dx-result');
+                return (p && p.style.display !== 'none') || (r && r.dataset.state === 'evidence_only');
+            }
+            """,
+            timeout=90_000,
+        )
+        if page.is_visible("#dx-preview"):
+            page.click("#dx-nosend")
 
     def test_inconclusive_never_renders_as_verdict(self, loaded_page):
         page, _ = loaded_page
