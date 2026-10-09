@@ -220,6 +220,22 @@ class TestWording:
         assert "fast_startup" in v["rule_hits"]
         assert "Fast Startup" in v["reasoning"]
 
+    def test_repeated_install_names_are_listed_once(self):
+        ev = put(
+            fixture_evidence("crash_power_loss"),
+            "crash.recent_changes",
+            {
+                "installs": [
+                    {"time": "2026-10-07T12:00:00Z", "kind": "service", "name": "MagicianSataModeReader"},
+                    {"time": "2026-10-07T11:00:00Z", "kind": "service", "name": "MagicianSataModeReader"},
+                    {"time": "2026-10-07T10:00:00Z", "kind": "driver", "name": "ACX HD Audio Driver"},
+                ]
+            },
+        )
+        text = dcr.evaluate_crash_rules(ev)["reasoning"]
+        assert text.count("MagicianSataModeReader") == 1
+        assert "ACX HD Audio Driver" in text
+
     def test_recent_install_within_48_hours_is_noted(self):
         ev = put(
             fixture_evidence("crash_power_loss"),

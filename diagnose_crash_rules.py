@@ -385,7 +385,7 @@ def _context(evidence: dict, incident: str | None) -> tuple[list[str], list[str]
             if installs:
                 hits.append("recent_install")
                 refs.append("crash.recent_changes")
-                names = ", ".join(str(i.get("name")) for i in installs[:3])
+                names = ", ".join(list(dict.fromkeys(str(i.get("name")) for i in installs))[:3])
                 lines.append(f"Installed in the {CONTEXT_HOURS} hours before: {names}.")
                 steps.append(
                     f"Something was installed shortly before ({names}); if the trouble started then, update or roll it back."

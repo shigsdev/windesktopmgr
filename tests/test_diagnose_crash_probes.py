@@ -514,9 +514,11 @@ class TestAppCrashes:
             {
                 "Application": [
                     app_crash("2026-10-08T10:00:00Z", "chrome.exe", "chrome.dll"),
-                    app_crash("2026-10-08T09:00:00Z", "chrome.exe", "ntdll.dll", module_path=SYS32 + r"\ntdll.dll"),
+                    app_crash("2026-10-08T09:00:00Z", "chrome.exe", "combase.dll", module_path=SYS32 + r"\combase.dll"),
                     app_hang("2026-10-08T08:00:00Z", "chrome.exe"),
-                    app_crash("2026-10-07T10:00:00Z", "notepad.exe", "ntdll.dll", module_path=SYS32 + r"\ntdll.dll"),
+                    app_crash(
+                        "2026-10-07T10:00:00Z", "notepad.exe", "combase.dll", module_path=SYS32 + r"\combase.dll"
+                    ),
                 ]
             }
         )
@@ -528,6 +530,28 @@ class TestAppCrashes:
         assert {"module": "chrome.dll", "count": 1} in chrome["modules"]
         assert chrome["system_module_crashes"] == 1
         assert notepad["system_module_crashes"] == 1
+
+    def test_own_executable_installed_in_system32_is_not_a_system_module(self, fake_evt, sysroot):
+        """Live 2026-10-09: Intel RST and Killer services live under System32 and
+        crash in their OWN exe; that is not a damaged Windows file."""
+        exe = SYS32 + r"\DriverStore\FileRepository\x\RstMwService.exe"
+        fake_evt(
+            {
+                "Application": [
+                    app_crash("2026-10-08T10:00:00Z", "RstMwService.exe", "RstMwService.exe", module_path=exe)
+                ]
+            }
+        )
+        assert dcp._p_app_crashes({})["apps"][0]["system_module_crashes"] == 0
+
+    @pytest.mark.parametrize("module", ["KERNELBASE.dll", "ntdll.dll", "ucrtbase.dll"])
+    def test_generic_exception_modules_are_not_evidence(self, fake_evt, sysroot, module):
+        """Live 2026-10-09: most app crashes are reported in KERNELBASE/ntdll
+        whoever caused them (ExpressVPN's helper: 967 times)."""
+        fake_evt(
+            {"Application": [app_crash("2026-10-08T10:00:00Z", "a.exe", module, module_path=SYS32 + "\\" + module)]}
+        )
+        assert dcp._p_app_crashes({})["apps"][0]["system_module_crashes"] == 0
 
     def test_named_app_goes_first(self, fake_evt, sysroot):
         log = [app_crash(f"2026-10-08T0{i}:00:00Z", "spotify.exe", "x.dll") for i in range(5)]

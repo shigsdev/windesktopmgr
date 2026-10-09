@@ -494,7 +494,20 @@ def _app_events(slots: dict) -> list[dict]:
     return out
 
 
-def _is_system_module(path: str) -> bool:
+# Where most app crashes are REPORTED whoever caused them (exception dispatch,
+# the heap, the C runtime's abort). A crash "in" one of these says nothing
+# about Windows' own files being damaged; on 2026-10-09 ExpressVPN's helper
+# had 967 crashes in KERNELBASE.dll.
+_GENERIC_CRASH_MODULES = frozenset({"kernelbase.dll", "ntdll.dll", "ucrtbase.dll", "msvcrt.dll", "vcruntime140.dll"})
+
+
+def _is_system_module(path: str, module: str, app: str) -> bool:
+    """A crash inside one of Windows' own System32 files: not the app's own
+    executable (third-party services install there too) and not one of the
+    generic modules every crash passes through."""
+    name = module.lower()
+    if not name or name == app.lower() or name in _GENERIC_CRASH_MODULES:
+        return False
     sys32 = os.path.join(os.environ.get("SYSTEMROOT", r"C:\Windows"), "System32").lower().rstrip("\\") + "\\"
     return path.lower().startswith(sys32)
 
@@ -530,7 +543,7 @@ def _p_app_crashes(slots: dict) -> dict:
                 g["_mods"][module] = g["_mods"].get(module, 0) + 1
             if exc:
                 g["_exc"][exc] = g["_exc"].get(exc, 0) + 1
-            if _is_system_module(_at(ev["data_list"], 11)):
+            if _is_system_module(_at(ev["data_list"], 11), module, ev["app"]):
                 g["system_module_crashes"] += 1
     apps = []
     for g in groups.values():
