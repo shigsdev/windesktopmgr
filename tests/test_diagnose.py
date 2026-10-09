@@ -2870,3 +2870,69 @@ class TestRoutes:
         resp = client.get("/api/diagnose/history")
         assert resp.status_code == 200
         assert [e["session_id"] for e in resp.get_json()] == ["second", "first"]
+
+
+class TestCrashReviewFixes:
+    """Fixes from the whole-branch review of the crash bundle (2026-10-09)."""
+
+    @pytest.mark.parametrize(
+        ("text", "expected_app"),
+        [
+            ("Spotify has crashed", "Spotify"),
+            ("since yesterday Outlook keeps crashing", "Outlook"),
+            ("after the update Outlook keeps crashing", "Outlook"),
+            ("Chrome keeps freezing", "Chrome"),
+            ("Discord has just frozen", "Discord"),
+            ("I think the driver crashed", None),
+            ("it has crashed", None),
+            ("Word, Excel and Outlook keep crashing", None),
+        ],
+    )
+    def test_app_name_phrasings(self, text, expected_app):
+        r = diagnose.classify(text)
+        assert r["symptom_class"] == "crashes"
+        assert r["slots"].get("app_name") == expected_app
+
+    def test_crash_class_offers_only_repair_image(self):
+        session = _session(symptom="it crashed", symptom_class="crashes", slots={}, rule_verdict={})
+        actions = json.loads(diagnose.build_payload(session))["available_actions"]
+        assert [a["key"] for a in actions] == ["repair_image"]
+
+    def test_network_class_still_offers_the_whole_registry(self):
+        actions = json.loads(diagnose.build_payload(_session()))["available_actions"]
+        assert [a["key"] for a in actions] == sorted(remediation.REMEDIATION_REGISTRY)
+
+    def test_guard_drops_actions_outside_the_class_allowlist(self):
+        v = {
+            "status": "likely",
+            "locus": "local",
+            "suggested_actions": ["reboot_system", "clear_temp", "repair_image"],
+            "manual_steps": [],
+        }
+        rule = {"rule_hits": ["app_crash_repeat", "system_modules"], "status": "likely", "locus": "local"}
+        out = diagnose.apply_guards(v, {}, rule, class_key="crashes")
+        assert out["suggested_actions"] == ["repair_image"]
+        # No class given (or a class with no allowlist): the registry is the limit.
+        assert diagnose.apply_guards(v, {}, rule)["suggested_actions"] == [
+            "reboot_system",
+            "clear_temp",
+            "repair_image",
+        ]
+
+    def test_this_pc_name_typed_into_a_crash_symptom_is_hidden(self, monkeypatch):
+        monkeypatch.setattr(diagnose.socket, "gethostname", lambda: "shigs78-pc24")
+        session = _session(
+            symptom="shigs78-pc24 crashed",
+            symptom_class="crashes",
+            slots={"app_name": "shigs78-pc24 helper"},
+            rule_verdict={"headline": "shigs78-pc24 was fine"},
+        )
+        text = diagnose.build_payload(session)
+        assert "shigs78-pc24" not in text
+        assert "<this-pc> crashed" in text
+
+    def test_network_symptom_keeps_a_typed_pc_name(self, monkeypatch):
+        """The network class diagnoses a NAME; it may be this PC's own."""
+        monkeypatch.setattr(diagnose.socket, "gethostname", lambda: "shigs78-pc24")
+        session = _session(symptom="shigs78-pc24 won't resolve", slots={"target_host": "shigs78-pc24"})
+        assert json.loads(diagnose.build_payload(session))["symptom"] == "shigs78-pc24 won't resolve"

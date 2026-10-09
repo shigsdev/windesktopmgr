@@ -275,3 +275,38 @@ class TestRobustness:
 
     def test_empty_evidence(self):
         assert dcr.evaluate_crash_rules({})["status"] == "inconclusive"
+
+
+class TestFinalReviewFixes:
+    """Fixes from the whole-branch review (2026-10-09)."""
+
+    def test_one_failed_start_is_not_1_times(self):
+        ev = put(
+            quiet(),
+            "crash.boot_health",
+            {
+                "boot_failures": ["2026-10-08T14:00:00Z"],
+                "startup_repair_runs": 1,
+                "boot_durations_ms": [],
+                "unavailable": [],
+            },
+        )
+        headline = dcr.evaluate_crash_rules(ev)["headline"]
+        assert "1 times" not in headline
+        assert headline.startswith("Windows failed to start on ")
+
+    def test_nothing_found_says_which_records_could_not_be_read(self):
+        ev = put(
+            quiet(),
+            "crash.boot_health",
+            {"boot_failures": [], "startup_repair_runs": 0, "boot_durations_ms": [], "unavailable": ["StartupRepair"]},
+        )
+        ev["crash.whea"] = {"key": "crash.whea", "label": "crash.whea", "ok": False, "error": "timeout"}
+        v = dcr.evaluate_crash_rules(ev)
+        assert v["rule_hits"] == ["nothing_found"]
+        assert "could not be read" in v["reasoning"]
+        assert "StartupRepair" in v["reasoning"]
+        assert "crash.whea" in v["reasoning"]
+
+    def test_nothing_found_reads_cleanly_when_everything_was_read(self):
+        assert "could not be read" not in dcr.evaluate_crash_rules(quiet())["reasoning"]

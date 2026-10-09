@@ -33,7 +33,7 @@ _COMPONENT_TEXT = {"processor": "processor", "memory": "memory", "pcie": "PCIe",
 
 # Whole words only: "hang" must not fire on "change", nor "hung" on "hungry".
 CRASH_RE = re.compile(
-    r"\b(?:crash\w*|blue\s+screen\w*|bsod\w*|froze|freez\w*|hung|hang(?:s|ing)?|stopped\s+responding|"
+    r"\b(?:crash\w*|blue\s+screen\w*|bsod\w*|froze(?:n)?|freez\w*|hung|hang(?:s|ing)?|stopped\s+responding|"
     r"not\s+responding|restarted\s+by\s+itself|reboot\w*|shut\s*down|won[’']?t\s+(?:boot|start)|"
     r"black\s+screen|keeps\s+closing|power(?:ed)?\s+off|turned\s+off)\b",
     re.IGNORECASE,
@@ -41,9 +41,15 @@ CRASH_RE = re.compile(
 
 _APP_VERB_RE = re.compile(
     r"(?P<name>(?:[\w\"“”'.+-]+\s+){0,2}[\w\"“”'.+-]+)\s+"
-    r"(?:keeps?\s+crashing|crashe[sd]|froze|freezes|stopped\s+responding|keeps\s+closing|is\s+not\s+responding)\b",
+    r"(?:(?:has|have|had|just|always|also|now|again|is|was)\s+){0,2}"
+    r"(?:keeps?\s+(?:crashing|freezing|closing)|crashe[sd]|froze(?:n)?|freezes|stopped\s+responding|"
+    r"not\s+responding)\b",
     re.IGNORECASE,
 )
+# Helper words that may sit between the app and the verb ("Spotify has just crashed").
+_AUXILIARY = frozenset({"has", "have", "had", "just", "always", "also", "now", "again", "is", "was"})
+# "Word, Excel and Outlook keep crashing" names several apps: no one app to focus on.
+_LIST_WORDS = frozenset({"and", "or", "&", "plus"})
 _LEADING_FILLER = frozenset(
     {
         "the",
@@ -65,6 +71,23 @@ _LEADING_FILLER = frozenset(
         "now",
         "also",
         "just",
+        "since",
+        "after",
+        "before",
+        "update",
+        "updating",
+        "upgrade",
+        "reboot",
+        "restart",
+        "think",
+        "guess",
+        "i",
+        "last",
+        "night",
+        "morning",
+        "evening",
+        "tonight",
+        "week",
     }
 )
 _GENERIC = frozenset(
@@ -83,6 +106,24 @@ _GENERIC = frozenset(
         "the",
         "my",
         "a",
+        # Not an app the crash logs name.
+        "driver",
+        "app",
+        "apps",
+        "program",
+        "programs",
+        "game",
+        "browser",
+        "all",
+        # Pronouns: "it has crashed", "they keep crashing".
+        "i",
+        "he",
+        "she",
+        "they",
+        "we",
+        "you",
+        "this",
+        "that",
     }
 )
 
@@ -95,6 +136,10 @@ def extract_app_name(text: str) -> str | None:
         return None
     words = [w.strip("\"“”'.,!?") for w in m.group("name").split()]
     words = [w for w in words if w]
+    if any(w.lower() in _LIST_WORDS for w in words):
+        return None
+    while words and words[-1].lower() in _AUXILIARY:
+        words.pop()
     while words and words[0].lower() in _LEADING_FILLER:
         words.pop(0)
     if not words or words[-1].lower() in _GENERIC:
@@ -309,7 +354,8 @@ def _rule_boot_failure(evidence: dict):
     n = max(1, sum(1 for t in failures if _local(t).strftime("%Y-%m-%d") == day))
     reasoning = f"crash.boot_health: {len(failures)} failed start(s) recorded"
     reasoning += f" and Startup Repair ran {repairs} time(s)." if repairs else "."
-    verdict = dg._verdict("likely", "local", f"Windows failed to start {n} times on {day}", reasoning)
+    headline = f"Windows failed to start {n} times on {day}" if n > 1 else f"Windows failed to start on {day}"
+    verdict = dg._verdict("likely", "local", headline, reasoning)
     return "boot_failure", verdict, latest, ["crash.boot_health"]
 
 
@@ -412,6 +458,22 @@ def _system_module_apps(evidence: dict) -> int:
     return sum(1 for a in apps if isinstance(a, dict) and int(a.get("system_module_crashes") or 0) > 0)
 
 
+def _unread_sources(evidence: dict) -> list[str]:
+    """Probes that failed and channels a probe could not read: why "nothing
+    found" may only mean "nothing found in what could be read"."""
+    out: list[str] = []
+    for key, result in evidence.items():
+        if not (isinstance(key, str) and key.startswith("crash.") and isinstance(result, dict)):
+            continue
+        if result.get("ok") is not True:
+            out.append(key)
+            continue
+        data = result.get("data")
+        if isinstance(data, dict):
+            out += [str(c) for c in _list(data, "unavailable")]
+    return list(dict.fromkeys(out))
+
+
 # ── entry point ───────────────────────────────────────────────────────────
 
 
@@ -429,6 +491,11 @@ def evaluate_crash_rules(evidence: dict[str, dict]) -> dict:
             f"{WINDOW_DAYS} days point to a cause.",
             rule_hits=["nothing_found"],
         )
+        unread = _unread_sources(evidence)
+        if unread:
+            verdict["reasoning"] += (
+                f" Some records could not be read ({', '.join(unread)}), so something there could have been missed."
+            )
         return verdict
     key, verdict, incident, refs = hit
     hits, lines, extra_steps, context_refs = _context(evidence, incident)

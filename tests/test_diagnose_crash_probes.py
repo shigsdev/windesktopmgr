@@ -815,3 +815,94 @@ class TestRegistrationB:
 
     def test_thirteen_crash_probes(self):
         assert len(dcp.REGISTERED) == 13
+
+
+class TestFinalReviewFixes:
+    """Fixes from the whole-branch review (2026-10-09)."""
+
+    def test_fast_startup_boot_27_is_a_boot(self, fake_evt, monkeypatch):
+        """A Fast Startup (hybrid) start logs Kernel-Boot 27 but no Kernel-General
+        12. Without it, one 'episode' spans days and a later power-button 41 is
+        blamed on a shutdown that finished normally."""
+        fake_evt(
+            {
+                "System": [
+                    evt_xml(41, "2026-10-07T08:00:20Z", data={"BugcheckCode": "0"}, level=1),
+                    evt_xml(12, "2026-10-07T08:00:01Z", KG),
+                    evt_xml(27, "2026-10-07T08:00:01Z", KB, data={"BootType": "0"}),
+                    evt_xml(27, "2026-10-06T08:00:00Z", KB, data={"BootType": "1"}),
+                    evt_xml(109, "2026-10-05T22:00:00Z"),
+                    evt_xml(27, "2026-10-05T08:00:00Z", KB, data={"BootType": "0"}),
+                    evt_xml(12, "2026-10-05T08:00:00Z", KG),
+                ]
+            }
+        )
+        monkeypatch.setattr(dcp, "activity_between", lambda s, e, cap=500: (40, "2026-10-06T16:59:00Z"))
+        eps = dcp._p_power_timeline({})["episodes"]
+        # 27 + 12 in the same second is one start, not two.
+        assert [e["boot"] for e in eps] == ["2026-10-05T08:00:00Z", "2026-10-06T08:00:00Z", "2026-10-07T08:00:01Z"]
+        assert eps[0]["shutdown_started_at"] == "2026-10-05T22:00:00Z"
+        assert eps[0]["next_boot_unexpected"] is False
+        assert eps[1]["shutdown_started_at"] is None
+        assert eps[1]["next_boot_unexpected"] is True
+
+    def test_timeline_query_asks_for_kernel_boot_27(self, fake_evt):
+        fake = fake_evt({"System": []})
+        dcp._p_power_timeline({})
+        assert "EventID=27" in fake.queries[0][1]
+
+    def test_activity_window_skips_the_shutdown_itself(self, fake_evt, monkeypatch, edt):
+        """The shutdown's own 109/13/6006 records are not 'activity after it began'."""
+        fake_evt({"System": _real_system_log()})
+        seen = []
+        monkeypatch.setattr(dcp, "activity_between", lambda s, e, cap=500: seen.append((s, e)) or (0, None))
+        dcp._p_power_timeline({})
+        assert seen == [("2026-10-09T03:39:02Z", "2026-10-09T12:17:48Z")]
+
+    def test_timeout_reports_the_channel_unavailable(self, fake_evt, monkeypatch):
+        import time as _time
+
+        fake = fake_evt({"System": [evt_xml(12, "2026-10-08T10:00:00Z", KG)]})
+        monkeypatch.setattr(fake, "EvtNext", lambda h, c: _time.sleep(0.5) or [])
+        with pytest.raises(dcp.EvtUnavailable):
+            dcp.evt_query("System", "*", timeout_s=0.05)
+        unavailable = []
+        assert dcp._query("System", "*", unavailable, timeout_s=0.05) == []
+        assert unavailable == ["System"]
+
+    def test_routine_reinstalls_and_store_updates_are_dropped(self, fake_evt):
+        scm, wu, pnp = "Service Control Manager", "Microsoft-Windows-WindowsUpdateClient", "Microsoft-Windows-UserPnp"
+        fake_evt(
+            {
+                "System": [
+                    evt_xml(7045, "2026-10-09T08:00:00Z", scm, data={"ServiceName": "McAfee Scheduled Task"}),
+                    evt_xml(19, "2026-10-09T07:00:00Z", wu, data={"updateTitle": "9NRZT3Q9R3DL-Microsoft.Runtime"}),
+                    evt_xml(7045, "2026-10-09T04:00:00Z", scm, data={"ServiceName": "McAfee Scheduled Task"}),
+                    evt_xml(20003, "2026-10-08T21:00:00Z", pnp, user={"ServiceName": "HidUsb"}),
+                    evt_xml(7045, "2026-10-08T20:00:00Z", scm, data={"ServiceName": "ACX HD Audio Driver"}),
+                    evt_xml(20003, "2026-10-08T19:00:00Z", pnp, user={"ServiceName": "HidUsb"}),
+                    evt_xml(7045, "2026-10-08T12:00:00Z", scm, data={"ServiceName": "McAfee Scheduled Task"}),
+                    evt_xml(19, "2026-10-07T10:00:00Z", wu, data={"updateTitle": "2026-10 Update (KB5050001)"}),
+                ]
+            }
+        )
+        names = [i["name"] for i in dcp._p_recent_changes({})["installs"]]
+        assert names == ["HidUsb", "ACX HD Audio Driver", "HidUsb", "2026-10 Update (KB5050001)"]
+
+    def test_driver_name_never_falls_back_to_the_device_instance_id(self, fake_evt):
+        """A device instance id can end in the device's serial number."""
+        fake_evt(
+            {
+                "System": [
+                    evt_xml(
+                        20001,
+                        "2026-10-08T10:00:00Z",
+                        "Microsoft-Windows-UserPnp",
+                        user={"DeviceInstanceID": "USB\\VID_1&amp;PID_2\\SERIAL123", "DriverVersion": "1.0"},
+                    )
+                ]
+            }
+        )
+        [install] = dcp._p_recent_changes({})["installs"]
+        assert "SERIAL123" not in install["name"]
+        assert install["name"] == "an unnamed driver"

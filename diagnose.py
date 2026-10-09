@@ -80,7 +80,9 @@ _CRASH_PROMPT = (
 # of the class's ``slots`` (both enforced by the registry invariant tests).
 # ``optional_slots`` are kept when given but never asked for; ``rules`` is the
 # class's evidence-only verdict function (evidence, target_host) -> verdict;
-# ``prompt`` is appended to _BASE_PROMPT for the model call.
+# ``prompt`` is appended to _BASE_PROMPT for the model call. ``actions``, when
+# given, is the only part of the remediation registry the class may offer or
+# keep; without it the whole registry is in scope.
 SYMPTOM_CLASSES = {
     "network_dns": {
         "label": "Website or network unreachable",
@@ -128,6 +130,7 @@ SYMPTOM_CLASSES = {
         # Looked up at call time: the two diagnose modules import each other.
         "rules": lambda evidence, host: dcr.evaluate_crash_rules(evidence),
         "prompt": _CRASH_PROMPT,
+        "actions": ("repair_image",),
     },
 }
 
@@ -976,6 +979,20 @@ def _local_utc_offset() -> str:
     return f"{raw[:3]}:{raw[3:]}"
 
 
+def _class_actions(class_key: str | None) -> dict:
+    """The remediation actions a symptom class may offer: its ``actions``
+    allowlist when it has one, else the whole registry."""
+    allowed = SYMPTOM_CLASSES.get(class_key or "", {}).get("actions")
+    registry = remediation.REMEDIATION_REGISTRY
+    return registry if allowed is None else {k: v for k, v in registry.items() if k in allowed}
+
+
+def _class_redacts(spec: dict, cls: str) -> bool:
+    """True when any of the class's probes redacts PII class ``cls``."""
+    keys = (*spec.get("wave1", ()), *spec.get("escalate", ()))
+    return any(cls in dp.PROBES[k].redact for k in keys if k in dp.PROBES)
+
+
 def build_payload(session: dict) -> str:
     """The exact JSON text previewed to the user and then sent to the model.
 
@@ -990,9 +1007,13 @@ def build_payload(session: dict) -> str:
     slots = dict(session.get("slots") or {})
     target = slots.get("target_host")
     host = dp.normalize_host(target) if isinstance(target, str) else None
+    spec = SYMPTOM_CLASSES.get(session.get("symptom_class"), {})
+    # A class whose evidence hides this PC's name hides it in what the user
+    # typed too; the network class keeps it (the name may be what it diagnoses).
+    typed = ["username", "self_host"] if _class_redacts(spec, "self_host") else ["username"]
 
     def scrub(value: Any) -> Any:
-        return redact(value, ["username"], protect=host)
+        return redact(value, typed, protect=host)
 
     evidence = []
     for item in raw_evidence:
@@ -1004,7 +1025,7 @@ def build_payload(session: dict) -> str:
         else:
             item = scrub(item)
         evidence.append(item)
-    escalate = SYMPTOM_CLASSES.get(session.get("symptom_class"), {}).get("escalate", ())
+    escalate = spec.get("escalate", ())
     verdict = session.get("rule_verdict") or {}
     rnd = session.get("round", 0)
     payload = {
@@ -1028,7 +1049,7 @@ def build_payload(session: dict) -> str:
         ],
         "available_actions": [
             {"key": k, "label": v["label"], "description": v["description"]}
-            for k, v in sorted(remediation.REMEDIATION_REGISTRY.items())
+            for k, v in sorted(_class_actions(session.get("symptom_class")).items())
         ],
     }
     return json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False)
@@ -1104,7 +1125,7 @@ def model_unavailable_reason() -> str | None:
 def reply_schema(class_key: str) -> dict:
     """JSON schema the model's reply must match: one flat object, no extra keys."""
     probes = list(SYMPTOM_CLASSES.get(class_key, {}).get("escalate", ()))
-    actions = sorted(remediation.REMEDIATION_REGISTRY)
+    actions = sorted(_class_actions(class_key))
     return {
         "type": "object",
         "additionalProperties": False,
@@ -1235,17 +1256,23 @@ def parse_reply(obj: dict, class_key: str) -> tuple[str, Any] | None:
         "headline": texts["headline"],
         "reasoning": texts["reasoning"],
         "evidence_refs": [str(r) for r in refs],
-        "suggested_actions": _keep_known(actions, remediation.REMEDIATION_REGISTRY, "action"),
+        "suggested_actions": _keep_known(actions, _class_actions(class_key), "action"),
         # Advice text only; a missing or malformed list just means no steps.
         "manual_steps": clean_steps(obj.get("manual_steps")),
         "no_local_fix_reason": texts["no_local_fix_reason"],
     }
 
 
-def apply_guards(verdict: dict, evidence: dict, rule_verdict: dict, target_host: str | None = None) -> dict:
+def apply_guards(
+    verdict: dict,
+    evidence: dict,
+    rule_verdict: dict,
+    target_host: str | None = None,
+    class_key: str | None = None,
+) -> dict:
     """The model's verdict with the server-side guards applied; inputs are not mutated.
 
-    Order: unknown actions dropped; ``flush_dns`` dropped when the cache and
+    Order: unknown actions, and actions outside ``class_key``'s allowlist, dropped; ``flush_dns`` dropped when the cache and
     live DNS agree, the rules found the network's DNS filtering the name, or the
     target is an IP literal (no DNS to flush); a confident rule-based ``external_cause`` overrides the
     model's locus; actions survive only on a ``confident``/``likely`` verdict
@@ -1266,7 +1293,7 @@ def apply_guards(verdict: dict, evidence: dict, rule_verdict: dict, target_host:
     out.setdefault("no_local_fix_reason", "")
     actions = out.get("suggested_actions")
     out["suggested_actions"] = _keep_known(
-        actions if isinstance(actions, list) else [], remediation.REMEDIATION_REGISTRY, "action"
+        actions if isinstance(actions, list) else [], _class_actions(class_key), "action"
     )
     # A flush cannot help when the cache already agrees with live DNS, nor when
     # this network's DNS itself withholds the address (it would refill the same answer).
@@ -1623,7 +1650,11 @@ def _drive(session: dict) -> None:
         out_of_rounds = kind != "verdict" and session["round"] >= MAX_ROUNDS
         if kind == "verdict" or out_of_rounds:
             verdict = apply_guards(
-                _OUT_OF_ROUNDS if out_of_rounds else value, _by_key(evidence), session["rule_verdict"], host
+                _OUT_OF_ROUNDS if out_of_rounds else value,
+                _by_key(evidence),
+                session["rule_verdict"],
+                host,
+                class_key=class_key,
             )
             if out_of_rounds and verdict["source"] == "model":
                 verdict["source"] = "engine"  # not the model's words; "rules" when guard 3 took over

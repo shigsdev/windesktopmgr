@@ -17,6 +17,7 @@ import concurrent.futures
 import os
 import re
 import xml.etree.ElementTree as ET  # noqa: S405 -- parses Event Log service XML, not user input
+from collections import Counter
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 
@@ -102,9 +103,10 @@ def _parse_event(xml_str: str) -> dict | None:
 def evt_query(channel: str, xpath: str, max_events: int = 200, timeout_s: float = 10.0) -> list[dict]:
     """Events from ``channel`` matching ``xpath``, newest first, at most ``max_events``.
 
-    Raises ``EvtUnavailable`` when the channel cannot be opened, so a probe can
-    report which source it could not read. A timeout returns ``[]``; an event
-    that cannot be rendered or parsed is skipped.
+    Raises ``EvtUnavailable`` when the channel cannot be opened or the read
+    times out, so a probe can report which source it could not read (a slow log
+    must never look like an empty one). An event that cannot be rendered or
+    parsed is skipped.
     """
     if win32evtlog is None:
         raise EvtUnavailable(channel, "pywin32 is not installed")
@@ -136,8 +138,8 @@ def evt_query(channel: str, xpath: str, max_events: int = 200, timeout_s: float 
     ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
         return ex.submit(_drain).result(timeout=timeout_s)
-    except concurrent.futures.TimeoutError:
-        return []
+    except concurrent.futures.TimeoutError as exc:
+        raise EvtUnavailable(channel, f"timed out after {timeout_s:g} s") from exc
     finally:
         ex.shutdown(wait=False, cancel_futures=True)
 
@@ -169,6 +171,9 @@ def window_xpath(
 # How long after a boot the "unexpected shutdown" / "dirty shutdown" records
 # can be logged and still describe the shutdown that preceded that boot.
 _BOOT_REPORT_WINDOW_S = 600
+# A cold start logs Kernel-Boot 27 and Kernel-General 12 in the same second;
+# two "boot" records this close together are one start.
+_SAME_BOOT_S = 10
 
 
 def _seconds_between(a: str, b: str) -> float:
@@ -201,6 +206,8 @@ def derive_episodes(events: list[dict]) -> list[dict]:
     for ev in ordered:
         kind, when = ev.get("kind"), ev.get("time")
         if kind == "boot":
+            if current is not None and current["boot"] and _seconds_between(current["boot"], when) <= _SAME_BOOT_S:
+                continue
             if current is not None:
                 current["next_boot"] = when
             current = new(when)
@@ -299,6 +306,8 @@ def _query(channel: str, xpath: str, unavailable: list[str] | None = None, **kw)
 # (provider, id) -> timeline kind
 _TIMELINE_KINDS = {
     ("Microsoft-Windows-Kernel-General", 12): "boot",
+    # Fast Startup (hybrid) and hibernate resumes log only this one, not 12.
+    ("Microsoft-Windows-Kernel-Boot", 27): "boot",
     ("Microsoft-Windows-Kernel-General", 13): "shutdown_started",
     ("Microsoft-Windows-Kernel-Power", 109): "shutdown_started",
     ("Microsoft-Windows-Kernel-Power", 41): "unexpected",
@@ -307,6 +316,17 @@ _TIMELINE_KINDS = {
     ("EventLog", 6006): "eventlog_stop",
     ("EventLog", 6008): "dirty_noted",
 }
+
+
+# Records a normal shutdown writes in its first moments (109, 13, 6006, the
+# services stopping) are not "activity after the shutdown began".
+_SHUTDOWN_OWN_RECORDS_S = 120
+
+
+def _shift(stamp: str, seconds: int) -> str:
+    return _iso_utc(
+        datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) + timedelta(seconds=seconds)
+    )
 
 
 def _p_power_timeline(slots: dict, days: int = WINDOW_DAYS) -> dict:
@@ -327,7 +347,8 @@ def _p_power_timeline(slots: dict, days: int = WINDOW_DAYS) -> dict:
     episodes = derive_episodes(events)
     for ep in episodes:
         if ep["next_boot_unexpected"] and ep["shutdown_started_at"] and ep["next_boot"]:
-            count, last = activity_between(ep["shutdown_started_at"], ep["next_boot"])
+            start = _shift(ep["shutdown_started_at"], _SHUTDOWN_OWN_RECORDS_S)
+            count, last = activity_between(start, ep["next_boot"]) if start < ep["next_boot"] else (0, None)
             ep["activity_after_shutdown_start"] = count
             ep["last_activity"] = last
     trimmed = [{k: e[k] for k in ("time", "kind", "id")} for e in events[-MAX_TIMELINE_EVENTS:]]
@@ -607,17 +628,30 @@ def _install_name(kind: str, ev: dict) -> str:
         return d.get("ServiceName", "")
     if kind == "update":
         return d.get("updateTitle", "")
-    return d.get("DriverName") or next((v for v in ev["data_list"] if v), "") or next((v for v in d.values() if v), "")
+    # Never a generic fallback: DeviceInstanceID can end in the device's serial.
+    return d.get("DriverName") or d.get("ServiceName") or "an unnamed driver"
+
+
+# Microsoft Store app updates are titled "<12-char product id>-<package>".
+_STORE_UPDATE_RE = re.compile(r"^[0-9A-Z]{12}-")
+# A name installed this many times in the window is routine (a service that
+# re-registers at every start or every few hours), not a change.
+_ROUTINE_REPEATS = 3
 
 
 def _p_recent_changes(slots: dict) -> dict:
     ids = sorted({eid for _, eid in _INSTALL_SOURCES})
     installs = []
-    for ev in _query("System", window_xpath(ids=ids), max_events=300):
+    for ev in _query("System", window_xpath(ids=ids), max_events=500):
         kind = _INSTALL_SOURCES.get((ev["provider"], ev["id"]))
         if kind is None:
             continue
-        installs.append({"time": ev["time"], "kind": kind, "name": _install_name(kind, ev)})
+        name = _install_name(kind, ev)
+        if kind == "update" and _STORE_UPDATE_RE.match(name):
+            continue
+        installs.append({"time": ev["time"], "kind": kind, "name": name})
+    repeats = Counter((i["kind"], i["name"]) for i in installs)
+    installs = [i for i in installs if repeats[(i["kind"], i["name"])] < _ROUTINE_REPEATS]
     installs.sort(key=lambda i: i["time"], reverse=True)
     return {"installs": installs[:MAX_INSTALLS]}
 
