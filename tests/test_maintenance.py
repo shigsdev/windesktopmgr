@@ -657,10 +657,13 @@ class TestGenericScanRegistry:
         maintenance._scans.pop("unit", None)
 
     def test_keys_are_isolated(self, mocker):
+        # Compare against a snapshot rather than assuming the module-global junk
+        # slot is idle -- other tests own that slot's state.
+        junk_before = dict(maintenance._scans["junk"])
         mocker.patch("maintenance.threading.Thread")
         maintenance.start_or_get("unit", lambda: {"ok": True})
         assert maintenance._scans["unit"]["running"] is True
-        assert maintenance._scans["junk"]["running"] is False  # untouched
+        assert maintenance._scans["junk"] == junk_before  # untouched
 
     def test_worker_caches_under_its_own_key(self):
         maintenance._scan_worker("unit", lambda: {"ok": True, "v": 1})
