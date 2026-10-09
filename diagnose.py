@@ -25,6 +25,7 @@ import json
 import os
 import re
 import secrets
+import socket
 import threading
 import time
 from collections.abc import Iterable
@@ -831,7 +832,7 @@ _SERIAL_KEY_RE = re.compile(r"serial", re.IGNORECASE)
 _PRIVATE_NETS = tuple(ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
 # Placeholders are matched too so a second pass leaves them alone (a user
 # named "mac" must not turn "<mac>" into "<<user>>").
-_PLACEHOLDER = r"<(?:user|mac|serial|private-ip)>"
+_PLACEHOLDER = r"<(?:user|mac|serial|private-ip|this-pc)>"
 
 
 def _redact_private_ip(match: re.Match) -> str:
@@ -865,10 +866,22 @@ def _username_pattern(protect: str | None = None) -> re.Pattern | None:
     )
 
 
-def _redact_string(text: str, classes: frozenset[str], user_re: re.Pattern | None) -> str:
+def _self_host_pattern() -> re.Pattern | None:
+    """This PC's own computer name as a whole token (hyphens are part of it), or None."""
+    name = (socket.gethostname() or "").strip()
+    if not name:
+        return None
+    return re.compile(rf"(?<![\w-]){re.escape(name)}(?![\w-])", re.IGNORECASE)
+
+
+def _redact_string(
+    text: str, classes: frozenset[str], user_re: re.Pattern | None, host_re: re.Pattern | None = None
+) -> str:
     # The user name goes last: running it first would eat hex pairs of a MAC
     # ("3c:ed:12..." for user Ed), and the placeholders it leaves alone then
-    # protect <mac> / <private-ip>.
+    # protect <mac> / <private-ip> / <this-pc>.
+    if host_re is not None:
+        text = host_re.sub("<this-pc>", text)
     if "mac" in classes:
         text = _MAC_RE.sub("<mac>", text)
     if "local_ip" in classes:
@@ -878,23 +891,25 @@ def _redact_string(text: str, classes: frozenset[str], user_re: re.Pattern | Non
     return text
 
 
-def _redact_walk(obj: Any, classes: frozenset[str], user_re: re.Pattern | None) -> Any:
+def _redact_walk(
+    obj: Any, classes: frozenset[str], user_re: re.Pattern | None, host_re: re.Pattern | None = None
+) -> Any:
     if isinstance(obj, str):
-        return _redact_string(obj, classes, user_re)
+        return _redact_string(obj, classes, user_re, host_re)
     if isinstance(obj, dict):
         out = {}
         for key, value in obj.items():
             if "serial" in classes and isinstance(key, str) and _SERIAL_KEY_RE.search(key):
                 value = "<serial>"
             else:
-                value = _redact_walk(value, classes, user_re)
+                value = _redact_walk(value, classes, user_re, host_re)
             # Keys are authored by our code, so the user name is never applied to them.
             out[_redact_string(key, classes, None) if isinstance(key, str) else key] = value
         return out
     if isinstance(obj, list):
-        return [_redact_walk(v, classes, user_re) for v in obj]
+        return [_redact_walk(v, classes, user_re, host_re) for v in obj]
     if isinstance(obj, tuple):
-        return tuple(_redact_walk(v, classes, user_re) for v in obj)
+        return tuple(_redact_walk(v, classes, user_re, host_re) for v in obj)
     return copy.deepcopy(obj)
 
 
@@ -904,14 +919,16 @@ def redact(obj: Any, classes: Iterable[str], protect: str | None = None) -> Any:
     ``username``: the Windows user name, whole-word and case-insensitive, so
     "local alpha" survives a user called Al. ``mac``: MAC addresses with ``:``
     or ``-`` separators. ``serial``: the whole value of any dict key containing
-    "serial". ``local_ip``: RFC1918 IPv4 addresses. ``protect`` is a hostname
+    "serial". ``local_ip``: RFC1918 IPv4 addresses. ``self_host``: this PC's
+    own computer name, whole token, any case, as ``<this-pc>``. ``protect`` is a hostname
     the ``username`` class must leave intact. Dict keys are never touched by
     ``username``; unknown classes are ignored; non-string scalars pass
     through. The input is never mutated.
     """
     wanted = frozenset(classes)
     user_re = _username_pattern(protect) if "username" in wanted else None
-    return _redact_walk(obj, wanted, user_re)
+    host_re = _self_host_pattern() if "self_host" in wanted else None
+    return _redact_walk(obj, wanted, user_re, host_re)
 
 
 def build_payload(session: dict) -> str:

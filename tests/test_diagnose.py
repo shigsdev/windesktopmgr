@@ -899,6 +899,56 @@ class TestRedact:
     def test_username_plain_word(self):
         assert diagnose.redact("Al reported", ["username"]) == "<user> reported"
 
+    def test_self_host_is_replaced_whole_token_any_case(self, monkeypatch):
+        monkeypatch.setattr(diagnose.socket, "gethostname", lambda: "shigs78-pc24")
+        assert diagnose.redact({"m": "SHIGS78-PC24 restarted"}, ["self_host"]) == {"m": "<this-pc> restarted"}
+        assert diagnose.redact(r"\\shigs78-pc24\share", ["self_host"]) == r"\\<this-pc>\share"
+
+    def test_self_host_leaves_longer_tokens_alone(self, monkeypatch):
+        monkeypatch.setattr(diagnose.socket, "gethostname", lambda: "shigs78-pc24")
+        text = "myshigs78-pc24x and shigs78-pc245"
+        assert diagnose.redact(text, ["self_host"]) == text
+
+    def test_self_host_empty_hostname_is_a_no_op(self, monkeypatch):
+        monkeypatch.setattr(diagnose.socket, "gethostname", lambda: "")
+        assert diagnose.redact("anything", ["self_host"]) == "anything"
+
+    def test_self_host_placeholder_survives_username_pass(self, monkeypatch):
+        monkeypatch.setattr(diagnose.socket, "gethostname", lambda: "box")
+        assert diagnose.redact("box", ["self_host", "username"]) == "<this-pc>"
+
+    def test_crash_style_evidence_leaks_nothing_into_the_payload(self, monkeypatch):
+        """C4: planted user name, PC name, serial and MAC never reach the preview."""
+        monkeypatch.setattr(diagnose.socket, "gethostname", lambda: "SHIGS78-PC24")
+        monkeypatch.setitem(
+            diagnose.dp.PROBES,
+            "t.crash",
+            diagnose.dp.Probe("t.crash", "T", "crash", lambda s: {}, redact=("username", "serial", "mac", "self_host")),
+        )
+        session = {
+            "symptom": "the computer crashed",
+            "symptom_class": "network_dns",
+            "slots": {},
+            "evidence": [
+                {
+                    "key": "t.crash",
+                    "label": "T",
+                    "ok": True,
+                    "data": {
+                        "path": r"C:\Users\Al\AppData\x.dll",
+                        "host": "SHIGS78-PC24",
+                        "serialNumber": "S6S2NS0TA41838Z",
+                        "nic": "3c:ed:12:aa:bb:cc",
+                    },
+                }
+            ],
+        }
+        text = diagnose.build_payload(session)
+        for leak in ("\\\\Al\\\\", "SHIGS78-PC24", "S6S2NS0TA41838Z", "3c:ed:12:aa:bb:cc"):
+            assert leak not in text, leak
+        for placeholder in ("<this-pc>", "<serial>", "<mac>", "<user>"):
+            assert placeholder in text, placeholder
+
     @pytest.mark.parametrize("value", [None, "", "   "])
     def test_username_unset_or_blank_leaves_input(self, monkeypatch, value):
         if value is None:
