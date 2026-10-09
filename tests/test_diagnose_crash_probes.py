@@ -483,3 +483,311 @@ class TestRegistrationA:
         assert probe.category == "crash"
         assert probe.redact == CRASH_REDACT
         assert 8 <= probe.timeout_s <= 15
+
+
+# ── Task 6: wave-one probes B + escalation probes ─────────────────────────
+
+APP_ERR = "Application Error"
+APP_HANG = "Application Hang"
+SYS32 = r"C:\Windows\System32"
+
+
+def app_crash(time, app, module, exc="0xc0000005", module_path=None, app_ver="1.0", mod_ver="2.0", offset="0x1234"):
+    """An Application Error 1000 event; data_list positions as Windows writes them."""
+    path = module_path or rf"C:\Program Files\{app}\{module}"
+    fields = [app, app_ver, "ts", module, mod_ver, "ts", exc, offset, "pid", "start", rf"C:\Program Files\{app}", path]
+    return evt_xml(1000, time, APP_ERR, 2, data_list=fields)
+
+
+def app_hang(time, app):
+    return evt_xml(1002, time, APP_HANG, 2, data_list=[app, "1.0", "pid"])
+
+
+@pytest.fixture
+def sysroot(monkeypatch):
+    monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
+
+
+class TestAppCrashes:
+    def test_groups_counts_modules_and_system_modules(self, fake_evt, sysroot):
+        fake_evt(
+            {
+                "Application": [
+                    app_crash("2026-10-08T10:00:00Z", "chrome.exe", "chrome.dll"),
+                    app_crash("2026-10-08T09:00:00Z", "chrome.exe", "ntdll.dll", module_path=SYS32 + r"\ntdll.dll"),
+                    app_hang("2026-10-08T08:00:00Z", "chrome.exe"),
+                    app_crash("2026-10-07T10:00:00Z", "notepad.exe", "ntdll.dll", module_path=SYS32 + r"\ntdll.dll"),
+                ]
+            }
+        )
+        d = dcp._p_app_crashes({})
+        assert d["named"] is None
+        chrome, notepad = d["apps"]
+        assert chrome["app"] == "chrome.exe"
+        assert (chrome["crashes"], chrome["hangs"], chrome["last"]) == (2, 1, "2026-10-08T10:00:00Z")
+        assert {"module": "chrome.dll", "count": 1} in chrome["modules"]
+        assert chrome["system_module_crashes"] == 1
+        assert notepad["system_module_crashes"] == 1
+
+    def test_named_app_goes_first(self, fake_evt, sysroot):
+        log = [app_crash(f"2026-10-08T0{i}:00:00Z", "spotify.exe", "x.dll") for i in range(5)]
+        log.append(app_crash("2026-10-07T10:00:00Z", "chrome.exe", "chrome.dll"))
+        fake_evt({"Application": log})
+        d = dcp._p_app_crashes({"app_name": "Chrome"})
+        assert d["named"] == "Chrome"
+        assert d["apps"][0]["app"] == "chrome.exe"
+
+    def test_huge_log_is_capped_at_the_query_and_in_output(self, fake_evt, sysroot, monkeypatch):
+        """Review Focus 5: 5,000 events still give at most 10 apps."""
+        calls = []
+        many = [app_crash("2026-10-08T10:00:00Z", f"app{i % 40}.exe", "m.dll") for i in range(5000)]
+
+        def fake_query(channel, xpath, max_events=200, timeout_s=10.0):
+            calls.append(max_events)
+            return [dcp._parse_event(x) for x in many[:max_events]]
+
+        monkeypatch.setattr(dcp, "evt_query", fake_query)
+        d = dcp._p_app_crashes({})
+        assert calls == [1000]
+        assert len(d["apps"]) <= 10
+
+    def test_short_event_data_is_tolerated(self, fake_evt, sysroot):
+        fake_evt({"Application": [evt_xml(1000, "2026-10-08T10:00:00Z", APP_ERR, 2, data_list=["x.exe"])]})
+        [app] = dcp._p_app_crashes({})["apps"]
+        assert app["app"] == "x.exe"
+        assert app["modules"] == []
+
+    def test_dotnet_runtime_crash_counts(self, fake_evt, sysroot):
+        msg = "Application: tool.exe\nFramework Version: v4.0\nDescription: unhandled exception"
+        fake_evt({"Application": [evt_xml(1026, "2026-10-08T10:00:00Z", ".NET Runtime", 2, data_list=[msg])]})
+        [app] = dcp._p_app_crashes({})["apps"]
+        assert (app["app"], app["crashes"]) == ("tool.exe", 1)
+
+    def test_empty_and_command(self, fake_evt, sysroot):
+        fake = fake_evt({"Application": []})
+        assert dcp._p_app_crashes({})["apps"] == []
+        channel, xpath = fake.queries[0]
+        assert channel == "Application"
+        assert "EventID=1000" in xpath and "EventID=1002" in xpath
+
+
+class TestStorageErrors:
+    def test_providers_pool_and_storage_services(self, fake_evt):
+        fake_evt(
+            {
+                "System": [
+                    evt_xml(153, "2026-10-08T10:00:00Z", "disk", 3),
+                    evt_xml(11, "2026-10-08T09:00:00Z", "stornvme", 2),
+                    evt_xml(1, "2026-10-08T08:00:00Z", "unrelated", 2),
+                ],
+                dcp.STORAGE_SPACES_CHANNEL: [
+                    evt_xml(313, "2026-10-09T03:36:24Z", "Microsoft-Windows-StorageSpaces-Driver", 2),
+                    evt_xml(304, "2026-10-09T03:36:24Z", "Microsoft-Windows-StorageSpaces-Driver", 3),
+                ],
+                "Application": [
+                    app_crash("2026-10-09T03:36:24Z", "RstMwService.exe", "KERNELBASE.dll"),
+                    app_crash("2026-10-09T03:36:20Z", "chrome.exe", "chrome.dll"),
+                ],
+            }
+        )
+        d = dcp._p_storage_errors({})
+        assert d["by_provider"] == {
+            "disk": {"count": 1, "last": "2026-10-08T10:00:00Z"},
+            "stornvme": {"count": 1, "last": "2026-10-08T09:00:00Z"},
+        }
+        assert d["pool_repair_failures"] == 1
+        assert d["pool_times"] == ["2026-10-09T03:36:24Z"]
+        assert d["storage_service_faults"] == [{"app": "RstMwService.exe", "time": "2026-10-09T03:36:24Z"}]
+
+    def test_unreadable_pool_channel(self, fake_evt):
+        fake_evt({"System": [], dcp.STORAGE_SPACES_CHANNEL: OSError("missing"), "Application": []})
+        d = dcp._p_storage_errors({})
+        assert d["pool_repair_failures"] == 0
+        assert d["unavailable"] == [dcp.STORAGE_SPACES_CHANNEL]
+
+
+class TestRecentChanges:
+    def test_drivers_services_updates(self, fake_evt):
+        fake_evt(
+            {
+                "System": [
+                    evt_xml(
+                        20001, "2026-10-08T10:00:00Z", "Microsoft-Windows-UserPnp", user={"DriverName": "iaStorVD.inf"}
+                    ),
+                    evt_xml(
+                        7045, "2026-10-09T04:11:05Z", "Service Control Manager", data={"ServiceName": "McAfee Task"}
+                    ),
+                    evt_xml(
+                        19,
+                        "2026-10-07T10:00:00Z",
+                        "Microsoft-Windows-WindowsUpdateClient",
+                        data={"updateTitle": "KB5050001"},
+                    ),
+                    evt_xml(7045, "2026-10-06T10:00:00Z", "Some-Other", data={"ServiceName": "nope"}),
+                ]
+            }
+        )
+        assert dcp._p_recent_changes({})["installs"] == [
+            {"time": "2026-10-09T04:11:05Z", "kind": "service", "name": "McAfee Task"},
+            {"time": "2026-10-08T10:00:00Z", "kind": "driver", "name": "iaStorVD.inf"},
+            {"time": "2026-10-07T10:00:00Z", "kind": "update", "name": "KB5050001"},
+        ]
+
+    def test_capped_at_30(self, fake_evt):
+        log = [
+            evt_xml(
+                7045,
+                f"2026-10-08T{i // 60:02d}:{i % 60:02d}:00Z",
+                "Service Control Manager",
+                data={"ServiceName": f"s{i}"},
+            )
+            for i in range(80)
+        ]
+        fake_evt({"System": log})
+        assert len(dcp._p_recent_changes({})["installs"]) == 30
+
+
+class TestHwChanges:
+    def test_changes_in_window_with_serials_hidden(self, monkeypatch, edt):
+        import bios_audit
+
+        history = [
+            {"kind": "baseline", "timestamp": "2026-10-08T11:00:00", "snapshot": {}},
+            {
+                "kind": "change",
+                "context": "elevated",
+                "timestamp": "2026-10-08T11:39:21",
+                "changes": [
+                    {"field": "secure_boot", "old": "enabled", "new": "disabled"},
+                    {"field": "board_serial", "old": "AAA111", "new": "BBB222"},
+                ],
+            },
+            {
+                "kind": "change",
+                "timestamp": "2026-08-21T08:52:20",
+                "changes": [{"field": "bios_version", "old": "2.23.0", "new": "2.24.0"}],
+            },
+        ]
+        monkeypatch.setattr(bios_audit, "load_history", lambda: history)
+        monkeypatch.setattr(
+            dcp,
+            "_now_utc",
+            lambda: __import__("datetime").datetime(2026, 10, 9, 13, 0, tzinfo=__import__("datetime").timezone.utc),
+        )
+        assert dcp._p_hw_changes({})["changes"] == [
+            {"time": "2026-10-08T15:39:21Z", "field": "secure_boot", "old": "enabled", "new": "disabled"},
+            {"time": "2026-10-08T15:39:21Z", "field": "board_serial", "old": "<changed>", "new": "<changed>"},
+        ]
+
+    def test_single_change_dict_and_bad_entries(self, monkeypatch, edt):
+        import bios_audit
+
+        monkeypatch.setattr(
+            bios_audit,
+            "load_history",
+            lambda: [
+                {
+                    "kind": "change",
+                    "timestamp": "2026-10-08T11:39:21",
+                    "changes": {"field": "tpm", "old": "a", "new": "b"},
+                },
+                {"kind": "change", "timestamp": "not a time", "changes": []},
+                "junk",
+            ],
+        )
+        monkeypatch.setattr(
+            dcp,
+            "_now_utc",
+            lambda: __import__("datetime").datetime(2026, 10, 9, 13, 0, tzinfo=__import__("datetime").timezone.utc),
+        )
+        assert [c["field"] for c in dcp._p_hw_changes({})["changes"]] == ["tpm"]
+
+
+class TestPowerConfig:
+    def test_reads_both_values(self, monkeypatch):
+        values = {"HiberbootEnabled": 1, "HibernateEnabled": 0}
+        monkeypatch.setattr(dcp, "_reg_dword", lambda path, name: values.get(name))
+        assert dcp._p_power_config({}) == {"fast_startup": True, "hibernate": False}
+
+    def test_missing_values_are_none(self, monkeypatch):
+        monkeypatch.setattr(dcp, "_reg_dword", lambda path, name: None)
+        assert dcp._p_power_config({}) == {"fast_startup": None, "hibernate": None}
+
+
+class TestEscalations:
+    def test_window_30d_reruns_three_probes_over_30_days(self, fake_evt, tmp_path, monkeypatch):
+        monkeypatch.setenv("SYSTEMROOT", str(tmp_path))
+        fake = fake_evt({"System": []})
+        d = dcp._p_window_30d({})
+        assert set(d) == {"power_timeline", "bugchecks", "whea"}
+        assert d["power_timeline"]["window_days"] == 30
+        assert all("timediff(@SystemTime) <= 2592000000" in x for _, x in fake.queries)
+
+    def test_app_detail(self, fake_evt, sysroot):
+        fake_evt(
+            {
+                "Application": [
+                    app_crash("2026-10-08T10:00:00Z", "chrome.exe", "chrome.dll"),
+                    app_hang("2026-10-08T09:00:00Z", "chrome.exe"),
+                    app_crash("2026-10-08T08:00:00Z", "notepad.exe", "x.dll"),
+                ]
+            }
+        )
+        d = dcp._p_app_detail({"app_name": "chrome"})
+        assert d["records"][0] == {
+            "time": "2026-10-08T10:00:00Z",
+            "kind": "crash",
+            "app_version": "1.0",
+            "module": "chrome.dll",
+            "module_version": "2.0",
+            "exception": "0xc0000005",
+            "offset": "0x1234",
+        }
+        assert [r["kind"] for r in d["records"]] == ["crash", "hang"]
+
+    def test_event_context_before_newest_unexpected_shutdown(self, fake_evt):
+        fake_evt(
+            {
+                "System": [
+                    evt_xml(41, "2026-10-09T12:17:51Z", KP, 1, data={}),
+                    evt_xml(7, "2026-10-09T12:10:00Z", "disk", 2),
+                ],
+                "Application": [evt_xml(1000, "2026-10-09T12:15:00Z", APP_ERR, 2, data_list=["x.exe"])],
+            }
+        )
+        d = dcp._p_event_context({})
+        assert d["anchor"] == "2026-10-09T12:17:51Z"
+        assert {(e["provider"], e["id"]) for e in d["events"]} >= {("disk", 7), (APP_ERR, 1000)}
+        assert all(set(e) == {"time", "provider", "id", "level"} for e in d["events"])
+
+    def test_event_context_without_any_unexpected_shutdown(self, fake_evt):
+        fake_evt({"System": [], "Application": []})
+        assert dcp._p_event_context({}) == {"anchor": None, "events": []}
+
+
+class TestRegistrationB:
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "crash.app_crashes",
+            "crash.storage_errors",
+            "crash.recent_changes",
+            "crash.hw_changes",
+            "crash.power_config",
+            "crash.window_30d",
+            "crash.app_detail",
+            "crash.event_context",
+        ],
+    )
+    def test_registered_with_crash_category_and_redaction(self, key):
+        probe = dcp.REGISTERED[key]
+        assert probe.category == "crash"
+        assert probe.redact == CRASH_REDACT
+        assert 8 <= probe.timeout_s <= 15
+
+    def test_slot_needs(self):
+        assert dcp.REGISTERED["crash.app_crashes"].needs_optional == ("app_name",)
+        assert dcp.REGISTERED["crash.app_detail"].needs == ("app_name",)
+
+    def test_thirteen_crash_probes(self):
+        assert len(dcp.REGISTERED) == 13

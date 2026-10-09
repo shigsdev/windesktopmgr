@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
+import re
 import xml.etree.ElementTree as ET  # noqa: S405 -- parses Event Log service XML, not user input
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import diagnose_probes as dp
 
@@ -374,10 +375,10 @@ def _file_time(mtime: float) -> str:
     return _iso_utc(datetime.fromtimestamp(mtime, timezone.utc))
 
 
-def _p_bugchecks(slots: dict) -> dict:
+def _p_bugchecks(slots: dict, days: int = WINDOW_DAYS) -> dict:
     wer = "Microsoft-Windows-WER-SystemErrorReporting"
     bugchecks = []
-    for ev in _query("System", window_xpath(ids=[1001], providers=[wer])):
+    for ev in _query("System", window_xpath(ids=[1001], providers=[wer], days=days)):
         if ev["id"] != 1001 or ev["provider"] != wer or not ev["data_list"]:
             continue
         code, name = _stop_code(ev["data_list"][0])
@@ -405,12 +406,12 @@ def _p_bugchecks(slots: dict) -> dict:
 _WHEA_COMPONENT = {17: "pcie", 20: "pcie", 18: "processor", 19: "processor", 46: "memory", 47: "memory"}
 
 
-def _p_whea(slots: dict) -> dict:
+def _p_whea(slots: dict, days: int = WINDOW_DAYS) -> dict:
     provider = "Microsoft-Windows-WHEA-Logger"
     fatal = corrected = 0
     by_component = {"processor": 0, "memory": 0, "pcie": 0, "other": 0}
     times = []
-    for ev in _query("System", window_xpath(providers=[provider]), max_events=500):
+    for ev in _query("System", window_xpath(providers=[provider], days=days), max_events=500):
         if ev["provider"] != provider:
             continue
         if ev["level"] in (1, 2):
@@ -455,3 +456,286 @@ _crash_probe("crash.unexpected_shutdowns", "Unexpected shutdown details", _p_une
 _crash_probe("crash.bugchecks", "Blue screens and crash dumps", _p_bugchecks)
 _crash_probe("crash.whea", "Hardware error reports (WHEA)", _p_whea)
 _crash_probe("crash.boot_health", "Startup health", _p_boot_health)
+
+
+# ── Wave one B (plan Task 6) ──────────────────────────────────────────────
+
+STORAGE_SPACES_CHANNEL = "Microsoft-Windows-StorageSpaces-Driver/Operational"
+MAX_APPS = 10
+MAX_APP_EVENTS = 1000
+MAX_INSTALLS = 30
+MAX_APP_DETAIL = 30
+MAX_CONTEXT_EVENTS = 40
+_APP_PROVIDERS = {1000: "Application Error", 1002: "Application Hang", 1026: ".NET Runtime"}
+_STORAGE_PROVIDERS = ("disk", "stornvme", "storahci", "Ntfs")
+_STORAGE_SERVICE_RE = re.compile(r"^(RstMwService|IAStor|ia?storage).*\.exe$", re.IGNORECASE)
+_DOTNET_APP_RE = re.compile(r"Application:\s*(\S+)")
+
+
+def _at(items: list[str], i: int) -> str:
+    return items[i] if len(items) > i else ""
+
+
+def _app_events(slots: dict) -> list[dict]:
+    """App crash / hang records, newest first: {time, kind, app, data_list}."""
+    raw = _query("Application", window_xpath(ids=list(_APP_PROVIDERS)), max_events=MAX_APP_EVENTS)
+    out = []
+    for ev in raw:
+        if _APP_PROVIDERS.get(ev["id"]) != ev["provider"]:
+            continue
+        if ev["id"] == 1026:
+            m = _DOTNET_APP_RE.search(_at(ev["data_list"], 0))
+            app = m.group(1) if m else ""
+        else:
+            app = _at(ev["data_list"], 0)
+        if app:
+            kind = "hang" if ev["id"] == 1002 else "crash"
+            out.append({"time": ev["time"], "kind": kind, "app": app, "id": ev["id"], "data_list": ev["data_list"]})
+    return out
+
+
+def _is_system_module(path: str) -> bool:
+    sys32 = os.path.join(os.environ.get("SYSTEMROOT", r"C:\Windows"), "System32").lower().rstrip("\\") + "\\"
+    return path.lower().startswith(sys32)
+
+
+def _top(counter: dict[str, int], n: int = 3) -> list[tuple[str, int]]:
+    return sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))[:n]
+
+
+def _p_app_crashes(slots: dict) -> dict:
+    named = slots.get("app_name") or None
+    groups: dict[str, dict] = {}
+    for ev in _app_events(slots):
+        g = groups.setdefault(
+            ev["app"].lower(),
+            {
+                "app": ev["app"],
+                "crashes": 0,
+                "hangs": 0,
+                "last": "",
+                "_mods": {},
+                "_exc": {},
+                "system_module_crashes": 0,
+            },
+        )
+        g["last"] = max(g["last"], ev["time"])
+        if ev["kind"] == "hang":
+            g["hangs"] += 1
+            continue
+        g["crashes"] += 1
+        if ev["id"] == 1000:
+            module, exc = _at(ev["data_list"], 3), _at(ev["data_list"], 6)
+            if module:
+                g["_mods"][module] = g["_mods"].get(module, 0) + 1
+            if exc:
+                g["_exc"][exc] = g["_exc"].get(exc, 0) + 1
+            if _is_system_module(_at(ev["data_list"], 11)):
+                g["system_module_crashes"] += 1
+    apps = []
+    for g in groups.values():
+        mods, excs = g.pop("_mods"), g.pop("_exc")
+        g["modules"] = [{"module": m, "count": c} for m, c in _top(mods)]
+        g["exception_codes"] = [e for e, _ in _top(excs)]
+        apps.append(g)
+    wanted = named.lower().replace(" ", "") if named else None
+
+    def rank(g: dict) -> tuple:
+        is_named = bool(wanted) and wanted in g["app"].lower().replace(" ", "")
+        return (not is_named, -(g["crashes"] + g["hangs"]))
+
+    # Two stable sorts: newest first, then named app first and most failures first.
+    apps.sort(key=lambda g: g["last"], reverse=True)
+    apps.sort(key=rank)
+    return {"named": named, "apps": apps[:MAX_APPS]}
+
+
+def _p_storage_errors(slots: dict) -> dict:
+    unavailable: list[str] = []
+    by_provider: dict[str, dict] = {}
+    for ev in _query(
+        "System", window_xpath(providers=list(_STORAGE_PROVIDERS), levels=[1, 2, 3]), unavailable, max_events=500
+    ):
+        if ev["provider"] not in _STORAGE_PROVIDERS:
+            continue
+        slot = by_provider.setdefault(ev["provider"], {"count": 0, "last": ""})
+        slot["count"] += 1
+        slot["last"] = max(slot["last"], ev["time"])
+    pool_times = [
+        ev["time"] for ev in _query(STORAGE_SPACES_CHANNEL, window_xpath(ids=[313]), unavailable) if ev["id"] == 313
+    ]
+    faults = [
+        {"app": _at(ev["data_list"], 0), "time": ev["time"]}
+        for ev in _query("Application", window_xpath(ids=[1000]), unavailable, max_events=MAX_APP_EVENTS)
+        if ev["id"] == 1000
+        and ev["provider"] == "Application Error"
+        and _STORAGE_SERVICE_RE.match(_at(ev["data_list"], 0))
+    ]
+    return {
+        "by_provider": by_provider,
+        "pool_repair_failures": len(pool_times),
+        "pool_times": pool_times,
+        "storage_service_faults": faults,
+        "unavailable": unavailable,
+    }
+
+
+_INSTALL_SOURCES = {
+    ("Microsoft-Windows-UserPnp", 20001): "driver",
+    ("Microsoft-Windows-UserPnp", 20003): "driver",
+    ("Service Control Manager", 7045): "service",
+    ("Microsoft-Windows-WindowsUpdateClient", 19): "update",
+}
+
+
+def _install_name(kind: str, ev: dict) -> str:
+    d = ev["data"]
+    if kind == "service":
+        return d.get("ServiceName", "")
+    if kind == "update":
+        return d.get("updateTitle", "")
+    return d.get("DriverName") or next((v for v in ev["data_list"] if v), "") or next((v for v in d.values() if v), "")
+
+
+def _p_recent_changes(slots: dict) -> dict:
+    ids = sorted({eid for _, eid in _INSTALL_SOURCES})
+    installs = []
+    for ev in _query("System", window_xpath(ids=ids), max_events=300):
+        kind = _INSTALL_SOURCES.get((ev["provider"], ev["id"]))
+        if kind is None:
+            continue
+        installs.append({"time": ev["time"], "kind": kind, "name": _install_name(kind, ev)})
+    installs.sort(key=lambda i: i["time"], reverse=True)
+    return {"installs": installs[:MAX_INSTALLS]}
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _naive_local_to_utc(stamp: str) -> str | None:
+    """bios_audit writes local naive ISO timestamps; UTC ISO or None."""
+    try:
+        naive = datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return None
+    if naive.tzinfo is not None:
+        return _iso_utc(naive)
+    local = naive.replace(tzinfo=_LOCAL_TZ) if _LOCAL_TZ is not None else naive.astimezone()
+    return _iso_utc(local)
+
+
+def _p_hw_changes(slots: dict, days: int = WINDOW_DAYS) -> dict:
+    import bios_audit
+
+    cutoff = _iso_utc(_now_utc() - timedelta(days=days))
+    out = []
+    for entry in bios_audit.load_history():
+        if not isinstance(entry, dict) or entry.get("kind") != "change":
+            continue
+        when = _naive_local_to_utc(entry.get("timestamp", ""))
+        if when is None or when < cutoff:
+            continue
+        changes = entry.get("changes")
+        for ch in [changes] if isinstance(changes, dict) else (changes or []):
+            if not isinstance(ch, dict):
+                continue
+            field = str(ch.get("field", ""))
+            hidden = "serial" in field.lower()
+            out.append(
+                {
+                    "time": when,
+                    "field": field,
+                    "old": "<changed>" if hidden else ch.get("old"),
+                    "new": "<changed>" if hidden else ch.get("new"),
+                }
+            )
+    return {"changes": out}
+
+
+_POWER_KEY = r"SYSTEM\CurrentControlSet\Control\Session Manager\Power"
+_HIBERNATE_KEY = r"SYSTEM\CurrentControlSet\Control\Power"
+
+
+def _reg_dword(path: str, name: str) -> int | None:
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path) as key:
+            value, _ = winreg.QueryValueEx(key, name)
+        return int(value)
+    except (OSError, ImportError, TypeError, ValueError):
+        return None
+
+
+def _p_power_config(slots: dict) -> dict:
+    fast = _reg_dword(_POWER_KEY, "HiberbootEnabled")
+    hib = _reg_dword(_HIBERNATE_KEY, "HibernateEnabled")
+    return {"fast_startup": None if fast is None else bool(fast), "hibernate": None if hib is None else bool(hib)}
+
+
+# ── Escalation probes ─────────────────────────────────────────────────────
+
+
+def _p_window_30d(slots: dict) -> dict:
+    return {
+        "power_timeline": _p_power_timeline(slots, days=30),
+        "bugchecks": _p_bugchecks(slots, days=30),
+        "whea": _p_whea(slots, days=30),
+    }
+
+
+def _p_app_detail(slots: dict) -> dict:
+    wanted = str(slots.get("app_name", "")).lower().replace(" ", "")
+    records = []
+    for ev in _app_events(slots):
+        if wanted not in ev["app"].lower().replace(" ", ""):
+            continue
+        dl = ev["data_list"]
+        crash = ev["id"] == 1000
+        records.append(
+            {
+                "time": ev["time"],
+                "kind": ev["kind"],
+                "app_version": _at(dl, 1),
+                "module": _at(dl, 3) if crash else "",
+                "module_version": _at(dl, 4) if crash else "",
+                "exception": _at(dl, 6) if crash else "",
+                "offset": _at(dl, 7) if crash else "",
+            }
+        )
+        if len(records) >= MAX_APP_DETAIL:
+            break
+    return {"records": records}
+
+
+def _p_event_context(slots: dict) -> dict:
+    kp = "Microsoft-Windows-Kernel-Power"
+    anchors = [
+        ev["time"] for ev in _query("System", window_xpath(ids=[41], providers=[kp]), max_events=5) if ev["id"] == 41
+    ]
+    if not anchors:
+        return {"anchor": None, "events": []}
+    anchor = max(anchors)
+    start = _iso_utc(
+        datetime.strptime(anchor, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) - timedelta(minutes=10)
+    )
+    xpath = window_xpath(levels=[1, 2, 3], start=start, end=anchor)
+    events = []
+    for channel in ("System", "Application"):
+        for ev in _query(channel, xpath, max_events=MAX_CONTEXT_EVENTS):
+            if ev["time"] == anchor and ev["id"] == 41:
+                continue
+            events.append({"time": ev["time"], "provider": ev["provider"], "id": ev["id"], "level": ev["level"]})
+    events.sort(key=lambda e: e["time"], reverse=True)
+    return {"anchor": anchor, "events": events[:MAX_CONTEXT_EVENTS]}
+
+
+_crash_probe("crash.app_crashes", "Apps that crashed or froze", _p_app_crashes, needs_optional=("app_name",))
+_crash_probe("crash.storage_errors", "Disk and storage errors", _p_storage_errors)
+_crash_probe("crash.recent_changes", "Recent driver, service and update installs", _p_recent_changes)
+_crash_probe("crash.hw_changes", "BIOS and hardware changes", _p_hw_changes)
+_crash_probe("crash.power_config", "Fast Startup and hibernate settings", _p_power_config, timeout_s=8.0)
+_crash_probe("crash.window_30d", "Shutdowns, blue screens and hardware errors (30 days)", _p_window_30d, timeout_s=15.0)
+_crash_probe("crash.app_detail", "Every crash record for the named app", _p_app_detail, needs=("app_name",))
+_crash_probe("crash.event_context", "Errors in the 10 minutes before the last unexpected shutdown", _p_event_context)
