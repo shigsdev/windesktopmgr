@@ -10059,6 +10059,60 @@ async function doc_exportPdf(btn) {
   }
 }
 
+// Secure Boot state for the Docs procedure. Only the ELEVATED BIOS audit can
+// read it (bios_audit._ELEVATED_ONLY_FIELDS). That check runs daily but only
+// APPENDS history when something changes, so the newest elevated entry is the
+// current value and its timestamp is when it last changed -- not when it was
+// last checked. msinfo32 is the instant answer after a change.
+function doc_secureBootFrom(history) {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const e = history[i] || {};
+    const snap = e.snapshot || {};
+    const ctx = e.context || snap.context;
+    if (ctx === "elevated" && typeof snap.secure_boot === "string" && snap.secure_boot) {
+      return {state: snap.secure_boot, when: e.timestamp || snap.timestamp || ""};
+    }
+  }
+  return null;
+}
+
+async function doc_loadSecureBoot() {
+  const host = document.getElementById("doc-sb-state");
+  if (!host) return;
+  let sb = null;
+  let failed = false;
+  try {
+    const d = await fetch("/api/bios/audit/history?limit=200").then(r => r.json());
+    sb = doc_secureBootFrom(Array.isArray(d && d.history) ? d.history : []);
+  } catch (e) {
+    console.error("doc: secure boot read failed", e);
+    failed = true;
+  }
+  while (host.firstChild) host.removeChild(host.firstChild);
+  host.dataset.sbState = sb ? sb.state : "unknown";
+  const line = doc_el("div", "display:flex;align-items:center;gap:10px;flex-wrap:wrap");
+  line.appendChild(doc_el("span", "font-size:12px;font-weight:700", "Secure Boot:"));
+  if (!sb) {
+    line.appendChild(doc_el("span", "font-size:12px;color:var(--muted)",
+      failed ? "could not read the BIOS audit" : "not recorded yet — check with msinfo32 (Step 3)"));
+  } else if (sb.state.toLowerCase() === "enabled") {
+    line.appendChild(doc_el("span", "font-size:12px;font-weight:700;color:var(--green)", "On — nothing to do"));
+  } else if (sb.state.toLowerCase() === "unsupported") {
+    // Confirm-SecureBootUEFI fails on a Legacy-mode boot; Step 2 says not to
+    // change that, so this must not read as "follow the steps".
+    line.appendChild(doc_el("span", "font-size:12px;font-weight:700;color:var(--amber)",
+      "not available — Windows may be starting in Legacy mode. Check BIOS Mode in msinfo32 (Step 3) before changing anything."));
+  } else {
+    line.appendChild(doc_el("span", "font-size:12px;font-weight:700;color:var(--amber)",
+      `${sb.state} — follow the steps below`));
+  }
+  host.appendChild(line);
+  if (sb && sb.when) {
+    host.appendChild(doc_el("div", "font-size:11px;color:var(--muted);margin-top:4px",
+      `Recorded ${sb.when.replace("T", " ")}, when it last changed. The app re-checks daily and only records changes, so turning it on shows up here within a day; msinfo32 shows it immediately.`));
+  }
+}
+
 // Tracks the in-flight page load so the export can wait for real data instead
 // of capturing the "Reading the card layout…" placeholder.
 let _docReady = null;
@@ -10090,6 +10144,7 @@ async function _doc_loadInner() {
     console.error("doc: topology fetch failed", e);
   }
   const poolDone = doc_loadPoolState(topo);
+  const sbDone = doc_loadSecureBoot();
   try {
     await dkLoadTopology("doc-card-section", "doc-card", topo);
     const sec = document.getElementById("doc-card-section");
@@ -10107,6 +10162,7 @@ async function _doc_loadInner() {
     if (empty) empty.textContent = "Could not read the card layout: " + e.message;
   }
   await poolDone;
+  await sbDone;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
