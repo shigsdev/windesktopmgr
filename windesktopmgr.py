@@ -4710,6 +4710,9 @@ def baseline_timeline_route():
     window = max(10, min(window, 86400))
     history = baseline.load_history()
     timeline = baseline.correlate_drift_events(history, window_seconds=window)
+    # Say which changes the accepted baseline already holds, so the tab
+    # stops offering to accept them again (bug 2026-10-10).
+    baseline.annotate_reconciled(timeline, history, baseline.load_baseline(), baseline.load_accept_watermark())
     return jsonify({"ok": True, "window_seconds": window, "timeline": timeline})
 
 
