@@ -27,13 +27,10 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = [
-    "--cov=windesktopmgr",
-    "--cov=homenet",
-    "--cov=disk",
-    "--cov=remediation",
-    "--cov=nlq",
-    "--cov=diagnose",
-    "--cov=diagnose_probes",
+    # The whole repo, scoped by [tool.coverage.run] source/omit below -- never
+    # a list of module names, which every later module silently falls
+    # outside of (tech-debt #65: 7 of 39 modules were gated).
+    "--cov=.",
     "--cov-report=term-missing:skip-covered",
     "--cov-fail-under=80",
     "-q",
