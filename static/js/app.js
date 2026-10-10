@@ -6393,7 +6393,8 @@ async function bl_examineCluster(idx, windowSeconds) {
 async function bl_acceptCluster(idx) {
   const cluster = (window._blClusterStash || [])[idx];
   if (!cluster) { alert("Cluster data not available -- refresh the timeline."); return; }
-  const events = (cluster.events || []).map(ev => ({
+  // Only what the accepted baseline does not already hold (bug 2026-10-10).
+  const events = (cluster.events || []).filter(ev => ev.reconciled !== true).map(ev => ({
     category: ev.category,
     key: ev.key,
     kind: ev.kind,
@@ -6402,7 +6403,12 @@ async function bl_acceptCluster(idx) {
     // payload small + avoids stale-data bugs.
     current_value: null,
   }));
-  if (!events.length) { alert("Cluster has no events."); return; }
+  if (!events.length) {
+    alert((cluster.events || []).length
+      ? "Everything in this cluster is already in your baseline -- refresh the timeline."
+      : "Cluster has no events.");
+    return;
+  }
   const n = events.length;
   const expected = `ACCEPT ${n} CHANGES`;
   const typed = window.prompt(
@@ -6489,11 +6495,16 @@ async function loadBaselineTimeline() {
   // Cluster + event counts for the subtitle.
   const clusters = items.filter(x => x.type === "cluster").length;
   const lone = items.filter(x => x.type === "event").length;
-  subtitle.textContent = `Cluster window: ${win} s · ${clusters} cluster(s), ${lone} lone event(s)`;
+  // Clusters the accepted baseline already holds stay listed (the history)
+  // but are no longer offered for accepting (bug 2026-10-10).
+  const toReview = items.filter(x => x.reconciled !== true).length;
+  subtitle.textContent = `Cluster window: ${win} s · ${clusters} cluster(s), ${lone} lone event(s) · ${toReview} to review`;
   // Render newest-first (API already returns that order).
   const html = items.map(it => {
     if (it.type === "cluster") {
-      const color = sevColor[it.severity] || sevColor.info;
+      const done = it.reconciled === true;
+      const open = Number.isFinite(it.open_count) ? it.open_count : (it.event_count || 0);
+      const color = done ? sevColor.info : (sevColor[it.severity] || sevColor.info);
       const catLabel = (it.categories || []).join(", ");
       const span = it.span_seconds;
       const spanLabel = span >= 1 ? `${Math.round(span)} s` : "simultaneous";
@@ -6501,7 +6512,7 @@ async function loadBaselineTimeline() {
       const startedAt = it.started_at ? new Date(it.started_at).toLocaleString() : "—";
       const eventRows = (it.events || []).map(ev => `
         <div style="padding:4px 8px;border-left:2px solid ${color};margin:2px 0 2px 14px;font-size:11px;color:var(--text)">
-          <span style="color:var(--muted);font-family:var(--font-mono);font-size:10px">${escHtml(ev.timestamp || "")}</span>
+          ${ev.reconciled === true && !done ? '<span style="color:var(--green)" title="Already in the baseline">✓</span> ' : ""}<span style="color:var(--muted);font-family:var(--font-mono);font-size:10px">${escHtml(ev.timestamp || "")}</span>
           &nbsp;·&nbsp;
           <span style="font-weight:600">${escHtml(ev.category || "")}</span>
           <span style="color:var(--muted)">${escHtml(ev.kind || "")}</span>
@@ -6513,7 +6524,7 @@ async function loadBaselineTimeline() {
       // but adds escaping nightmares for nested quotes; a global is simpler.
       const idx = window._blClusterStash.push(it) - 1;
       return `
-        <div style="margin:8px 0;padding:8px 10px;background:var(--surface);border:1px solid ${color};border-left:4px solid ${color};border-radius:6px">
+        <div data-bl-cluster data-reconciled="${done ? "true" : "false"}" style="margin:8px 0;padding:8px 10px;background:var(--surface);border:1px solid ${color};border-left:4px solid ${color};border-radius:6px${done ? ";opacity:0.75" : ""}">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px">
             <div>
               <span style="font-weight:700;color:${color};text-transform:uppercase;font-size:10px">${escHtml(it.severity || "info")}</span>
@@ -6524,7 +6535,9 @@ async function loadBaselineTimeline() {
           <div style="color:var(--muted);font-size:11px;margin-bottom:6px">Categories: ${escHtml(catLabel)}</div>
           <div style="display:flex;gap:6px;margin-bottom:6px">
             <button onclick="bl_examineCluster(${idx})" style="background:transparent;border:1px solid var(--cyan);color:var(--cyan);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px">🔍 Examine</button>
-            <button onclick="bl_acceptCluster(${idx})" style="background:var(--cyan);border:none;color:#000;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">✓ Accept all ${it.event_count || 0}</button>
+            ${done
+              ? '<span style="color:var(--green);border:1px solid var(--green);padding:3px 10px;border-radius:4px;font-size:11px" title="Your accepted baseline already includes every change in this cluster">✓ In baseline</span>'
+              : `<button onclick="bl_acceptCluster(${idx})" style="background:var(--cyan);border:none;color:#000;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">✓ Accept all ${open}</button>`}
           </div>
           ${eventRows}
         </div>`;

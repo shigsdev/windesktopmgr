@@ -1164,6 +1164,12 @@ def _event_summary(ev: dict) -> str:
     return f"{cat} {kind}: {name}"
 
 
+def _history_key(item: dict) -> str:
+    """A drift item's key, as the timeline names it (one rule for both the
+    flattening and the reconciled lookup, so they can never disagree)."""
+    return item.get("key") or item.get("name") or "(unknown)"
+
+
 def _flatten_history_events(history: list) -> list:
     """Expand history entries into individual change events.
 
@@ -1197,7 +1203,7 @@ def _flatten_history_events(history: list) -> list:
                 for item in items:
                     if not isinstance(item, dict):
                         continue
-                    key = item.get("key") or item.get("name") or "(unknown)"
+                    key = _history_key(item)
                     ev = {
                         "timestamp": ts_str,
                         "_ts": ts,  # internal sort key, stripped before return
@@ -1293,6 +1299,71 @@ def correlate_drift_events(history: list, window_seconds: int = 300) -> list:
 
     # Newest first for the UI.
     timeline.reverse()
+    return timeline
+
+
+def _change_in_baseline(kind: str, item: dict, by_key: dict) -> bool:
+    """True when the accepted baseline already reflects one history change:
+    an added item is in it, a removed item is not, and a changed item holds
+    the new value of every field that changed."""
+    key = _history_key(item)
+    if kind == "added":
+        return key in by_key
+    if kind == "removed":
+        return key not in by_key
+    current = by_key.get(key)
+    new = item.get("new")
+    delta = item.get("delta") or []
+    if not (isinstance(current, dict) and isinstance(new, dict) and delta):
+        return False
+    return all(current.get(field) == new.get(field) for field in delta)
+
+
+def annotate_reconciled(timeline: list, history: list, baseline: dict | None, watermark: datetime | None) -> list:
+    """Mark which timeline changes the accepted baseline already holds.
+
+    Each event gains ``reconciled``: True when it was recorded at or before
+    the last full "accept current as baseline" (``watermark``), or when the
+    baseline reflects it (see ``_change_in_baseline``), which covers changes
+    accepted one cluster or one entry at a time. Each cluster gains
+    ``open_count`` (events still to review) and ``reconciled`` (none left).
+    The Baseline tab keeps the full history but offers to accept only what
+    is open. Bug 2026-10-10: every old cluster kept its "Accept all N"
+    button after the user accepted the whole current state.
+
+    ``timeline`` items are updated in place and returned.
+    """
+    items: dict[tuple, dict] = {}
+    for entry in history if isinstance(history, list) else []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("drift"), dict):
+            continue
+        for cat in ("startup", "services", "tasks"):
+            cat_drift = entry["drift"].get(cat) or {}
+            for kind in ("added", "removed", "changed"):
+                for item in (cat_drift.get(kind) or []) if isinstance(cat_drift, dict) else []:
+                    if isinstance(item, dict):
+                        items[(entry.get("timestamp"), cat, kind, _history_key(item))] = item
+
+    def reconciled(ev: dict) -> bool:
+        try:
+            if watermark is not None and datetime.fromisoformat(ev.get("timestamp", "")) <= watermark:
+                return True
+        except (TypeError, ValueError):
+            pass
+        if not isinstance(baseline, dict):
+            return False
+        item = items.get((ev.get("timestamp"), ev.get("category"), ev.get("kind"), ev.get("key")))
+        by_key = (baseline.get(ev.get("category")) or {}).get("by_key") or {}
+        return item is not None and _change_in_baseline(ev.get("kind"), item, by_key)
+
+    for it in timeline:
+        if it.get("type") == "cluster":
+            for ev in it.get("events") or []:
+                ev["reconciled"] = reconciled(ev)
+            it["open_count"] = sum(1 for ev in it.get("events") or [] if not ev["reconciled"])
+            it["reconciled"] = it["open_count"] == 0
+        else:
+            it["reconciled"] = reconciled(it)
     return timeline
 
 

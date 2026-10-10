@@ -3436,3 +3436,106 @@ class TestDiagnoseTab:
         page.wait_for_timeout(1000)
         actionable = [e for e in errors if "favicon" not in e.lower()]
         assert not actionable, f"console errors on the Diagnose tab: {actionable}"
+
+
+class TestBaselineTimelineReconciled:
+    """Bug 2026-10-10: after "Accept current as baseline" every old cluster in
+    the timeline still showed "Accept all N". A cluster the baseline already
+    reflects shows an "In baseline" tag instead; a partly reflected one offers
+    only what is left, and accepting it sends only those events. The timeline
+    and accept endpoints are stubbed: nothing is written."""
+
+    @staticmethod
+    def _cluster(started, events):
+        open_count = sum(1 for e in events if not e["reconciled"])
+        return {
+            "type": "cluster",
+            "started_at": started,
+            "ended_at": started,
+            "span_seconds": 0,
+            "categories": sorted({e["category"] for e in events}),
+            "category_counts": {},
+            "event_count": len(events),
+            "severity": "warning",
+            "reconciled": open_count == 0,
+            "open_count": open_count,
+            "events": events,
+        }
+
+    @staticmethod
+    def _ev(cat, key, reconciled):
+        return {
+            "timestamp": "2026-10-10T15:00:00",
+            "category": cat,
+            "kind": "added",
+            "key": key,
+            "name": key,
+            "delta": [],
+            "reconciled": reconciled,
+        }
+
+    def _stub(self, page):
+        posted: list[dict] = []
+        timeline = [
+            self._cluster(
+                "2026-10-10T15:00:00", [self._ev("startup", "open1", False), self._ev("services", "done1", True)]
+            ),
+            self._cluster("2026-10-10T13:47:13", [self._ev("startup", "old1", True), self._ev("tasks", "old2", True)]),
+        ]
+
+        def fulfill(route, body):
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+        def accept(route):
+            posted.append(route.request.post_data_json)
+            fulfill(route, {"ok": True, "accepted": 1, "no_op": 0, "failed": 0, "errors": []})
+
+        page.route(
+            lambda url: "/api/baseline/timeline" in url,
+            lambda route: fulfill(route, {"ok": True, "window_seconds": 300, "timeline": timeline}),
+        )
+        page.route("**/api/baseline/accept-cluster", accept)
+        return posted
+
+    def _render(self, page):
+        page.evaluate("switchTab('baseline')")
+        page.evaluate("loadBaselineTimeline()")
+        # Wait on the DOM, not the stash: the tab switch also loads the timeline,
+        # and two overlapping loads both append to the stash.
+        page.wait_for_function(
+            "[...document.querySelectorAll('#bl-timeline-body button')]"
+            ".filter(b => b.textContent.includes('Examine')).length === 2",
+            timeout=10_000,
+        )
+
+    def test_reconciled_cluster_shows_in_baseline_not_accept(self, loaded_page):
+        page, errors = loaded_page
+        self._stub(page)
+        self._render(page)
+        cards = page.locator("#bl-timeline-body [data-bl-cluster]")
+        assert cards.count() == 2
+        partly, done = cards.nth(0), cards.nth(1)
+        assert partly.get_attribute("data-reconciled") == "false"
+        assert partly.locator("button", has_text="Accept all").inner_text().strip() == "✓ Accept all 1"
+        assert done.get_attribute("data-reconciled") == "true"
+        assert done.locator("button", has_text="Accept").count() == 0
+        assert "In baseline" in done.inner_text()
+        assert not [e for e in errors if "pageerror" in e]
+
+    def test_accepting_a_partly_reconciled_cluster_sends_only_open_events(self, loaded_page):
+        page, _ = loaded_page
+        posted = self._stub(page)
+        self._render(page)
+        page.evaluate("""() => {
+            window.prompt = () => "ACCEPT 1 CHANGES";
+            window.alert = () => {};
+            return bl_acceptCluster(0);
+        }""")
+        page.wait_for_function("true")
+        for _ in range(20):
+            if posted:
+                break
+            page.wait_for_timeout(250)
+        assert len(posted) == 1
+        assert [e["key"] for e in posted[0]["events"]] == ["open1"]
+        assert posted[0]["confirm_token"] == "ACCEPT 1 CHANGES"

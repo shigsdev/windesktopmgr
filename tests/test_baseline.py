@@ -3426,3 +3426,111 @@ class TestAcceptWatermark:
         good = {"timestamp": "2026-06-03T10:00:00", "total_changes": 1}
         out = baseline.drop_accepted(["junk", None, 42, good])
         assert out == [good]
+
+
+class TestTimelineReconciled:
+    """Bug 2026-10-10: after "Accept current as baseline" the Baseline tab's
+    timeline still offered "Accept all N" on every old cluster, because
+    nothing compared a timeline event with the accepted baseline. Each event
+    now says whether the baseline already reflects it."""
+
+    BASE = {
+        "timestamp": "2026-10-10T14:00:00",
+        "startup": {
+            "by_key": {"kept": {"name": "kept", "command": "new.exe"}, "other": {"name": "other", "command": "x.exe"}}
+        },
+        "services": {"by_key": {"svc_now": {"name": "svc_now", "start_mode": "Auto"}}},
+        "tasks": {"by_key": {}},
+    }
+    WATERMARK = datetime(2026, 10, 10, 13, 47, 34)
+
+    def _timeline(self, history, snap=BASE, watermark=WATERMARK):
+        timeline = baseline.correlate_drift_events(history, window_seconds=60)
+        return baseline.annotate_reconciled(timeline, history, snap, watermark)
+
+    def test_everything_up_to_the_last_full_accept_is_reconciled(self):
+        # The user's case: a 2-category burst one minute before the accept,
+        # including an item the baseline no longer even has.
+        history = [
+            _hist_entry(
+                "2026-10-10T13:47:13",
+                startup={"added": [{"key": "gone", "name": "gone"}]},
+                services={"added": [{"key": "svc_now", "name": "svc_now"}]},
+            )
+        ]
+        [cluster] = self._timeline(history)
+        assert cluster["type"] == "cluster"
+        assert cluster["reconciled"] is True
+        assert cluster["open_count"] == 0
+        assert all(ev["reconciled"] for ev in cluster["events"])
+
+    def test_after_the_accept_each_event_is_checked_against_the_baseline(self):
+        history = [
+            _hist_entry(
+                "2026-10-10T15:00:00",
+                startup={
+                    "added": [{"key": "kept", "name": "kept"}, {"key": "not_in_base", "name": "not_in_base"}],
+                    "changed": [
+                        {"key": "kept", "name": "kept", "delta": ["command"], "new": {"command": "new.exe"}},
+                        {"key": "other", "name": "other", "delta": ["command"], "new": {"command": "other.exe"}},
+                    ],
+                },
+                services={"removed": [{"key": "svc_gone", "name": "svc_gone"}, {"key": "svc_now", "name": "svc_now"}]},
+            )
+        ]
+        [cluster] = self._timeline(history)
+        got = {(e["category"], e["kind"], e["name"]): e["reconciled"] for e in cluster["events"]}
+        assert got == {
+            ("startup", "added", "kept"): True,  # in the baseline now
+            ("startup", "added", "not_in_base"): False,
+            ("startup", "changed", "kept"): True,  # baseline holds the new value
+            ("startup", "changed", "other"): False,  # baseline holds a different value
+            ("services", "removed", "svc_gone"): True,  # gone from the baseline too
+            ("services", "removed", "svc_now"): False,  # baseline still has it
+        }
+        assert cluster["reconciled"] is False
+        assert cluster["open_count"] == 3
+
+    def test_lone_events_are_annotated_too(self):
+        history = [_hist_entry("2026-10-10T15:00:00", services={"added": [{"key": "svc_now", "name": "svc_now"}]})]
+        [event] = self._timeline(history)
+        assert event["type"] == "event"
+        assert event["reconciled"] is True
+
+    def test_no_baseline_and_no_accept_leaves_everything_open(self):
+        history = [
+            _hist_entry(
+                "2026-10-10T13:00:00",
+                startup={"added": [{"key": "a", "name": "a"}]},
+                services={"added": [{"key": "b", "name": "b"}]},
+            )
+        ]
+        [cluster] = self._timeline(history, snap=None, watermark=None)
+        assert cluster["reconciled"] is False
+        assert cluster["open_count"] == 2
+
+    def test_route_reports_reconciled_after_a_full_accept(self, client, baseline_tmp):
+        baseline._append_history(
+            _hist_entry(
+                "2026-10-10T13:47:13",
+                startup={"added": [{"key": "R\\X", "name": "X"}]},
+                services={"added": [{"key": "svc.X", "name": "X"}]},
+            )
+        )
+        baseline._atomic_write(baseline.BASELINE_FILE, self.BASE)
+        baseline._save_accept_watermark("2026-10-10T13:47:34")
+        [cluster] = client.get("/api/baseline/timeline?window=60").get_json()["timeline"]
+        assert cluster["reconciled"] is True
+        assert cluster["open_count"] == 0
+
+    def test_route_without_any_accept_keeps_items_open(self, client, baseline_tmp):
+        baseline._append_history(
+            _hist_entry(
+                "2026-10-10T13:47:13",
+                startup={"added": [{"key": "R\\X", "name": "X"}]},
+                services={"added": [{"key": "svc.X", "name": "X"}]},
+            )
+        )
+        [cluster] = client.get("/api/baseline/timeline?window=60").get_json()["timeline"]
+        assert cluster["reconciled"] is False
+        assert cluster["open_count"] == 2
