@@ -1208,3 +1208,24 @@ class TestRunAndSaveAppendsToBacklog:
         # State got persisted despite backlog miss.
         state = codehealth.load_state()
         assert state.get("scanners", {}).get("coverage", {}).get("level") == "warning"
+
+
+class TestCoverageGateScope:
+    """Tech-debt #65 (2026-10-10): the --cov-fail-under gate listed seven
+    modules by name, so every module added later (baseline, backup,
+    dashboard, maintenance, the crash bundle...) was neither measured nor
+    gated. The gate must measure the whole repo (pyproject [tool.coverage]
+    source/omit decide what is in scope)."""
+
+    def _addopts(self):
+        import tomllib
+        from pathlib import Path
+
+        cfg = tomllib.loads((Path(__file__).parent.parent / "pyproject.toml").read_text(encoding="utf-8"))
+        return cfg["tool"]["pytest"]["ini_options"]["addopts"]
+
+    def test_gate_measures_the_whole_repo_not_a_module_list(self):
+        assert [a for a in self._addopts() if a.startswith("--cov=")] == ["--cov=."]
+
+    def test_gate_still_fails_under_80(self):
+        assert "--cov-fail-under=80" in self._addopts()
