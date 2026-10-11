@@ -1633,3 +1633,265 @@ class TestBackupActionRoutes:
         resp = client.post("/api/backup/scan-cleanup", json={"session_id": "abc"})
         assert resp.status_code == 200
         assert resp.get_json()["ok"] is True
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Elevated helper (scripts/backup_helper_elevated.py) -- tech-debt #69
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _helper_run(rc=0, stdout="", stderr=""):
+    return {
+        "returncode": rc,
+        "stdout": stdout,
+        "stderr": stderr,
+        "stdout_tail": stdout,
+        "stderr_tail": stderr,
+        "elapsed_seconds": 1.0,
+        "timed_out": False,
+    }
+
+
+class TestHelperUtilities:
+    def test_tail_short_and_empty(self):
+        helper = _load_helper()
+        assert helper._tail("") == ""
+        assert helper._tail("  ok  ") == "ok"
+
+    def test_tail_truncates_keeping_the_end(self):
+        helper = _load_helper()
+        out = helper._tail("a" * 600 + "END", limit=10)
+        assert out.startswith("...[truncated]...")
+        assert out.endswith("aaaaaaaEND")
+
+    def test_atomic_write_json_and_text(self, tmp_path):
+        helper = _load_helper()
+        p = tmp_path / "r.json"
+        assert helper._atomic_write(str(p), {"ok": True}) is True
+        assert json.loads(p.read_text(encoding="utf-8")) == {"ok": True}
+        assert helper._atomic_write(str(p), "plain") is True
+        assert p.read_text(encoding="utf-8") == "plain"
+        assert not (tmp_path / "r.json.tmp").exists()
+
+    def test_atomic_write_failure_returns_false(self, tmp_path):
+        helper = _load_helper()
+        missing_dir = tmp_path / "nope" / "r.json"
+        assert helper._atomic_write(str(missing_dir), {"a": 1}) is False
+
+    def test_run_captures_output(self, mocker):
+        helper = _load_helper()
+        mocker.patch.object(
+            helper.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(["x"], 0, stdout="hello", stderr=""),
+        )
+        res = helper._run(["wbadmin.exe", "get", "versions"])
+        assert res["returncode"] == 0
+        assert res["stdout"] == "hello"
+        assert res["timed_out"] is False
+
+    def test_run_timeout_with_bytes_output(self, mocker):
+        helper = _load_helper()
+        exc = subprocess.TimeoutExpired(cmd="wbadmin", timeout=5, output=b"partial")
+        mocker.patch.object(helper.subprocess, "run", side_effect=exc)
+        res = helper._run(["wbadmin.exe"], timeout=5)
+        assert res["returncode"] == -1
+        assert res["timed_out"] is True
+        assert res["stdout"] == "partial"
+        assert "5s" in res["stderr_tail"]
+
+
+class TestHelperProbeBackupSize:
+    def test_no_drive_letter_returns_none(self):
+        helper = _load_helper()
+        assert helper._probe_backup_size("USB Disk", "1/1/2026 1:00 AM") is None
+
+    def test_missing_root_returns_none(self, mocker):
+        helper = _load_helper()
+        mocker.patch.object(helper.os.path, "isdir", return_value=False)
+        assert helper._probe_backup_size("USB Disk labeled WD(E:)", "x") is None
+
+    def test_sums_backup_folders_only(self, mocker):
+        helper = _load_helper()
+        root = "E:\\WindowsImageBackup"
+        mocker.patch.object(helper.os.path, "isdir", return_value=True)
+        mocker.patch.object(
+            helper.os,
+            "listdir",
+            side_effect=lambda p: ["PC1"] if p == root else ["Backup 2026-10-01 010000", "Logs"],
+        )
+        walk = mocker.patch.object(helper.os, "walk", return_value=[("d", [], ["a.vhdx", "b.xml"])])
+        mocker.patch.object(helper.os.path, "getsize", side_effect=[1000, 24])
+        assert helper._probe_backup_size("USB Disk labeled WD(E:)", "x") == 1024
+        # Only the "Backup ..." folder is walked -- "Logs" is skipped.
+        assert walk.call_count == 1
+
+    def test_empty_store_returns_none(self, mocker):
+        helper = _load_helper()
+        mocker.patch.object(helper.os.path, "isdir", return_value=True)
+        mocker.patch.object(helper.os, "listdir", return_value=[])
+        assert helper._probe_backup_size("X(E:)", "x") is None
+
+
+_VERSION = {"version_id": "10/01/2026-01:00", "target": "USB(E:)", "backup_time": "10/1/2026 1:00 AM"}
+
+
+class TestHelperScanCatalog:
+    def test_wbadmin_failure(self, mocker):
+        helper = _load_helper()
+        mocker.patch.object(helper, "_run", return_value=_helper_run(5, stderr="access denied"))
+        write = mocker.patch.object(helper.bk, "_atomic_write_json")
+        res = helper._action_scan_catalog({})
+        assert res["ok"] is False
+        assert "access denied" in res["error"]
+        write.assert_not_called()
+
+    def test_no_versions_writes_empty_cache(self, mocker):
+        helper = _load_helper()
+        mocker.patch.object(helper, "_run", return_value=_helper_run(0, "No backup found."))
+        mocker.patch.object(helper.bk, "parse_wbadmin_versions", return_value=[])
+        write = mocker.patch.object(helper.bk, "_atomic_write_json", return_value=True)
+        res = helper._action_scan_catalog({})
+        assert res["ok"] is True
+        assert res["version_count"] == 0
+        assert write.call_args.args[1]["versions"] == []
+
+    def test_versions_cached_with_size(self, mocker):
+        helper = _load_helper()
+        mocker.patch.object(helper, "_run", return_value=_helper_run(0, "..."))
+        mocker.patch.object(helper.bk, "parse_wbadmin_versions", return_value=[_VERSION])
+        mocker.patch.object(helper, "_probe_backup_size", return_value=4096)
+        write = mocker.patch.object(helper.bk, "_atomic_write_json", return_value=True)
+        res = helper._action_scan_catalog({})
+        assert res == {"ok": True, "version_count": 1, "total_size_bytes": 4096, "run": mocker.ANY}
+        assert write.call_args.args[0] == helper.bk.WINDOWS_BACKUP_CACHE_FILE
+
+    def test_cache_write_failure_reported(self, mocker):
+        helper = _load_helper()
+        mocker.patch.object(helper, "_run", return_value=_helper_run(0, "..."))
+        mocker.patch.object(helper.bk, "parse_wbadmin_versions", return_value=[_VERSION])
+        mocker.patch.object(helper, "_probe_backup_size", return_value=None)
+        mocker.patch.object(helper.bk, "_atomic_write_json", return_value=False)
+        res = helper._action_scan_catalog({})
+        assert res["ok"] is False
+        assert "backup_cache.json" in res["error"]
+
+
+class TestHelperDeleteVersion:
+    def test_validator_rejection_never_runs_wbadmin(self, mocker):
+        """Defence in depth: the helper re-validates the version id against
+        the cached catalog before touching wbadmin."""
+        helper = _load_helper()
+        mocker.patch.object(helper.bk, "load_windows_backup_cache", return_value={"versions": []})
+        run = mocker.patch.object(helper, "_run")
+        res = helper._action_delete_version({"version_id": "10/01/2026-01:00"})
+        assert res["ok"] is False
+        assert res["validator"] == "delete_version"
+        run.assert_not_called()
+
+    def test_wbadmin_delete_failure(self, mocker):
+        helper = _load_helper()
+        mocker.patch.object(helper.bk, "load_windows_backup_cache", return_value={"versions": [_VERSION]})
+        mocker.patch.object(helper.bk, "validate_delete_version_request", return_value=(True, ""))
+        mocker.patch.object(helper, "_run", return_value=_helper_run(1, stderr="in use"))
+        rescan = mocker.patch.object(helper, "_action_scan_catalog")
+        res = helper._action_delete_version({"version_id": _VERSION["version_id"]})
+        assert res["ok"] is False
+        assert "in use" in res["error"]
+        rescan.assert_not_called()
+
+    def test_success_rescans_and_estimates_freed(self, mocker):
+        helper = _load_helper()
+        cache = {"versions": [_VERSION, dict(_VERSION, version_id="b")], "total_size_bytes": 10_000}
+        mocker.patch.object(helper.bk, "load_windows_backup_cache", return_value=cache)
+        mocker.patch.object(helper.bk, "validate_delete_version_request", return_value=(True, ""))
+        run = mocker.patch.object(helper, "_run", return_value=_helper_run(0))
+        mocker.patch.object(
+            helper, "_action_scan_catalog", return_value={"ok": True, "total_size_bytes": 6_000, "version_count": 1}
+        )
+        res = helper._action_delete_version({"version_id": _VERSION["version_id"]})
+        assert res["ok"] is True
+        assert res["bytes_freed_estimate"] == 4_000
+        assert res["version_count_after"] == 1
+        assert f"-version:{_VERSION['version_id']}" in run.call_args.args[0]
+
+
+class TestHelperMain:
+    """main() -- the elevated entry point. Always writes a result file the
+    unelevated tray can poll, and always appends an audit row."""
+
+    @pytest.fixture
+    def env(self, tmp_path, mocker):
+        helper = _load_helper()
+        mocker.patch.object(helper, "APP_DIR", str(tmp_path))
+        history = mocker.patch.object(helper.bk, "append_action_history", return_value=True)
+        return helper, tmp_path, history
+
+    def _request(self, tmp_path, payload):
+        req = tmp_path / "backup_request_x.json"
+        req.write_text(json.dumps(payload), encoding="utf-8")
+        return req
+
+    def test_unreadable_request_exits_2(self, env):
+        helper, tmp_path, history = env
+        assert helper.main(["--request", str(tmp_path / "missing.json")]) == 2
+        history.assert_not_called()
+
+    def test_unknown_action_writes_failed_result(self, env):
+        helper, tmp_path, history = env
+        req = self._request(tmp_path, {"session_id": "abc123", "action": "format_c_drive"})
+        assert helper.main(["--request", str(req)]) == 1
+        result = json.loads((tmp_path / "backup_result_abc123.json").read_text(encoding="utf-8"))
+        assert result["ok"] is False
+        assert "invalid request" in result["error"]
+        assert history.call_args.args[0]["status"] == "failed"
+        assert not req.exists()  # request consumed
+
+    def test_success_strips_full_output_and_audits(self, env, mocker):
+        helper, tmp_path, history = env
+        handler = mocker.Mock(return_value={"ok": True, "run": _helper_run(0, "BIG STDOUT", "BIG STDERR")})
+        mocker.patch.dict(helper._ACTION_HANDLERS, {"scan_catalog": handler})
+        req = self._request(tmp_path, {"session_id": "abc123", "action": "scan_catalog", "params": {"k": 1}})
+        assert helper.main(["--request", str(req)]) == 0
+        handler.assert_called_once_with({"k": 1})
+        result = json.loads((tmp_path / "backup_result_abc123.json").read_text(encoding="utf-8"))
+        assert result["ok"] is True
+        assert result["action"] == "scan_catalog"
+        assert "stdout" not in result["run"] and "stderr" not in result["run"]
+        assert result["run"]["stdout_tail"] == "BIG STDOUT"
+        row = history.call_args.args[0]
+        assert row["status"] == "completed"
+        assert row["returncode"] == 0
+
+    def test_handler_crash_is_caught(self, env, mocker):
+        helper, tmp_path, history = env
+        mocker.patch.dict(helper._ACTION_HANDLERS, {"scan_catalog": mocker.Mock(side_effect=KeyError("boom"))})
+        req = self._request(tmp_path, {"session_id": "abc123", "action": "scan_catalog"})
+        assert helper.main(["--request", str(req)]) == 1
+        result = json.loads((tmp_path / "backup_result_abc123.json").read_text(encoding="utf-8"))
+        assert "handler crashed: KeyError" in result["error"]
+
+    @pytest.mark.parametrize("bad_id", ["..\\..\\evil", "../evil", "a/b", "x" * 200, "id with space"])
+    def test_path_like_session_id_never_used_in_a_path(self, env, mocker, bad_id):
+        """Regression: the session id from the request file was dropped
+        straight into the result-file path, so a tampered request could
+        make this ELEVATED process write a file outside the app dir. The
+        id is now validated (the tray always uses token_hex) and nothing
+        runs or gets written for a bad one."""
+        helper, tmp_path, history = env
+        handler = mocker.Mock(return_value={"ok": True})
+        mocker.patch.dict(helper._ACTION_HANDLERS, {"scan_catalog": handler})
+        write = mocker.patch.object(helper, "_atomic_write")
+        req = self._request(tmp_path, {"session_id": bad_id, "action": "scan_catalog"})
+        assert helper.main(["--request", str(req)]) == 1
+        handler.assert_not_called()
+        write.assert_not_called()
+        assert history.call_args.args[0]["status"] == "failed"
+
+    def test_real_session_id_shape_accepted(self, env, mocker):
+        helper, tmp_path, _history = env
+        sid = backup._session_id()  # the exact shape the tray generates
+        mocker.patch.dict(helper._ACTION_HANDLERS, {"scan_catalog": mocker.Mock(return_value={"ok": True})})
+        req = self._request(tmp_path, {"session_id": sid, "action": "scan_catalog"})
+        assert helper.main(["--request", str(req)]) == 0
+        assert (tmp_path / f"backup_result_{sid}.json").exists()
