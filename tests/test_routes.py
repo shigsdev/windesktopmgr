@@ -4580,3 +4580,59 @@ class TestFavicon:
         assert "function _updateFavicon" in html
         # And renderDashboard must call it
         assert "_updateFavicon(critical)" in html or "_updateFavicon(d.critical" in html
+
+
+class TestOneEscapeHelper:
+    """Tech-debt #67 (2026-10-10): app.js had ~30 private copies of an HTML
+    escaper, most of which skipped quotes -- an event-log message containing
+    a double quote broke out of title="..." -- and text dropped into
+    onclick="fn('...')" needs JavaScript escaping too, because the browser
+    decodes &#39; back to ' before running the handler."""
+
+    import re as _re
+
+    ESCAPER = _re.compile(
+        r"(?:const|let|var)\s+\w*esc\w*\s*=\s*(?:\(?\s*s\s*\)?\s*=>|function\s*\(\s*s\s*\))\s*\{?\s*(?:return\s+)?String\("
+    )
+    JS_ARG_IN_HANDLER = _re.compile(r"""on[a-z]+="[^"]*'\$\{(?:esc|escHtml|_esc)\(""")
+
+    def _js(self):
+        from pathlib import Path
+
+        return (Path(__file__).parent.parent / "static" / "js" / "app.js").read_text(encoding="utf-8")
+
+    def test_exactly_one_escaper_implementation(self):
+        js = self._js()
+        assert js.count("function escHtml(") == 1
+        assert self.ESCAPER.findall(js) == [], "a private escaper copy is back; call esc()/escHtml() instead"
+
+    def test_the_escaper_covers_all_five_characters(self):
+        js = self._js()
+        start = js.index("function escHtml(")
+        body = js[start : js.index("}", start)]
+        for entity in ("&amp;", "&lt;", "&gt;", "&quot;", "&#39;"):
+            assert entity in body, entity
+
+    def test_text_inside_an_inline_handler_uses_the_js_escaper(self):
+        bad = [
+            f"{n}: {line.strip()[:90]}"
+            for n, line in enumerate(self._js().splitlines(), 1)
+            if self.JS_ARG_IN_HANDLER.search(line)
+        ]
+        assert bad == [], "use escJsArg() for text inside onclick=\"fn('...')\":\n" + "\n".join(bad)
+
+
+class TestNoHandRolledJsEscaping:
+    """Tech-debt #67 /code-review: baseline keys were hand-escaped for JS
+    and then escaped again by escJsArg, doubling every backslash in a Task
+    Scheduler key. JS-string escaping lives in escJsArg only."""
+
+    HAND_ROLLED = r""".replace(/'/g, "\\'")"""
+
+    def test_quote_to_backslash_quote_happens_only_inside_escjsarg(self):
+        from pathlib import Path
+
+        js = (Path(__file__).parent.parent / "static" / "js" / "app.js").read_text(encoding="utf-8")
+        assert js.count(self.HAND_ROLLED) == 1
+        start = js.index("function escJsArg(")
+        assert self.HAND_ROLLED in js[start : js.index("\n}", start)]

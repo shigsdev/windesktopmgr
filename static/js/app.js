@@ -1,8 +1,24 @@
 // ── Shared ─────────────────────────────────────────────────────────────────
 const CAT_ICONS = { Display:"🖥", Audio:"🔊", Network:"🌐", Chipset:"⚙", Other:"📦" };
 
+// The one HTML escaper (tech-debt #67): text AND attribute values, all five
+// HTML-special characters. null/undefined -> "", 0 -> "0". esc() and _esc()
+// are the same function -- never add a private copy in a tab section.
 function escHtml(s) {
-  return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+// Text inside an inline handler's quoted JS string:
+//   onclick="fn('${escJsArg(name)}')"
+// The browser turns &#39; back into ' before it runs the handler, so HTML
+// escaping alone lets a quote end the string; JS-escape first, then HTML.
+function escJsArg(s) {
+  return escHtml(String(s == null ? "" : s)
+    .replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/"/g, '\\"')
+    .replace(/\r/g, "\\r").replace(/\n/g, "\\n")
+    .replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029"));
 }
 
 // ── Dynamic favicon (backlog #41) ────────────────────────────────
@@ -258,7 +274,7 @@ function nlqMarkdown(text) {
   return "<p>" + html + "</p>";
 }
 
-const esc = s => String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const esc = escHtml;
 
 // ── Page switching ──────────────────────────────────────────────────────────
 let bsodLoaded = false;
@@ -904,7 +920,6 @@ function renderStartup() {
     const active = [fName,fWhat,fPublisher,fLocation,fStatus,fRec,fImpact,fSuspicious].filter(Boolean).length;
     countEl.textContent = active > 0 ? `Showing ${items.length} of ${_startupData.length}` : "";
   }
-  const esc = s => String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 
   document.getElementById("su-total").textContent      = _startupData.length;
   document.getElementById("su-enabled").textContent    = _startupData.filter(i => i.Enabled).length;
@@ -998,7 +1013,6 @@ async function loadDisk() {
     const d = await r.json();
     const drives = Array.isArray(d.drives) ? d.drives : [];
     const physical = Array.isArray(d.physical) ? d.physical : [];
-    const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
     // Split by drive type. Default missing type to 'local' for backward compat
     // with cached payloads from the pre-Win32_LogicalDisk implementation.
     const dkType = dr => (dr.DriveTypeName || (dr.DriveType === 4 ? 'network' : dr.DriveType === 2 ? 'removable' : 'local'));
@@ -1076,7 +1090,6 @@ async function dkLoadSpaces() {
     const ss = await r.json();
     const sec = document.getElementById('dk-spaces-section');
     if (!ss || !ss.has_spaces) { sec.style.display = 'none'; return; }
-    const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
     const degraded = (h,o) => {
       h=(h||'').toLowerCase(); o=(o||'').toLowerCase();
       return h==='warning'||h==='unhealthy'||/degraded|incomplete|unhealthy|detached/.test(o);
@@ -1243,7 +1256,6 @@ async function dkLoadNas() {
     const nd = await r.json();
     const sec = document.getElementById('dk-nas-section');
     if (!nd || !nd.configured) { sec.style.display = 'none'; return; }
-    const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
     let html = '';
     (nd.nas||[]).forEach(n => {
       const online = !!n.reachable;
@@ -1290,17 +1302,9 @@ async function dkLoadNas() {
 let _dkAnalyzePath = null;
 let _dkAnalyzeDrive = null;
 
-// Escape a string for safe embedding as a JS single-quoted string literal
-// inside an HTML attribute like onclick="fn('<value>')". Critically, this
-// doubles backslashes so `C:\Users` survives the JS string-literal parser
-// (otherwise `\U` is treated as an invalid escape and the backslash is lost).
+// Storage tab's name for escJsArg (kept for its call sites).
 function dkJsArg(s) {
-  return String(s || '')
-    .replace(/\\/g, '\\\\')
-    .replace(/'/g, "\\'")
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/"/g, '&quot;');
+  return escJsArg(s);
 }
 
 const _dkAnalyzeCache = new Map();
@@ -1321,7 +1325,6 @@ function dkAnalyzeClose() {
 }
 
 function _dkRenderAnalyzeResult(d) {
-  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/'/g,'&#39;').replace(/"/g,'&quot;');
   const entries = d.entries || [];
   const total = d.total_bytes || 0;
   const cloudTotal = d.total_cloud_bytes || 0;
@@ -1363,7 +1366,6 @@ function _dkRenderAnalyzeResult(d) {
 
 async function dkAnalyzeLoad(path) {
   _dkAnalyzePath = path;
-  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/'/g,'&#39;').replace(/"/g,'&quot;');
   document.getElementById('dk-analyze-error').style.display = 'none';
   document.getElementById('dk-analyze-tbody').innerHTML = '';
   document.getElementById('dk-analyze-total').textContent = '';
@@ -1428,7 +1430,6 @@ async function dkAnalyzeLoad(path) {
 }
 
 async function dkQuickWinsLoad(letter) {
-  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/'/g,'&#39;').replace(/"/g,'&quot;');
   const loadingEl = document.getElementById('dk-quickwins-loading');
   const listEl = document.getElementById('dk-quickwins-list');
   loadingEl.style.display = 'block';
@@ -1477,7 +1478,6 @@ async function dkQuickWinsLoad(letter) {
 // Items may also carry `extra_tools: [{tool, label}, ...]` for secondary
 // tool buttons (e.g. Windows Installer offers PatchCleaner + Disk Cleanup).
 function dkRenderQuickWinActions(it) {
-  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/'/g,'&#39;').replace(/"/g,'&quot;');
   const kind = it.action_kind || 'open_folder';
   const openBtn = `<button class="btn-action" style="padding:3px 8px;font-size:10px" onclick="dkOpenFolder('${dkJsArg(it.path)}')">📁 Open folder</button>`;
   const extraBtns = (it.extra_tools || []).map(x =>
@@ -1527,7 +1527,6 @@ async function dkRunTool(tool, label) {
 // info_only quick-wins (WinSxS / hiberfil / etc.) where the user must run
 // the command themselves from an elevated prompt.
 function dkShowCli(label, cli, desc) {
-  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/'/g,'&#39;').replace(/"/g,'&quot;');
   let modal = document.getElementById('dk-cli-modal');
   if (!modal) {
     modal = document.createElement('div');
@@ -1612,7 +1611,6 @@ async function loadNetwork() {
 function renderNetwork() {
   if (!_networkData) return;
   const d = _networkData;
-  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
   document.getElementById('nw-established').textContent = d.total_connections||0;
   document.getElementById('nw-listening').textContent   = d.total_listening||0;
   document.getElementById('nw-procs').textContent       = (d.top_processes||[]).length;
@@ -1627,7 +1625,6 @@ function renderNetwork() {
 }
 function renderConnections() {
   if (!_networkData) return;
-  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
   const q = (document.getElementById('nw-search').value||'').toLowerCase();
   const conns = (_networkData.established||[]).filter(c=>!q||(c.Process||'').toLowerCase().includes(q)||(c.RemoteAddress||'').includes(q));
   const rows = conns.slice(0,200).map(c=>`<tr style="border-bottom:1px solid var(--border)"><td style="padding:5px 10px;font-weight:600">${esc(c.Process)}</td><td style="padding:5px 10px;color:var(--muted)">${c.PID}</td><td style="padding:5px 10px">${c.LocalPort}</td><td style="padding:5px 10px;font-family:monospace;font-size:11px">${esc(c.RemoteAddress)}</td><td style="padding:5px 10px">${c.RemotePort}</td><td style="padding:5px 10px;color:var(--cyan)">${esc(c.State)}</td></tr>`).join('');
@@ -1652,7 +1649,6 @@ async function loadUpdates() {
 }
 function renderUpdates() {
   if (!_updatesData) return;
-  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
   const q = (document.getElementById('upd-search').value||'').toLowerCase();
   const filter = document.getElementById('upd-filter').value;
   const now = new Date();
@@ -1683,7 +1679,6 @@ async function queryEvents() {
   const r = await fetch('/api/events/query', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
   const events = await r.json();
   document.getElementById('ev-loading').style.display = 'none';
-  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
   const lc = l => l==='Error'||l==='Critical'?'var(--red)':l==='Warning'?'var(--orange)':'var(--muted)';
   document.getElementById('ev-errors').textContent   = events.filter(e=>e.Level==='Error'||e.Level==='Critical').length;
   document.getElementById('ev-warnings').textContent = events.filter(e=>e.Level==='Warning').length;
@@ -1715,7 +1710,6 @@ async function loadBsodCache() {
     var stats = document.getElementById("bsod-cache-stats");
     if (stats) stats.textContent =
       d.total_cached + " stop codes cached  |  " + d.queue_pending + " pending  |  " + d.in_flight + " in-flight";
-    var esc = function(s) { return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;"); };
     var src_color = function(s) {
       return s === "windows_bugcheck_table" ? "var(--cyan)"
            : s === "microsoft_learn"        ? "var(--orange)"
@@ -1766,7 +1760,6 @@ async function loadCacheStatus() {
       const flight = (d.in_flight != null) ? d.in_flight : 0;
       stats.textContent = `${total} event IDs cached | ${queue} pending | ${flight} in-flight`;
     }
-    const esc = s => String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
     const wrap = document.getElementById("cache-table-wrap");
     const tbody = document.getElementById("cache-tbody");
     const entries = d.entries || [];
@@ -1901,7 +1894,6 @@ async function loadProcesses() {
 
 function renderProcesses() {
   if (!_processData) return;
-  const esc   = s => String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
   const q     = (document.getElementById("pr-search")?.value||"").toLowerCase();
   const flag  = document.getElementById("pr-filter-flag")?.value||"";
   const procs = (_processData.processes||[]).filter(p => {
@@ -1968,7 +1960,7 @@ function renderProcesses() {
     const canKill  = p.PID && p.PID > 4 && safeKill !== false &&
                      !["system","idle"].includes((p.Name||"").toLowerCase());
     const killBtn  = canKill
-      ? `<button onclick="killProc(${p.PID},'${esc(plain)}')"
+      ? `<button onclick="killProc(${p.PID},'${escJsArg(plain)}')"
            style="background:#ff404022;border:1px solid var(--red);color:var(--red);
            padding:2px 8px;border-radius:3px;cursor:pointer;font-size:10px">Kill</button>`
       : (safeKill === false
@@ -2414,7 +2406,6 @@ async function loadServices() {
 
 function renderServices() {
   if (!_servicesData) return;
-  const esc     = s => String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
   const fName   = (document.getElementById("sv-f-name")?.value||"").toLowerCase();
   const fWhat   = (document.getElementById("sv-f-what")?.value||"").toLowerCase();
   const fStatus = document.getElementById("sv-f-status")?.value||"";
@@ -2464,16 +2455,16 @@ function renderServices() {
     const isCrit   = info && info.safe_stop === false;
 
     const stopBtn = running && !isCrit
-      ? `<button onclick="svcAction('${esc(s.Name)}','stop')"
+      ? `<button onclick="svcAction('${escJsArg(s.Name)}','stop')"
            style="background:#ff404022;border:1px solid var(--red);color:var(--red);padding:2px 8px;border-radius:3px;cursor:pointer;font-size:10px;margin-right:4px">Stop</button>` : "";
     const startBtn = !running
-      ? `<button onclick="svcAction('${esc(s.Name)}','start')"
+      ? `<button onclick="svcAction('${escJsArg(s.Name)}','start')"
            style="background:#00d4ff22;border:1px solid var(--cyan);color:var(--cyan);padding:2px 8px;border-radius:3px;cursor:pointer;font-size:10px;margin-right:4px">Start</button>` : "";
     const disableBtn = !disabled && !isCrit
-      ? `<button onclick="svcAction('${esc(s.Name)}','disable')"
+      ? `<button onclick="svcAction('${escJsArg(s.Name)}','disable')"
            style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:2px 8px;border-radius:3px;cursor:pointer;font-size:10px;margin-right:4px">Disable</button>` : "";
     const enableBtn = disabled
-      ? `<button onclick="svcAction('${esc(s.Name)}','enable')"
+      ? `<button onclick="svcAction('${escJsArg(s.Name)}','enable')"
            style="background:#00d4ff22;border:1px solid var(--cyan);color:var(--cyan);padding:2px 8px;border-radius:3px;cursor:pointer;font-size:10px">Enable</button>` : "";
 
     return `<tr style="border-bottom:1px solid var(--border);vertical-align:top">
@@ -2602,7 +2593,6 @@ async function loadHealthHistory() {
 }
 
 function renderHealthHistory(d) {
-  const esc = s => String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
   const reports = d.reports || [];
   document.getElementById("hh-total").textContent   = d.total || 0;
   document.getElementById("hh-avg").textContent     = d.avg_score != null ? d.avg_score + "/100" : "—";
@@ -2694,7 +2684,6 @@ async function loadTimeline() {
 
 function renderTimeline() {
   if (!_tlData) return;
-  const esc    = s => String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
   const filter = document.getElementById("tl-filter")?.value || "";
   const events = (_tlData.events||[]).filter(e => !filter || e.type === filter);
 
@@ -2791,7 +2780,6 @@ async function loadMemory() {
 }
 
 function renderMemory(d) {
-  const esc = s => String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
   const total = d.total_mb||32768, used = d.used_mb||0, free = d.free_mb||0;
   document.getElementById("mem-total").textContent  = (total/1024).toFixed(1) + " GB";
   document.getElementById("mem-used").textContent   = used.toLocaleString() + " MB";
@@ -3059,7 +3047,7 @@ async function loadBiosAudit() {
   try {
     const r = await fetch("/api/bios/audit/history?limit=20");
     const d = await r.json();
-    const esc = s => String(s == null ? "—" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+    const esc = s => escHtml(s == null ? "—" : s);
     const fullHistory = (d.history || []).slice().reverse(); // newest first
     if (!fullHistory.length) {
       content.innerHTML = '<div style="color:var(--muted)">No snapshots yet — the baseline will be captured on the next polling cycle (up to 60 s).</div>';
@@ -3167,13 +3155,12 @@ async function loadBiosAudit() {
 }
 
 function renderBios(d) {
-  const esc = s => String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
   const cur  = d.current || {};
   const upd  = d.update  || {};
 
-  document.getElementById("bios-version").textContent = esc(cur.BIOSVersion||"—");
-  document.getElementById("bios-date").textContent    = esc(cur.BIOSDateFormatted||"—");
-  document.getElementById("bios-latest").textContent  = esc(upd.latest_version||"—");
+  document.getElementById("bios-version").textContent = cur.BIOSVersion||"—";
+  document.getElementById("bios-date").textContent    = cur.BIOSDateFormatted||"—";
+  document.getElementById("bios-latest").textContent  = upd.latest_version||"—";
 
   const badge = document.getElementById("bios-update-badge");
   if (upd.update_available) {
@@ -3255,7 +3242,7 @@ async function loadWarrantyData() {
 }
 
 function renderWarranty(w) {
-  const esc = s => String(s||"—").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+  const esc = s => escHtml(s || "—");
   const grid = document.getElementById("warranty-grid");
   const statColor = (v, threshold=0) => v > threshold ? "var(--red)" : "var(--green)";
 
@@ -3334,7 +3321,6 @@ async function loadCredentials() {
 }
 
 function renderCredentials(d) {
-  const esc = s => String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
 
   // OneDrive stat cards
   const odStatusEl = document.getElementById("cr-od-status");
@@ -3969,7 +3955,6 @@ function renderGauges(el, gauges) {
 }
 
 function renderDashboard(d) {
-  const esc = s => String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
   const concerns  = d.concerns  || [];
   const critical  = d.critical  || 0;
   const warnings  = d.warnings  || 0;
@@ -4204,9 +4189,8 @@ async function loadTrends() {
         // without parsing visible label text. Future additions to the
         // labels dict must preserve this attribute or the test fails.
         // Click anywhere on the card to open the drill-down modal.
-        const safeMetric = metric.replace(/"/g, '&quot;').replace(/'/g, "\\'");
         return `
-          <div data-metric="${metric.replace(/"/g, '&quot;')}" onclick="openTrendDrilldown('${safeMetric}')" style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:10px 12px;cursor:pointer;transition:border-color 0.15s,transform 0.05s" onmouseover="this.style.borderColor='var(--cyan)'" onmouseout="this.style.borderColor='var(--border)'" title="Click to drill down (full chart, time axis, summary stats)">
+          <div data-metric="${esc(metric)}" onclick="openTrendDrilldown('${escJsArg(metric)}')" style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:10px 12px;cursor:pointer;transition:border-color 0.15s,transform 0.05s" onmouseover="this.style.borderColor='var(--cyan)'" onmouseout="this.style.borderColor='var(--border)'" title="Click to drill down (full chart, time axis, summary stats)">
             <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px">
               <div style="font-size:11px;color:var(--text-bright);font-weight:600">${cfg.label}</div>
               <div style="font-size:10px;color:var(--muted);font-family:var(--font-mono)">n=${n} 🔍</div>
@@ -4584,7 +4568,6 @@ async function loadAlertRules() {
     const rules = d.rules || [];
     if (!rules.length) { el.innerHTML = '<div style="color:var(--muted);font-size:12px">No rules.</div>'; return; }
     const lvlColor = l => l === "critical" ? "var(--red)" : l === "warning" ? "var(--orange)" : "var(--cyan)";
-    const esc = s => String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
     const unitFor = m => m === "temperature_c" ? "°C" : "%";
     el.innerHTML = rules.map(rule => `
       <div data-rule-id="${esc(rule.id)}" style="display:flex;align-items:center;gap:12px;padding:8px 12px;background:var(--card);border:1px solid var(--border);border-left:3px solid ${lvlColor(rule.level)};border-radius:6px">
@@ -4710,7 +4693,7 @@ function renderRemActions() {
               border:1px solid ${_remRiskColor(a.risk)};padding:2px 8px;border-radius:8px">
               ${a.risk} risk</span>
             ${a.reboot ? '<span style="font-size:9px;color:var(--orange);font-weight:700">&#9888; Reboot required</span>' : ""}
-            <button onclick="confirmRemediation('${esc(a.id)}')"
+            <button onclick="confirmRemediation('${escJsArg(a.id)}')"
               style="margin-left:auto;background:var(--card);border:1px solid ${_remRiskColor(a.risk)};
               color:${_remRiskColor(a.risk)};padding:5px 14px;border-radius:6px;
               cursor:pointer;font-size:11px;font-weight:700;font-family:var(--font-mono)">
@@ -4955,10 +4938,10 @@ function renderHomeNetCredentials(creds) {
         ? `<div style="font-size:11px;margin-bottom:8px">User: <span style="color:var(--cyan)">${esc(c.username)}</span> &nbsp; Pass: <span style="color:var(--muted)">${esc(c.password_hint)}</span></div>
            <div style="display:flex;gap:6px">
              <button onclick="testCredentialDirect('${c.key}')" style="padding:3px 10px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--cyan);cursor:pointer;font-size:11px;font-family:var(--font-mono)">Test</button>
-             <button onclick="openCredModal('${c.key}','${esc(c.label)}')" style="padding:3px 10px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--orange);cursor:pointer;font-size:11px;font-family:var(--font-mono)">Change</button>
+             <button onclick="openCredModal('${c.key}','${escJsArg(c.label)}')" style="padding:3px 10px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--orange);cursor:pointer;font-size:11px;font-family:var(--font-mono)">Change</button>
              <button onclick="deleteCredential('${c.key}')" style="padding:3px 10px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--red);cursor:pointer;font-size:11px;font-family:var(--font-mono)">Delete</button>
            </div>`
-        : `<button onclick="openCredModal('${c.key}','${esc(c.label)}')" class="btn-action" style="padding:4px 12px;font-size:11px">Add Credentials</button>`
+        : `<button onclick="openCredModal('${c.key}','${escJsArg(c.label)}')" class="btn-action" style="padding:4px 12px;font-size:11px">Add Credentials</button>`
       }
     </div>
   `).join("");
@@ -5008,7 +4991,7 @@ function renderHomeNet() {
       <td style="padding:6px 10px;font-size:11px;color:var(--muted)">${d.network === "wireless" && d.ssid ? esc(d.ssid) : '—'}</td>
       <td style="padding:6px 10px">${cat}</td>
       <td style="padding:6px 10px">
-        <button onclick="openEditModal('${esc(d.mac)}')" style="padding:2px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--cyan);cursor:pointer;font-size:11px;font-family:var(--font-mono)">Edit</button>
+        <button onclick="openEditModal('${escJsArg(d.mac)}')" style="padding:2px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--cyan);cursor:pointer;font-size:11px;font-family:var(--font-mono)">Edit</button>
       </td>
     </tr>`;
   }).join("");
@@ -5410,7 +5393,7 @@ function hnTopoBuildSvg(t) {
     // headers were inert. Cursor:pointer + a tooltip make the affordance
     // discoverable.
     const headerExtra = col.click_mac
-      ? ` style="cursor:pointer" onclick="openEditModal('${_esc(col.click_mac).replace(/'/g, '')}')" data-click-mac="${_esc(col.click_mac)}"`
+      ? ` style="cursor:pointer" onclick="openEditModal('${escJsArg(col.click_mac)}')" data-click-mac="${_esc(col.click_mac)}"`
       : "";
     svg += `<g data-column-kind="${_esc(col.kind || '')}" data-column-id="${_esc(col.id || '')}"${headerExtra}>`;
     if (col.click_mac) {
@@ -5521,9 +5504,7 @@ function _hnIsAp(dev) {
   return (dev.ip || "") === "10.0.0.1";
 }
 
-function _esc(s) {
-  return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
+function _esc(s) { return escHtml(s); }
 
 function _truncate(s, n) {
   if (!s || s.length <= n) return s;
@@ -7757,7 +7738,7 @@ async function util_loadQuickFixes() {
     const rc = r=>r==="high"?"var(--red)":r==="medium"?"var(--orange)":"var(--green)";
     const rb = r=>r==="high"?"rgba(255,71,87,.22)":r==="medium"?"rgba(255,112,67,.22)":"rgba(0,229,160,.22)";
     target.innerHTML = (actions || []).map(a=>`
-      <button onclick="runRemediationFromDashboard('${esc(a.id)}')"
+      <button onclick="runRemediationFromDashboard('${escJsArg(a.id)}')"
         style="background:var(--card);border:1px solid var(--border);border-radius:8px;
         padding:10px 8px;cursor:pointer;text-align:center;transition:border-color .15s;position:relative"
         onmouseover="this.style.borderColor='${rc(a.risk)}'"
@@ -8462,14 +8443,13 @@ function _blRenderEntry(header, oldObj, newObj, delta, cfg, catKey, kind, accent
   // investigate, then renders path safety + recent updates + recommendation.
   const entryKey = header.key || header.mac || header.name || "";
   const investigateId = `bl-invest-${_blHashKey(entryKey + ":" + catKey)}`;
-  const safeKey = entryKey.replace(/'/g, "\\'").replace(/\\/g, "\\\\");
   const remediationHtml = `
     <div style="margin-top:8px;padding:8px 10px;background:var(--card);border:1px dashed var(--border);border-radius:4px;font-size:11px">
       <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:4px">How to fix</div>
       <div style="color:var(--text);margin-bottom:6px">${kindExplainer}</div>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:4px 0 6px">
-        ${rem.console_label ? `<button onclick="blLaunchConsole('${escHtml(catKey)}', this)" style="background:var(--cyan);border:none;color:#000;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">🔧 ${escHtml(rem.console_label)}</button>` : ""}
-        <button onclick="blInvestigateDrift('${escHtml(catKey)}', '${escHtml(safeKey)}', '${investigateId}', this)" style="background:transparent;border:1px solid var(--cyan);color:var(--cyan);padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">🔍 Why did this change?</button>
+        ${rem.console_label ? `<button onclick="blLaunchConsole('${escJsArg(catKey)}', this)" style="background:var(--cyan);border:none;color:#000;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">🔧 ${escHtml(rem.console_label)}</button>` : ""}
+        <button onclick="blInvestigateDrift('${escJsArg(catKey)}', '${escJsArg(entryKey)}', '${investigateId}', this)" style="background:transparent;border:1px solid var(--cyan);color:var(--cyan);padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">🔍 Why did this change?</button>
         <button onclick="blAcceptThisChange(this)" title="Update the baseline for THIS entry only -- leaves all other drift untouched" style="background:var(--green);border:none;color:#000;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:700">✓ Accept this change</button>
         ${rem.console_hint ? `<span style="font-size:10px;color:var(--muted)">${escHtml(rem.console_hint)}</span>` : ""}
       </div>
@@ -8492,7 +8472,7 @@ function _blRenderEntry(header, oldObj, newObj, delta, cfg, catKey, kind, accent
     ? ` data-drift-current-value="${escHtml(JSON.stringify(currentForAccept))}"`
     : "";
   return `<div class="bl-entry" data-drift-category="${escHtml(catKey)}" data-drift-kind="${escHtml(kind)}" data-drift-key="${escHtml(entryKey)}" data-drift-rows="${cfg.fields.length}"${cvAttr} style="padding:8px 10px;margin:4px 0;background:var(--surface);border-left:2px solid ${accent};border-radius:4px">
-    <div onclick="openBaselineEntryDrilldown('${escHtml(catKey)}', '${escHtml(safeKey)}')" title="Click for full-screen detail (parameter table, investigation, history)" style="font-weight:600;font-size:12px;color:var(--text-bright);cursor:pointer;display:inline-flex;align-items:center;gap:6px" onmouseover="this.style.color='var(--cyan)'" onmouseout="this.style.color='var(--text-bright)'">${title} <span style="font-size:10px;color:var(--muted);font-weight:400">🔍</span></div>
+    <div onclick="openBaselineEntryDrilldown('${escJsArg(catKey)}', '${escJsArg(entryKey)}')" title="Click for full-screen detail (parameter table, investigation, history)" style="font-weight:600;font-size:12px;color:var(--text-bright);cursor:pointer;display:inline-flex;align-items:center;gap:6px" onmouseover="this.style.color='var(--cyan)'" onmouseout="this.style.color='var(--text-bright)'">${title} <span style="font-size:10px;color:var(--muted);font-weight:400">🔍</span></div>
     ${subtitle ? `<div style="font-size:10px;color:var(--muted);font-family:var(--font-mono);margin-bottom:4px">${escHtml(subtitle)}</div>` : ""}
     <table class="bl-param-table" style="width:100%;border-collapse:collapse;margin-top:4px">
       <thead>
@@ -8836,10 +8816,9 @@ async function openBaselineEntryDrilldown(category, key) {
   document.getElementById("bl-entry-modal-sub").textContent = key;
   // Quick action buttons -- mirror the inline view's How-to-fix block
   const consoleLabel = (cfg.remediation || {}).console_label || "";
-  const safeKey = key.replace(/'/g, "\\'").replace(/\\/g, "\\\\");
   document.getElementById("bl-entry-modal-actions").innerHTML = `
-    ${consoleLabel ? `<button onclick="blLaunchConsole('${escHtml(category)}', this)" style="background:var(--cyan);border:none;color:#000;padding:6px 14px;border-radius:5px;cursor:pointer;font-size:12px;font-weight:700">🔧 ${escHtml(consoleLabel)}</button>` : ""}
-    ${kind && kind !== "" ? `<button onclick="blAcceptThisChangeFromModal('${escHtml(category)}', '${escHtml(safeKey)}', '${escHtml(kind)}', this)" title="Update the baseline for THIS entry only" style="background:var(--green);border:none;color:#000;padding:6px 14px;border-radius:5px;cursor:pointer;font-size:12px;font-weight:700">✓ Accept this change</button>` : ""}
+    ${consoleLabel ? `<button onclick="blLaunchConsole('${escJsArg(category)}', this)" style="background:var(--cyan);border:none;color:#000;padding:6px 14px;border-radius:5px;cursor:pointer;font-size:12px;font-weight:700">🔧 ${escHtml(consoleLabel)}</button>` : ""}
+    ${kind && kind !== "" ? `<button onclick="blAcceptThisChangeFromModal('${escJsArg(category)}', '${escJsArg(key)}', '${escJsArg(kind)}', this)" title="Update the baseline for THIS entry only" style="background:var(--green);border:none;color:#000;padding:6px 14px;border-radius:5px;cursor:pointer;font-size:12px;font-weight:700">✓ Accept this change</button>` : ""}
     <button onclick="closeBaselineEntryDrilldown()" style="background:transparent;border:1px solid var(--border);color:var(--text);padding:6px 14px;border-radius:5px;cursor:pointer;font-size:12px">Close</button>`;
 
   // Parameter table -- larger render than the inline view. Get old/new
@@ -9294,16 +9273,6 @@ async function acceptBaseline() {
   }
 }
 
-// Local HTML-escape helper for the Baseline tab. Uses the same pattern
-// as other tabs -- keeps dependency-free from window.esc helpers that
-// may or may not be in scope here.
-function escHtml(s) {
-  return String(s == null ? "" : s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
 
 
 // ══════════════════════════════════════════════════════════════════════════
