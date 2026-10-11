@@ -157,7 +157,7 @@ class TestNlqFullLoop(unittest.TestCase):
         """Claude answers directly without calling tools."""
         mock_client = MagicMock()
         mock_anthropic_mod.Anthropic.return_value = mock_client
-        mock_client.messages.create.return_value = self._mock_text_response("Your system looks healthy!")
+        mock_client.beta.messages.create.return_value = self._mock_text_response("Your system looks healthy!")
 
         resp = self.client.post("/api/nlq/ask", json={"question": "How is my system?"})
         data = resp.get_json()
@@ -181,7 +181,7 @@ class TestNlqFullLoop(unittest.TestCase):
 
         # First call: Claude wants to use get_thermals tool
         # Second call: Claude responds with text
-        mock_client.messages.create.side_effect = [
+        mock_client.beta.messages.create.side_effect = [
             self._mock_tool_use_response("get_thermals", {}),
             self._mock_text_response("CPU is at 65C, looking good."),
         ]
@@ -200,7 +200,7 @@ class TestNlqFullLoop(unittest.TestCase):
         mock_anthropic_mod.Anthropic.return_value = mock_client
         mock_anthropic_mod.APIError = Exception
 
-        mock_client.messages.create.side_effect = [
+        mock_client.beta.messages.create.side_effect = [
             self._mock_tool_use_response("navigate_to_tab", {"tab": "bsod"}),
             self._mock_text_response("Here's your BSOD data."),
         ]
@@ -211,6 +211,21 @@ class TestNlqFullLoop(unittest.TestCase):
 
     @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=False)
     @patch("nlq.anthropic")
+    def test_navigate_to_unknown_tab_is_dropped(self, mock_anthropic_mod):
+        """navigate_to ends up in an onclick handler; a non-enum tab must never reach it."""
+        mock_client = MagicMock()
+        mock_anthropic_mod.Anthropic.return_value = mock_client
+        mock_anthropic_mod.APIError = Exception
+        mock_client.beta.messages.create.side_effect = [
+            self._mock_tool_use_response("navigate_to_tab", {"tab": "x');alert(1);//"}),
+            self._mock_text_response("Done."),
+        ]
+
+        data = self.client.post("/api/nlq/ask", json={"question": "q"}).get_json()
+        assert data["navigate_to"] is None
+
+    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=False)
+    @patch("nlq.anthropic")
     def test_api_error_returns_502(self, mock_anthropic_mod):
         """Claude API error returns 502."""
         mock_client = MagicMock()
@@ -218,7 +233,7 @@ class TestNlqFullLoop(unittest.TestCase):
 
         api_error = Exception("rate limited")
         mock_anthropic_mod.APIError = type(api_error)
-        mock_client.messages.create.side_effect = api_error
+        mock_client.beta.messages.create.side_effect = api_error
 
         resp = self.client.post("/api/nlq/ask", json={"question": "test"})
         assert resp.status_code == 502
@@ -234,7 +249,7 @@ class TestNlqFullLoop(unittest.TestCase):
         mock_anthropic_mod.Anthropic.return_value = mock_client
         mock_anthropic_mod.APIError = Exception
 
-        mock_client.messages.create.side_effect = [
+        mock_client.beta.messages.create.side_effect = [
             self._mock_tool_use_response("get_disk_health", {}),
             self._mock_text_response("I couldn't retrieve disk data."),
         ]
@@ -258,7 +273,7 @@ class TestNlqFullLoop(unittest.TestCase):
         mock_anthropic_mod.Anthropic.return_value = mock_client
         mock_anthropic_mod.APIError = Exception
 
-        mock_client.messages.create.side_effect = [
+        mock_client.beta.messages.create.side_effect = [
             self._mock_tool_use_response("query_event_log", {"log": "System", "level": "Error", "max": 10}),
             self._mock_text_response("Found 1 error."),
         ]
@@ -276,12 +291,147 @@ class TestNlqFullLoop(unittest.TestCase):
         mock_anthropic_mod.APIError = Exception
 
         # Every response is a tool_use — never a final text
-        mock_client.messages.create.return_value = self._mock_tool_use_response("navigate_to_tab", {"tab": "dashboard"})
+        mock_client.beta.messages.create.return_value = self._mock_tool_use_response(
+            "navigate_to_tab", {"tab": "dashboard"}
+        )
 
         resp = self.client.post("/api/nlq/ask", json={"question": "infinite loop test"})
         data = resp.get_json()
         assert resp.status_code == 200
         assert "couldn't finish" in data["answer"].lower()
+
+    def _stop_response(self, stop_reason, text=""):
+        resp = self._mock_text_response(text)
+        resp.stop_reason = stop_reason
+        return resp
+
+    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=False)
+    @patch("nlq.anthropic")
+    def test_refusal_returns_explanation_not_blank(self, mock_anthropic_mod):
+        """stop_reason=refusal (after the fallback chain) must not render an empty answer."""
+        mock_client = MagicMock()
+        mock_anthropic_mod.Anthropic.return_value = mock_client
+        mock_anthropic_mod.APIError = Exception
+        mock_client.beta.messages.create.return_value = self._stop_response("refusal")
+
+        resp = self.client.post("/api/nlq/ask", json={"question": "q"})
+        data = resp.get_json()
+        assert resp.status_code == 200
+        assert "declined" in data["answer"].lower()
+
+    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=False)
+    @patch("nlq.anthropic")
+    def test_max_tokens_without_text_returns_explanation(self, mock_anthropic_mod):
+        """A cut-off reply with no text (thinking ate the budget) gets a readable message."""
+        mock_client = MagicMock()
+        mock_anthropic_mod.Anthropic.return_value = mock_client
+        mock_anthropic_mod.APIError = Exception
+        mock_client.beta.messages.create.return_value = self._stop_response("max_tokens")
+
+        data = self.client.post("/api/nlq/ask", json={"question": "q"}).get_json()
+        assert "cut off" in data["answer"].lower()
+
+    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=False)
+    @patch("nlq.anthropic")
+    def test_max_tokens_with_partial_text_keeps_text(self, mock_anthropic_mod):
+        mock_client = MagicMock()
+        mock_anthropic_mod.Anthropic.return_value = mock_client
+        mock_anthropic_mod.APIError = Exception
+        mock_client.beta.messages.create.return_value = self._stop_response("max_tokens", "Partial answer")
+
+        data = self.client.post("/api/nlq/ask", json={"question": "q"}).get_json()
+        assert data["answer"].startswith("Partial answer")
+        assert "cut off" in data["answer"].lower()
+
+
+# Model IDs the API has retired (404 not_found_error). claude-sonnet-4-20250514
+# broke the NLQ endpoint in production on 2026-10-11.
+RETIRED_MODELS = {
+    "claude-sonnet-4-20250514",
+    "claude-3-7-sonnet-20250219",
+    "claude-3-5-sonnet-20241022",
+    "claude-3-5-haiku-20241022",
+    "claude-3-opus-20240229",
+}
+
+
+class TestNlqModel(unittest.TestCase):
+    """Regression: the model ID must be a live one and the request must be one it accepts."""
+
+    def setUp(self):
+        wdm.app.config["TESTING"] = True
+        self.client = wdm.app.test_client()
+
+    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=False)
+    @patch("nlq.anthropic")
+    def _create_kwargs(self, mock_anthropic_mod):
+        mock_client = MagicMock()
+        mock_anthropic_mod.Anthropic.return_value = mock_client
+        mock_anthropic_mod.APIError = Exception
+        block = MagicMock(type="text", text="ok")
+        mock_client.beta.messages.create.return_value = MagicMock(stop_reason="end_turn", content=[block])
+        assert self.client.post("/api/nlq/ask", json={"question": "q"}).status_code == 200
+        return mock_client.beta.messages.create.call_args.kwargs
+
+    def test_model_passed_is_nlq_model_and_not_retired(self):
+        kw = self._create_kwargs()
+        assert kw["model"] == nlq.NLQ_MODEL
+        assert kw["model"] not in RETIRED_MODELS
+
+    @staticmethod
+    def _model_in_fresh_interpreter(nlq_model_env):
+        """NLQ_MODEL as a fresh interpreter sees it (the constant is read at import)."""
+        import subprocess
+
+        env = {k: v for k, v in os.environ.items() if k != "NLQ_MODEL"}
+        if nlq_model_env is not None:
+            env["NLQ_MODEL"] = nlq_model_env
+        out = subprocess.run(  # noqa: S603 -- fixed argv, our own interpreter
+            [sys.executable, "-c", "import nlq; print(nlq.NLQ_MODEL)"],
+            cwd=PROJECT_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert out.returncode == 0, out.stderr
+        return out.stdout.strip()
+
+    def test_default_model_is_opus_5_5(self):
+        assert self._model_in_fresh_interpreter(None) == "claude-opus-5-5"
+
+    def test_env_override_sets_model(self):
+        assert self._model_in_fresh_interpreter("claude-sonnet-5-5") == "claude-sonnet-5-5"
+
+    @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=False)
+    @patch("nlq.anthropic")
+    def test_client_is_shared_and_has_timeout(self, mock_anthropic_mod):
+        nlq._get_client("k")
+        nlq._get_client("k")
+        mock_anthropic_mod.Anthropic.assert_called_once()
+        assert mock_anthropic_mod.Anthropic.call_args.kwargs["timeout"] == nlq.NLQ_TIMEOUT_S
+
+    def test_no_params_opus_5_5_rejects(self):
+        """Opus 5.5 400s on sampling params, thinking budgets/disabled, and forced tool_choice."""
+        kw = self._create_kwargs()
+        for banned in ("temperature", "top_p", "top_k"):
+            assert banned not in kw
+        thinking = kw.get("thinking")
+        assert thinking is None or thinking.get("type") == "adaptive"
+        tool_choice = kw.get("tool_choice")
+        assert tool_choice is None or tool_choice.get("type") in ("auto", "none")
+        # No assistant prefill: the first request ends on the user's question.
+        assert kw["messages"][-1]["role"] == "user"
+
+    def test_effort_and_fallbacks_set(self):
+        kw = self._create_kwargs()
+        assert kw["output_config"]["effort"] == nlq.NLQ_EFFORT
+        assert "server-side-fallback-2026-07-01" in kw["betas"]
+        assert kw["extra_body"] == {"fallbacks": "default"}
+
+    def test_max_tokens_leaves_room_for_thinking(self):
+        """Thinking is always on and counts against max_tokens; 1024 truncates answers."""
+        assert self._create_kwargs()["max_tokens"] >= 8000
 
 
 class TestNlqDashboardSummary(unittest.TestCase):

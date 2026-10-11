@@ -202,7 +202,8 @@ function nlqAsk() {
   btn.textContent = "...";
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 60000);
+  // Up to 5 model rounds (Opus 5.5 always thinks) plus tool calls: 60 s was too tight.
+  const timeoutId = setTimeout(() => controller.abort(), 150000);
 
   fetch("/api/nlq/ask", {
     method: "POST",
@@ -218,7 +219,7 @@ function nlqAsk() {
     }
     let html = '<div class="nlq-answer">' + nlqMarkdown(data.answer) + '</div>';
     if (data.navigate_to) {
-      html += `<div class="nlq-nav-hint">📍 <a onclick="switchTab('${data.navigate_to}')">Go to ${data.navigate_to} tab</a></div>`;
+      html += `<div class="nlq-nav-hint">📍 <a onclick="switchTab('${escJsArg(data.navigate_to)}')">Go to ${esc(data.navigate_to)} tab</a></div>`;
     }
     content.innerHTML = html;
   })

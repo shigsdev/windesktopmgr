@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from datetime import datetime
 
 from flask import Blueprint, jsonify, request
@@ -33,6 +34,30 @@ except ImportError:
     anthropic = None  # NLQ feature unavailable without the SDK
 
 nlq_bp = Blueprint("nlq", __name__)
+
+# Overridable via env so the model can track availability without a code change
+# (the hardcoded claude-sonnet-4-20250514 was retired and 404'd on 2026-10-11).
+NLQ_MODEL = os.environ.get("NLQ_MODEL", "claude-opus-5-5")
+# Chat-panel Q&A over tool data: "low" keeps a multi-round answer inside the
+# panel's wait budget. Set explicitly -- Opus 5.5 would otherwise default to "medium".
+NLQ_EFFORT = "low"
+# Thinking is always on for Opus 5.5 and counts against max_tokens, so the old
+# 1024 cap would cut answers off. Answer length is held by the system prompt.
+NLQ_MAX_TOKENS = 16000
+# Per-call ceiling; without it the SDK default is 10 min x 3 attempts.
+NLQ_TIMEOUT_S = 60.0
+
+# One shared client, lazily built (same pattern as ai_identify._get_client).
+_client = None
+_client_lock = threading.Lock()
+
+
+def _get_client(api_key: str):
+    global _client
+    with _client_lock:
+        if _client is None:
+            _client = anthropic.Anthropic(api_key=api_key, timeout=NLQ_TIMEOUT_S, max_retries=1)
+        return _client
 
 
 # ── Tool registry (populated by windesktopmgr at import time) ─────────────────
@@ -291,6 +316,11 @@ _NLQ_TOOLS = [
     },
 ]
 
+# Tabs the model may navigate to -- the navigate_to_tab enum, the single source.
+_NAV_TABS = frozenset(
+    next(t for t in _NLQ_TOOLS if t["name"] == "navigate_to_tab")["input_schema"]["properties"]["tab"]["enum"]
+)
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -325,7 +355,7 @@ def nlq_ask():
     if anthropic is None:
         return jsonify({"error": "anthropic package not installed. Run: pip install anthropic"}), 500
 
-    client = anthropic.Anthropic(api_key=api_key)
+    client = _get_client(api_key)
 
     system_prompt = (
         "You are a helpful Windows system diagnostics assistant embedded in WinDesktopMgr, "
@@ -350,12 +380,15 @@ def nlq_ask():
     max_rounds = 5
     for _round in range(max_rounds):
         try:
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=1024,
+            response = client.beta.messages.create(
+                model=NLQ_MODEL,
+                max_tokens=NLQ_MAX_TOKENS,
                 system=system_prompt,
                 tools=_NLQ_TOOLS,
                 messages=messages,
+                output_config={"effort": NLQ_EFFORT},
+                betas=["server-side-fallback-2026-07-01"],
+                extra_body={"fallbacks": "default"},
             )
         except anthropic.APIError as e:
             return jsonify({"error": f"Claude API error: {e}"}), 502
@@ -374,8 +407,10 @@ def nlq_ask():
                         try:
                             result = dispatch_fn(tool_input)
                             # Track tab navigations
-                            if tool_name == "navigate_to_tab":
-                                nav_tabs.append(tool_input.get("tab", "dashboard"))
+                            # The tab ends up in an onclick handler; only pass known tabs through.
+                            tab = tool_input.get("tab", "dashboard")
+                            if tool_name == "navigate_to_tab" and tab in _NAV_TABS:
+                                nav_tabs.append(tab)
                             result_json = json.dumps(_truncate_for_context(result), default=str)
                         except Exception as e:
                             result_json = json.dumps({"error": str(e)})
@@ -397,12 +432,21 @@ def nlq_ask():
             # Claude produced a final text response
             answer_parts = []
             for block in response.content:
-                if hasattr(block, "text"):
+                if getattr(block, "type", None) == "text":
                     answer_parts.append(block.text)
+            answer = "\n".join(answer_parts)
+
+            # Refusal (after the server-side fallback chain) or a cut-off reply
+            # would otherwise render as a blank or truncated bubble with no hint why.
+            if response.stop_reason == "refusal":
+                answer = "Claude declined to answer this question. Try rephrasing it."
+            elif response.stop_reason == "max_tokens":
+                note = "_(The answer was cut off — try a narrower question.)_"
+                answer = f"{answer}\n\n{note}" if answer else note
 
             return jsonify(
                 {
-                    "answer": "\n".join(answer_parts),
+                    "answer": answer,
                     "navigate_to": nav_tabs[-1] if nav_tabs else None,
                 }
             )
