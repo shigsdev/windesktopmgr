@@ -2558,39 +2558,48 @@ class TestDocsTab:
         )
         assert calls >= 2, f"doc_load ran {calls}x across two visits — stale after the first"
 
-    def test_swap_view_leads_with_label_serial_not_position(self, loaded_page):
-        """Regression (2026-10-08): the diagram said "Socket 1 ... REMOVE THIS
-        ONE", the page said that was the socket nearest the bracket, and the only
-        serial shown was the EUI, which is not printed on the drive. The socket
-        counted as first held a HEALTHY drive. Rendered from a fixed payload of
-        that exact machine state so the assertion does not depend on live disks."""
+    def test_swap_view_draws_card_from_the_bracket_in_checked_order(self, loaded_page):
+        """Regression (2026-10-08 wrong-drive pull, follow-up 2026-10-11): the
+        picture drew the drives in Windows' bus order with the bracket down the
+        left side and the failed drive on top -- the same picture that got a
+        healthy drive pulled, even after the text was fixed. It must now start at
+        the bracket in the order checked by hand (bracket end = highest bus),
+        mark unchecked sockets as assumed, and still lead each row with the label
+        serial. Fixed payload = this machine's real state on 2026-10-11."""
         page, _ = loaded_page
         page.evaluate("document.querySelector('[data-page=\"docs\"]').click()")
         result = page.evaluate(
             """
             async () => {
+                const drv = (pos, socket, slot, bus, model, sn, short, retired) => ({
+                    position: pos, position_checked: pos === 1, socket, slot, bus, model, size_gb: 1863,
+                    serial: '0025_' + short, label_serial: sn, serial_short: short, health: 'Healthy',
+                    usage: retired ? 'Retired' : 'Auto-Select', retired, flag: retired ? 'retired' : 'ok'});
+                const order = [
+                    drv(1, 4, 'PCI Slot 13', 15, 'Samsung SSD 990 PRO 2TB', 'S7L9NS0L407163R', '5B40', false),
+                    drv(2, 3, 'PCI Slot 9', 12, 'Samsung SSD 970 EVO Plus 2TB', 'S6S2NS0TB02576W', '18B5', false),
+                    drv(3, 2, 'PCI Slot 5', 9, 'Samsung SSD 990 PRO 2TB', 'S7KHNJ0WC87984N', '29B7', false),
+                    drv(4, 1, 'PCI Slot 1', 6, 'Samsung SSD 990 PRO 2TB', 'S7KHNJ0WC85693P', '20C4', true),
+                ];
                 const t = {
-                    ok: true, has_card: true, card_switch: '',
-                    note: "Rows are in Windows' order (PCIe bus), which is NOT the physical socket order.",
-                    failed_serial: '0025_384C_3145_20C4', failed_label_serial: 'S7KHNJ0WC85693P',
-                    card_drives: [
-                        {socket: 1, slot: 'PCI Slot 1', bus: 6, model: 'Samsung SSD 990 PRO 2TB', size_gb: 1863,
-                         serial: '0025_384C_3145_20C4', label_serial: 'S7KHNJ0WC85693P', serial_short: '20C4',
-                         health: 'Healthy', usage: 'Retired', retired: true, flag: 'retired'},
-                        {socket: 2, slot: 'PCI Slot 5', bus: 9, model: 'Samsung SSD 990 PRO 2TB', size_gb: 1863,
-                         serial: '0025_384C_3145_29B7', label_serial: 'S7KHNJ0WC87984N', serial_short: '29B7',
-                         health: 'Healthy', usage: 'Auto-Select', retired: false, flag: 'ok'},
-                    ],
+                    ok: true, has_card: true, card_switch: 'ASMedia ASM2812',
+                    note: 'Pull only the drive whose label matches.',
+                    order_basis: 'Socket order checked by hand on 2026-10-08 ... assumed ...',
+                    failed_serial: '0025_20C4', failed_label_serial: 'S7KHNJ0WC85693P',
+                    card_drives: order.slice().reverse(), physical_order: order,
                     onboard: [],
-                    missing: [{model: 'Samsung SSD 970 EVO Plus 2TB', serial: '0025_385A_2141_9E72',
+                    missing: [{model: 'Samsung SSD 970 EVO Plus 2TB', serial: '0025_9E72',
                                label_serial: 'S6S2NS0TA41838Z', serial_short: '9E72', usage: 'Auto-Select',
                                flag: 'missing'}],
                 };
                 await dkLoadTopology('doc-card-section', 'doc-card', t);
                 await doc_loadPoolState(t);
                 const svg = document.querySelector('#doc-card svg');
+                const texts = svg ? [...svg.querySelectorAll('text')].map(e => e.textContent) : [];
                 return {
+                    texts,
                     svgText: svg ? svg.textContent : '',
+                    drawnOrder: svg ? svg.getAttribute('data-dk-order') : null,
                     failedLabel: svg ? svg.getAttribute('data-dk-failed-label') : null,
                     card: document.getElementById('doc-card').textContent,
                     state: document.getElementById('doc-pool-state').textContent,
@@ -2599,16 +2608,27 @@ class TestDocsTab:
             }
             """
         )
+        # Drawn from the bracket: the new drive in Slot 13 first, the failed one last.
+        assert result["drawnOrder"] == "S7L9NS0L407163R,S6S2NS0TB02576W,S7KHNJ0WC87984N,S7KHNJ0WC85693P"
+        assert "METAL BRACKET" in result["svgText"]
+        t = result["texts"]
+        first_pos = next(x for x in t if "BRACKET" in x and "METAL" not in x)
+        assert first_pos.startswith("NEAREST THE BRACKET") and "checked by hand" in first_pos
+        # The failed drive's row says where to look AND that it is an assumption.
+        failed_i = next(i for i, x in enumerate(t) if "label S/N S7KHNJ0WC85693P" in x)
+        assert t[failed_i - 1] == "FARTHEST FROM THE BRACKET  (assumed)"
+        assert "REMOVE THE DRIVE WITH THIS LABEL" in t[failed_i]
         assert result["failedLabel"] == "S7KHNJ0WC85693P"
-        assert "label S/N S7KHNJ0WC85693P" in result["svgText"]
-        assert "Socket 1" not in result["svgText"], "rows must not be presented as physical sockets"
-        assert "S7KHNJ0WC85693P" in result["state"]
+        assert "Socket 1" not in result["svgText"]
+        # State line: label serial first, position only as a "probably" hint.
+        assert "S7KHNJ0WC85693P · probably farthest from the bracket" in result["state"]
         assert "Socket" not in result["state"]
         # The pulled-by-mistake drive is called out as not detected, by label.
         assert "S6S2NS0TA41838Z" in result["card"]
         assert "not detected" in result["state"].lower()
-        # The old position claim must be gone from the procedure text.
+        # The old claims are gone from the procedure text.
         assert "physical top-to-bottom order" not in result["page"]
+        assert "Do not pick the drive by its position" not in result["page"]
         assert "If you pulled the wrong drive" in result["page"]
         assert "put it back" in result["state"].lower()
 

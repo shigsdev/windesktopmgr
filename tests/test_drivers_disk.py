@@ -1821,11 +1821,50 @@ class TestBuildPcieCardTopology:
         assert [d["serial_short"] for d in topo["onboard"]] == ["USB9"]
         assert topo["missing"] == []
 
-    def test_note_disowns_physical_order(self):
+    def test_note_points_at_the_label(self):
         physical, members = self._machine()
         note = disk.build_pcie_card_topology(physical, members)["note"].lower()
-        assert "not the physical socket order" in note
         assert "label" in note
+        assert "doesn't match" in note
+
+    def test_physical_order_starts_at_the_bracket(self):
+        """Regression (2026-10-08 wrong-drive pull): the picture drew the drives in
+        Windows' bus order with the failed one on top, next to the bracket. On this
+        card the socket nearest the bracket holds the HIGHEST bus (checked by hand
+        when the 970 EVO in PCI Slot 13 came out of it), so the drawing order must
+        be bus-descending and the failed ...20C4 (bus 6) sits at the far end."""
+        physical, members = self._machine()
+        topo = disk.build_pcie_card_topology(physical, members)
+        order = [(d["position"], d["bus"], d["serial_short"]) for d in topo["physical_order"]]
+        assert order == [(1, 15, "9E72"), (2, 12, "18B5"), (3, 9, "29B7"), (4, 6, "20C4")]
+        assert topo["physical_order"][-1]["flag"] == "retired"
+
+    def test_only_the_bracket_end_is_marked_checked(self):
+        """Only the bracket-end socket was verified by hand; the rest are an
+        assumption and must say so, so the picture never overstates what is known."""
+        physical, members = self._machine()
+        topo = disk.build_pcie_card_topology(physical, members)
+        assert [d["position_checked"] for d in topo["physical_order"]] == [True, False, False, False]
+        basis = topo["order_basis"].lower()
+        assert "2026-10-08" in basis
+        assert "assumed" in basis
+        assert "label" in basis
+
+    def test_windows_numbering_unchanged(self):
+        """card_drives / socket stay in Windows' bus order (the 'Windows #' shown
+        on each row and used by the Docs state line)."""
+        physical, members = self._machine()
+        topo = disk.build_pcie_card_topology(physical, members)
+        assert [d["socket"] for d in topo["physical_order"]] == [4, 3, 2, 1]
+
+    def test_unknown_bus_has_no_position(self):
+        physical = [
+            self._phys("Samsung 990 PRO 2TB", "20C4.", "Healthy", "PCI Slot 1 : Bus 6 : Device 0 : Adapter 1"),
+            self._phys("Mystery NVMe", "ZZZZ.", "Healthy", "PCI Slot 7"),
+        ]
+        topo = disk.build_pcie_card_topology(physical, members=[])
+        order = [(d["position"], d["serial_short"]) for d in topo["physical_order"]]
+        assert order == [(1, "20C4"), (None, "ZZZZ")]
 
 
 class TestDetectPcieSwitch:

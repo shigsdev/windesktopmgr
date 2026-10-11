@@ -2389,13 +2389,13 @@
       <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
         <div style="font-weight:700;font-size:13px;margin-bottom:4px">Step 1 &mdash; Identify the failed drive</div>
         <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:10px">
-          The card has four M.2 sockets. The highlighted row below is the drive to remove, identified by the <b>serial printed on its label</b> and its model.
-          <b style="color:var(--amber)">Do not pick the drive by its position.</b> The rows are in the order Windows lists the drives, which is <b>not</b> the order of the sockets &mdash; on this card it runs the opposite way.
+          The card has four M.2 sockets. The picture below starts at the <b>metal bracket</b> (the end of the card at the back of the PC, where the cables plug in) and runs away from it, in the order found by hand on 2026-10-08. Only the socket nearest the bracket was actually checked; the others are marked <i>assumed</i>.
+          The highlighted row is the drive to remove. <b style="color:var(--amber)">Use its position to know where to look, then confirm it by the serial printed on its label and its model.</b>
           <br><br>
           <b>Read the label of each drive on the card and remove only the one whose serial and model both match the highlighted row.</b> If none match, stop and re-check here &mdash; do not guess. (The long <code>0025_&hellip;</code> number in grey is an internal Windows ID; it is not printed on the drive.)
         </div>
         <div style="font-size:11px;color:var(--muted);margin-bottom:10px;padding:8px 10px;border-left:2px solid var(--amber)">
-          <b>Learned the hard way (2026-10-08):</b> an earlier version of this page claimed the first row was the socket nearest the bracket and showed only the internal Windows ID. Following it, the socket counted as first was opened &mdash; and it held a <i>healthy</i> 970 EVO Plus, the drive Windows lists <i>last</i>. The bad drive was physically in the last socket.
+          <b>Learned the hard way (2026-10-08):</b> an earlier version of this page claimed the first row was the socket nearest the bracket and showed only the internal Windows ID. Following it, the socket nearest the bracket was opened &mdash; and it held a <i>healthy</i> 970 EVO Plus, the drive Windows lists <i>last</i> (PCI Slot 13). So on this card Windows' numbering runs the opposite way to the sockets, and the picture is now drawn from the bracket in that real order.
         </div>
         <div id="doc-card-section" style="display:none">
           <div id="doc-card"></div>
