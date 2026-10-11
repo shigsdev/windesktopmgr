@@ -15,6 +15,8 @@ pytest-cov>=7.0.0
 pytest-xdist>=3.5.0
 ruff>=0.15.0
 pre-commit>=4.0.0
+# Parses requirement specs for scripts/lock_requirements.py (requirements.lock).
+packaging>=24.0
 
 # Frontend smoke tests (backlog #26) — opt-in via `pytest -m playwright`.
 # One-time setup after install: `python -m playwright install chromium`
