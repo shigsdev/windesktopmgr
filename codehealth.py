@@ -26,9 +26,10 @@ Scanners (each returns ``{ok, level, count, summary, details, ...}``):
                 everything" button.
 
   tech_debt  -- pure file-walk: counts TODO/FIXME/XXX/HACK markers in
-                ``*.py`` and ``templates/*.html``, flags files over
-                ``LARGE_FILE_THRESHOLD`` lines (5000), counts ruff C901
-                complexity warnings.
+                ``*.py``, ``*.html``, ``*.js`` and ``*.css`` (not minified
+                bundles), flags files over ``LARGE_FILE_LINE_THRESHOLD`` lines
+                (5000); a flagged file is re-filed each time it crosses
+                another ``LARGE_FILE_BAND`` (1,000 lines).
 
 Severity ladder (UI uses this to colour the cards):
 
@@ -83,6 +84,15 @@ SCAN_TIMEOUT_SEC = 60
 
 # Tech-debt thresholds.
 LARGE_FILE_LINE_THRESHOLD = 5000
+# Source we write, in every language the app ships (tech-debt #68: .js and
+# .css were missed, hiding the 11,000-line static/js/app.js). Minified
+# vendor bundles are not ours to split.
+_SCANNED_SUFFIXES = (".py", ".html", ".js", ".css")
+_SKIPPED_SUFFIXES = (".min.js", ".min.css")
+# A large-file finding is re-filed each time the file crosses another
+# 1,000-line band, so a file that was split and then grew back is caught
+# again (windesktopmgr.py: 4,995 after #54, 5,471 four months later).
+LARGE_FILE_BAND = 1000
 _TODO_PATTERN = re.compile(r"\b(TODO|FIXME|XXX|HACK)\b")
 
 # Severity ladder used by the UI cards to pick a colour.
@@ -444,7 +454,7 @@ def scan_tech_debt() -> dict:
             if d not in {".git", ".pytest_cache", ".ruff_cache", "__pycache__", "node_modules", "Logs", ".claude"}
         ]
         for name in files:
-            if not name.endswith((".py", ".html")):
+            if not name.endswith(_SCANNED_SUFFIXES) or name.endswith(_SKIPPED_SUFFIXES):
                 continue
             full = os.path.join(root, name)
             rel = os.path.relpath(full, _REPO_ROOT)
@@ -1034,7 +1044,7 @@ def findings_to_backlog_entries(scan_result: dict) -> list[dict]:
             lines = lf.get("lines") or 0
             entries.append(
                 {
-                    "fingerprint": _fingerprint("tech_debt", f"large:{fname}"),
+                    "fingerprint": _fingerprint("tech_debt", f"large:{fname}:{lines // LARGE_FILE_BAND}"),
                     "category": "Tech Debt",
                     "title": f"{fname} is {lines:,} lines (target <5,000)",
                     "severity": "info",
