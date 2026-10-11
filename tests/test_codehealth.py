@@ -1229,3 +1229,52 @@ class TestCoverageGateScope:
 
     def test_gate_still_fails_under_80(self):
         assert "--cov-fail-under=80" in self._addopts()
+
+
+class TestTechDebtBlindSpots:
+    """Tech-debt #68 (2026-10-10): the scanner walked only .py/.html, so the
+    11,000-line static/js/app.js was invisible after the JS moved out of
+    index.html (#55); and a large-file finding's fingerprint was just the
+    file name, so windesktopmgr.py regrowing 4,995 -> 5,471 lines after #54
+    closed was never filed again."""
+
+    def _scan(self, ch_tmp, monkeypatch):
+        monkeypatch.setattr(codehealth, "_REPO_ROOT", str(ch_tmp["tmp"]))
+        return codehealth.scan_tech_debt()
+
+    def test_large_js_and_css_files_are_flagged(self, ch_tmp, monkeypatch):
+        (ch_tmp["tmp"] / "static").mkdir()
+        (ch_tmp["tmp"] / "static" / "app.js").write_text("let x = 1;\n" * 6000)
+        (ch_tmp["tmp"] / "static" / "app.css").write_text("a{}\n" * 5200)
+        large = {f["file"].replace("\\", "/") for f in self._scan(ch_tmp, monkeypatch)["details"]["large_files"]}
+        assert large == {"static/app.js", "static/app.css"}
+
+    def test_todo_markers_in_js_are_counted(self, ch_tmp, monkeypatch):
+        (ch_tmp["tmp"] / "app.js").write_text("// TODO wire this up\nlet x = 1;\n")
+        assert self._scan(ch_tmp, monkeypatch)["count"] == 1
+
+    def test_minified_vendor_bundles_are_ignored(self, ch_tmp, monkeypatch):
+        (ch_tmp["tmp"] / "lib.min.js").write_text("x\n" * 9000)
+        assert self._scan(ch_tmp, monkeypatch)["details"]["large_files"] == []
+
+    @staticmethod
+    def _entry(fname, lines):
+        scan = {
+            "scanners": {
+                "coverage": {"level": "ok"},
+                "ruff": {"details": []},
+                "secrets": {"level": "ok"},
+                "tech_debt": {"details": {"large_files": [{"file": fname, "lines": lines}]}},
+            }
+        }
+        [entry] = codehealth.findings_to_backlog_entries(scan)
+        return entry
+
+    def test_regrowth_past_the_next_thousand_lines_is_a_new_finding(self):
+        # Filed at 5,4xx; the file was later split, then grew back to 6,1xx.
+        assert (
+            self._entry("windesktopmgr.py", 5471)["fingerprint"] != self._entry("windesktopmgr.py", 6120)["fingerprint"]
+        )
+
+    def test_small_drift_within_a_thousand_lines_is_not_refiled(self):
+        assert self._entry("app.js", 11089)["fingerprint"] == self._entry("app.js", 11420)["fingerprint"]
