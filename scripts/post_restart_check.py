@@ -390,7 +390,16 @@ def check_logs(host: str, since: str | None = None) -> bool:
         # Filter to entries after the restart timestamp
         if since:
             cutoff = datetime.fromisoformat(since)
-            entries = [e for e in entries if datetime.fromisoformat(e.get("timestamp", "2000-01-01")) >= cutoff]
+            recent = []
+            for e in entries:
+                # Skip unparseable timestamps (same as check_idle_poll_rate) --
+                # one garbled line must not crash the whole verify.
+                try:
+                    if datetime.fromisoformat(e.get("timestamp", "2000-01-01")) >= cutoff:
+                        recent.append(e)
+                except ValueError:
+                    continue
+            entries = recent
         count = len(entries)
         if count == 0:
             print(f"  {GREEN}{level}{RESET}: 0 entries")

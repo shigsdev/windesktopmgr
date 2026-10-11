@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -54,6 +55,11 @@ if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
 import backup as bk  # noqa: E402
+
+# The tray names sessions with secrets.token_hex(6). The id goes into the
+# result-file path, so anything path-like is refused -- this process runs
+# ELEVATED and must never write outside APP_DIR on a tampered request.
+_SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 # ── Helper utilities ────────────────────────────────────────────────
 
@@ -340,12 +346,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FATAL: cannot read request file: {e}", file=sys.stderr)
         return 2
 
-    session_id = request.get("session_id") or ""
+    session_id = str(request.get("session_id") or "")
     action = request.get("action") or ""
     params = request.get("params") or {}
     started_at = _now_iso()
 
-    if not session_id or action not in _ACTION_HANDLERS:
+    valid_session = bool(_SESSION_ID_RE.fullmatch(session_id))
+    if not valid_session or action not in _ACTION_HANDLERS:
         result_payload = {
             "ok": False,
             "error": f"invalid request: session_id={session_id!r}, action={action!r}",
@@ -391,8 +398,11 @@ def main(argv: list[str] | None = None) -> int:
         result_payload["run"].pop("stdout", None)
         result_payload["run"].pop("stderr", None)
 
-    result_path = os.path.join(APP_DIR, bk._RESULT_FILE_TPL.format(session=session_id))  # noqa: SLF001
-    _atomic_write(result_path, result_payload)
+    # No result file for an invalid id -- there is no safe path to write it
+    # to. The tray's poll times out and the audit row above records why.
+    if valid_session:
+        result_path = os.path.join(APP_DIR, bk._RESULT_FILE_TPL.format(session=session_id))  # noqa: SLF001
+        _atomic_write(result_path, result_payload)
 
     # Best-effort cleanup of the request file -- we've consumed it.
     try:
