@@ -30,6 +30,7 @@ Public API:
     compute_drift()               -- current vs accepted baseline
     record_drift_if_any()         -- append a history entry when drift > 0
     recent_drift(window)          -- history entries in last N hours
+    drop_reconciled(entries)      -- history minus changes no longer open
     load_history()                -- raw history list (for API/tests)
 """
 
@@ -68,6 +69,8 @@ HISTORY_FILE = os.path.join(APP_DIR, "baseline_history.json")
 # rolling window (bug 2026-06-03). The Baseline tab's own history/timeline
 # intentionally still shows the FULL audit trail -- only the dashboard's
 # actionable "is there drift right now?" view is gated by the watermark.
+# A drift check that finds no drift moves it forward too: the PC matched the
+# baseline at that instant, so nothing recorded before it is still open.
 ACCEPT_WATERMARK_FILE = os.path.join(APP_DIR, "baseline_accept_watermark.json")
 
 MAX_HISTORY = 500
@@ -773,10 +776,11 @@ def _append_history(entry: dict) -> bool:
 def _save_accept_watermark(timestamp: str) -> bool:
     """Persist the acceptance watermark (best-effort).
 
-    Written when the full current state is promoted to baseline so the
-    dashboard can treat all drift recorded at or before ``timestamp`` as
-    resolved. A failed write is non-fatal -- the baseline still updated;
-    we just don't suppress the stale dashboard drift (pre-fix behaviour).
+    Written when the full current state is promoted to baseline, or when a
+    drift check finds the PC matching the baseline, so the dashboard can
+    treat all drift recorded at or before ``timestamp`` as resolved. A
+    failed write is non-fatal -- the baseline still updated; we just don't
+    suppress the stale dashboard drift (pre-fix behaviour).
     """
     with _file_lock:
         return _atomic_write(ACCEPT_WATERMARK_FILE, {"accepted_at": timestamp})
@@ -798,41 +802,6 @@ def load_accept_watermark() -> datetime | None:
             return datetime.fromisoformat(data["accepted_at"])
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             return None
-
-
-def drop_accepted(entries: list) -> list:
-    """Filter drift-history ``entries`` to those recorded AFTER the most
-    recent baseline acceptance.
-
-    Entries at or before the acceptance watermark describe drift the user
-    already reconciled by promoting the current state to baseline, so the
-    live dashboard concerns must exclude them. Behaviour:
-
-      * No watermark on record -> return ``entries`` unchanged.
-      * Entry timestamp strictly after the watermark -> kept.
-      * Entry timestamp at or before the watermark -> dropped (reconciled).
-      * Missing/unparseable timestamp -> KEPT (fail-open: never hide drift
-        we can't date).
-      * Non-dict junk entry -> dropped.
-
-    The acceptance instant uses strict ``>`` so the snapshot moment itself
-    (which defines the new baseline) counts as reconciled.
-    """
-    watermark = load_accept_watermark()
-    if watermark is None:
-        return entries
-    out: list = []
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        try:
-            ts = datetime.fromisoformat(entry.get("timestamp", ""))
-        except (ValueError, TypeError):
-            out.append(entry)  # undateable -> keep (fail-open)
-            continue
-        if ts > watermark:
-            out.append(entry)
-    return out
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1042,6 +1011,18 @@ def record_drift_if_any() -> dict:
         result["recorded"] = True
     else:
         result["recorded"] = False
+        if result["has_baseline"]:
+            # The PC matches the baseline, so every change recorded before
+            # now is settled -- including one undone on the PC (installed,
+            # then uninstalled) that accepting could never clear. Never move
+            # it backwards past a full accept that landed mid-snapshot.
+            try:
+                checked = datetime.fromisoformat(result["current_timestamp"])
+            except (TypeError, ValueError):
+                checked = None  # undateable check -> can't settle anything
+            previous = load_accept_watermark()
+            if checked is not None and (previous is None or checked > previous):
+                _save_accept_watermark(result["current_timestamp"])
     return result
 
 
@@ -1319,17 +1300,98 @@ def _change_in_baseline(kind: str, item: dict, by_key: dict) -> bool:
     return all(current.get(field) == new.get(field) for field in delta)
 
 
-def annotate_reconciled(timeline: list, history: list, baseline: dict | None, watermark: datetime | None) -> list:
-    """Mark which timeline changes the accepted baseline already holds.
+def _index_items(drift: dict) -> dict:
+    """Map ``(category, kind, key)`` to the list of items in one drift
+    record, so a lookup costs O(1) instead of a scan."""
+    index: dict[tuple, list] = {}
+    for cat in ("startup", "services", "tasks"):
+        cat_drift = drift.get(cat)
+        if not isinstance(cat_drift, dict):
+            continue
+        for kind in ("added", "removed", "changed"):
+            items = cat_drift.get(kind)
+            for item in items if isinstance(items, list) else []:
+                if isinstance(item, dict):
+                    index.setdefault((cat, kind, _history_key(item)), []).append(item)
+    return index
 
-    Each event gains ``reconciled``: True when it was recorded at or before
-    the last full "accept current as baseline" (``watermark``), or when the
-    baseline reflects it (see ``_change_in_baseline``), which covers changes
-    accepted one cluster or one entry at a time. Each cluster gains
-    ``open_count`` (events still to review) and ``reconciled`` (none left).
-    The Baseline tab keeps the full history but offers to accept only what
-    is open. Bug 2026-10-10: every old cluster kept its "Accept all N"
-    button after the user accepted the whole current state.
+
+def _still_shows(index: dict, cat: str, kind: str, item: dict) -> bool:
+    """True when an indexed drift record shows the same change as ``item``:
+    same key, and for a changed item the same new value of every field in
+    its delta (a later change to a different value supersedes it)."""
+    others = index.get((cat, kind, _history_key(item))) or []
+    if kind != "changed":
+        return bool(others)
+    new = item.get("new") if isinstance(item.get("new"), dict) else {}
+    for other in others:
+        other_new = other.get("new") if isinstance(other.get("new"), dict) else {}
+        if all(new.get(field) == other_new.get(field) for field in item.get("delta") or []):
+            return True
+    return False
+
+
+def _reconciler(history: list, baseline: dict | None, watermark: datetime | None):
+    """Return ``reconciled(timestamp, category, kind, item) -> bool``: the
+    one rule for whether a recorded change still needs review. Shared by
+    the Baseline tab timeline and the dashboard concerns so they agree.
+
+    A change is reconciled when any of these holds:
+      * it was recorded at or before ``watermark`` (the last full accept,
+        or the last drift check that found the PC matching the baseline);
+      * the newest drift record is later and no longer shows it -- the
+        change was undone on the PC, or superseded by a different value;
+      * the accepted baseline already reflects it (``_change_in_baseline``),
+        which covers changes accepted one cluster or one entry at a time.
+
+    An undateable change skips the time-based tests, and an item that isn't
+    a dict (legacy rows) is judged by the watermark alone -- never hide
+    drift we can't check.
+    """
+    latest_ts, latest_drift = None, None
+    for entry in history if isinstance(history, list) else []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("drift"), dict):
+            continue
+        try:
+            ts = datetime.fromisoformat(entry.get("timestamp", ""))
+        except (TypeError, ValueError):
+            continue
+        if latest_ts is None or ts >= latest_ts:
+            latest_ts, latest_drift = ts, entry["drift"]
+    latest_index = _index_items(latest_drift) if latest_drift is not None else {}
+
+    def reconciled(timestamp, cat: str, kind: str, item) -> bool:
+        try:
+            ts = datetime.fromisoformat(timestamp or "")
+        except (TypeError, ValueError):
+            ts = None
+        if ts is not None and watermark is not None and ts <= watermark:
+            return True
+        if not isinstance(item, dict):
+            return False
+        if (
+            ts is not None
+            and latest_ts is not None
+            and ts < latest_ts
+            and not _still_shows(latest_index, cat, kind, item)
+        ):
+            return True
+        if not isinstance(baseline, dict):
+            return False
+        return _change_in_baseline(kind, item, (baseline.get(cat) or {}).get("by_key") or {})
+
+    return reconciled
+
+
+def annotate_reconciled(timeline: list, history: list, baseline: dict | None, watermark: datetime | None) -> list:
+    """Mark which timeline changes no longer need review.
+
+    Each event gains ``reconciled`` (see ``_reconciler`` for the rule).
+    Each cluster gains ``open_count`` (events still to review) and
+    ``reconciled`` (none left). The Baseline tab keeps the full history but
+    offers to accept only what is open. Bug 2026-10-10: every old cluster
+    kept its "Accept all N" button after the user accepted the whole
+    current state.
 
     ``timeline`` items are updated in place and returned.
     """
@@ -1343,18 +1405,11 @@ def annotate_reconciled(timeline: list, history: list, baseline: dict | None, wa
                 for item in (cat_drift.get(kind) or []) if isinstance(cat_drift, dict) else []:
                     if isinstance(item, dict):
                         items[(entry.get("timestamp"), cat, kind, _history_key(item))] = item
+    check = _reconciler(history, baseline, watermark)
 
     def reconciled(ev: dict) -> bool:
-        try:
-            if watermark is not None and datetime.fromisoformat(ev.get("timestamp", "")) <= watermark:
-                return True
-        except (TypeError, ValueError):
-            pass
-        if not isinstance(baseline, dict):
-            return False
-        item = items.get((ev.get("timestamp"), ev.get("category"), ev.get("kind"), ev.get("key")))
-        by_key = (baseline.get(ev.get("category")) or {}).get("by_key") or {}
-        return item is not None and _change_in_baseline(ev.get("kind"), item, by_key)
+        ts, cat, kind, key = ev.get("timestamp"), ev.get("category"), ev.get("kind"), ev.get("key")
+        return check(ts, cat, kind, items.get((ts, cat, kind, key), {"key": key}))
 
     for it in timeline:
         if it.get("type") == "cluster":
@@ -1365,6 +1420,60 @@ def annotate_reconciled(timeline: list, history: list, baseline: dict | None, wa
         else:
             it["reconciled"] = reconciled(it)
     return timeline
+
+
+def drop_reconciled(entries: list, history: list | None = None) -> list:
+    """Return drift-history ``entries`` with every reconciled change removed
+    (same rule as the Baseline tab timeline, see ``_reconciler``).
+
+    The dashboard concerns count and correlate what this returns. Bug
+    2026-10-10: they only honoured the full-accept watermark, so a cluster
+    accepted one entry at a time ("Accept all N") kept raising the drift
+    and cross-surface concerns for up to 24h.
+
+      * An entry with some changes left is copied with only those, and its
+        ``total_changes`` recounted; an untouched entry is returned as is.
+      * An entry with no changes left is dropped.
+      * An entry without itemised changes is judged by the watermark.
+      * Non-dict junk is dropped.
+
+    ``history`` (the full drift history, for the newest-record rule) is
+    read from disk when the caller hasn't already loaded it.
+    """
+    if history is None:
+        history = load_history()
+    check = _reconciler(history, load_baseline(), load_accept_watermark())
+    out: list = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        ts, drift = entry.get("timestamp"), entry.get("drift")
+        if not isinstance(drift, dict):
+            drift = {}
+        kept_drift = dict(drift)
+        kept_total = dropped = 0
+        for cat in ("startup", "services", "tasks"):
+            if not isinstance(drift.get(cat), dict):
+                continue
+            kept_cat = dict(drift[cat])
+            for kind in ("added", "removed", "changed"):
+                items = drift[cat].get(kind) or []
+                if not isinstance(items, list):
+                    continue
+                kept_cat[kind] = [item for item in items if not check(ts, cat, kind, item)]
+                kept_total += len(kept_cat[kind])
+                dropped += len(items) - len(kept_cat[kind])
+            kept_drift[cat] = kept_cat
+        if not dropped:
+            # Untouched: keep it, unless it has no changes to judge one by one
+            # and the watermark says everything that old is settled.
+            if kept_total or not check(ts, "", "", None):
+                out.append(entry)
+        elif kept_total:
+            if "total_changes" in drift:
+                kept_drift["total_changes"] = kept_total
+            out.append({**entry, "drift": kept_drift, "total_changes": kept_total})
+    return out
 
 
 def correlation_alert(history: list, *, window_seconds: int = 60, min_categories: int = 3) -> dict | None:

@@ -1022,6 +1022,8 @@ class TestComputeDrift:
         result = baseline.record_drift_if_any()
         assert result["recorded"] is False
         assert baseline.load_history() == []
+        # "now" isn't a date, so the clean check can't settle anything.
+        assert baseline.load_accept_watermark() is None
 
     def test_record_drift_noop_when_no_baseline(self, baseline_tmp, mocker):
         """First-run: there's no baseline so drift can't be logged."""
@@ -1038,6 +1040,55 @@ class TestComputeDrift:
         result = baseline.record_drift_if_any()
         assert result["recorded"] is False
         assert result["has_baseline"] is False
+
+    # A drift check that finds nothing proves the PC matches the baseline,
+    # so every change recorded before it is settled -- including one undone
+    # on the PC (installed, then uninstalled) that accepting can't clear.
+    _EMPTY = {"startup": {"by_key": {}}, "services": {"by_key": {}}, "tasks": {"by_key": {}}}
+
+    def test_clean_drift_check_moves_the_watermark(self, baseline_tmp, mocker):
+        baseline._atomic_write(baseline.BASELINE_FILE, {"timestamp": "2026-10-10T09:00:00", **self._EMPTY})
+        baseline._save_accept_watermark("2026-10-10T09:00:00")
+        mocker.patch(
+            "baseline.take_snapshot",
+            return_value={"timestamp": "2026-10-10T12:00:00", **self._EMPTY, "counts": {}},
+        )
+        baseline.record_drift_if_any()
+        assert baseline.load_accept_watermark() == datetime(2026, 10, 10, 12, 0, 0)
+
+    def test_drift_check_with_changes_leaves_the_watermark(self, baseline_tmp, mocker):
+        baseline._atomic_write(baseline.BASELINE_FILE, {"timestamp": "2026-10-10T09:00:00", **self._EMPTY})
+        baseline._save_accept_watermark("2026-10-10T09:00:00")
+        mocker.patch(
+            "baseline.take_snapshot",
+            return_value={
+                "timestamp": "2026-10-10T12:00:00",
+                **self._EMPTY,
+                "startup": {"by_key": {"k": {"name": "k", "command": "x"}}},
+                "counts": {},
+            },
+        )
+        baseline.record_drift_if_any()
+        assert baseline.load_accept_watermark() == datetime(2026, 10, 10, 9, 0, 0)
+
+    def test_clean_check_never_moves_the_watermark_backwards(self, baseline_tmp, mocker):
+        # A full accept that landed while this (older) snapshot was running.
+        baseline._atomic_write(baseline.BASELINE_FILE, {"timestamp": "2026-10-10T12:05:00", **self._EMPTY})
+        baseline._save_accept_watermark("2026-10-10T12:05:00")
+        mocker.patch(
+            "baseline.take_snapshot",
+            return_value={"timestamp": "2026-10-10T12:00:00", **self._EMPTY, "counts": {}},
+        )
+        baseline.record_drift_if_any()
+        assert baseline.load_accept_watermark() == datetime(2026, 10, 10, 12, 5, 0)
+
+    def test_clean_check_without_a_baseline_writes_no_watermark(self, baseline_tmp, mocker):
+        mocker.patch(
+            "baseline.take_snapshot",
+            return_value={"timestamp": "2026-10-10T12:00:00", **self._EMPTY, "counts": {}},
+        )
+        baseline.record_drift_if_any()
+        assert baseline.load_accept_watermark() is None
 
 
 class TestRecentDrift:
@@ -3319,7 +3370,7 @@ class TestAcceptClusterRoute:
 
 
 class TestAcceptWatermark:
-    """Acceptance watermark + drop_accepted() — the fix for the bug where
+    """Acceptance watermark — the fix for the bug where
     drift cleared via "accept current as baseline" kept showing as open on
     the dashboard for up to 24h (2026-06-03)."""
 
@@ -3396,36 +3447,142 @@ class TestAcceptWatermark:
         assert result["ok"] is True  # accept itself still succeeds
         assert baseline.load_accept_watermark() is None  # watermark not persisted
 
-    def test_drop_accepted_no_watermark_returns_unchanged(self, baseline_tmp):
-        entries = [
-            {"timestamp": "2026-06-03T08:00:00", "total_changes": 3},
-            {"timestamp": "2026-06-03T09:00:00", "total_changes": 1},
-        ]
-        assert baseline.drop_accepted(entries) == entries
 
-    def test_drop_accepted_filters_at_and_before_watermark(self, baseline_tmp):
+class TestDropReconciled:
+    """drop_reconciled() -- what the dashboard concerns count. Bug
+    2026-10-10: the dashboard only honoured the full-accept watermark, so a
+    cluster accepted one entry at a time on the Baseline tab still raised
+    the drift and cross-surface concerns for up to 24h."""
+
+    BASE = {
+        "timestamp": "2026-10-10T14:00:00",
+        "startup": {"by_key": {"held": {"name": "held", "command": "new.exe"}}},
+        "services": {"by_key": {"svc_held": {"name": "svc_held"}}},
+        "tasks": {"by_key": {}},
+    }
+
+    @staticmethod
+    def _keys(entry):
+        return {
+            (cat, kind, item["key"])
+            for cat in ("startup", "services", "tasks")
+            for kind in ("added", "removed", "changed")
+            for item in entry["drift"][cat][kind]
+        }
+
+    def test_no_baseline_and_no_watermark_returns_unchanged(self, baseline_tmp):
+        entries = [_hist_entry("2026-06-03T08:00:00", startup={"added": [{"key": "a"}]})]
+        entries[0]["total_changes"] = 1
+        assert baseline.drop_reconciled(entries) == entries
+
+    def test_drops_entries_at_and_before_the_watermark(self, baseline_tmp):
         baseline._save_accept_watermark("2026-06-03T09:00:00")
-        before = {"timestamp": "2026-06-03T08:00:00", "total_changes": 3}
-        at = {"timestamp": "2026-06-03T09:00:00", "total_changes": 9}
-        after = {"timestamp": "2026-06-03T10:00:00", "total_changes": 1}
-        out = baseline.drop_accepted([before, at, after])
+        before, at, after = (
+            _hist_entry(ts, startup={"added": [{"key": "a"}]})
+            for ts in ("2026-06-03T08:00:00", "2026-06-03T09:00:00", "2026-06-03T10:00:00")
+        )
         # Strict `>`: the acceptance instant itself counts as reconciled.
-        assert out == [after]
+        assert baseline.drop_reconciled([before, at, after]) == [after]
 
-    def test_drop_accepted_keeps_undateable_entries_fail_open(self, baseline_tmp):
+    def test_keeps_undateable_entries_fail_open(self, baseline_tmp):
         baseline._save_accept_watermark("2026-06-03T09:00:00")
         no_ts = {"total_changes": 5}
         bad_ts = {"timestamp": "garbage", "total_changes": 2}
-        good = {"timestamp": "2026-06-03T10:00:00", "total_changes": 1}
-        out = baseline.drop_accepted([no_ts, bad_ts, good])
+        out = baseline.drop_reconciled([no_ts, bad_ts])
         # Never hide drift we can't date.
-        assert no_ts in out and bad_ts in out and good in out
+        assert out == [no_ts, bad_ts]
 
-    def test_drop_accepted_drops_non_dict_junk(self, baseline_tmp):
-        baseline._save_accept_watermark("2026-06-03T09:00:00")
+    def test_drops_non_dict_junk(self, baseline_tmp):
         good = {"timestamp": "2026-06-03T10:00:00", "total_changes": 1}
-        out = baseline.drop_accepted(["junk", None, 42, good])
-        assert out == [good]
+        assert baseline.drop_reconciled(["junk", None, 42, good]) == [good]
+
+    def test_drops_items_the_baseline_already_holds(self, baseline_tmp):
+        baseline._atomic_write(baseline.BASELINE_FILE, self.BASE)
+        baseline._save_accept_watermark("2026-10-10T13:00:00")
+        entry = _hist_entry(
+            "2026-10-10T13:30:00",
+            startup={
+                "added": [{"key": "held"}, {"key": "open"}],
+                "changed": [{"key": "held", "delta": ["command"], "new": {"command": "other.exe"}}],
+            },
+            services={"added": [{"key": "svc_held"}]},
+        )
+        entry["total_changes"] = entry["drift"]["total_changes"] = 4
+        [out] = baseline.drop_reconciled([entry])
+        assert self._keys(out) == {("startup", "added", "open"), ("startup", "changed", "held")}
+        assert out["total_changes"] == 2
+        assert out["drift"]["total_changes"] == 2
+        assert entry["total_changes"] == 4, "the caller's entry must not be mutated"
+
+    def test_drops_an_entry_once_every_item_is_held(self, baseline_tmp):
+        # The user's case: "Accept all N" on one cluster after the last full accept.
+        baseline._atomic_write(baseline.BASELINE_FILE, self.BASE)
+        baseline._save_accept_watermark("2026-10-10T13:00:00")
+        entry = _hist_entry(
+            "2026-10-10T13:30:00",
+            startup={"added": [{"key": "held"}]},
+            services={"added": [{"key": "svc_held"}]},
+        )
+        assert baseline.drop_reconciled([entry]) == []
+
+    def test_drops_a_change_the_newest_record_no_longer_shows(self, baseline_tmp):
+        # Installed, then uninstalled before anyone accepted it: the newer
+        # drift record no longer shows it, so there's nothing to accept.
+        older = _hist_entry("2026-10-10T13:30:00", startup={"added": [{"key": "undone"}, {"key": "still"}]})
+        newer = _hist_entry("2026-10-10T13:40:00", startup={"added": [{"key": "still"}]})
+        baseline._append_history(older)
+        baseline._append_history(newer)
+        out = baseline.drop_reconciled([older, newer])
+        assert [self._keys(e) for e in out] == [{("startup", "added", "still")}] * 2
+
+    def test_a_change_to_a_different_value_supersedes_the_older_one(self, baseline_tmp):
+        older = _hist_entry(
+            "2026-10-10T13:30:00", startup={"changed": [{"key": "k", "delta": ["command"], "new": {"command": "b"}}]}
+        )
+        newer = _hist_entry(
+            "2026-10-10T13:40:00", startup={"changed": [{"key": "k", "delta": ["command"], "new": {"command": "c"}}]}
+        )
+        baseline._append_history(older)
+        baseline._append_history(newer)
+        assert baseline.drop_reconciled([older, newer]) == [newer]
+
+    def test_a_change_the_newest_record_still_shows_stays(self, baseline_tmp):
+        older = _hist_entry(
+            "2026-10-10T13:30:00", startup={"changed": [{"key": "k", "delta": ["command"], "new": {"command": "b"}}]}
+        )
+        newer = _hist_entry(
+            "2026-10-10T13:40:00",
+            startup={"changed": [{"key": "k", "delta": ["command", "enabled"], "new": {"command": "b", "enabled": 0}}]},
+        )
+        baseline._append_history(older)
+        baseline._append_history(newer)
+        assert baseline.drop_reconciled([older, newer]) == [older, newer]
+
+    def test_malformed_history_rows_never_count_as_the_newest_record(self, baseline_tmp):
+        entry = _hist_entry("2026-10-10T13:30:00", startup={"added": [{"key": "a"}]})
+        baseline._append_history(entry)
+        baseline._append_history({"timestamp": "garbage", "drift": {}})
+        baseline._append_history({"timestamp": "2026-10-10T14:00:00", "drift": "junk"})
+        assert baseline.drop_reconciled([entry]) == [entry]
+
+    def test_uses_the_history_it_is_given(self, baseline_tmp):
+        older = _hist_entry("2026-10-10T13:30:00", startup={"added": [{"key": "undone"}]})
+        newer = _hist_entry("2026-10-10T13:40:00")
+        # Nothing on disk: the caller's history decides what is newest.
+        assert baseline.drop_reconciled([older], [older, newer]) == []
+
+    def test_entry_without_items_is_judged_by_the_watermark(self, baseline_tmp):
+        baseline._save_accept_watermark("2026-06-03T09:00:00")
+        before = {"timestamp": "2026-06-03T08:00:00", "total_changes": 2, "drift": {}}
+        after = {"timestamp": "2026-06-03T10:00:00", "total_changes": 2, "drift": {}}
+        assert baseline.drop_reconciled([before, after]) == [after]
+
+    def test_keeps_items_it_cannot_inspect(self, baseline_tmp):
+        # Legacy rows held bare strings; never hide what we can't check.
+        entry = {"timestamp": "2026-06-03T10:00:00", "drift": {"services": {"added": ["NewSvc"]}}}
+        baseline._append_history(_hist_entry("2026-06-03T11:00:00"))
+        [out] = baseline.drop_reconciled([entry])
+        assert out["drift"]["services"]["added"] == ["NewSvc"]
 
 
 class TestTimelineReconciled:
@@ -3496,6 +3653,23 @@ class TestTimelineReconciled:
         [event] = self._timeline(history)
         assert event["type"] == "event"
         assert event["reconciled"] is True
+
+    def test_change_undone_on_the_pc_is_reconciled(self):
+        # Installed then uninstalled after the last full accept: the newer
+        # record no longer shows it, so accepting it would be a no-op.
+        history = [
+            _hist_entry("2026-10-10T15:00:00", startup={"added": [{"key": "undone", "name": "undone"}]}),
+            _hist_entry("2026-10-10T16:00:00", startup={"added": [{"key": "still", "name": "still"}]}),
+        ]
+        got = {ev["key"]: ev["reconciled"] for ev in self._timeline(history)}
+        assert got == {"undone": True, "still": False}
+
+    def test_change_the_newest_record_still_shows_stays_open(self):
+        history = [
+            _hist_entry("2026-10-10T15:00:00", startup={"added": [{"key": "x", "name": "x"}]}),
+            _hist_entry("2026-10-10T16:00:00", startup={"added": [{"key": "x", "name": "x"}]}),
+        ]
+        assert [ev["reconciled"] for ev in self._timeline(history)] == [False, False]
 
     def test_no_baseline_and_no_accept_leaves_everything_open(self):
         history = [

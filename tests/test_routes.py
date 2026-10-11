@@ -2381,7 +2381,7 @@ class TestDashboardSummaryRoute:
     # The drift dashboard concern reads the rolling 24h drift HISTORY, not
     # live drift. Before the fix, clearing drift via "accept current as
     # baseline" left those history entries untouched, so the concern kept
-    # showing as open for up to 24h. drop_accepted() must exclude history
+    # showing as open for up to 24h. drop_reconciled() must exclude history
     # at/before the acceptance watermark.
 
     _DRIFT_ENTRY = {
