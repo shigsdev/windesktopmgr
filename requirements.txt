@@ -31,8 +31,9 @@ dnspython>=2.6
 # until tech-debt #66.
 pywin32>=311
 # Claude API client for Diagnose, AI identify and the ask-a-question box.
-# Held below 1.0 until the major upgrade is done and tested (backlog #70).
-anthropic>=0.86,<1
+# 1.x since backlog #70 (no call-site changes needed: no httpx objects,
+# raw responses, Text Completions or sampling params in this codebase).
+anthropic>=1.13,<2
 # System-tray icon + menu (tray.py) and the icon image it draws.
 pystray>=0.19
 Pillow>=12.0
