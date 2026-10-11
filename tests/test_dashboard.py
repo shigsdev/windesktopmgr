@@ -7,6 +7,10 @@ health report (SystemHealthDiag.check_disk_health) and the Disk tab
 concerns feed, which only inspected logical-volume fullness.
 """
 
+from datetime import datetime, timedelta
+
+import pytest
+
 import dashboard
 
 
@@ -616,3 +620,71 @@ class TestDashboardDiskSnooze:
         dc = self._disk(resp)
         assert len(dc) == 1
         assert dc[0]["disk_serial"] == "SN-XYZ."
+
+
+class TestDashboardBaselineDriftReconciled:
+    """Bug 2026-10-10: the baseline drift concerns ignored everything the
+    accepted baseline already holds except a full "accept current" -- so a
+    cross-surface cluster accepted one entry at a time on the Baseline tab
+    ("Accept all N") kept raising both concerns for up to 24h."""
+
+    @pytest.fixture
+    def drift_files(self, tmp_path, monkeypatch, mocker):
+        import baseline
+
+        monkeypatch.setattr(baseline, "BASELINE_FILE", str(tmp_path / "baseline_snapshot.json"))
+        monkeypatch.setattr(baseline, "HISTORY_FILE", str(tmp_path / "baseline_history.json"))
+        monkeypatch.setattr(baseline, "ACCEPT_WATERMARK_FILE", str(tmp_path / "baseline_accept_watermark.json"))
+        TestDashboardPhysicalDiskHealth._mock_deps(
+            TestDashboardPhysicalDiskHealth(),
+            mocker,
+            {"drives": [], "physical": [{"Name": "SSD", "Health": "Healthy", "Status": "OK"}], "io": []},
+        )
+        now = datetime.now().replace(microsecond=0)
+        baseline._save_accept_watermark((now - timedelta(hours=2)).isoformat())
+        # One three-category burst recorded after the last full accept.
+        baseline._append_history(
+            {
+                "timestamp": (now - timedelta(minutes=30)).isoformat(),
+                "total_changes": 3,
+                "drift": {
+                    "startup": {"added": [{"key": "run_app", "name": "app"}], "removed": [], "changed": []},
+                    "services": {"added": [{"key": "AppSvc", "name": "AppSvc"}], "removed": [], "changed": []},
+                    "tasks": {"added": [{"key": "AppTask", "name": "AppTask"}], "removed": [], "changed": []},
+                    "total_changes": 3,
+                },
+            }
+        )
+        return baseline
+
+    @staticmethod
+    def _write_baseline(baseline, startup=(), services=(), tasks=()):
+        baseline._atomic_write(
+            baseline.BASELINE_FILE,
+            {
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+                "startup": {"by_key": {k: {"name": k} for k in startup}},
+                "services": {"by_key": {k: {"name": k} for k in services}},
+                "tasks": {"by_key": {k: {"name": k} for k in tasks}},
+            },
+        )
+
+    @staticmethod
+    def _baseline_concerns(client):
+        return [c for c in client.get("/api/dashboard/summary").get_json()["concerns"] if c.get("tab") == "baseline"]
+
+    def test_open_cluster_raises_both_concerns(self, client, drift_files):
+        self._write_baseline(drift_files)
+        titles = [c["title"] for c in self._baseline_concerns(client)]
+        assert any("drift detected (3 change(s)" in t for t in titles)
+        assert any("Cross-surface" in t for t in titles)
+
+    def test_cluster_accepted_entry_by_entry_raises_nothing(self, client, drift_files):
+        self._write_baseline(drift_files, startup=["run_app"], services=["AppSvc"], tasks=["AppTask"])
+        assert self._baseline_concerns(client) == []
+
+    def test_partly_accepted_cluster_counts_only_open_items(self, client, drift_files):
+        self._write_baseline(drift_files, startup=["run_app"], services=["AppSvc"])
+        concerns = self._baseline_concerns(client)
+        assert [c["title"] for c in concerns] == ["System baseline drift detected (1 change(s) in 24h)"]
+        assert concerns[0]["detail"] == "tasks: +1/-0/~0"
