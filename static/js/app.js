@@ -1126,12 +1126,12 @@ async function dkLoadSpaces() {
 }
 
 // Physical card view (dk = Storage tab). Draws the add-in PCIe M.2 card's
-// drives in Windows' (PCIe-bus) order, highlighting a failed/retired drive
-// for a hardware swap, and lists the onboard M.2 drives as "do not touch".
-// The rows are NOT physical socket positions -- on this machine's card the bus
-// order runs opposite to the sockets, and drawing it as "Socket 1" got a
-// healthy drive pulled on 2026-10-08. Each row therefore leads with the serial
-// printed on the drive label; the EUI Windows uses is shown second.
+// drives starting at the metal bracket, in the order checked by hand
+// (physical_order from disk.build_pcie_card_topology), highlighting a
+// failed/retired drive for a hardware swap, and lists the onboard M.2 drives
+// as "do not touch". Each row says how far it sits from the bracket and whether
+// that was checked or assumed, then leads with the serial printed on the drive
+// label; the EUI Windows uses is shown last.
 // Built with DOM APIs + textContent (no innerHTML) so the live drive
 // model/serial strings can't inject markup. Shown only when the
 // machine actually has an add-in card (has_card).
@@ -1154,8 +1154,12 @@ async function dkLoadTopology(sectionId, hostId, prefetched) {
     while (host.firstChild) host.removeChild(host.firstChild);
 
     const flagColor = f => f === 'retired' ? '#ff4d4f' : (f === 'unhealthy' ? '#ffd740' : '#8b949e');
-    const drives = t.card_drives || [];
-    const rowH = 72, top = 58, W = 700, H = top + drives.length * rowH + 16;
+    // Drawn starting at the metal bracket, in the order checked by hand
+    // (physical_order). Windows' bus order ran the OTHER way on this card, and
+    // drawing it top-down beside the bracket got a healthy drive pulled on
+    // 2026-10-08. Older payloads without physical_order fall back to bus order.
+    const drives = t.physical_order || t.card_drives || [];
+    const rowH = 88, top = 74, W = 700, H = top + drives.length * rowH + 12;
     const svg = document.createElementNS(SVGNS, 'svg');
     svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
     svg.setAttribute('width', '100%');
@@ -1175,35 +1179,49 @@ async function dkLoadTopology(sectionId, hostId, prefetched) {
       if (o.mono) e.setAttribute('font-family', 'ui-monospace,Consolas,monospace');
       e.textContent = s; svg.appendChild(e); return e;
     };
-    // card PCB + bracket
-    rect(60, 20, W - 80, H - 30, {rx: 10, fill: '#11161d', stroke: '#30363d', sw: 2});
-    rect(34, 12, 26, H - 14, {rx: 4, fill: '#1c2530', stroke: '#30363d'});
+    // Bracket across the top (the end of the card at the back of the PC), the
+    // card body below it, sockets running away from the bracket.
+    rect(30, 10, W - 60, 26, {rx: 4, fill: '#2a3440', stroke: '#4b5a6b'});
+    text(46, 28, 'METAL BRACKET  ·  back of the PC, where the cables plug in', {fill: '#c9d1d9', size: 12, weight: '700'});
+    rect(40, 36, W - 80, H - 40, {rx: 10, fill: '#11161d', stroke: '#30363d', sw: 2});
     // card_switch already reads as a full noun ("ASMedia ASM2812", "PCIe
     // switch", "Broadcom/PLX PCIe switch") — don't append "switch" or fallbacks
     // double it ("PCIe switch switch").
     const cardLabel = t.card_switch ? `PCIe M.2 carrier card · ${t.card_switch}` : 'PCIe M.2 carrier card';
-    text(48, 40, cardLabel, {fill: '#8b949e', size: 12});
+    text(56, 60, cardLabel, {fill: '#8b949e', size: 12});
+    const placedCount = drives.filter(d => d.position).length;
+    const where = d => {
+      if (!d.position) return 'POSITION UNKNOWN — find it by the label';
+      const n = d.position;
+      const pos = n === 1 ? 'NEAREST THE BRACKET'
+        : (n === placedCount ? 'FARTHEST FROM THE BRACKET'
+          : `${n}${n === 2 ? 'nd' : n === 3 ? 'rd' : 'th'} FROM THE BRACKET`);
+      return `${pos}  ${d.position_checked ? '(checked by hand 2026-10-08)' : '(assumed)'}`;
+    };
     drives.forEach((d, i) => {
       const y = top + i * rowH;
       const failed = d.flag !== 'ok';
-      rect(80, y, W - 110, rowH - 12, failed ? {fill: '#2d1416', stroke: '#ff4d4f', sw: 2.5} : {fill: '#0d1117', stroke: '#30363d'});
+      rect(60, y, W - 120, rowH - 12, failed ? {fill: '#2d1416', stroke: '#ff4d4f', sw: 2.5} : {fill: '#0d1117', stroke: '#30363d'});
       const c = flagColor(d.flag);
       const tag = failed ? (d.retired ? '✖ RETIRED — REMOVE THE DRIVE WITH THIS LABEL' : '⚠ unhealthy — check this drive') : '✓ healthy';
+      text(76, y + 18, where(d), {fill: '#d29922', size: 11, weight: '700'});
       // Label serial first: it is the only thing printed on the drive.
       const lbl = d.label_serial ? `label S/N ${d.label_serial}` : 'label S/N not reported — match by model';
-      text(96, y + 23, `${lbl}    ${tag}`, {fill: c, size: 13, mono: true, weight: '700'});
-      text(96, y + 43, `${d.model || ''}${d.size_gb ? ' · ' + Math.round(d.size_gb) + ' GB' : ''}`, {size: 13});
+      text(76, y + 38, `${lbl}    ${tag}`, {fill: c, size: 13, mono: true, weight: '700'});
+      text(76, y + 57, `${d.model || ''}${d.size_gb ? ' · ' + Math.round(d.size_gb) + ' GB' : ''}`, {size: 13});
       const slotTxt = d.slot ? ` · ${d.slot}` : '';
       const busTxt = (d.bus !== null && d.bus !== undefined) ? ` · bus ${d.bus}` : '';
-      text(96, y + 61, `Windows #${d.socket}${slotTxt}${busTxt} · ID ${d.serial || ('…' + (d.serial_short || '????'))} (not on label)`, {fill: '#8b949e', size: 11, mono: true});
+      text(76, y + 73, `Windows #${d.socket}${slotTxt}${busTxt} · ID ${d.serial || ('…' + (d.serial_short || '????'))} (not on label)`, {fill: '#8b949e', size: 11, mono: true});
     });
+    // Drawn order (bracket first), for tests.
+    svg.setAttribute('data-dk-order', drives.map(d => d.label_serial || d.serial_short || '').join(','));
     // The failed drive's label serial, for tests and the Docs state line.
     svg.setAttribute('data-dk-failed-label', t.failed_label_serial || '');
     host.appendChild(svg);
 
     const note = document.createElement('div');
     note.style.cssText = 'font-size:11px;color:var(--muted);margin-top:6px';
-    note.textContent = t.note || '';
+    note.textContent = [t.order_basis, t.note].filter(Boolean).join(' ');
     host.appendChild(note);
 
     // Drives that dropped off the bus entirely (dead / already pulled) but are
@@ -9911,12 +9929,21 @@ async function doc_loadPoolState(prefetched) {
     }
     host.appendChild(line);
 
-    // No socket number here: Windows' order is not the physical order on this
-    // card. The label serial + model are what the user can actually check.
+    // The label serial + model are what the user can actually check; the
+    // distance from the bracket (from physical_order) is a where-to-look hint,
+    // marked "probably" unless that socket was checked by hand.
+    const placed = drives.filter(d => d.position).length;
+    const nearBracket = d => {
+      if (!d.position) return "";
+      const n = d.position;
+      const pos = n === 1 ? "nearest the bracket"
+        : (n === placed ? "farthest from the bracket" : `${n}${n === 2 ? "nd" : n === 3 ? "rd" : "th"} from the bracket`);
+      return ` · ${d.position_checked ? "" : "probably "}${pos}`;
+    };
     retired.concat(unhealthy).forEach(d => {
       const lbl = d.label_serial ? `label S/N ${d.label_serial}` : `Windows ID ${d.serial || "unknown"} (label serial not reported)`;
       host.appendChild(doc_el("div", "font-size:12px;font-weight:700;color:var(--amber);margin-top:6px",
-        `Remove: ${d.model || "unknown drive"} · ${lbl} · ${d.usage || d.health || ""}`.trim()));
+        `Remove: ${d.model || "unknown drive"} · ${lbl}${nearBracket(d)} · ${d.usage || d.health || ""}`.trim()));
     });
     lostData.forEach(d => {
       const lbl = d.label_serial ? `label S/N ${d.label_serial}` : `Windows ID ${d.serial || "unknown"}`;

@@ -429,6 +429,19 @@ def describe_disk_location(location: str, bus_type: str = "") -> dict:
     return {"slot": slot, "bus": bus, "integrated": integrated, "raw": raw, "hint": hint}
 
 
+# Physical orientation of THIS machine's add-in card, checked by hand on
+# 2026-10-08 (not inferred from enumeration): the socket nearest the metal
+# bracket held the drive in "PCI Slot 13" -- the HIGHEST PCIe bus. Windows'
+# bus order therefore runs away from the bracket in reverse. Only that end was
+# checked; the middle sockets are assumed to follow, and every row says so.
+CARD_BRACKET_END_HIGHEST_BUS = True
+CARD_ORDER_BASIS = (
+    "Socket order checked by hand on 2026-10-08: the socket nearest the metal bracket "
+    "held the drive Windows lists last (PCI Slot 13). Only that end was checked -- the "
+    "other sockets are assumed to follow in order. Confirm by the label before pulling."
+)
+
+
 def build_pcie_card_topology(physical: list[dict], members: list[dict] | None = None) -> dict:
     """Group physical disks into add-in-card sockets vs onboard M.2 so the
     Storage tab can draw a physical card view that highlights a failed/retired
@@ -441,8 +454,8 @@ def build_pcie_card_topology(physical: list[dict], members: list[dict] | None = 
     location; integrated M.2 / SATA / USB / unknown-location drives go to
     ``onboard`` ("not on the card") so a non-card drive is never drawn as a
     socket that doesn't exist. Card drives are sorted by PCIe bus and numbered
-    in that order (``socket``), but that is WINDOWS' order, not a physical
-    position: on this machine's card it runs the opposite way to the sockets.
+    in that order (``socket``) -- WINDOWS' order. ``physical_order`` is the same
+    drives starting at the bracket (``position`` 1), per CARD_ORDER_BASIS.
     Each entry carries ``label_serial`` (printed on the drive) as the physical
     anchor, the EUI ``serial`` Windows uses internally, and a ``flag``: ``retired`` (dropped
     from a Storage Spaces pool — the definitive "dead one" marker even when SMART
@@ -508,6 +521,20 @@ def build_pcie_card_topology(physical: list[dict], members: list[dict] | None = 
     for i, e in enumerate(card):
         e["socket"] = i + 1
 
+    # Physical order for the drawing, starting at the bracket (see
+    # CARD_ORDER_BASIS). A drive with no bus can't be placed, so it gets no
+    # position and is listed last.
+    placed = sorted(
+        (e for e in card if e["bus"] is not None), key=lambda e: e["bus"], reverse=CARD_BRACKET_END_HIGHEST_BUS
+    )
+    for pos, e in enumerate(placed, 1):
+        e["position"] = pos
+        e["position_checked"] = pos == 1
+    unplaced = [e for e in card if e["bus"] is None]
+    for e in unplaced:
+        e["position"] = None
+        e["position_checked"] = False
+
     # Pool members with no matching physical disk have fully dropped off the bus
     # (dead or already pulled) — the exact swap scenario. Surface them explicitly
     # so the view never shows all-healthy while a drive is actually gone.
@@ -535,15 +562,17 @@ def build_pcie_card_topology(physical: list[dict], members: list[dict] | None = 
     return {
         "has_card": len(card) > 0,
         "card_drives": card,
+        "physical_order": placed + unplaced,
+        "order_basis": CARD_ORDER_BASIS,
         "onboard": onboard,
         "missing": missing,
         "failed_serial": failed["serial"] if failed else "",
         "failed_serial_short": failed["serial_short"] if failed else "",
         "failed_label_serial": failed["label_serial"] if failed else "",
         "note": (
-            "Rows are in Windows' order (PCIe bus), which is NOT the physical socket "
-            "order -- on this card it runs the opposite way. Find the drive by the label "
-            "serial and model printed on it, and do not pull anything that doesn't match."
+            "Sockets are drawn starting at the metal bracket, in the order found by hand "
+            "(the reverse of Windows' numbering). Pull only the drive whose label serial "
+            "and model printed on it match the highlighted row -- never one that doesn't match."
         ),
     }
 
