@@ -3539,3 +3539,45 @@ class TestBaselineTimelineReconciled:
         assert len(posted) == 1
         assert [e["key"] for e in posted[0]["events"]] == ["open1"]
         assert posted[0]["confirm_token"] == "ACCEPT 1 CHANGES"
+
+
+class TestEscapeHelpers:
+    """Tech-debt #67: one escaper for HTML text and attributes, one for text
+    inside inline handlers. Runs the real app.js helpers in the browser."""
+
+    NASTY = "a\"b'c<d>&e\\f"
+
+    def test_esc_makes_text_and_attributes_inert(self, loaded_page):
+        page, _ = loaded_page
+        got = page.evaluate(
+            """(s) => {
+                const div = document.createElement('div');
+                div.innerHTML = `<span title="${esc(s)}">${esc(s)}</span>`;
+                const span = div.firstElementChild;
+                return {title: span.title, text: span.textContent, n: div.children.length,
+                        zero: esc(0), none: esc(null), alias: escHtml === esc || escHtml(s) === esc(s)};
+            }""",
+            self.NASTY,
+        )
+        assert got["title"] == self.NASTY
+        assert got["text"] == self.NASTY
+        assert got["n"] == 1
+        assert got["zero"] == "0"
+        assert got["none"] == ""
+        assert got["alias"] is True
+
+    def test_escjsarg_round_trips_through_an_inline_handler(self, loaded_page):
+        page, _ = loaded_page
+        got = page.evaluate(
+            """(s) => {
+                window.__dxGot = undefined;
+                const div = document.createElement('div');
+                div.innerHTML = `<button onclick="window.__dxGot = '${escJsArg(s)}'">x</button>`;
+                document.body.appendChild(div);
+                div.firstElementChild.click();
+                div.remove();
+                return window.__dxGot;
+            }""",
+            self.NASTY,
+        )
+        assert got == self.NASTY
