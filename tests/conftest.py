@@ -31,6 +31,7 @@ import events
 import homenet
 import maintenance
 import network
+import nlq
 import processes
 import windesktopmgr as wdm
 
@@ -221,6 +222,8 @@ def reset_globals():
         diagnose._sessions.clear()
     diagnose._model_calls = 0
     diagnose._client = None
+    # NLQ's shared Anthropic client: a cached mock would leak past later tests' patches.
+    nlq._client = None
 
     # Cleanup-tab scan registry (maintenance.py). A test that mocks
     # threading.Thread and starts a scan leaves its slot at running=True
