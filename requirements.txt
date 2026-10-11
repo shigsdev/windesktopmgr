@@ -25,3 +25,16 @@ zeroconf>=0.132.0
 # the OS resolver (no rcode, no choice of server), so it cannot tell NXDOMAIN
 # from SERVFAIL or compare resolvers (spec §4.1).
 dnspython>=2.6
+# Windows APIs in-process (Python-first per CLAUDE.md): event logs
+# (win32evtlog, Diagnose crash probes), Windows Update + Task Scheduler COM
+# (win32com/pythoncom), services (win32service). Was imported but undeclared
+# until tech-debt #66.
+pywin32>=311
+# Claude API client for Diagnose, AI identify and the ask-a-question box.
+# Held below 1.0 until the major upgrade is done and tested (backlog #70).
+anthropic>=0.86,<1
+# System-tray icon + menu (tray.py) and the icon image it draws.
+pystray>=0.19
+Pillow>=12.0
+# Imported directly (retry/SSL helpers), not only through requests.
+urllib3>=2.0
