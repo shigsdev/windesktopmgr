@@ -19,7 +19,7 @@ mac-vendor-lookup>=0.1.13
 # Covers Apple devices, Chromecasts, Rokus, AirPrint printers, Sonos,
 # HomeKit accessories, and most modern IoT that advertises via mDNS.
 # Python-first alternative to shelling out to ``avahi-browse`` / ``dns-sd``.
-zeroconf>=0.132.0
+zeroconf>=0.149.16
 # DNS probes for the Diagnose tab: query specific resolvers / authoritative
 # servers directly and read rcode + AA flag. stdlib ``socket`` only exposes
 # the OS resolver (no rcode, no choice of server), so it cannot tell NXDOMAIN
@@ -36,6 +36,8 @@ pywin32>=311
 anthropic>=1.13,<2
 # System-tray icon + menu (tray.py) and the icon image it draws.
 pystray>=0.19
-Pillow>=12.0
+Pillow>=12.3.0
 # Imported directly (retry/SSL helpers), not only through requests.
-urllib3>=2.0
+# Floors on Pillow, urllib3 and zeroconf are the fixed versions for the
+# advisories the weekly advisory scan found (backlog #74, 2026-10-11).
+urllib3>=2.8.0
