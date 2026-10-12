@@ -263,7 +263,9 @@ def _snmp_collect(nas: dict, timeout: float) -> dict | None:  # pragma: no cover
     async def _run():
         disp = SnmpDispatcher()
         target = await UdpTransportTarget.create((host, 161), timeout=timeout, retries=1)
-        creds = CommunityData(community, mpModel=1)
+        # SNMPv2c sends the community in cleartext (ruff S508). Accepted risk:
+        # LAN-only, read-only community; SNMPv3 needs QNAP credential setup.
+        creds = CommunityData(community, mpModel=1)  # noqa: S508
 
         async def _get(oid):
             errI, errS, _, vbs = await get_cmd(disp, creds, target, ObjectType(ObjectIdentity(oid)))

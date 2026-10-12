@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import io
 import json
 import subprocess
 import sys
@@ -244,6 +245,15 @@ class TestRunAudit:
         rc, send = self._run([("a", boom)], _args(no_email=False), mocker)
         assert rc == 2
         send.assert_not_called()
+
+    def test_cp1252_stdout_does_not_crash_on_subject(self, mocker, monkeypatch):
+        # A piped Windows stdout is cp1252; the clean subject contains "✓".
+        buf = io.BytesIO()
+        monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(buf, encoding="cp1252"))
+        rc, _ = self._run([("a", list)], _args(no_email=True), mocker)
+        sys.stdout.flush()
+        assert rc == 0
+        assert b"all clear" in buf.getvalue()
 
     def test_build_parser_flags(self):
         args = ac.build_parser("x").parse_args(["--no-email", "--report-only"])

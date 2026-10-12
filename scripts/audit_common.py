@@ -286,6 +286,10 @@ def run_audit(
     before any email goes out, so a broken audit can't masquerade as clean.
     """
     log_tag = f"{tag}-audit"
+    # A piped Windows stdout is cp1252, which can't encode the subject's
+    # "✓" -- without this, a local run crashes after the audit and exits 1.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
     sys.stdout.write(f"[{log_tag}] starting {datetime.datetime.now(datetime.UTC).isoformat(timespec='seconds')}\n")
     findings: list[Finding] = []
     per_check_counts: list[tuple[str, int]] = []
