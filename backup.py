@@ -37,6 +37,7 @@ defensive against malformed XML / missing files / stale targets.
 Public API:
     load_windows_backup_cache()    -- read backup_cache.json (PR-2 fills it)
     get_file_history_state()       -- live read of FH config + health probes
+    get_windows_backup_schedule_state() -- Backup and Restore last-success age
     summarize_backup()              -- combined health summary for dashboard
 """
 
@@ -84,6 +85,7 @@ _FH_CATALOG_FILE = os.path.join(_FH_CONFIG_DIR, "Catalog1.edb")
 # Health-check thresholds. Catalog stale = no FH activity in days; staging
 # warn = bytes-used / capacity above this.
 _FH_CATALOG_STALE_DAYS = 7
+_FH_CATALOG_DEAD_DAYS = 30  # no cycle in a month -> critical, not a stall
 _FH_STAGING_WARN_RATIO = 0.95
 
 # Scheduled File History auto-cleanup (in-app retention via a recurring
@@ -908,6 +910,33 @@ def _join_store_path(target_url: str, store_path: str) -> str:
     return os.path.join(base, (store_path or "").lstrip("\\/"))
 
 
+def _store_path_candidates(target_url: str, store_path: str) -> list[str]:
+    """Where a File History store can live on its target, most likely first.
+
+    ``TargetBackupStorePath`` is relative to a ``FileHistory`` folder on the
+    target, NOT the target root: the config says ``higs7\\SHIGS78-PC24\\Data``
+    while the store is ``E:\\FileHistory\\higs7\\SHIGS78-PC24\\Data`` (verified
+    live 2026-10-12 on a freshly provisioned target). Probing only the bare
+    join reported a healthy store as missing. The bare join stays as a
+    fallback for any layout that omits the ``FileHistory`` level.
+    """
+    return [
+        _join_store_path(_join_store_path(target_url, "FileHistory"), store_path),
+        _join_store_path(target_url, store_path),
+    ]
+
+
+def _store_is_empty(full_store: str) -> bool | None:
+    """True when the store folder is directly listable and holds nothing --
+    File History has never copied a file into it. None when it can't be
+    listed (an ACL-restricted store is healthy, not empty)."""
+    try:
+        with os.scandir(full_store) as entries:
+            return next(entries, None) is None
+    except OSError:
+        return None
+
+
 def _deepest_existing_ancestor(path: str) -> str | None:
     """Return the deepest ancestor of ``path`` that exists on disk, or
     ``None`` if not even the drive root is present.
@@ -1079,6 +1108,8 @@ def get_file_history_state() -> dict:
               # None  = couldn't determine (parent not listable -- may
               #         need elevation; treated as info, not critical)
           "target_backup_store_probe": str,  # one-line reason for above
+          "target_backup_store_empty": bool | None,
+              # True = store readable and holds no files (never backed up)
           "staging_usage_bytes": int,
           "staging_file_count": int,
           "staging_usage_ratio": float | None,
@@ -1100,6 +1131,7 @@ def get_file_history_state() -> dict:
         "target_path_exists": None,
         "target_backup_store_exists": None,
         "target_backup_store_probe": "",
+        "target_backup_store_empty": None,
         "staging_usage_bytes": 0,
         "staging_file_count": 0,
         "staging_usage_ratio": None,
@@ -1140,14 +1172,20 @@ def get_file_history_state() -> dict:
         result["target_path_exists"] = os.path.isdir(target_url)
         store_path = target.get("backup_store_path") or ""
         if store_path and result["target_path_exists"]:
-            # Backup store lives under the target drive, e.g.
-            # E:\higs7\SHIGS78-PC24\Data. The backup_store_path in the
-            # XML is relative to the drive. _join_store_path avoids the
-            # drive-relative os.path.join bug (E:\ + path -> E:path).
-            full_store = _join_store_path(target_url, store_path)
-            exists, probe_reason = _probe_backup_store(full_store)
+            # Backup store lives under the target drive, normally at
+            # E:\FileHistory\higs7\SHIGS78-PC24\Data -- see
+            # _store_path_candidates. First confirmed candidate wins; an
+            # inconclusive (ACL) probe outranks a clean "missing".
+            probes = [(p, *_probe_backup_store(p)) for p in _store_path_candidates(target_url, store_path)]
+            found = next((p for p in probes if p[1] is True), None)
+            unknown = next((p for p in probes if p[1] is None), None)
+            full_store, exists, probe_reason = found or unknown or probes[0]
             result["target_backup_store_exists"] = exists
             result["target_backup_store_probe"] = probe_reason
+            # Only a directly readable store can be judged empty; an
+            # ACL-restricted one stays None (not evidence of anything).
+            if exists is True and os.path.isdir(full_store):
+                result["target_backup_store_empty"] = _store_is_empty(full_store)
         else:
             result["target_backup_store_exists"] = False if store_path else None
             result["target_backup_store_probe"] = (
@@ -1203,6 +1241,25 @@ def get_file_history_state() -> dict:
                 f"target drive may be unreachable and files are piling up locally"
             ),
         }
+    elif result["target_backup_store_empty"] is True:
+        # The store is readable and EMPTY: File History has never copied a
+        # file, whatever the catalog says. A just-provisioned config writes a
+        # fresh catalog with no backup behind it (2026-10-12: the tray called
+        # a brand-new, never-run setup "healthy -- 0.0 days ago" while every
+        # Run now failed), so a fresh catalog is NOT proof here.
+        if catalog_age is not None and catalog_age < 1:
+            result["health"] = {
+                "level": "info",
+                "reason": "File History was just set up -- no files copied yet (first backup pending)",
+            }
+        else:
+            result["health"] = {
+                "level": "critical",
+                "reason": (
+                    f"File History is enabled but has never copied any files to '{store_path_cfg}' "
+                    f"-- backups are NOT being saved"
+                ),
+            }
     elif catalog_fresh:
         # The catalog was written within the freshness window, so File
         # History IS actively protecting files -- backups are current
@@ -1217,6 +1274,16 @@ def get_file_history_state() -> dict:
                 f"normal for an ACL-protected store; probe: {result.get('target_backup_store_probe') or 'unknown'})"
             )
         result["health"] = {"level": "ok", "reason": reason}
+    elif catalog_age is not None and catalog_age > _FH_CATALOG_DEAD_DAYS:
+        # A month without a protection cycle is a dead backup, not a stall.
+        # Checked before the unreadable-store info branch: 2026-07 to 2026-10
+        # File History failed every cycle while the tray showed only info.
+        result["health"] = {
+            "level": "critical",
+            "reason": (
+                f"File History hasn't completed a backup in {catalog_age:.0f} days -- backups are NOT being saved"
+            ),
+        }
     elif result["target_backup_store_exists"] is False:
         # Probe says missing AND the catalog is stale (or absent) -- both
         # signals agree backups are NOT happening.
@@ -1227,6 +1294,11 @@ def get_file_history_state() -> dict:
                 f"'{store_path_cfg}' is missing -- "
                 f"backups are NOT being saved to disk (catalog also stale)"
             ),
+        }
+    elif result["catalog_age_days"] is not None and result["catalog_age_days"] > _FH_CATALOG_STALE_DAYS:
+        result["health"] = {
+            "level": "warning",
+            "reason": f"Catalog hasn't been updated in {result['catalog_age_days']:.1f} days -- File History may have stalled",
         }
     elif result["target_backup_store_exists"] is None and (target.get("backup_store_path") or ""):
         # Couldn't determine whether the store exists because the
@@ -1244,11 +1316,6 @@ def get_file_history_state() -> dict:
                 f"Probe: {result.get('target_backup_store_probe') or 'unknown'}"
             ),
         }
-    elif result["catalog_age_days"] is not None and result["catalog_age_days"] > _FH_CATALOG_STALE_DAYS:
-        result["health"] = {
-            "level": "warning",
-            "reason": f"Catalog hasn't been updated in {result['catalog_age_days']:.1f} days -- File History may have stalled",
-        }
     elif staging_full:
         result["health"] = {
             "level": "warning",
@@ -1264,12 +1331,140 @@ def get_file_history_state() -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# Backup and Restore (Windows 7) schedule -- LIVE READ from the registry
+# ══════════════════════════════════════════════════════════════════════
+
+_WB_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsBackup"
+# A scheduled run is weekly by default: a week + a day of grace is current,
+# two weeks is a missed run, beyond that backups have stopped.
+_WB_WARN_DAYS = 8
+_WB_CRITICAL_DAYS = 15
+# Windows FILETIME: 100-ns ticks since 1601-01-01 UTC.
+_FILETIME_EPOCH_OFFSET = 116444736000000000
+
+
+def _filetime_to_datetime(ft) -> datetime | None:
+    """Local-time datetime for a registry FILETIME QWORD; None for 0/garbage."""
+    if not isinstance(ft, int) or ft <= _FILETIME_EPOCH_OFFSET:
+        return None
+    try:
+        return datetime.fromtimestamp((ft - _FILETIME_EPOCH_OFFSET) / 10_000_000)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _read_wb_registry() -> dict:
+    """Raw values from HKLM\\...\\WindowsBackup, all readable unelevated.
+    Missing keys/values are simply absent from the result. Never raises."""
+    raw: dict[str, Any] = {}
+    try:
+        import winreg
+    except ImportError:
+        return raw
+
+    def _values(sub: str) -> dict:
+        out: dict[str, Any] = {}
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, sub) as k:
+                i = 0
+                while True:
+                    try:
+                        name, val, _ = winreg.EnumValue(k, i)
+                    except OSError:
+                        break
+                    out[name] = val
+                    i += 1
+        except OSError:
+            pass
+        return out
+
+    def _subkey_count(sub: str) -> int:
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, sub) as k:
+                return winreg.QueryInfoKey(k)[0]
+        except OSError:
+            return 0
+
+    raw["root"] = _values(_WB_KEY)
+    raw["status"] = _values(_WB_KEY + r"\Status")
+    raw["target"] = _values(_WB_KEY + r"\ScheduleParams\TargetDevice")
+    raw["exclusions"] = _values(_WB_KEY + r"\ScheduleParams\UserDataExclusions")
+    raw["rule_count"] = _subkey_count(_WB_KEY + r"\ScheduleParams\Rules")
+    return raw
+
+
+def _wb_engine_running() -> bool:
+    """True while the block-level backup engine (wbengine) is running --
+    i.e. a Backup and Restore run is in progress right now."""
+    try:
+        import psutil
+
+        return psutil.win_service_get("wbengine").status() == "running"
+    except Exception:  # noqa: BLE001 -- no psutil / not Windows / no service
+        return False
+
+
+def get_windows_backup_schedule_state(raw: dict | None = None, now: datetime | None = None) -> dict:
+    """Backup and Restore (Windows 7) scheduled-backup state + health.
+
+    This is the file backup the user runs on 2026-10-12 after File History
+    broke (a Windows 11 25H2 bug since 2026-07). Windows records the last
+    successful run in ``WindowsBackup\\Status\\LastSuccess`` -- that age is the
+    health signal. ``raw``/``now`` are injectable for tests.
+    """
+    raw = _read_wb_registry() if raw is None else raw
+    now = now or datetime.now()
+    root = raw.get("root") or {}
+    status = raw.get("status") or {}
+    target = raw.get("target") or {}
+    exclusions = raw.get("exclusions") or {}
+
+    configured = root.get("ValidConfig") == 1
+    # Files are in scope when a volume rule exists or user data isn't
+    # fully excluded (an image-only schedule has neither).
+    includes_files = configured and (int(raw.get("rule_count") or 0) > 0 or exclusions.get("UsersFullyExcluded") == 0)
+    last_success = _filetime_to_datetime(status.get("LastSuccess"))
+    last_result = _filetime_to_datetime(status.get("LastResultTime"))
+    age_days = round((now - last_success).total_seconds() / 86400.0, 1) if last_success else None
+    running = configured and _wb_engine_running()
+
+    result: dict[str, Any] = {
+        "configured": configured,
+        "includes_files": includes_files,
+        "system_image": root.get("ValidSystemImageBackup") == 1,
+        "target": target.get("PresentableName") or "",
+        "last_success": last_success.isoformat(timespec="seconds") if last_success else None,
+        "last_success_age_days": age_days,
+        "last_result_time": last_result.isoformat(timespec="seconds") if last_result else None,
+        "running": running,
+    }
+
+    note = " (a backup is running now)" if running else ""
+    if not configured:
+        health = {"level": "info", "reason": "Backup and Restore (Windows 7) is not set up"}
+    elif last_success is None:
+        health = {"level": "warning", "reason": f"Backup and Restore has never completed a backup{note}"}
+    elif age_days <= _WB_WARN_DAYS:
+        health = {"level": "ok", "reason": f"Last successful backup {age_days:.0f} day(s) ago{note}"}
+    else:
+        level = "warning" if age_days <= _WB_CRITICAL_DAYS else "critical"
+        health = {
+            "level": level,
+            "reason": f"Last successful backup was {age_days:.0f} days ago ({last_success:%b %d}){note}",
+        }
+    result["health"] = health
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════════
 # Combined summary -- drives the dashboard concern + the Backup tab header
 # ══════════════════════════════════════════════════════════════════════
 
 
 def summarize_backup() -> dict:
-    """Combined health summary across Sections 1 + 2.
+    """Combined health summary across Sections 1 + 2 + the Backup and
+    Restore schedule (``windows_backup_schedule``, see
+    get_windows_backup_schedule_state).
 
     Returns:
         {
@@ -1291,6 +1486,7 @@ def summarize_backup() -> dict:
     """
     wb = load_windows_backup_cache()
     fh = get_file_history_state()
+    wbs = get_windows_backup_schedule_state()
     fh_cfg = fh.get("config") or {}
 
     # WindowsImageBackup top-level health:
@@ -1323,6 +1519,7 @@ def summarize_backup() -> dict:
             + sum(len(lib.get("folders", [])) for lib in fh_cfg.get("libraries", [])),
             "health": fh.get("health") or {"level": "info", "reason": ""},
         },
+        "windows_backup_schedule": wbs,
     }
 
     # Overall health = worst of the two. Critical > warning > info > ok.
@@ -1330,6 +1527,7 @@ def summarize_backup() -> dict:
     candidates = [
         (rank.get(wb_health["level"], 1), wb_health),
         (rank.get(fh["health"]["level"], 1), fh["health"]),
+        (rank.get(wbs["health"]["level"], 1), wbs["health"]),
     ]
     candidates.sort(key=lambda t: t[0], reverse=True)
     summary["overall_health"] = candidates[0][1]

@@ -896,7 +896,8 @@ def _compute_dashboard_summary() -> dict:
     # Backup health concerns (backlog #47). Fires when File History is
     # configured + enabled but the target backup store is unreachable
     # (silent-failure mode that wastes the user's mental "I'm backed up"
-    # reassurance) or when the WindowsImageBackup catalog is empty.
+    # reassurance), when the WindowsImageBackup catalog is empty, or when
+    # the Backup and Restore schedule's last success is stale.
     # Best-effort: NEVER block dashboard rendering on this.
     try:
         import backup as backup_mod
@@ -905,24 +906,24 @@ def _compute_dashboard_summary() -> dict:
         overall = backup_summary.get("overall_health") or {}
         level = overall.get("level", "info")
         if level in ("warning", "critical"):
-            fh = backup_summary.get("file_history") or {}
-            wb = backup_summary.get("windows_backups") or {}
-            # Detail line shows both surfaces so the user sees the full
-            # picture from the concern card without opening the tab.
-            fh_label = fh.get("health", {}).get("reason", "")
-            wb_label = wb.get("health", {}).get("reason", "")
+            # Detail line shows every failing surface so the user sees the
+            # full picture from the concern card without opening the tab.
             detail_parts = []
-            if fh_label and (fh.get("health", {}).get("level") in ("warning", "critical")):
-                detail_parts.append(f"File History: {fh_label}")
-            if wb_label and (wb.get("health", {}).get("level") in ("warning", "critical")):
-                detail_parts.append(f"WindowsImageBackup: {wb_label}")
+            for key, label in (
+                ("file_history", "File History"),
+                ("windows_backups", "WindowsImageBackup"),
+                ("windows_backup_schedule", "Backup and Restore"),
+            ):
+                health = (backup_summary.get(key) or {}).get("health") or {}
+                if health.get("reason") and health.get("level") in ("warning", "critical"):
+                    detail_parts.append(f"{label}: {health['reason']}")
             concerns.append(
                 {
                     "level": level,
                     "tab": "backup",
                     "icon": "📦",
                     "title": (
-                        "Backup health: critical -- target unreachable or store missing"
+                        "Backup health: critical -- backups are not being saved or are out of date"
                         if level == "critical"
                         else "Backup health: warning"
                     ),

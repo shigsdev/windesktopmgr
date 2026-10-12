@@ -6639,6 +6639,33 @@ function bk_setStatusPill(elId, level, label) {
   el.textContent = label;
 }
 
+// Backup and Restore (Windows 7) schedule strip: last successful run +
+// scope. data-level carries the health level for the smoke test.
+function bk_renderSchedule(wbs) {
+  const el = document.getElementById("bk-wb-schedule");
+  if (!el) return;
+  if (!wbs) { el.innerHTML = ""; el.removeAttribute("data-level"); return; }
+  const h = wbs.health || {};
+  const lvl = h.level || "info";
+  const s = bk_pillStyle(lvl);
+  el.dataset.level = lvl;
+  const last = wbs.last_success ? new Date(wbs.last_success).toLocaleString() : "never";
+  const scope = !wbs.configured ? "—"
+    : [wbs.includes_files ? "files" : null, wbs.system_image ? "system image" : null].filter(Boolean).join(" + ") || "nothing selected";
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
+      <strong style="color:var(--text-bright)">Backup and Restore (Windows 7) schedule</strong>
+      <span style="font-size:10px;padding:2px 8px;border-radius:10px;background:${s.bg};color:${s.fg};border:1px solid ${s.border}">${escHtml(lvl.toUpperCase())}</span>
+    </div>
+    <div style="font-size:12px;margin-bottom:6px">${escHtml(h.reason || "")}</div>
+    <div style="display:flex;gap:24px;flex-wrap:wrap;color:var(--muted);font-size:11px">
+      <div>Last success: <strong style="color:var(--text-bright)">${escHtml(last)}</strong></div>
+      <div>Backs up: <strong style="color:var(--text-bright)">${escHtml(scope)}</strong></div>
+      <div>Target: <strong style="color:var(--text-bright)">${escHtml(wbs.target || "—")}</strong></div>
+      ${wbs.running ? '<div style="color:var(--cyan)">⏳ backup running now</div>' : ""}
+    </div>`;
+}
+
 // ── Elevated actions (PR-2 of #47) ─────────────────────────────────
 // All three actions (scan / delete / fh-cleanup) follow the same
 // pattern: POST to launch the helper -> store the session_id ->
@@ -7102,6 +7129,8 @@ async function loadBackup(preserveBanner = false) {
         </div>
       </div>`;
   }
+
+  bk_renderSchedule(summary && summary.windows_backup_schedule);
 
   // ── Section 1: Windows backups ───────────────────────────────────
   if (s1body) {
