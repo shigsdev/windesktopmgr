@@ -1012,6 +1012,27 @@ class TestThermalsRedesign:
             timeout=45_000,
         )
 
+    def test_auto_refresh_runs_while_open_and_stops_on_leave(self, loaded_page):
+        """A one-off snapshot read as 'stuck hot' (it kept a reading taken mid
+        dashboard refresh), so the tab reloads on entry, auto-refreshes while
+        open, stamps the time of the reading -- and stops polling when left."""
+        page = loaded_page
+        self._goto(page)
+        state = page.evaluate(
+            """() => ({
+                running: !!_thAutoTimer,
+                button: document.getElementById('th-auto-btn').textContent.trim(),
+                updated: document.getElementById('th-updated').textContent,
+            })"""
+        )
+        assert state["running"], "Temps & Power should auto-refresh while open"
+        assert "Stop" in state["button"]
+        assert state["updated"].startswith("updated ")
+
+        page.evaluate("switchTab('dashboard')")
+        assert page.evaluate("() => _thAutoTimer") is None, "auto-refresh must stop when the tab is left"
+        assert "Auto-refresh" in page.evaluate("() => document.getElementById('th-auto-btn').textContent")
+
     def test_hero_gauges_match_api(self, loaded_page):
         """One tile per API gauge, in order -- the tab reuses renderGauges()
         against /api/thermals/data's `gauges`, same contract as the dashboard."""
@@ -3601,3 +3622,34 @@ class TestEscapeHelpers:
             self.NASTY,
         )
         assert got == self.NASTY
+
+
+class TestDashboardStaleRefetch:
+    """A stale cached summary is served instantly while the server refreshes
+    in the background; the page must re-fetch once the refresh lands instead
+    of showing the old numbers (a minutes-old CPU temp) until a reload."""
+
+    def test_stale_summary_is_refetched_and_rerendered(self, loaded_page):
+        page = loaded_page
+        page.evaluate(
+            """() => {
+                window.__rendered = [];
+                window.__origRender = renderDashboard;
+                window.__origFetch = window.fetch;
+                renderDashboard = (d) => window.__rendered.push(d.checked_at);
+                window.fetch = async (url, opts) => String(url).includes('/api/dashboard/summary')
+                    ? new Response(JSON.stringify({checked_at: 'NEW', cache: 'fresh', gauges: [], concerns: []}))
+                    : window.__origFetch(url, opts);
+                dbScheduleStaleRefetch({cache: 'stale', checked_at: 'OLD'}, 1);
+            }"""
+        )
+        try:
+            page.wait_for_function("() => window.__rendered.length > 0", timeout=15_000)
+            assert page.evaluate("() => window.__rendered") == ["NEW"]
+        finally:
+            page.evaluate("() => { renderDashboard = window.__origRender; window.fetch = window.__origFetch; }")
+
+    def test_fresh_summary_schedules_nothing(self, loaded_page):
+        page = loaded_page
+        page.evaluate("() => dbScheduleStaleRefetch({cache: 'fresh', checked_at: 'X'}, 1)")
+        assert page.evaluate("() => _dbStaleTimer") is None

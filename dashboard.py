@@ -26,6 +26,7 @@ need to stub those must patch ``processes.X``, not ``windesktopmgr.X``.
 """
 
 import json
+import re
 import threading
 from datetime import datetime, timedelta, timezone
 
@@ -41,6 +42,24 @@ _dashboard_state: dict = {"data": None, "ts": None}
 _dashboard_cache_lock = threading.Lock()
 _dashboard_refresh_lock = threading.Lock()
 _DASHBOARD_CACHE_TTL = timedelta(seconds=30)
+
+
+def _cpu_core_average(cpu_temps: list, num) -> float | None:
+    """Average CPU core temperature from the CPU sensor list.
+
+    Prefers LibreHardwareMonitor's own ``Core Average`` sensor; otherwise the
+    mean of per-core readings (names like ``P-Core #3`` / ``Core #3``). None
+    when there are no per-core sensors (e.g. a bare WMI thermal zone), so the
+    gauge doesn't present a single zone reading as an "average".
+    """
+    for t in cpu_temps:
+        if (t.get("Name") or "").strip().lower() == "core average":
+            v = num(t.get("TempC"))
+            if v is not None:
+                return v
+    cores = [num(t.get("TempC")) for t in cpu_temps if re.search(r"\bcore #\d+\b", (t.get("Name") or "").lower())]
+    cores = [v for v in cores if v is not None]
+    return sum(cores) / len(cores) if cores else None
 
 
 def _build_gauges(results: dict) -> list:
@@ -79,6 +98,17 @@ def _build_gauges(results: dict) -> list:
     all_vals = [v for v in all_vals if v is not None]
     pick = cpu_vals or all_vals
     cpu_temp = round(max(pick), 1) if pick else None
+    # The value is the hottest sensor at that instant -- on a hybrid CPU the
+    # favored P-cores swing 30 C within a second of any work, so the sub-line
+    # adds the far steadier core average (LHM's "Core Average" sensor, else
+    # the mean of the per-core readings) to keep a spike in perspective.
+    cpu_avg = _cpu_core_average([t for t in temps if isinstance(t, dict) and _is_cpu_temp(t)], _num)
+    if cpu_temp is None:
+        cpu_temp_sub = "no sensor"
+    elif cpu_avg is not None:
+        cpu_temp_sub = f"hottest core · avg {round(cpu_avg)}°"
+    else:
+        cpu_temp_sub = ""
 
     cpu_pct = _num(perf.get("CPUPct"))
     # Memory here comes from the thermals perf snapshot (psutil), NOT the
@@ -103,7 +133,7 @@ def _build_gauges(results: dict) -> list:
             "unit": "°C",
             "max": 100,
             "kind": "temp",
-            "sub": "" if cpu_temp is not None else "no sensor",
+            "sub": cpu_temp_sub,
         },
         {
             "key": "gpu_temp",
@@ -423,8 +453,14 @@ def _compute_dashboard_summary() -> dict:
         except Exception as e:
             results[name] = {"error": str(e)}
 
+    # Thermals run FIRST and alone. The other collectors below spawn
+    # PowerShell / WMI work that pushes the CPU to ~40% load and ~200 W for
+    # several seconds; sampled in parallel, the CPU-temp and CPU-load gauges
+    # were measuring the dashboard's own refresh (86-91 C on an idle 14900K
+    # whose cores sat at ~50 C) and then showing that for minutes.
+    run("thermals", wdm.get_thermals)
+
     checks = {
-        "thermals": wdm.get_thermals,
         "memory": wdm.get_memory_analysis,
         "bios": wdm.get_bios_status,
         "credentials": wdm.get_credentials_network_health,

@@ -2142,6 +2142,51 @@ class TestBuildGauges:
         g = self._by_key({"thermals": {"perf": {"CPUPct": True}, "temps": []}, "gpu": {}})
         assert g["cpu_load"]["value"] is None
 
+    def test_cpu_temp_sub_shows_lhm_core_average(self):
+        """The value is the hottest core at that instant (a favored P-core
+        can read 30 C over the rest); the sub-line adds LHM's Core Average."""
+        g = self._by_key(
+            {
+                "thermals": {
+                    "perf": {},
+                    "temps": [
+                        {"Name": "Core Max", "TempC": 81.0, "SensorId": "/intelcpu/0/temperature/24"},
+                        {"Name": "Core Average", "TempC": 52.4, "SensorId": "/intelcpu/0/temperature/25"},
+                        {"Name": "P-Core #6", "TempC": 81.0, "SensorId": "/intelcpu/0/temperature/5"},
+                        {"Name": "P-Core #1", "TempC": 49.0, "SensorId": "/intelcpu/0/temperature/0"},
+                    ],
+                },
+                "gpu": {"available": False},
+            }
+        )
+        assert g["cpu_temp"]["value"] == 81.0
+        assert g["cpu_temp"]["sub"] == "hottest core · avg 52°"
+
+    def test_cpu_temp_sub_averages_per_core_sensors_without_core_average(self):
+        g = self._by_key(
+            {
+                "thermals": {
+                    "perf": {},
+                    "temps": [
+                        {"Name": "P-Core #1", "TempC": 50.0, "SensorId": "/intelcpu/0/temperature/0"},
+                        {"Name": "P-Core #2", "TempC": 60.0, "SensorId": "/intelcpu/0/temperature/1"},
+                        {"Name": "E-Core #1", "TempC": 40.0, "SensorId": "/intelcpu/0/temperature/8"},
+                        {"Name": "CPU Package", "TempC": 70.0, "SensorId": "/intelcpu/0/temperature/26"},
+                    ],
+                },
+                "gpu": {"available": False},
+            }
+        )
+        assert g["cpu_temp"]["value"] == 70.0
+        assert g["cpu_temp"]["sub"] == "hottest core · avg 50°"  # the package sensor is not a core
+
+    def test_cpu_temp_sub_blank_for_single_zone_reading(self):
+        """A bare WMI thermal zone is one reading, not an average of cores."""
+        g = self._by_key(
+            {"thermals": {"perf": {}, "temps": [{"Name": "Thermal Zone", "TempC": 48.0}]}, "gpu": {"available": False}}
+        )
+        assert g["cpu_temp"]["sub"] == ""
+
 
 class TestDashboardSummaryRoute:
     HEALTHY_DISK = {"drives": [{"Letter": "C", "PctUsed": 50, "FreeGB": 400}], "physical": [], "io": []}

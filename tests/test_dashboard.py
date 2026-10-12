@@ -688,3 +688,73 @@ class TestDashboardBaselineDriftReconciled:
         concerns = self._baseline_concerns(client)
         assert [c["title"] for c in concerns] == ["System baseline drift detected (1 change(s) in 24h)"]
         assert concerns[0]["detail"] == "tasks: +1/-0/~0"
+
+
+class TestDashboardThermalsSampledFirst:
+    """CPU temp + load are sampled BEFORE the other collectors start. Sampled
+    in parallel they measured the dashboard's own refresh burst (PowerShell /
+    WMI collectors pushed an idle 14900K to ~200 W and 86-91 C for seconds),
+    and that cached reading then stayed on screen for minutes."""
+
+    COLLECTORS = [
+        "get_thermals",
+        "get_memory_analysis",
+        "get_bios_status",
+        "get_credentials_network_health",
+        "get_disk_health",
+        "get_driver_health",
+        "get_gpu_metrics",
+        "get_network_metrics",
+        "get_network_health",
+        "get_warranty_data",
+        "get_memory_config",
+        "get_storage_spaces",
+        "get_nas_storage",
+    ]
+
+    def _healthy(self, mocker):
+        TestDashboardPhysicalDiskHealth._mock_deps(
+            TestDashboardPhysicalDiskHealth(),
+            mocker,
+            {"drives": [], "physical": [{"Name": "SSD", "Health": "Healthy", "Status": "OK"}], "io": []},
+        )
+
+    def test_thermals_finish_before_any_other_collector_starts(self, mocker):
+        import threading
+        import time
+
+        import windesktopmgr as wdm
+
+        self._healthy(mocker)
+        events = []
+        lock = threading.Lock()
+
+        def recorded(name, fn):
+            def wrapper(*args, **kwargs):
+                with lock:
+                    events.append(f"start:{name}")
+                if name == "get_thermals":
+                    time.sleep(0.05)  # a parallel fan-out would start others meanwhile
+                result = fn(*args, **kwargs)
+                with lock:
+                    events.append(f"end:{name}")
+                return result
+
+            return wrapper
+
+        for name in self.COLLECTORS:
+            mocker.patch(f"windesktopmgr.{name}", side_effect=recorded(name, getattr(wdm, name)))
+
+        dashboard._compute_dashboard_summary()
+
+        assert events[:2] == ["start:get_thermals", "end:get_thermals"]
+        assert sum(e.startswith("start:") for e in events) == len(self.COLLECTORS)
+
+    def test_thermals_failure_still_runs_the_rest(self, mocker):
+        self._healthy(mocker)
+        mocker.patch("windesktopmgr.get_thermals", side_effect=RuntimeError("WMI gone"))
+        result = dashboard._compute_dashboard_summary()
+        gauges = {g["key"]: g for g in result["gauges"]}
+        assert gauges["cpu_temp"]["value"] is None
+        assert gauges["cpu_temp"]["sub"] == "no sensor"
+        assert result["concerns"] is not None  # the other collectors still ran
