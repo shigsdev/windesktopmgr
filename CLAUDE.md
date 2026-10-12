@@ -572,6 +572,27 @@ This command:
 
 ---
 
+## Scheduled Repo Audits (GitHub Actions)
+
+Five cron workflows in `.github/workflows/` re-scan the repo for drift no
+single commit causes (same design as shigsdev/taskmanager). Each emails on
+EVERY run via Brevo, clean or not — a missing email means the audit stopped.
+
+| Workflow | When (UTC) | Script |
+|----------|-----------|--------|
+| weekly-advisory-check | Mon 13:30 | `scripts/check_advisories.py` — pip-audit on `requirements.lock` |
+| weekly-bug-pattern-scan | Sun 13:30 | `scripts/check_bug_patterns.py` |
+| weekly-coverage-audit | Fri 13:30 (windows-latest) | `scripts/check_test_coverage.py` |
+| weekly-tech-debt-audit | Sat 13:30 | `scripts/check_tech_debt.py` |
+| monthly-security-audit | 1st 13:30 | `scripts/check_security_posture.py` |
+
+- Run any of them locally with `--no-email`. Exit 0 clean / 1 findings / 2 a check crashed.
+- After intentionally raising coverage: `python scripts/check_test_coverage.py --write-baseline`.
+- After reviewing a new `# noqa: S…`: `python scripts/check_security_posture.py --write-baseline`.
+- Email needs the `BREVO_API_KEY` secret and `DIGEST_FROM_EMAIL` / `DIGEST_TO_EMAIL` variables on the repo.
+
+---
+
 ## SOP Compliance Report — Phase 11 (MANDATORY)
 
 At the end of **every** code change, print this checklist as the LAST thing in

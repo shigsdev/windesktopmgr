@@ -1,0 +1,49 @@
+# Weekly dependency-advisory (CVE) check -- scripts/check_advisories.py.
+#
+# Mondays 13:30 UTC. pip-audit looks every pin in requirements.lock up in the
+# advisory databases; a CVE published against a package we already pin never
+# trips a commit gate because nothing in the repo changed.
+#
+# Email: BREVO_API_KEY (secret) + DIGEST_FROM_EMAIL / DIGEST_TO_EMAIL
+# (variables) on this repo. Missing any -> no email; the run's Summary tab
+# still has the full report.
+#
+# The pull_request trigger only proves the audit still runs when the audit
+# itself changes: no email, and findings don't fail the PR (--report-only).
+name: Weekly advisory check
+
+on:
+  schedule:
+    - cron: "30 13 * * 1"
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - ".github/workflows/weekly-advisory-check.yml"
+      - "scripts/audit_common.py"
+      - "scripts/check_advisories.py"
+      - "requirements.lock"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install pip-audit
+        run: python -m pip install --upgrade pip pip-audit
+
+      - name: Run advisory check
+        env:
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+          DIGEST_FROM_EMAIL: ${{ vars.DIGEST_FROM_EMAIL }}
+          DIGEST_TO_EMAIL: ${{ vars.DIGEST_TO_EMAIL }}
+          PR_FLAGS: ${{ github.event_name == 'pull_request' && '--no-email --report-only' || '' }}
+        run: python scripts/check_advisories.py $PR_FLAGS

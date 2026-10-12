@@ -88,6 +88,7 @@ TEST_FILES = [
     "test_diagnose_probes.py",
     "test_diagnose_crash_probes.py",
     "test_diagnose_crash_rules.py",
+    "test_recurring_audits.py",
 ]
 
 
