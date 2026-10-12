@@ -291,6 +291,8 @@ document.querySelectorAll(".page-tab").forEach(btn => {
     const page = btn.dataset.page;
     // Stop home network polling when leaving the tab
     if (page !== "homenet" && typeof _hnStopPolling === "function") _hnStopPolling();
+    // Same for the Temps & Power auto-refresh: it only polls while visible.
+    if (page !== "thermals") thStopAutoRefresh();
     // Iterate the actual nav buttons (data-page attribute) rather than
     // a duplicated string array. The old approach silently broke when
     // a new tab landed in the markup but the dev forgot to update the
@@ -321,7 +323,11 @@ document.querySelectorAll(".page-tab").forEach(btn => {
     } else if (page === "processes") {
       if (!_tabLoaded["processes"]) { _tabLoaded["processes"] = true; loadProcesses(); }
     } else if (page === "thermals") {
-      if (!_tabLoaded["thermals"])  { _tabLoaded["thermals"]  = true; loadThermals(); }
+      // Always fresh on entry: a temperature snapshot from a previous visit is
+      // misleading (it kept showing a reading taken mid dashboard refresh).
+      _tabLoaded["thermals"] = true;
+      loadThermals();
+      thStartAutoRefresh();
     } else if (page === "services") {
       if (!_tabLoaded["services"])       { _tabLoaded["services"]       = true; loadServices(); }
     } else if (page === "health-history") {
@@ -2069,13 +2075,20 @@ let _thermalsData = null;
 let _thAutoTimer  = null;
 let _lhmStatus    = null;
 
-async function loadThermals() {
+async function loadThermals(opts) {
+  // Auto-refresh passes {silent:true}: keep the current readings on screen
+  // while the next sample loads instead of flashing "Loading…" every 10 s.
+  const silent = !!(opts && opts.silent) && _thermalsData !== null;
   try {
     const ld = document.getElementById("th-loading");
-    if (ld) { ld.style.display = "block"; ld.textContent = "Loading thermal data…"; }
-    document.getElementById("th-content").style.display = "none";
+    if (!silent) {
+      if (ld) { ld.style.display = "block"; ld.textContent = "Loading thermal data…"; }
+      document.getElementById("th-content").style.display = "none";
+    }
     const r = await fetch("/api/thermals/data");
     _thermalsData = await r.json();
+    const upd = document.getElementById("th-updated");
+    if (upd) upd.textContent = "updated " + new Date().toLocaleTimeString();
     // LHM installer status drives the per-core CTA button (best effort —
     // the CTA still renders its copy if this fetch fails).
     try { _lhmStatus = await (await fetch("/api/thermals/lhm/status")).json(); }
@@ -2381,20 +2394,36 @@ async function thLaunchLhm(btn) {
   }
 }
 
-function toggleThAutoRefresh() {
+// Auto-refresh is ON whenever the tab is open (a one-off snapshot of a CPU
+// whose favored cores swing 30 C in a second reads as "stuck hot") and OFF
+// when the tab is left, so it never polls in the background.
+function thStartAutoRefresh() {
+  if (_thAutoTimer) return;
+  _thAutoTimer = setInterval(() => loadThermals({silent: true}), 10000);
   const btn = document.getElementById("th-auto-btn");
-  if (_thAutoTimer) {
-    clearInterval(_thAutoTimer);
-    _thAutoTimer = null;
-    btn.textContent = "▶ Auto-refresh (10s)";
-    btn.style.borderColor = "var(--border)";
-    btn.style.color = "var(--muted)";
-  } else {
-    _thAutoTimer = setInterval(loadThermals, 10000);
+  if (btn) {
     btn.textContent = "⏹ Stop Auto-refresh";
     btn.style.borderColor = "var(--cyan)";
     btn.style.color = "var(--cyan)";
   }
+}
+
+function thStopAutoRefresh() {
+  if (_thAutoTimer) {
+    clearInterval(_thAutoTimer);
+    _thAutoTimer = null;
+  }
+  const btn = document.getElementById("th-auto-btn");
+  if (btn) {
+    btn.textContent = "▶ Auto-refresh (10s)";
+    btn.style.borderColor = "var(--border)";
+    btn.style.color = "var(--muted)";
+  }
+}
+
+function toggleThAutoRefresh() {
+  if (_thAutoTimer) thStopAutoRefresh();
+  else thStartAutoRefresh();
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -3886,6 +3915,24 @@ const ALL_TABS = [
   { page:"logs",         icon:"📜", label:"Application Logs" },
 ];
 
+// A stale cached summary is served instantly while the server recomputes in
+// the background (~5-15 s). Without a follow-up fetch the page kept showing
+// the old numbers -- e.g. a CPU temp minutes old -- until a manual reload.
+let _dbStaleTimer = null;
+
+function dbScheduleStaleRefetch(d, attempt) {
+  if (_dbStaleTimer) { clearTimeout(_dbStaleTimer); _dbStaleTimer = null; }
+  if (!d || d.cache !== "stale" || attempt > 3) return;
+  _dbStaleTimer = setTimeout(async () => {
+    _dbStaleTimer = null;
+    try {
+      const fresh = await (await fetch("/api/dashboard/summary")).json();
+      if (fresh.checked_at !== d.checked_at) renderDashboard(fresh);
+      else dbScheduleStaleRefetch(d, attempt + 1);
+    } catch (_e) { /* next manual load will retry */ }
+  }, 8000);
+}
+
 async function loadDashboard() {
   document.getElementById("db-loading").style.display = "block";
   document.getElementById("db-content").style.display  = "none";
@@ -3894,6 +3941,7 @@ async function loadDashboard() {
     const r = await fetch("/api/dashboard/summary");
     const d = await r.json();
     renderDashboard(d);
+    dbScheduleStaleRefetch(d, 1);
   } catch(e) {
     document.getElementById("db-loading").innerHTML =
       `<div style="color:var(--red);padding:20px">Error loading dashboard: ${e.message}</div>`;
