@@ -567,6 +567,34 @@ class TestFileHistoryStoreAlarm:
             )
 
 
+# ── Backup tab — Backup and Restore (Windows 7) schedule strip ─────────
+#
+# Added 2026-10-12: File History broke (Windows bug), so files are backed
+# up by Backup and Restore. Gate: the strip's data-level + reason must
+# match the API's verdict for the schedule, not just "the strip exists".
+
+
+class TestBackupAndRestoreScheduleStrip:
+    def test_strip_reflects_api_verdict(self, loaded_page):
+        page, _ = loaded_page
+        wbs = page.evaluate("async () => (await (await fetch('/api/backup/summary')).json()).windows_backup_schedule")
+        assert wbs and wbs.get("health"), f"summary missing windows_backup_schedule: {wbs!r}"
+
+        page.evaluate("switchTab('backup')")
+        level, text = None, ""
+        for _ in range(20):
+            page.wait_for_timeout(300)
+            level, text = page.evaluate(
+                """() => { const el = document.getElementById('bk-wb-schedule');
+                           return el ? [el.dataset.level || null, el.textContent] : [null, '']; }"""
+            )
+            if level:
+                break
+
+        assert level == wbs["health"]["level"], f"strip level {level!r} != API {wbs['health']!r}"
+        assert wbs["health"]["reason"] in text, f"strip text doesn't show the API reason; text={text[:240]!r}"
+
+
 # ── Backup tab — scheduled auto-cleanup control (in-app retention) ────
 #
 # Added 2026-06-16: a weekly `fhmanagew -cleanup <N>` task that actually

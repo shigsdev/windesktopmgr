@@ -18,7 +18,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import time
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -80,6 +82,9 @@ def backup_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr(backup, "BACKUP_ACTIONS_HISTORY_FILE", str(actions))
     monkeypatch.setattr(backup, "_FH_CONFIG_FILE", str(fh_config))
     monkeypatch.setattr(backup, "_FH_CATALOG_FILE", str(fh_catalog))
+    # Never read the real machine's Backup and Restore registry state.
+    monkeypatch.setattr(backup, "_read_wb_registry", dict)
+    monkeypatch.setattr(backup, "_wb_engine_running", lambda: False)
     return {
         "cache": cache,
         "actions": actions,
@@ -87,6 +92,15 @@ def backup_tmp(tmp_path, monkeypatch):
         "fh_catalog": fh_catalog,
         "root": tmp_path,
     }
+
+
+def _populated_store(store):
+    """A real store holds backed-up files -- an EMPTY one means File History
+    never copied anything (now reported as such, not as healthy)."""
+    store.mkdir(parents=True, exist_ok=True)
+    (store / "C").mkdir(exist_ok=True)
+    (store / "C" / "doc (2026_10_12 18_00_00 UTC).txt").write_text("x", encoding="utf-8")
+    return store
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -435,7 +449,7 @@ class TestGetFileHistoryState:
     def test_healthy_when_target_and_store_exist(self, backup_tmp, tmp_path):
         drive = tmp_path / "drive"
         store = drive / "higs7" / "SHIGS78-PC24" / "Data"
-        store.mkdir(parents=True)
+        _populated_store(store)
         xml = _REAL_FH_XML.replace("<TargetUrl>E:\\</TargetUrl>", f"<TargetUrl>{drive}\\</TargetUrl>")
         backup_tmp["fh_config"].write_text(xml, encoding="utf-8")
         state = backup.get_file_history_state()
@@ -446,7 +460,7 @@ class TestGetFileHistoryState:
     def test_catalog_age_days_reported(self, backup_tmp, tmp_path):
         drive = tmp_path / "drive"
         store = drive / "higs7" / "SHIGS78-PC24" / "Data"
-        store.mkdir(parents=True)
+        _populated_store(store)
         xml = _REAL_FH_XML.replace("<TargetUrl>E:\\</TargetUrl>", f"<TargetUrl>{drive}\\</TargetUrl>")
         backup_tmp["fh_config"].write_text(xml, encoding="utf-8")
         # Create a catalog file with mtime in the past.
@@ -467,7 +481,7 @@ class TestGetFileHistoryState:
     def test_fresh_catalog_with_present_store_clean_reason(self, backup_tmp, tmp_path):
         # Store present AND catalog fresh -> clean OK, no store caveat.
         drive = tmp_path / "drive"
-        (drive / "higs7" / "SHIGS78-PC24" / "Data").mkdir(parents=True)
+        _populated_store(drive / "higs7" / "SHIGS78-PC24" / "Data")
         xml = _REAL_FH_XML.replace("<TargetUrl>E:\\</TargetUrl>", f"<TargetUrl>{drive}\\</TargetUrl>")
         backup_tmp["fh_config"].write_text(xml, encoding="utf-8")
         backup_tmp["fh_catalog"].write_bytes(b"x" * 1024)  # fresh catalog
@@ -524,6 +538,253 @@ class TestGetFileHistoryState:
         backup.get_file_history_state()
         probed = spy.call_args[0][0]
         assert probed == str(drive / "higs7" / "SHIGS78-PC24" / "Data")
+
+
+class TestFileHistoryHonestHealth:
+    """2026-10-12: the tray called a never-run File History setup "healthy"
+    (fresh catalog, empty store, probed at the wrong path) and showed only
+    info while File History failed every cycle from 2026-07 to 2026-10."""
+
+    def _config(self, backup_tmp, drive):
+        xml = _REAL_FH_XML.replace("<TargetUrl>E:\\</TargetUrl>", f"<TargetUrl>{drive}\\</TargetUrl>")
+        backup_tmp["fh_config"].write_text(xml, encoding="utf-8")
+
+    def _age_catalog(self, backup_tmp, days):
+        backup_tmp["fh_catalog"].write_bytes(b"x" * 1024)
+        old = time.time() - days * 86400
+        os.utime(backup_tmp["fh_catalog"], (old, old))
+
+    def test_store_candidates_put_filehistory_level_first(self):
+        assert backup._store_path_candidates("E:\\", "higs7\\PC\\Data") == [
+            "E:\\FileHistory\\higs7\\PC\\Data",
+            "E:\\higs7\\PC\\Data",
+        ]
+
+    def test_real_layout_store_under_filehistory_is_found(self, backup_tmp, tmp_path):
+        drive = tmp_path / "drive"
+        _populated_store(drive / "FileHistory" / "higs7" / "SHIGS78-PC24" / "Data")
+        self._config(backup_tmp, drive)
+        backup_tmp["fh_catalog"].write_bytes(b"x")  # fresh
+        state = backup.get_file_history_state()
+        assert state["target_backup_store_exists"] is True
+        assert state["target_backup_store_empty"] is False
+        assert state["health"]["level"] == "ok"
+        assert "directly readable" not in state["health"]["reason"]
+
+    def test_fresh_setup_with_empty_store_is_pending_not_healthy(self, backup_tmp, tmp_path):
+        drive = tmp_path / "drive"
+        (drive / "FileHistory" / "higs7" / "SHIGS78-PC24" / "Data").mkdir(parents=True)
+        self._config(backup_tmp, drive)
+        backup_tmp["fh_catalog"].write_bytes(b"x")  # written at setup, just now
+        state = backup.get_file_history_state()
+        assert state["target_backup_store_empty"] is True
+        assert state["health"]["level"] == "info"
+        assert "no files copied yet" in state["health"]["reason"]
+
+    def test_empty_store_a_day_after_setup_is_critical(self, backup_tmp, tmp_path):
+        drive = tmp_path / "drive"
+        (drive / "FileHistory" / "higs7" / "SHIGS78-PC24" / "Data").mkdir(parents=True)
+        self._config(backup_tmp, drive)
+        self._age_catalog(backup_tmp, 2)
+        state = backup.get_file_history_state()
+        assert state["health"]["level"] == "critical"
+        assert "never copied" in state["health"]["reason"]
+
+    def test_empty_store_without_catalog_is_critical(self, backup_tmp, tmp_path):
+        drive = tmp_path / "drive"
+        (drive / "FileHistory" / "higs7" / "SHIGS78-PC24" / "Data").mkdir(parents=True)
+        self._config(backup_tmp, drive)
+        assert backup.get_file_history_state()["health"]["level"] == "critical"
+
+    def test_month_stale_catalog_is_critical_even_when_store_unreadable(self, backup_tmp, tmp_path, mocker):
+        # The 2026-07..10 silent failure: store not confirmable, catalog dead.
+        drive = tmp_path / "drive"
+        drive.mkdir()
+        self._config(backup_tmp, drive)
+        self._age_catalog(backup_tmp, 90)
+        mocker.patch.object(backup, "_probe_backup_store", return_value=(None, "parent dir not listable"))
+        state = backup.get_file_history_state()
+        assert state["health"]["level"] == "critical"
+        assert "90 days" in state["health"]["reason"]
+
+    def test_week_stale_catalog_warns_even_when_store_unreadable(self, backup_tmp, tmp_path, mocker):
+        drive = tmp_path / "drive"
+        drive.mkdir()
+        self._config(backup_tmp, drive)
+        self._age_catalog(backup_tmp, 10)
+        mocker.patch.object(backup, "_probe_backup_store", return_value=(None, "parent dir not listable"))
+        assert backup.get_file_history_state()["health"]["level"] == "warning"
+
+    def test_unknown_probe_outranks_clean_missing(self, backup_tmp, tmp_path, mocker):
+        drive = tmp_path / "drive"
+        drive.mkdir()
+        self._config(backup_tmp, drive)
+        mocker.patch.object(
+            backup, "_probe_backup_store", side_effect=[(False, "leaf truly missing"), (None, "not listable")]
+        )
+        state = backup.get_file_history_state()
+        assert state["target_backup_store_exists"] is None
+        assert state["target_backup_store_probe"] == "not listable"
+
+    def test_store_is_empty_states(self, tmp_path):
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        full = _populated_store(tmp_path / "full")
+        assert backup._store_is_empty(str(empty)) is True
+        assert backup._store_is_empty(str(full)) is False
+        assert backup._store_is_empty(str(tmp_path / "missing")) is None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Backup and Restore (Windows 7) schedule
+# ══════════════════════════════════════════════════════════════════════
+
+_NOW = datetime(2026, 10, 12, 18, 0, 0)
+
+
+def _ft(dt):
+    """Registry FILETIME QWORD for a local-time datetime."""
+    return int(dt.timestamp() * 10_000_000) + backup._FILETIME_EPOCH_OFFSET
+
+
+def _wb_raw(last_success=None, rule_count=2, users_fully_excluded=0, valid=1):
+    raw = {
+        "root": {"ValidConfig": valid, "ValidSystemImageBackup": 1},
+        "status": {},
+        "target": {"PresentableName": "E:\\"},
+        "exclusions": {"UsersFullyExcluded": users_fully_excluded},
+        "rule_count": rule_count,
+    }
+    if last_success is not None:
+        raw["status"]["LastSuccess"] = _ft(last_success)
+        raw["status"]["LastResultTime"] = _ft(last_success)
+    return raw
+
+
+class TestWindowsBackupSchedule:
+    @pytest.fixture(autouse=True)
+    def _idle_engine(self, monkeypatch):
+        monkeypatch.setattr(backup, "_wb_engine_running", lambda: False)
+
+    def test_not_configured_is_info(self):
+        s = backup.get_windows_backup_schedule_state(raw={}, now=_NOW)
+        assert s["configured"] is False
+        assert s["health"]["level"] == "info"
+
+    def test_recent_success_is_ok_with_scope(self):
+        s = backup.get_windows_backup_schedule_state(raw=_wb_raw(_NOW - timedelta(days=2)), now=_NOW)
+        assert s["health"]["level"] == "ok"
+        assert s["includes_files"] is True
+        assert s["system_image"] is True
+        assert s["target"] == "E:\\"
+        assert s["last_success_age_days"] == 2.0
+        assert s["last_success"] == (_NOW - timedelta(days=2)).isoformat(timespec="seconds")
+
+    def test_ten_days_is_warning(self):
+        s = backup.get_windows_backup_schedule_state(raw=_wb_raw(_NOW - timedelta(days=10)), now=_NOW)
+        assert s["health"]["level"] == "warning"
+
+    def test_seven_weeks_is_critical_with_date(self):
+        # The live state on 2026-10-12: last success Aug 24.
+        s = backup.get_windows_backup_schedule_state(raw=_wb_raw(datetime(2026, 8, 24, 2, 29)), now=_NOW)
+        assert s["health"]["level"] == "critical"
+        assert "50 days ago (Aug 24)" in s["health"]["reason"]  # 49.6 days
+
+    def test_never_succeeded_is_warning(self):
+        s = backup.get_windows_backup_schedule_state(raw=_wb_raw(None), now=_NOW)
+        assert s["last_success"] is None
+        assert s["health"]["level"] == "warning"
+        assert "never completed" in s["health"]["reason"]
+
+    def test_image_only_schedule_does_not_include_files(self):
+        raw = _wb_raw(_NOW, rule_count=0, users_fully_excluded=1)
+        assert backup.get_windows_backup_schedule_state(raw=raw, now=_NOW)["includes_files"] is False
+
+    def test_user_data_alone_counts_as_files(self):
+        raw = _wb_raw(_NOW, rule_count=0, users_fully_excluded=0)
+        assert backup.get_windows_backup_schedule_state(raw=raw, now=_NOW)["includes_files"] is True
+
+    def test_running_backup_is_noted(self, monkeypatch):
+        monkeypatch.setattr(backup, "_wb_engine_running", lambda: True)
+        s = backup.get_windows_backup_schedule_state(raw=_wb_raw(datetime(2026, 8, 24)), now=_NOW)
+        assert s["running"] is True
+        assert "running now" in s["health"]["reason"]
+
+    def test_filetime_conversion(self):
+        assert backup._filetime_to_datetime(backup._FILETIME_EPOCH_OFFSET + 10_000_000) == datetime.fromtimestamp(1)
+        assert backup._filetime_to_datetime(0) is None
+        assert backup._filetime_to_datetime("garbage") is None
+        assert backup._filetime_to_datetime(2**63) is None  # beyond datetime range
+
+
+class _FakeKey:
+    def __init__(self, values, subkeys):
+        self.values, self.subkeys = values, subkeys
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class TestReadWbRegistry:
+    def _fake_winreg(self, tree):
+        import types
+
+        def open_key(_hive, path):
+            if path not in tree:
+                raise OSError("not found")
+            return _FakeKey(*tree[path])
+
+        def enum_value(key, i):
+            items = list(key.values.items())
+            if i >= len(items):
+                raise OSError("no more")
+            return (*items[i], 4)
+
+        return types.SimpleNamespace(
+            HKEY_LOCAL_MACHINE=object(),
+            OpenKey=open_key,
+            EnumValue=enum_value,
+            QueryInfoKey=lambda key: (key.subkeys, len(key.values), 0),
+        )
+
+    def test_reads_all_sections(self, monkeypatch):
+        base = backup._WB_KEY
+        tree = {
+            base: ({"ValidConfig": 1}, 4),
+            base + r"\Status": ({"LastSuccess": 123}, 0),
+            base + r"\ScheduleParams\TargetDevice": ({"PresentableName": "E:\\"}, 0),
+            base + r"\ScheduleParams\Rules": ({}, 2),
+        }
+        monkeypatch.setitem(sys.modules, "winreg", self._fake_winreg(tree))
+        raw = backup._read_wb_registry()
+        assert raw["root"] == {"ValidConfig": 1}
+        assert raw["status"] == {"LastSuccess": 123}
+        assert raw["target"]["PresentableName"] == "E:\\"
+        assert raw["exclusions"] == {}  # missing key -> empty, no raise
+        assert raw["rule_count"] == 2
+
+    def test_missing_rules_key_counts_zero(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "winreg", self._fake_winreg({}))
+        assert backup._read_wb_registry()["rule_count"] == 0
+
+    def test_no_winreg_returns_empty(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "winreg", None)  # import raises ImportError
+        assert backup._read_wb_registry() == {}
+
+
+class TestWbEngineRunning:
+    def test_running(self, mocker):
+        svc = mocker.MagicMock()
+        svc.status.return_value = "running"
+        mocker.patch("psutil.win_service_get", return_value=svc, create=True)
+        assert backup._wb_engine_running() is True
+
+    def test_lookup_failure_is_false(self, mocker):
+        mocker.patch("psutil.win_service_get", side_effect=Exception("no such service"), create=True)
+        assert backup._wb_engine_running() is False
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -632,6 +893,19 @@ class TestSummarizeBackup:
         s = backup.summarize_backup()
         # 1 folder in lib1, 2 in lib2, 2 user folders -> 5 total.
         assert s["file_history"]["watched_folders"] == 5
+
+    def test_stale_backup_and_restore_drives_overall_critical(self, backup_tmp, monkeypatch):
+        # FH off (not configured), Backup and Restore last succeeded 49 days ago.
+        monkeypatch.setattr(backup, "_read_wb_registry", lambda: _wb_raw(datetime.now() - timedelta(days=49)))
+        s = backup.summarize_backup()
+        assert s["windows_backup_schedule"]["configured"] is True
+        assert s["overall_health"]["level"] == "critical"
+
+    def test_current_backup_and_restore_keeps_overall_quiet(self, backup_tmp, monkeypatch):
+        monkeypatch.setattr(backup, "_read_wb_registry", lambda: _wb_raw(datetime.now() - timedelta(days=1)))
+        s = backup.summarize_backup()
+        assert s["windows_backup_schedule"]["health"]["level"] == "ok"
+        assert s["overall_health"]["level"] == "info"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -794,7 +1068,7 @@ class TestBackupDashboardConcern:
         # FH enabled + target + store both present + populated cache -> info only
         drive = tmp_path / "drive"
         store = drive / "higs7" / "SHIGS78-PC24" / "Data"
-        store.mkdir(parents=True)
+        _populated_store(store)
         xml = _REAL_FH_XML.replace("<TargetUrl>E:\\</TargetUrl>", f"<TargetUrl>{drive}\\</TargetUrl>")
         backup_tmp["fh_config"].write_text(xml, encoding="utf-8")
         backup_tmp["cache"].write_text(
@@ -811,6 +1085,15 @@ class TestBackupDashboardConcern:
         resp = client.get("/api/dashboard/summary")
         concerns = resp.get_json().get("concerns", [])
         assert not any("backup health" in c.get("title", "").lower() for c in concerns)
+
+    def test_stale_backup_and_restore_named_in_concern(self, client, backup_tmp, mocker, monkeypatch):
+        monkeypatch.setattr(backup, "_read_wb_registry", lambda: _wb_raw(datetime.now() - timedelta(days=49)))
+        self._mock_collectors(mocker)
+        concerns = client.get("/api/dashboard/summary").get_json().get("concerns", [])
+        matching = [c for c in concerns if "backup health" in c.get("title", "").lower()]
+        assert matching and matching[0]["level"] == "critical"
+        assert "Backup and Restore: Last successful backup was 49 days ago" in matching[0]["detail"]
+        assert "out of date" in matching[0]["title"]
 
 
 # ══════════════════════════════════════════════════════════════════════
