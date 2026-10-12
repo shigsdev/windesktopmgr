@@ -1016,7 +1016,7 @@ class TestThermalsRedesign:
         """A one-off snapshot read as 'stuck hot' (it kept a reading taken mid
         dashboard refresh), so the tab reloads on entry, auto-refreshes while
         open, stamps the time of the reading -- and stops polling when left."""
-        page = loaded_page
+        page, _ = loaded_page
         self._goto(page)
         state = page.evaluate(
             """() => ({
@@ -3630,7 +3630,11 @@ class TestDashboardStaleRefetch:
     of showing the old numbers (a minutes-old CPU temp) until a reload."""
 
     def test_stale_summary_is_refetched_and_rerendered(self, loaded_page):
-        page = loaded_page
+        page, _ = loaded_page
+        # Let the page's own stale re-fetch (if its load was stale) finish first:
+        # there is one pending re-fetch at a time, and it would replace ours.
+        page.wait_for_function("() => _dbStaleTimer === null", timeout=45_000)
+        page.wait_for_timeout(1500)
         page.evaluate(
             """() => {
                 window.__rendered = [];
@@ -3644,12 +3648,13 @@ class TestDashboardStaleRefetch:
             }"""
         )
         try:
-            page.wait_for_function("() => window.__rendered.length > 0", timeout=15_000)
-            assert page.evaluate("() => window.__rendered") == ["NEW"]
+            # The page's own load may also have been stale, so its real re-fetch
+            # can land here too -- what matters is that ours rendered.
+            page.wait_for_function("() => window.__rendered.includes('NEW')", timeout=20_000)
         finally:
             page.evaluate("() => { renderDashboard = window.__origRender; window.fetch = window.__origFetch; }")
 
     def test_fresh_summary_schedules_nothing(self, loaded_page):
-        page = loaded_page
+        page, _ = loaded_page
         page.evaluate("() => dbScheduleStaleRefetch({cache: 'fresh', checked_at: 'X'}, 1)")
         assert page.evaluate("() => _dbStaleTimer") is None
