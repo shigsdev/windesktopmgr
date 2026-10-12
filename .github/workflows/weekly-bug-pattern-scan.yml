@@ -1,0 +1,43 @@
+# Weekly bug-pattern scan -- scripts/check_bug_patterns.py.
+#
+# Sundays 13:30 UTC, so findings are waiting before the week starts. Re-greps
+# the tree for code shapes that caused bugs here before (credentialed URLs,
+# GET routes that change state, subprocess calls with no timeout, relaunching
+# from pysnmp's rewritten sys.argv, stacking JS pollers). Pure stdlib -- no
+# installs needed.
+#
+# Email settings and the pull_request trigger: see weekly-advisory-check.yml.
+name: Weekly bug-pattern scan
+
+on:
+  schedule:
+    - cron: "30 13 * * 0"
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - ".github/workflows/weekly-bug-pattern-scan.yml"
+      - "scripts/audit_common.py"
+      - "scripts/check_bug_patterns.py"
+      - "scripts/lint_setinterval.py"
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Run bug-pattern scan
+        env:
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+          DIGEST_FROM_EMAIL: ${{ vars.DIGEST_FROM_EMAIL }}
+          DIGEST_TO_EMAIL: ${{ vars.DIGEST_TO_EMAIL }}
+          PR_FLAGS: ${{ github.event_name == 'pull_request' && '--no-email --report-only' || '' }}
+        run: python scripts/check_bug_patterns.py $PR_FLAGS

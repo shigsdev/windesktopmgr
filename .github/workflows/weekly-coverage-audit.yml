@@ -1,0 +1,49 @@
+# Weekly test-coverage audit -- scripts/check_test_coverage.py.
+#
+# Fridays 13:30 UTC. Runs the full unit suite with coverage and compares it to
+# docs/audit/coverage-baseline.json (overall and per-file drift, plus floors
+# for the modules that kill processes, delete files or change the system).
+# Windows runner: the suite imports wmi / pywin32.
+#
+# Email settings and the pull_request trigger: see weekly-advisory-check.yml.
+name: Weekly coverage audit
+
+on:
+  schedule:
+    - cron: "30 13 * * 5"
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - ".github/workflows/weekly-coverage-audit.yml"
+      - "scripts/audit_common.py"
+      - "scripts/check_test_coverage.py"
+      - "docs/audit/coverage-baseline.json"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.lock -r requirements-dev.txt
+
+      - name: Run coverage audit
+        shell: bash
+        env:
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+          DIGEST_FROM_EMAIL: ${{ vars.DIGEST_FROM_EMAIL }}
+          DIGEST_TO_EMAIL: ${{ vars.DIGEST_TO_EMAIL }}
+          PYTHONIOENCODING: utf-8
+          PR_FLAGS: ${{ github.event_name == 'pull_request' && '--no-email --report-only' || '' }}
+        run: python scripts/check_test_coverage.py $PR_FLAGS
