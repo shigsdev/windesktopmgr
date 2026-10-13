@@ -412,9 +412,92 @@ def get_identify_status(session_id: str) -> dict:
     return {"state": "done", "session_id": session_id, "result": result}
 
 
+def is_admin() -> bool:
+    """True when this process runs elevated (UAC "Yes"). Never raises."""
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:  # noqa: BLE001 -- not Windows / shell32 missing
+        return False
+
+
+def enable_debug_privilege() -> bool:
+    """Switch on SeDebugPrivilege for this process; True on success.
+
+    Windows 11 hides kernel addresses (thread StartAddress, EnumDeviceDrivers
+    bases) even from an elevated process unless this privilege is ENABLED --
+    an admin token holds it but disabled. Verified 2026-10-13: the UAC helper
+    ran as admin yet every address came back 0. (PowerShell's process APIs
+    enable it implicitly, which is why the 2026-10-11 diagnosis script could
+    name KfeCo11X64.sys.) Fails harmlessly when unelevated. Never raises."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+        class LUID(ctypes.Structure):
+            _fields_ = [("LowPart", wintypes.DWORD), ("HighPart", wintypes.LONG)]
+
+        class LUIDAndAttributes(ctypes.Structure):
+            _fields_ = [("Luid", LUID), ("Attributes", wintypes.DWORD)]
+
+        class TokenPrivileges(ctypes.Structure):
+            _fields_ = [("PrivilegeCount", wintypes.DWORD), ("Privileges", LUIDAndAttributes * 1)]
+
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        advapi32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+        advapi32.LookupPrivilegeValueW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.POINTER(LUID)]
+        advapi32.AdjustTokenPrivileges.argtypes = [
+            wintypes.HANDLE,
+            wintypes.BOOL,
+            ctypes.POINTER(TokenPrivileges),
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+        token = wintypes.HANDLE()
+        token_adjust_and_query = 0x0020 | 0x0008
+        if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), token_adjust_and_query, ctypes.byref(token)):
+            return False
+        try:
+            luid = LUID()
+            if not advapi32.LookupPrivilegeValueW(None, "SeDebugPrivilege", ctypes.byref(luid)):
+                return False
+            tp = TokenPrivileges(1, (LUIDAndAttributes * 1)(LUIDAndAttributes(luid, 0x00000002)))  # ENABLED
+            ctypes.set_last_error(0)
+            if not advapi32.AdjustTokenPrivileges(token, False, ctypes.byref(tp), 0, None, None):
+                return False
+            # Succeeds even when the token lacks the privilege; that case sets
+            # ERROR_NOT_ALL_ASSIGNED (1300), so the last error decides.
+            return ctypes.get_last_error() == 0
+        finally:
+            kernel32.CloseHandle(token)
+    except Exception:  # noqa: BLE001 -- any ctypes/OS failure -> not enabled
+        return False
+
+
+def _hidden_note(admin: bool, debug: bool) -> str:
+    if not admin:
+        return "driver addresses were hidden -- the helper did not run as Administrator"
+    if not debug:
+        return "driver addresses were hidden -- running as Administrator, but Windows refused the debug privilege"
+    return "driver addresses were hidden even with Administrator + debug privilege"
+
+
 def run_identify(seconds: float = IDENTIFY_SECONDS, sleep=time.sleep) -> dict:
     """The elevated helper's work: two System-process snapshots WITH start
-    addresses ``seconds`` apart, attributed to the loaded drivers."""
+    addresses ``seconds`` apart, attributed to the loaded drivers. Enables
+    SeDebugPrivilege first (see enable_debug_privilege) and reports whether
+    it ran elevated / got the privilege, so a hidden result says why."""
+    admin = is_admin()
+    debug = enable_debug_privilege()
     drivers = enum_device_drivers()
     raw = _query_process_info()
     before = parse_process_thread_details(raw, SYSTEM_PID) if raw else None
@@ -429,8 +512,10 @@ def run_identify(seconds: float = IDENTIFY_SECONDS, sleep=time.sleep) -> dict:
     return {
         "ok": True,
         "named": named,
+        "admin": admin,
+        "debug_privilege": debug,
         "sampled_s": round(interval, 1),
         "drivers_mapped": len(drivers),
         "rows": summarize_by_driver(before, after, interval, drivers),
-        "note": "" if named else "driver addresses were hidden -- the helper did not run as Administrator",
+        "note": "" if named else _hidden_note(admin, debug),
     }
