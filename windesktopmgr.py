@@ -3715,6 +3715,28 @@ def thermals_lhm_autostart_remove():
     return jsonify(result), (200 if result.get("ok") else 400)
 
 
+@app.route("/api/thermals/kernel/identify", methods=["POST"])
+def thermals_kernel_identify():
+    """Launch the elevated "Identify driver" helper (#75 PR 2) behind a UAC
+    prompt. Blocks until the prompt is answered; the UI then polls
+    /api/thermals/kernel/identify/status."""
+    import kernel_cpu
+
+    result = kernel_cpu.request_identify()
+    return jsonify(result), (200 if result.get("ok") else 502)
+
+
+@app.route("/api/thermals/kernel/identify/status")
+def thermals_kernel_identify_status():
+    import kernel_cpu
+
+    session_id = (request.args.get("session_id") or "").strip()
+    if not session_id:
+        return jsonify({"state": "missing", "error": "session_id required"}), 400
+    status = kernel_cpu.get_identify_status(session_id)
+    return jsonify(status), (400 if status.get("error") == "invalid session_id" else 200)
+
+
 @app.route("/api/services/list")
 def services_list():
     return jsonify(get_services_list())

@@ -909,6 +909,18 @@
            one core. A driver pinning a core heats the fastest cores at ~0%
            load. Filled by thRenderKernel(); data-state = ok|stuck|na. -->
       <div id="th-kernel" style="margin-top:14px;padding:10px 14px;border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--text)"></div>
+      <!-- "Identify driver" (#75 PR 2): UAC-elevated, read-only helper names the
+           drivers behind the busiest System threads. Kept OUTSIDE #th-kernel so
+           the 10 s auto-refresh doesn't wipe the result. data-state on the
+           result: idle|prompt|running|done|error. -->
+      <div style="margin-top:8px;display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap">
+        <button id="th-kernel-identify" onclick="thIdentifyDriver()"
+          style="padding:5px 12px;font-size:11px;background:transparent;border:1px solid var(--cyan);color:var(--cyan);border-radius:6px;cursor:pointer"
+          title="Asks for administrator permission, watches the System process for about 10 seconds, then names the drivers using the CPU. Read-only.">
+          🔎 Identify driver (admin)
+        </button>
+        <div id="th-kernel-identify-result" data-state="idle" style="flex:1;min-width:260px;font-size:12px;color:var(--text)"></div>
+      </div>
 
       <!-- Per-core temperatures. Auto-populates when LibreHardwareMonitor /
            OpenHardwareMonitor registers its WMI provider (per-core "CPU Core

@@ -2262,7 +2262,7 @@ function thRenderKernel(k) {
     el.dataset.state = "stuck";
     el.style.borderColor = "var(--orange)";
     msg.textContent = "a driver thread is pinning a core — " + s.pct + "% of a core for " +
-      Math.round(s.minutes) + " min. It heats the fastest cores at low load; see the dashboard concern for common causes.";
+      Math.round(s.minutes) + " min. It heats the fastest cores at low load — click Identify driver below to name it.";
     msg.style.color = "var(--orange)";
   } else {
     el.dataset.state = "ok";
@@ -2272,6 +2272,85 @@ function thRenderKernel(k) {
       "% · normal (alerts above 50% sustained)";
   }
   el.appendChild(msg);
+}
+
+// "Identify driver" (#75 PR 2). POST launches the UAC-elevated helper (the
+// request blocks until the prompt is answered), then poll the status route
+// until the helper's result lands (~10 s sample). textContent only.
+let _thIdentifyBusy = false;
+async function thIdentifyDriver() {
+  if (_thIdentifyBusy) return;
+  const out = document.getElementById("th-kernel-identify-result");
+  const btn = document.getElementById("th-kernel-identify");
+  if (!out) return;
+  const say = (state, text, color) => {
+    out.dataset.state = state;
+    out.textContent = text;
+    out.style.color = color || "var(--muted)";
+  };
+  _thIdentifyBusy = true;
+  if (btn) btn.disabled = true;
+  try {
+    say("prompt", "Approve the Windows admin prompt to continue…");
+    const r = await fetch("/api/thermals/kernel/identify", { method: "POST" });
+    const launch = await r.json();
+    if (!launch.ok) { say("error", "Not identified: " + (launch.error || "launch failed"), "var(--orange)"); return; }
+    say("running", "Watching the System process for about 10 seconds…");
+    for (let i = 0; i < 45; i++) {
+      await new Promise(res => setTimeout(res, 2000));
+      const s = await (await fetch("/api/thermals/kernel/identify/status?session_id=" + encodeURIComponent(launch.session_id))).json();
+      if (s.state === "pending") continue;
+      if (s.state !== "done") { say("error", "Not identified: " + (s.error || "unknown error"), "var(--orange)"); return; }
+      thRenderIdentify(out, s.result || {});
+      return;
+    }
+    say("error", "The helper didn't report back within 90 seconds.", "var(--orange)");
+  } catch (e) {
+    say("error", "Not identified: " + e.message, "var(--orange)");
+  } finally {
+    _thIdentifyBusy = false;
+    if (btn) btn.disabled = false;
+  }
+}
+
+function thRenderIdentify(out, res) {
+  out.textContent = "";
+  out.style.color = "var(--text)";
+  if (!res.ok) {
+    out.dataset.state = "error";
+    out.style.color = "var(--orange)";
+    out.textContent = "Not identified: " + (res.error || "the helper failed");
+    return;
+  }
+  out.dataset.state = "done";
+  const head = document.createElement("div");
+  head.style.color = "var(--muted)";
+  head.textContent = "System-process CPU by driver over " + res.sampled_s + " s" +
+    (res.note ? " — " + res.note : "") + ":";
+  out.appendChild(head);
+  const rows = Array.isArray(res.rows) ? res.rows : [];
+  if (!rows.length) {
+    const none = document.createElement("div");
+    none.textContent = "No kernel thread used measurable CPU — nothing is pinning a core right now.";
+    out.appendChild(none);
+  }
+  rows.forEach(row => {
+    const line = document.createElement("div");
+    line.className = "th-kernel-driver-row";
+    line.dataset.driver = row.driver;
+    const name = document.createElement("strong");
+    name.textContent = row.driver;
+    line.appendChild(name);
+    line.appendChild(document.createTextNode(
+      " — " + row.pct + "% of a core (" + row.threads + " thread" + (row.threads === 1 ? "" : "s") + ")"));
+    if (row.hint) {
+      const hint = document.createElement("span");
+      hint.style.color = row.pct > 50 ? "var(--orange)" : "var(--muted)";
+      hint.textContent = " → " + row.hint;
+      line.appendChild(hint);
+    }
+    out.appendChild(line);
+  });
 }
 
 // ── LibreHardwareMonitor in-app installer (per-core CTA) ──────────────────

@@ -24,6 +24,10 @@ unelevated) -- that's a separate UAC "Identify driver" step (#75 PR 2).
 
 from __future__ import annotations
 
+import json
+import os
+import re
+import secrets
 import struct
 import sys
 import threading
@@ -40,11 +44,12 @@ STUCK_INTERVALS = 2  # consecutive over-threshold intervals => stuck
 # NumberOfThreads (ULONG) at 0x04, UniqueProcessId at 0x50, entry header is
 # 0x100 bytes, followed by NumberOfThreads SYSTEM_THREAD_INFORMATION records
 # of 0x50 bytes each: KernelTime 0x00, UserTime 0x08 (100-ns ticks),
-# ClientId.UniqueThread 0x30. Verified live on Windows 11 25H2 (2026-10-12).
+# StartAddress 0x20 (0 unless elevated), ClientId.UniqueThread 0x30. Verified live on Windows 11 25H2 (2026-10-12).
 _SYSTEM_PROCESS_INFORMATION = 5
 _PROC_HEADER = 0x100
 _PID_OFF = 0x50
 _THREAD_SIZE = 0x50
+_START_OFF = 0x20
 _TID_OFF = 0x30
 _STATUS_INFO_LENGTH_MISMATCH = 0xC0000004
 _TICKS_PER_PCT_SECOND = 100_000  # 1e7 ticks per core-second / 100
@@ -58,10 +63,11 @@ COMMON_CAUSES = (
 )
 
 
-def parse_process_threads(raw: bytes, pid: int) -> dict[int, int] | None:
-    """``{thread_id: kernel+user ticks}`` for ``pid`` from a raw
-    SystemProcessInformation buffer, or None when the pid isn't in it or the
-    buffer is malformed. Bounds-checked: never reads past ``raw``."""
+def parse_process_thread_details(raw: bytes, pid: int) -> dict[int, tuple[int, int]] | None:
+    """``{thread_id: (kernel+user ticks, start address)}`` for ``pid`` from a
+    raw SystemProcessInformation buffer, or None when the pid isn't in it or
+    the buffer is malformed. Bounds-checked: never reads past ``raw``. Start
+    addresses read as 0 unless the caller is elevated."""
     off = 0
     size = len(raw)
     for _ in range(100_000):  # entry-count guard against a looping offset
@@ -71,17 +77,25 @@ def parse_process_threads(raw: bytes, pid: int) -> dict[int, int] | None:
         if struct.unpack_from("<Q", raw, off + _PID_OFF)[0] == pid:
             if off + _PROC_HEADER + n * _THREAD_SIZE > size:
                 return None
-            threads: dict[int, int] = {}
+            threads: dict[int, tuple[int, int]] = {}
             for i in range(n):
                 t = off + _PROC_HEADER + i * _THREAD_SIZE
                 kernel, user = struct.unpack_from("<qq", raw, t)
+                start = struct.unpack_from("<Q", raw, t + _START_OFF)[0]
                 tid = struct.unpack_from("<Q", raw, t + _TID_OFF)[0]
-                threads[tid] = kernel + user
+                threads[tid] = (kernel + user, start)
             return threads
         if nxt == 0:
             return None
         off += nxt
     return None
+
+
+def parse_process_threads(raw: bytes, pid: int) -> dict[int, int] | None:
+    """``{thread_id: kernel+user ticks}`` for ``pid`` (see
+    parse_process_thread_details)."""
+    details = parse_process_thread_details(raw, pid)
+    return None if details is None else {tid: ticks for tid, (ticks, _start) in details.items()}
 
 
 def _query_process_info() -> bytes | None:
@@ -206,7 +220,8 @@ def stuck_concern(state: dict | None) -> dict | None:
         ),
         "detail": (
             "A kernel thread in the System process has stayed above half a core. That heats the fastest "
-            "cores and raises idle power. Common causes: " + "; ".join(COMMON_CAUSES) + "."
+            "cores and raises idle power. Click 'Identify driver' on Temps & Power to name it. "
+            "Common causes: " + "; ".join(COMMON_CAUSES) + "."
         ),
         "action": "View Temps & Power",
         "action_fn": "switchTab('thermals')",
@@ -223,3 +238,199 @@ def kernel_cpu_selftest() -> dict:
     if len(snap) < 10:
         return {"error": f"implausible System thread count {len(snap)} -- struct layout changed?"}
     return {"ok": True, "threads": len(snap)}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# "Identify driver" (#75 PR 2) -- elevated, on demand
+# ══════════════════════════════════════════════════════════════════════
+# Thread start addresses and driver base addresses are hidden from an
+# unelevated process, so naming the driver runs in a short-lived helper
+# (scripts/kernel_cpu_elevated.py) behind a UAC prompt -- the same
+# request-file / ShellExecuteW("runas") / result-file pattern as the Backup
+# tab's helper. Read-only: it samples and names, it never changes anything.
+
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+IDENTIFY_SECONDS = 10.0
+_IDENTIFY_REQUEST_TPL = "kernel_identify_request_{session}.json"
+_IDENTIFY_RESULT_TPL = "kernel_identify_result_{session}.json"
+SESSION_RE = re.compile(r"[a-f0-9]{12}")
+
+# Known kernel-module offenders -> what to do. Matched on the lowercased
+# driver file name's prefix. First match wins, so specific names go first.
+DRIVER_HINTS: tuple[tuple[str, str], ...] = (
+    ("kfeco", "Intel Killer Prioritization Engine -- turn it off in Killer Intelligence Center."),
+    ("killer", "Intel Killer networking software -- turn off its Prioritization Engine or update it."),
+    ("wdfilter", "Microsoft Defender's file filter -- usually a scan; if it stays busy, a folder may need excluding."),
+    ("nvlddmkm", "NVIDIA graphics driver -- update or clean-reinstall the GPU driver."),
+    ("dxgkrnl", "Windows graphics kernel -- update the GPU driver."),
+    ("acpi", "ACPI / firmware -- often an interrupt storm; a BIOS update usually fixes it."),
+    ("spaceport", "Storage Spaces -- a pool repair or rebuild keeps this busy; check the Storage tab."),
+    ("storport", "Storage stack -- check the Storage tab for a failing or rebuilding drive."),
+    ("stornvme", "NVMe storage driver -- check the Storage tab for a failing drive."),
+    ("ndis", "Network stack -- a network adapter or filter driver; update the network driver."),
+    ("tcpip", "Network stack (TCP/IP) -- heavy traffic or a filter driver; check the Network tab."),
+    ("ntoskrnl", "The Windows kernel's own worker threads -- normal unless one stays pinned."),
+)
+
+
+def hint_for_driver(name: str) -> str | None:
+    """Plain-English next step for a known driver file name, else None."""
+    low = (name or "").lower()
+    return next((hint for prefix, hint in DRIVER_HINTS if low.startswith(prefix)), None)
+
+
+def driver_for_address(addr: int, drivers: list[tuple[int, str]]) -> str:
+    """Name of the loaded kernel module containing ``addr``: the one with the
+    highest base address at or below it. ``drivers`` is sorted by base.
+    ``(hidden)`` for a 0 address (unelevated), ``(unknown)`` below every base."""
+    if not addr:
+        return "(hidden)"
+    hit = "(unknown)"
+    for base, name in drivers:
+        if base > addr:
+            break
+        hit = name
+    return hit
+
+
+def enum_device_drivers() -> list[tuple[int, str]]:
+    """``[(base address, file name)]`` of every loaded kernel module, sorted
+    by base. Bases read as 0 unless elevated (filtered out). Never raises."""
+    if sys.platform != "win32":
+        return []
+    try:
+        import ctypes
+
+        psapi = ctypes.WinDLL("psapi")
+        psapi.GetDeviceDriverBaseNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_ulong]
+        arr = (ctypes.c_void_p * 4096)()
+        needed = ctypes.c_ulong()
+        if not psapi.EnumDeviceDrivers(arr, ctypes.sizeof(arr), ctypes.byref(needed)):
+            return []
+        count = min(needed.value // ctypes.sizeof(ctypes.c_void_p), len(arr))
+        out = []
+        for i in range(count):
+            base = arr[i] or 0
+            if not base:
+                continue
+            name = ctypes.create_unicode_buffer(260)
+            psapi.GetDeviceDriverBaseNameW(base, name, 260)
+            out.append((base, name.value or "(unnamed)"))
+        return sorted(out)
+    except Exception:  # noqa: BLE001 -- psapi unavailable -> nothing to map
+        return []
+
+
+def summarize_by_driver(
+    before: dict[int, tuple[int, int]],
+    after: dict[int, tuple[int, int]],
+    interval_s: float,
+    drivers: list[tuple[int, str]],
+    limit: int = 8,
+) -> list[dict]:
+    """Group per-thread CPU over ``interval_s`` by owning driver, busiest
+    first: ``[{"driver", "pct", "threads", "hint"}]``. Threads that used no
+    CPU are dropped."""
+    if interval_s <= 0:
+        return []
+    totals: dict[str, list] = {}
+    for tid, (ticks, start) in after.items():
+        if tid not in before:
+            continue
+        delta = ticks - before[tid][0]
+        if delta <= 0:
+            continue
+        entry = totals.setdefault(driver_for_address(start, drivers), [0.0, 0])
+        entry[0] += delta / (interval_s * _TICKS_PER_PCT_SECOND)
+        entry[1] += 1
+    rows = [
+        {"driver": name, "pct": round(pct, 1), "threads": n, "hint": hint_for_driver(name)}
+        for name, (pct, n) in totals.items()
+    ]
+    rows.sort(key=lambda r: -r["pct"])
+    return rows[:limit]
+
+
+def identify_path(kind: str, session: str) -> str:
+    """Request/result file for a session (``kind`` = "request" | "result")."""
+    tpl = _IDENTIFY_REQUEST_TPL if kind == "request" else _IDENTIFY_RESULT_TPL
+    return os.path.join(APP_DIR, tpl.format(session=session))
+
+
+def request_identify() -> dict:
+    """Write a request file and launch the elevated helper via UAC.
+    ``{"ok": True, "session_id"}`` once the user accepts the prompt, else
+    ``{"ok": False, "error"}`` (declined, helper missing, not Windows)."""
+    helper = os.path.join(APP_DIR, "scripts", "kernel_cpu_elevated.py")
+    if not os.path.exists(helper):
+        return {"ok": False, "error": f"elevated helper not found at {helper}"}
+    session = secrets.token_hex(6)
+    request_path = identify_path("request", session)
+    try:
+        with open(request_path, "w", encoding="utf-8") as f:
+            json.dump({"session_id": session, "action": "identify", "seconds": IDENTIFY_SECONDS}, f)
+    except OSError as e:
+        return {"ok": False, "error": f"failed to write request file: {e}"}
+    try:
+        import ctypes
+
+        # SW_HIDE (0): no console window for the helper.
+        rc = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", sys.executable, f'"{helper}" --request "{request_path}"', None, 0
+        )
+        error = f"admin prompt declined or launch failed (ShellExecuteW rc={rc})"
+    except (ImportError, AttributeError, OSError) as e:
+        rc, error = 0, f"cannot launch the elevated helper: {e}"
+    if rc <= 32:
+        try:
+            os.remove(request_path)
+        except OSError:
+            pass
+        return {"ok": False, "error": error}
+    return {"ok": True, "session_id": session}
+
+
+def get_identify_status(session_id: str) -> dict:
+    """``{"state": "pending"}`` while the helper runs, ``{"state": "done",
+    "result"}`` once it wrote its result (the session files are then
+    removed), or ``{"state": "missing", "error"}`` for a malformed id."""
+    if not SESSION_RE.fullmatch(session_id or ""):
+        return {"state": "missing", "error": "invalid session_id"}
+    result_path = identify_path("result", session_id)
+    if not os.path.exists(result_path):
+        return {"state": "pending", "session_id": session_id}
+    try:
+        with open(result_path, encoding="utf-8") as f:
+            result = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        return {"state": "missing", "error": f"result file unreadable: {e}"}
+    for kind in ("request", "result"):
+        try:
+            os.remove(identify_path(kind, session_id))
+        except OSError:
+            pass
+    return {"state": "done", "session_id": session_id, "result": result}
+
+
+def run_identify(seconds: float = IDENTIFY_SECONDS, sleep=time.sleep) -> dict:
+    """The elevated helper's work: two System-process snapshots WITH start
+    addresses ``seconds`` apart, attributed to the loaded drivers."""
+    drivers = enum_device_drivers()
+    raw = _query_process_info()
+    before = parse_process_thread_details(raw, SYSTEM_PID) if raw else None
+    t0 = time.monotonic()
+    sleep(seconds)
+    raw = _query_process_info()
+    after = parse_process_thread_details(raw, SYSTEM_PID) if raw else None
+    interval = time.monotonic() - t0
+    if not before or not after:
+        return {"ok": False, "error": "could not read System process threads"}
+    named = bool(drivers) and any(start for _ticks, start in after.values())
+    return {
+        "ok": True,
+        "named": named,
+        "sampled_s": round(interval, 1),
+        "drivers_mapped": len(drivers),
+        "rows": summarize_by_driver(before, after, interval, drivers),
+        "note": "" if named else "driver addresses were hidden -- the helper did not run as Administrator",
+    }

@@ -1057,6 +1057,46 @@ class TestThermalsRedesign:
         assert state in expected_phrase, f"unexpected data-state {state!r}"
         assert expected_phrase[state] in text, f"state {state!r} but text {text!r}"
 
+    def test_identify_driver_button_wired_and_survives_refresh(self, loaded_page):
+        """#75 PR 2: the Identify driver button calls thIdentifyDriver, and its
+        result area sits OUTSIDE the auto-refreshed #th-kernel line (a 10 s
+        refresh must not wipe a result). Clicking would raise a real UAC
+        prompt, so the click itself is not exercised here."""
+        page, _ = loaded_page
+        self._goto(page)
+        info = page.evaluate(
+            """() => {
+                const btn = document.getElementById('th-kernel-identify');
+                const out = document.getElementById('th-kernel-identify-result');
+                const line = document.getElementById('th-kernel');
+                return {
+                    btn: !!btn, onclick: btn && btn.getAttribute('onclick'),
+                    fn: typeof thIdentifyDriver, render: typeof thRenderIdentify,
+                    state: out && out.dataset.state, nested: !!(line && out && line.contains(out)),
+                };
+            }"""
+        )
+        assert info["btn"] and info["onclick"] == "thIdentifyDriver()"
+        assert info["fn"] == "function" and info["render"] == "function"
+        assert info["state"] == "idle"
+        assert not info["nested"], "result area must not live inside the auto-refreshed #th-kernel line"
+
+        # Render a canned helper result and check rows survive a re-render of the line.
+        page.evaluate(
+            """() => thRenderIdentify(document.getElementById('th-kernel-identify-result'),
+                {ok: true, sampled_s: 10, note: '', rows: [
+                  {driver: 'KfeCo11X64.sys', pct: 99, threads: 1, hint: 'Intel Killer Prioritization Engine'}]})"""
+        )
+        page.evaluate("thRenderKernel({available: true, busiest: {pct: 3}, total_pct: 20, stuck: []})")
+        rows = page.evaluate(
+            "() => [...document.querySelectorAll('.th-kernel-driver-row')].map(r => [r.dataset.driver, r.textContent])"
+        )
+        assert rows and rows[0][0] == "KfeCo11X64.sys" and "99% of a core" in rows[0][1]
+        page.evaluate(
+            "() => { const o = document.getElementById('th-kernel-identify-result');"
+            " o.textContent = ''; o.dataset.state = 'idle'; }"
+        )
+
     def test_auto_refresh_runs_while_open_and_stops_on_leave(self, loaded_page):
         """A one-off snapshot read as 'stuck hot' (it kept a reading taken mid
         dashboard refresh), so the tab reloads on entry, auto-refreshes while
