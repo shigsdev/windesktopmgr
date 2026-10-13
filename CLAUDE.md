@@ -22,9 +22,12 @@ No step may be skipped. No exceptions.
                                 official, installed 2026-05-28.)
 4. Update architecture.html  →  REQUIRED if any of the triggers below apply
 5. git commit + push branch  →  open PR, merge to main (pre-commit + pre-push hooks)
-6. deploy + verify           →  pull main into the primary repo, restart the tray,
-                                then `python dev.py verify` against the DEPLOYED code
-7. Print SOP Compliance Report (Phase 11 checklist — see bottom of this file)
+6. deploy + verify           →  `python dev.py deploy` FROM THE PRIMARY REPO: pulls
+                                main (ff-only), restarts the tray, runs verify against
+                                the DEPLOYED code. Refuses from a worktree, off main,
+                                or with uncommitted tracked changes.
+7. Print SOP Compliance Report (Phase 11 checklist — see bottom of this file;
+                                `/sop-report` pre-fills what git can prove)
 ```
 
 **Step 4 is NON-OPTIONAL when any of these triggers apply.** If you skip it,
@@ -63,11 +66,21 @@ deploy half of step 6 (pull `main` into the primary repo, then restart the
 tray) is what actually makes a change live. `dev.py verify` then catches
 mock-vs-reality drift, startup crashes, and PS output format regressions.
 A green verify against a tray that re-execed *old* code is a false pass —
-always confirm the primary repo was pulled before the restart. See the
-Docs-Only Fast Path below for the one exception.
+always confirm the primary repo was pulled before the restart -- `python dev.py
+deploy` does the pull + restart + verify in that order and refuses to pull into
+a dirty tree. See the Docs-Only Fast Path below for the one exception.
 
 **Step 7 is NON-OPTIONAL.** The SOP Compliance Report must be the LAST thing
 printed for every code change. See the template at the bottom of this file.
+`/sop-report` (`python scripts/sop_report.py --title ... --commit <sha>`)
+pre-marks files changed, docs-only, merged, tests touched, architecture.html
+and the backlog row; fill the remaining `[ ]` lines from what you ran.
+
+**Claude Code hook (`.claude/settings.json`).** A PreToolUse hook on
+Edit|Write runs `scripts/claude_hooks.py pre-edit` and adds a warning to
+context when an edit targets the PRIMARY checkout instead of a worktree, or
+hits a Step-4 architecture trigger (new root/scripts/tests file, new Flask
+route). It warns, never blocks. Hook changes load in a NEW session.
 
 ---
 
@@ -551,13 +564,14 @@ pytest tests/ -v -s
 
 ## Post-Push Live Verification (MANDATORY)
 
-After every `git push`, run:
+After every merge to main, from the primary repo run:
 
 ```bash
-python dev.py verify
+python dev.py deploy
 ```
 
-This command:
+It pulls main (fast-forward only), then runs `python dev.py verify`, which:
+
 1. POSTs to `/api/restart` to restart the running tray instance
 2. Polls `/api/health` until the new instance responds (45s budget)
 3. Runs `/api/selftest` — 15 real health checks (PowerShell / WMI / ntdll) in parallel
@@ -618,7 +632,7 @@ Phase 4  Quality Gates
   [ ] pytest (all pass, ≥80% coverage)
   [ ] /code-review (high-priority findings resolved or justified)
   [ ] pre-commit hooks passed
-  [ ] python dev.py verify (post-restart live check)
+  [ ] python dev.py deploy (pull + restart + verify)
 Phase 5  Tests
   [ ] New/modified code has test coverage
 Phase 9  Documentation
