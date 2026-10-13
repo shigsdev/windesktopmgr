@@ -279,6 +279,21 @@ def hint_for_driver(name: str) -> str | None:
     return next((hint for prefix, hint in DRIVER_HINTS if low.startswith(prefix)), None)
 
 
+# A fix-it hint on a driver using a sliver of a core reads as "this is the
+# problem" when it isn't (a 0.2% NVIDIA row said "reinstall the GPU driver"),
+# so rows below this share of a core carry no hint. Reassurance-only hints
+# (the kernel's own threads are normal) show at any level.
+HINT_MIN_PCT = 20.0
+_ALWAYS_HINT_PREFIXES = ("ntoskrnl",)
+
+
+def _row_hint(name: str, pct: float) -> str | None:
+    """Hint for an Identify row: only when the driver is busy enough to matter."""
+    if pct >= HINT_MIN_PCT or (name or "").lower().startswith(_ALWAYS_HINT_PREFIXES):
+        return hint_for_driver(name)
+    return None
+
+
 def driver_for_address(addr: int, drivers: list[tuple[int, str]]) -> str:
     """Name of the loaded kernel module containing ``addr``: the one with the
     highest base address at or below it. ``drivers`` is sorted by base.
@@ -330,7 +345,7 @@ def summarize_by_driver(
 ) -> list[dict]:
     """Group per-thread CPU over ``interval_s`` by owning driver, busiest
     first: ``[{"driver", "pct", "threads", "hint"}]``. Threads that used no
-    CPU are dropped."""
+    CPU are dropped; ``hint`` is None below ``HINT_MIN_PCT`` (``_row_hint``)."""
     if interval_s <= 0:
         return []
     totals: dict[str, list] = {}
@@ -344,7 +359,7 @@ def summarize_by_driver(
         entry[0] += delta / (interval_s * _TICKS_PER_PCT_SECOND)
         entry[1] += 1
     rows = [
-        {"driver": name, "pct": round(pct, 1), "threads": n, "hint": hint_for_driver(name)}
+        {"driver": name, "pct": round(pct, 1), "threads": n, "hint": _row_hint(name, pct)}
         for name, (pct, n) in totals.items()
     ]
     rows.sort(key=lambda r: -r["pct"])
