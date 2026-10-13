@@ -87,6 +87,7 @@ from gpu import (
     get_nvidia_update_info,
 )
 from homenet import homenet_bp, homenet_get_inventory
+from kernel_cpu import kernel_cpu_selftest  # noqa: F401 -- resolved by-name via globals() in SELFTEST_CHECKS
 from maintenance import maintenance_bp
 from nas import (
     get_nas_storage,  # noqa: F401 -- re-exported; dashboard fan-out resolves it via windesktopmgr.get_nas_storage
@@ -3118,6 +3119,9 @@ SELFTEST_CHECKS: list[tuple[str, str, int]] = [
     ("bios", "get_bios_status", 15),
     ("timeline", "get_system_timeline", 20),
     ("health_history", "get_health_report_history", 10),
+    # Real ntdll SystemProcessInformation parse (#75) -- catches a Windows
+    # update changing the struct layout, which mocked tests cannot.
+    ("kernel_cpu", "kernel_cpu_selftest", 10),
 ]
 
 
@@ -3130,7 +3134,7 @@ def api_selftest():
     import concurrent.futures
 
     results: list[dict] = []
-    # Overall wall-time budget for all 14 checks running in parallel. Had to
+    # Overall wall-time budget for all 15 checks running in parallel. Had to
     # bump 90 → 180 on 2026-04-18 because slow checks (bsod/timeline/processes/
     # bios ≈ 45-58 s each) can eat the budget before drivers finishes its WMI
     # + NVIDIA lookups. The per-check timeouts in SELFTEST_CHECKS are only

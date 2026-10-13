@@ -121,11 +121,21 @@ def get_thermals() -> dict:
         c = t.get("TempC", 0)
         t["status"] = "critical" if c >= TEMP_CRIT_C else "warning" if c >= TEMP_WARN_C else "ok"
 
+    # Kernel-thread CPU (#75): a driver pinning a core heats the favoured
+    # P-cores at near-zero load, which temperatures alone can't explain.
+    try:
+        import kernel_cpu  # noqa: PLC0415 -- lazy: optional sibling
+
+        kernel = kernel_cpu.sample()
+    except Exception:  # noqa: BLE001 -- never let the probe break thermals
+        kernel = {"available": False, "reason": "kernel CPU probe failed", "busiest": None, "stuck": []}
+
     has_rich = any(t.get("Source") in ("OpenHardwareMonitor", "LibreHardwareMonitor") for t in temps)
     return {
         "temps": temps,
         "perf": perf,
         "fans": fans,
+        "kernel_cpu": kernel,
         "has_rich": has_rich,
         "note": ""
         if has_rich

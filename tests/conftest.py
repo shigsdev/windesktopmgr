@@ -29,6 +29,7 @@ import diagnose
 import disk
 import events
 import homenet
+import kernel_cpu
 import maintenance
 import network
 import nlq
@@ -237,6 +238,16 @@ def reset_globals():
         maintenance._scans.clear()
         maintenance._scans["junk"] = junk
 
+    # Kernel-thread sampler (kernel_cpu.py, #75): the previous snapshot +
+    # stuck streaks persist across calls; a prior test's baseline would make
+    # a later get_thermals() report a delta or a stuck thread.
+    kernel_cpu._reset()
+    # LHM last-good data.json (30 s stall grace): a prior test's tree must
+    # not answer for a later test whose mocked request fails.
+    import lhm
+
+    lhm._reset_data_cache()
+
     yield  # run the test
 
     # Post-test cleanup (same as pre-test for symmetry)
@@ -245,6 +256,14 @@ def reset_globals():
     wdm._startup_cache.clear()
     processes._process_cache.clear()
     wdm._services_cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_kernel_snapshot(monkeypatch):
+    """Never read the real System process threads (ntdll) in unit tests --
+    get_thermals() samples on every call. test_kernel_cpu.py keeps its own
+    reference to the real function for the parsing tests."""
+    monkeypatch.setattr(kernel_cpu, "snapshot_system_threads", lambda: None)
 
 
 # ── Reusable data fixtures ─────────────────────────────────────────────────────

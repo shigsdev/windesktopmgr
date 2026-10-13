@@ -40,6 +40,7 @@ import hashlib
 import os
 import re
 import subprocess
+import time
 import zipfile
 from urllib.parse import urlparse
 
@@ -142,18 +143,37 @@ def is_installed() -> bool:
     return os.path.isfile(exe_path())
 
 
+# Last good data.json, served for a short grace period when a read fails.
+# LHM's web server sometimes stalls 5-20 s (seen 2026-10-11); without this the
+# Thermals tab flickered "no sensor" and the CPU-temp gauge blanked mid-session.
+LHM_STALE_GRACE_S = 30.0
+_last_good: tuple[float, dict] | None = None
+
+
+def _reset_data_cache() -> None:
+    global _last_good
+    _last_good = None
+
+
 def _fetch_data_json() -> dict | None:
-    """GET LHM's sensor tree over loopback. None if the server isn't up.
+    """GET LHM's sensor tree over loopback. On a failed read, returns the last
+    good tree if it's under LHM_STALE_GRACE_S old, else None (server down).
     Bounded + never raises."""
+    global _last_good
     try:
         import requests  # noqa: PLC0415 -- already a project dependency
 
         resp = requests.get(LHM_DATA_URL, timeout=LHM_HTTP_TIMEOUT_S)
         resp.raise_for_status()
         data = resp.json()
-        return data if isinstance(data, dict) else None
-    except Exception:  # noqa: BLE001 -- server down / not running -> None
-        return None
+        if isinstance(data, dict):
+            _last_good = (time.monotonic(), data)
+            return data
+    except Exception:  # noqa: BLE001 -- server down / stalled -> grace or None
+        pass
+    if _last_good and time.monotonic() - _last_good[0] <= LHM_STALE_GRACE_S:
+        return _last_good[1]
+    return None
 
 
 def _parse_temp_value(value: str) -> float | None:

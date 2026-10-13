@@ -560,7 +560,7 @@ python dev.py verify
 This command:
 1. POSTs to `/api/restart` to restart the running tray instance
 2. Polls `/api/health` until the new instance responds (45s budget)
-3. Runs `/api/selftest` — 14 real PowerShell-backed health checks in parallel
+3. Runs `/api/selftest` — 15 real health checks (PowerShell / WMI / ntdll) in parallel
 4. Any failure means the push broke something mocked tests didn't catch
 
 **What verify catches that mocked tests cannot:**

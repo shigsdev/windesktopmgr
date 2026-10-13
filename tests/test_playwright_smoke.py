@@ -1040,6 +1040,23 @@ class TestThermalsRedesign:
             timeout=45_000,
         )
 
+    def test_kernel_driver_load_line_renders_a_verdict(self, loaded_page):
+        """#75: the Kernel driver load line must render one of its three
+        verdicts with matching text -- not stay blank -- and the API must
+        carry the kernel_cpu block it renders from."""
+        page, _ = loaded_page
+        self._goto(page)
+        api = page.evaluate("async () => (await (await fetch('/api/thermals/data')).json()).kernel_cpu")
+        assert isinstance(api, dict) and "available" in api, f"thermals API missing kernel_cpu: {api!r}"
+        state, text = page.evaluate(
+            "() => { const el = document.getElementById('th-kernel');"
+            " return [el.dataset.state || null, el.textContent]; }"
+        )
+        assert text.startswith("Kernel driver load: ")
+        expected_phrase = {"ok": "% of a core", "stuck": "pinning a core", "na": ""}
+        assert state in expected_phrase, f"unexpected data-state {state!r}"
+        assert expected_phrase[state] in text, f"state {state!r} but text {text!r}"
+
     def test_auto_refresh_runs_while_open_and_stops_on_leave(self, loaded_page):
         """A one-off snapshot read as 'stuck hot' (it kept a reading taken mid
         dashboard refresh), so the tab reloads on entry, auto-refreshes while

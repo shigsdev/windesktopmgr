@@ -193,7 +193,7 @@
       <button type="button" onclick="exportPDF()" title="Open the browser print dialog — choose 'Save as PDF'" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--yellow);border:none;cursor:pointer;border-right:1px solid var(--border)">Export PDF</button>
       <button type="button" onclick="exportHTML()" title="Download a self-contained copy of this diagram" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--blue);border:none;cursor:pointer">Export HTML</button>
     </div>
-    <div class="badge" style="color:var(--green);border-color:#00e67633">4,645 tests · 89% coverage</div>
+    <div class="badge" style="color:var(--green);border-color:#00e67633">4,687 tests · 89% coverage</div>
     <div class="badge">
       <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
     </div>
@@ -288,7 +288,7 @@
 
   <!-- ── LAYER 2: FLASK BACKEND ───────────────────────────────── -->
   <div class="row row-flask" id="layer-flask">
-    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~4,741 lines + bsod.py · ~901 lines + events.py · ~656 lines + processes.py · ~1,907 lines + sysinfo.py · ~1,414 lines + dashboard.py · ~1,144 lines (+ _build_gauges hero-gauge readouts, redesign PR2) + credentials.py · ~706 lines + thermals.py · ~185 lines + lhm.py · ~271 lines (LibreHardwareMonitor in-app installer: pinned download + SHA256 verify + zip-slip-guarded extract + UAC elevated launch) + ai_identify.py · ~277 lines (GLOBAL AI identifier: when a local KB can't name an entity — process/service/startup/driver/MAC/BIOS — a bounded Claude call resolves it, cached; reuses the self-learning worker+cache pattern) + gpu.py · ~623 lines + network.py · ~540 lines + nas.py · ~508 lines (QNAP SNMP · cache-first non-blocking reads + persisted snapshot so a slow NAS never stalls the dashboard fan-out) + timeline.py · ~525 lines + bios.py · ~522 lines + homenet.py Blueprint · ~3,892 lines + disk.py Blueprint · ~1,832 lines (+ Storage Spaces pool/vdisk collector + physical-slot location parsing + PCIe card topology + switch-chip detection for drive swaps) + remediation.py Blueprint · ~445 lines + nlq.py Blueprint · ~460 lines + diagnose.py Blueprint · ~1,858 lines (Diagnose engine: symptom classifier · per-class rules + model prompt · deterministic DNS rules · optional slots · redaction (+ this-PC name) + egress preview/consent gate · schema-constrained model call + server-side guards · session engine) + diagnose_probes.py · ~1,281 lines (closed read-only probe registry + bounded parallel runner · 15 network/DNS probes) + diagnose_crash_probes.py · ~809 lines (crashes &amp; stability bundle: win32evtlog EventData reader, boot/shutdown episodes, 13 read-only crash probes) + diagnose_crash_rules.py · ~536 lines (crash classifier + 7 ordered verdict rules + context lines + steps) + baseline.py · ~3,011 lines + baseline_routes.py Blueprint · ~334 lines + backup_routes.py Blueprint · ~421 lines (Baseline + Backup/CloudCopy routes, moved out of windesktopmgr.py by tech-debt #73) · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · applogging.py RotatingFileHandler · dashboard summary cache (30s TTL + single-flight background refresh) · request-log flood suppressor · SAFE_PROCESSES kill guard + SYSTEM_PROCESSES_GLOSSARY · pynvml GPU metrics collector · psutil+socket network metrics collector + reachability/DNS health check · mac-vendor-lookup IEEE OUI (~36k vendors) + zeroconf mDNS for device name resolution · baseline.py drift detection (startup + services + tasks) · dnspython resolver/authoritative DNS probes (rcode + AA flag) for Diagnose</div>
+    <div class="row-label">🐍 Flask Backend — windesktopmgr.py · ~4,741 lines + bsod.py · ~901 lines + events.py · ~656 lines + processes.py · ~1,907 lines + sysinfo.py · ~1,414 lines + dashboard.py · ~1,144 lines (+ _build_gauges hero-gauge readouts, redesign PR2) + credentials.py · ~706 lines + thermals.py · ~273 lines + kernel_cpu.py · ~225 lines (stuck kernel-driver thread detector: ntdll SystemProcessInformation per-thread CPU of PID 4, unelevated, diffed per dashboard refresh) + lhm.py · ~511 lines (LibreHardwareMonitor in-app installer: pinned download + SHA256 verify + zip-slip-guarded extract + UAC elevated launch) + ai_identify.py · ~277 lines (GLOBAL AI identifier: when a local KB can't name an entity — process/service/startup/driver/MAC/BIOS — a bounded Claude call resolves it, cached; reuses the self-learning worker+cache pattern) + gpu.py · ~623 lines + network.py · ~540 lines + nas.py · ~508 lines (QNAP SNMP · cache-first non-blocking reads + persisted snapshot so a slow NAS never stalls the dashboard fan-out) + timeline.py · ~525 lines + bios.py · ~522 lines + homenet.py Blueprint · ~3,892 lines + disk.py Blueprint · ~1,832 lines (+ Storage Spaces pool/vdisk collector + physical-slot location parsing + PCIe card topology + switch-chip detection for drive swaps) + remediation.py Blueprint · ~445 lines + nlq.py Blueprint · ~460 lines + diagnose.py Blueprint · ~1,858 lines (Diagnose engine: symptom classifier · per-class rules + model prompt · deterministic DNS rules · optional slots · redaction (+ this-PC name) + egress preview/consent gate · schema-constrained model call + server-side guards · session engine) + diagnose_probes.py · ~1,281 lines (closed read-only probe registry + bounded parallel runner · 15 network/DNS probes) + diagnose_crash_probes.py · ~809 lines (crashes &amp; stability bundle: win32evtlog EventData reader, boot/shutdown episodes, 13 read-only crash probes) + diagnose_crash_rules.py · ~536 lines (crash classifier + 7 ordered verdict rules + context lines + steps) + baseline.py · ~3,011 lines + baseline_routes.py Blueprint · ~334 lines + backup_routes.py Blueprint · ~421 lines (Baseline + Backup/CloudCopy routes, moved out of windesktopmgr.py by tech-debt #73) · Python 3.14 · port 5000 · threaded=True · HEADLESS_MODE subprocess wrapper · applogging.py RotatingFileHandler · dashboard summary cache (30s TTL + single-flight background refresh) · request-log flood suppressor · SAFE_PROCESSES kill guard + SYSTEM_PROCESSES_GLOSSARY · pynvml GPU metrics collector · psutil+socket network metrics collector + reachability/DNS health check · mac-vendor-lookup IEEE OUI (~36k vendors) + zeroconf mDNS for device name resolution · baseline.py drift detection (startup + services + tasks) · dnspython resolver/authoritative DNS probes (rcode + AA flag) for Diagnose</div>
     <div style="margin-bottom:10px">
       <div style="font-size:10px;color:var(--muted);margin-bottom:8px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">API Routes (73 endpoints)</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
@@ -750,11 +750,15 @@
           </div>
           <div class="fs-chip" style="border-color:#ff6ec733">
             <div class="fs-title" style="color:var(--pink)">thermals.py</div>
-            <div class="fs-sub">Temperature &amp; power module · ~185 lines · WMI thermal zones + OpenHardwareMonitor WMI sensors + LibreHardwareMonitor HTTP-server sensors (lhm.get_lhm_temps — LHM has no WMI provider) + psutil CPU/mem/battery (#54 PR G)</div>
+            <div class="fs-sub">Temperature &amp; power module · ~273 lines · samples kernel_cpu on every read (Kernel driver load line + dashboard concern, #75) · WMI thermal zones + OpenHardwareMonitor WMI sensors + LibreHardwareMonitor HTTP-server sensors (lhm.get_lhm_temps — LHM has no WMI provider) + psutil CPU/mem/battery (#54 PR G)</div>
+          </div>
+          <div class="fs-chip" style="border-color:#ff6ec733">
+            <div class="fs-title" style="color:var(--pink)">kernel_cpu.py</div>
+            <div class="fs-sub">Stuck kernel-driver thread detector (#75) · ~225 lines · NtQuerySystemInformation(SystemProcessInformation) via ctypes → per-thread kernel+user time of the System process (PID 4), unelevated, no thread handles · diffed per get_thermals() call (no background thread; intervals &lt;20 s ignored) · a thread &gt;50% of one core for 2 consecutive intervals ⇒ dashboard warning naming common causes (Killer Prioritization Engine first) · kernel_cpu_selftest in /api/selftest catches struct-layout drift</div>
           </div>
           <div class="fs-chip" style="border-color:#ff6ec733">
             <div class="fs-title" style="color:var(--pink)">lhm.py</div>
-            <div class="fs-sub">LibreHardwareMonitor in-app installer · ~340 lines · pinned-URL download (requests) + SHA256 verify-before-extract + zip-slip-guarded extract to %LOCALAPPDATA% + start-minimised-to-tray + web-server-enabled config seed (idempotent migrate) + reads sensors via LHM's HTTP server data.json (LHM has NO WMI provider — was the per-core-temps bug; loopback-only via Windows default-deny firewall; excludes Distance-to-TjMax + SSD/DIMM threshold/limit/resolution pseudo-sensors that LHM mistypes as Temperature, via _is_reading_temp — fixed a false elevated-temp alert) + ShellExecuteW("runas") UAC elevated launch + optional auto-start (elevated at-logon schtasks task, UAC; setup/remove/status) · powers the Thermals per-core CTA (/api/thermals/lhm/status·install·launch·autostart)</div>
+            <div class="fs-sub">LibreHardwareMonitor in-app installer · ~511 lines · last-good data.json served for 30 s when LHM's web server stalls (no 'no sensor' flicker) · pinned-URL download (requests) + SHA256 verify-before-extract + zip-slip-guarded extract to %LOCALAPPDATA% + start-minimised-to-tray + web-server-enabled config seed (idempotent migrate) + reads sensors via LHM's HTTP server data.json (LHM has NO WMI provider — was the per-core-temps bug; loopback-only via Windows default-deny firewall; excludes Distance-to-TjMax + SSD/DIMM threshold/limit/resolution pseudo-sensors that LHM mistypes as Temperature, via _is_reading_temp — fixed a false elevated-temp alert) + ShellExecuteW("runas") UAC elevated launch + optional auto-start (elevated at-logon schtasks task, UAC; setup/remove/status) · powers the Thermals per-core CTA (/api/thermals/lhm/status·install·launch·autostart)</div>
           </div>
           <div class="fs-chip" style="border-color:#ff6ec733">
             <div class="fs-title" style="color:var(--pink)">ai_identify.py</div>
@@ -952,7 +956,7 @@
 
   <!-- ── LAYER 7: TEST SUITE ──────────────────────────────────── -->
   <div class="row row-tests" id="layer-tests">
-    <div class="row-label">🧪 Test Suite — 4,645 tests · pytest · 89% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
+    <div class="row-label">🧪 Test Suite — 4,687 tests · pytest · 89% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
       <div class="test-chip">
         <div class="test-title">test_routes.py</div>
@@ -1354,7 +1358,7 @@
           <div style="flex:0 0 auto;min-width:120px;background:#ff80ab0a;border:1px solid #ff80ab44;border-radius:8px;padding:10px 12px;text-align:center">
             <div style="font-size:16px;margin-bottom:4px">🧪</div>
             <div style="color:var(--pink);font-weight:700;font-size:10px">3. PYTEST</div>
-            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">4,645 tests · 89% cov · ~60s</div>
+            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">4,687 tests · 89% cov · ~60s</div>
           </div>
           <div style="display:flex;align-items:center;padding:0 4px;color:var(--pink);font-size:14px">→</div>
 
@@ -1385,7 +1389,7 @@
               <div style="color:var(--muted);font-size:10px">→</div>
               <div style="background:#00e6760d;border:1px solid #00e67633;border-radius:4px;padding:2px 7px;font-size:9px;color:var(--green)">poll /api/health</div>
               <div style="color:var(--muted);font-size:10px">→</div>
-              <div style="background:#00e6760d;border:1px solid #00e67633;border-radius:4px;padding:2px 7px;font-size:9px;color:var(--green)">GET /api/selftest (14 checks)</div>
+              <div style="background:#00e6760d;border:1px solid #00e67633;border-radius:4px;padding:2px 7px;font-size:9px;color:var(--green)">GET /api/selftest (15 checks)</div>
               <div style="color:var(--muted);font-size:10px">→</div>
               <div style="background:#00e6760d;border:1px solid #00e67633;border-radius:4px;padding:2px 7px;font-size:9px;color:var(--green)">GET /api/logs ERROR+WARN since restart_ts</div>
             </div>
@@ -1502,7 +1506,7 @@
        this number by changing what it measures. Regenerate with:
          python -c "import pathlib;S={'.git','.claude','.pytest_cache','.ruff_cache','__pycache__'};print(sum(sum(1 for _ in p.open(encoding='utf-8',errors='replace')) for p in pathlib.Path('.').rglob('*.py') if p.is_file() and not set(p.parts)&S and 'tests' not in p.parts))"
   -->
-  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 4,645 tests · ~41,452 lines</span>
+  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 4,687 tests · ~41,452 lines</span>
   <span>github.com/shigsdev/windesktopmgr · Updated 2026-10-02</span>
 </div>
 
