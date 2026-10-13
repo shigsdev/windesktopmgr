@@ -360,6 +360,34 @@ class TestGetLhmTemps:
 # ── install_lhm ────────────────────────────────────────────────────────────
 
 
+class TestDataJsonStallGrace:
+    """LHM's web server stalls 5-20 s at times (2026-10-11); the last good
+    tree answers for up to LHM_STALE_GRACE_S so the Thermals tab doesn't
+    flicker 'no sensor'."""
+
+    def test_failed_read_within_grace_serves_last_good(self, mocker):
+        mocker.patch("requests.get", return_value=_resp(_LHM_TREE))
+        assert lhm._fetch_data_json() == _LHM_TREE
+        mocker.patch("requests.get", side_effect=TimeoutError("stalled"))
+        assert lhm._fetch_data_json() == _LHM_TREE
+        assert {t["Name"] for t in lhm.get_lhm_temps()} == {"Core Max", "P-Core #1", "GPU Core"}
+
+    def test_failed_read_after_grace_is_none(self, mocker):
+        lhm._last_good = (lhm.time.monotonic() - lhm.LHM_STALE_GRACE_S - 1, _LHM_TREE)
+        mocker.patch("requests.get", side_effect=TimeoutError("stalled"))
+        assert lhm._fetch_data_json() is None
+
+    def test_no_prior_good_read_is_none(self, mocker):
+        mocker.patch("requests.get", side_effect=ConnectionError("down"))
+        assert lhm._fetch_data_json() is None
+
+    def test_non_dict_payload_does_not_replace_last_good(self, mocker):
+        mocker.patch("requests.get", return_value=_resp(_LHM_TREE))
+        lhm._fetch_data_json()
+        mocker.patch("requests.get", return_value=_resp(["not", "a", "dict"]))
+        assert lhm._fetch_data_json() == _LHM_TREE
+
+
 class TestInstall:
     def test_happy_path_downloads_verifies_extracts(self, mocker, tmp_path):
         zip_bytes = _make_lhm_zip()

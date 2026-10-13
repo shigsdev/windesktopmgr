@@ -905,6 +905,11 @@
            temp shows "—" when no thermal-sensor provider is present. -->
       <div id="th-gauge-row" class="db-gauges"></div>
 
+      <!-- Kernel driver load (#75): busiest System-process thread as % of
+           one core. A driver pinning a core heats the fastest cores at ~0%
+           load. Filled by thRenderKernel(); data-state = ok|stuck|na. -->
+      <div id="th-kernel" style="margin-top:14px;padding:10px 14px;border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--text)"></div>
+
       <!-- Per-core temperatures. Auto-populates when LibreHardwareMonitor /
            OpenHardwareMonitor registers its WMI provider (per-core "CPU Core
            #N" sensors); otherwise #th-cores-cta shows the install prompt. -->

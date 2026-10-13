@@ -2131,6 +2131,7 @@ function renderThermals() {
 
   // Hero radial gauges (reuse the dashboard renderer; same 5 readouts).
   renderGauges(document.getElementById("th-gauge-row"), d.gauges || []);
+  thRenderKernel(d.kernel_cpu);
 
   const mk = (cls, text) => {
     const x = document.createElement("div");
@@ -2237,6 +2238,40 @@ function renderThermals() {
 
   document.getElementById("th-loading").style.display = "none";
   document.getElementById("th-content").style.display = "";
+}
+
+// Kernel driver load line (#75). textContent only. data-state drives the
+// Playwright gate: "stuck" when a driver thread is pinning a core.
+function thRenderKernel(k) {
+  const el = document.getElementById("th-kernel");
+  if (!el) return;
+  el.textContent = "";
+  const label = document.createElement("strong");
+  label.textContent = "Kernel driver load: ";
+  el.appendChild(label);
+  const msg = document.createElement("span");
+  if (!k || !k.available) {
+    el.dataset.state = "na";
+    el.style.borderColor = "var(--border)";
+    msg.textContent = (k && k.warming_up)
+      ? "measuring — needs two samples about 20 s apart"
+      : "unavailable" + (k && k.reason ? " (" + k.reason + ")" : "");
+    msg.style.color = "var(--muted)";
+  } else if (k.stuck && k.stuck.length) {
+    const s = k.stuck[0];
+    el.dataset.state = "stuck";
+    el.style.borderColor = "var(--orange)";
+    msg.textContent = "a driver thread is pinning a core — " + s.pct + "% of a core for " +
+      Math.round(s.minutes) + " min. It heats the fastest cores at low load; see the dashboard concern for common causes.";
+    msg.style.color = "var(--orange)";
+  } else {
+    el.dataset.state = "ok";
+    el.style.borderColor = "var(--border)";
+    const b = k.busiest ? k.busiest.pct : 0;
+    msg.textContent = "busiest thread " + b + "% of a core · all System threads " + k.total_pct +
+      "% · normal (alerts above 50% sustained)";
+  }
+  el.appendChild(msg);
 }
 
 // ── LibreHardwareMonitor in-app installer (per-core CTA) ──────────────────

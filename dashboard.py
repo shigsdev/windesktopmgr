@@ -583,6 +583,15 @@ def _compute_dashboard_summary() -> dict:
                 "action_fn": "switchTab('thermals')",
             }
         )
+    # A kernel driver pinning a core (#75) -- sampled by get_thermals().
+    try:
+        import kernel_cpu
+
+        kernel_concern = kernel_cpu.stuck_concern(therm.get("kernel_cpu"))
+        if kernel_concern:
+            concerns.append(kernel_concern)
+    except Exception:  # noqa: BLE001 -- best-effort, never block the dashboard
+        pass
     # Hoist mem/mem_pct OUT of the try/except so downstream code (per-process
     # memory concerns loop at line ~8605) can't hit NameError if the alerts
     # block is ever refactored. Audit finding (2026-04-19 security review).
