@@ -382,6 +382,23 @@ class TestSummarizeByDriver:
         assert "Killer" in rows[0]["hint"]
         assert rows[1]["pct"] == 5.0 and rows[1]["threads"] == 2
 
+    def test_hint_only_when_busy_enough(self):
+        """A fix-it hint on a sliver of a core is misleading (a 0.2% NVIDIA row
+        said 'reinstall the GPU driver'): below HINT_MIN_PCT a row has none,
+        except the kernel's own reassurance note."""
+        drivers = [(0x1000, "ntoskrnl.exe"), (0x2000, "nvlddmkm.sys"), (0x3000, "ndis.sys")]
+        before = {1: (0, 0x1100), 2: (0, 0x2100), 3: (0, 0x3100)}
+        after = {
+            1: (15 * _TEN_S_PCT, 0x1100),
+            2: (_TEN_S_PCT // 5, 0x2100),
+            3: (20 * _TEN_S_PCT, 0x3100),  # exactly at the threshold
+        }
+        rows = {r["driver"]: r for r in kernel_cpu.summarize_by_driver(before, after, 10.0, drivers)}
+        assert rows["nvlddmkm.sys"]["pct"] == 0.2 and rows["nvlddmkm.sys"]["hint"] is None
+        assert "normal" in rows["ntoskrnl.exe"]["hint"]
+        assert rows["ndis.sys"]["pct"] == kernel_cpu.HINT_MIN_PCT
+        assert "network driver" in rows["ndis.sys"]["hint"]
+
     def test_limit_and_zero_interval(self):
         before = {i: (0, 0x1000 + i) for i in range(20)}
         after = {i: (_TEN_S_PCT, 0x1000 + i) for i in range(20)}
