@@ -10,6 +10,7 @@ captured here at import time for the wrapper tests.
 
 from __future__ import annotations
 
+import json
 import struct
 
 import pytest
@@ -305,3 +306,323 @@ class TestWiring:
         concerns = client.get("/api/dashboard/summary").get_json().get("concerns", [])
         match = [c for c in concerns if "keeping one CPU core busy" in c.get("title", "")]
         assert match and match[0]["level"] == "warning"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# #75 PR 2 -- "Identify driver" (elevated, on demand)
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _entry_with_starts(pid, threads, last=True):
+    """Like _entry() but each thread is (tid, ticks, start address)."""
+    size = kernel_cpu._PROC_HEADER + len(threads) * kernel_cpu._THREAD_SIZE
+    buf = bytearray(size)
+    struct.pack_into("<II", buf, 0, 0 if last else size, len(threads))
+    struct.pack_into("<Q", buf, kernel_cpu._PID_OFF, pid)
+    for i, (tid, ticks, start) in enumerate(threads):
+        t = kernel_cpu._PROC_HEADER + i * kernel_cpu._THREAD_SIZE
+        struct.pack_into("<qq", buf, t, ticks, 0)
+        struct.pack_into("<Q", buf, t + kernel_cpu._START_OFF, start)
+        struct.pack_into("<Q", buf, t + kernel_cpu._TID_OFF, tid)
+    return bytes(buf)
+
+
+_DRIVERS = [(0x1000, "ntoskrnl.exe"), (0x5000, "ndis.sys"), (0x9000, "KfeCo11X64.sys")]
+_TEN_S_PCT = 10 * kernel_cpu._TICKS_PER_PCT_SECOND  # 1% of a core over 10 s
+
+
+class TestThreadDetails:
+    def test_start_addresses_parsed(self):
+        raw = _entry_with_starts(4, [(7, 100, 0x9100), (8, 5, 0)])
+        assert kernel_cpu.parse_process_thread_details(raw, 4) == {7: (100, 0x9100), 8: (5, 0)}
+
+    def test_ticks_only_view_unchanged(self):
+        raw = _entry_with_starts(4, [(7, 100, 0x9100)])
+        assert kernel_cpu.parse_process_threads(raw, 4) == {7: 100}
+
+
+class TestDriverMapping:
+    @pytest.mark.parametrize(
+        ("addr", "name"),
+        [
+            (0, "(hidden)"),
+            (0x500, "(unknown)"),
+            (0x1000, "ntoskrnl.exe"),
+            (0x5123, "ndis.sys"),
+            (0xFFFF, "KfeCo11X64.sys"),
+        ],
+    )
+    def test_driver_for_address(self, addr, name):
+        assert kernel_cpu.driver_for_address(addr, _DRIVERS) == name
+
+    def test_killer_hint_is_case_insensitive(self):
+        assert "Prioritization Engine" in kernel_cpu.hint_for_driver("KfeCo11X64.sys")
+
+    @pytest.mark.parametrize("name", ["", None, "mystery.sys", "(hidden)"])
+    def test_unknown_driver_has_no_hint(self, name):
+        assert kernel_cpu.hint_for_driver(name) is None
+
+    def test_storage_spaces_hint(self):
+        assert "Storage tab" in kernel_cpu.hint_for_driver("spaceport.sys")
+
+
+class TestSummarizeByDriver:
+    def test_groups_sorts_and_hints(self):
+        before = {1: (0, 0x9100), 2: (0, 0x5100), 3: (0, 0x5200), 4: (50, 0x1100)}
+        after = {
+            1: (99 * _TEN_S_PCT, 0x9100),
+            2: (3 * _TEN_S_PCT, 0x5100),
+            3: (2 * _TEN_S_PCT, 0x5200),
+            4: (50, 0x1100),  # no CPU used -> dropped
+            5: (40 * _TEN_S_PCT, 0x1100),  # new thread -> no baseline, ignored
+        }
+        rows = kernel_cpu.summarize_by_driver(before, after, 10.0, _DRIVERS)
+        assert [r["driver"] for r in rows] == ["KfeCo11X64.sys", "ndis.sys"]
+        assert rows[0]["pct"] == 99.0 and rows[0]["threads"] == 1
+        assert "Killer" in rows[0]["hint"]
+        assert rows[1]["pct"] == 5.0 and rows[1]["threads"] == 2
+
+    def test_limit_and_zero_interval(self):
+        before = {i: (0, 0x1000 + i) for i in range(20)}
+        after = {i: (_TEN_S_PCT, 0x1000 + i) for i in range(20)}
+        drivers = [(0x1000 + i, f"d{i:02}.sys") for i in range(20)]
+        assert len(kernel_cpu.summarize_by_driver(before, after, 10.0, drivers, limit=3)) == 3
+        assert kernel_cpu.summarize_by_driver(before, after, 0, drivers) == []
+
+
+class _FakeBaseName:
+    """GetDeviceDriverBaseNameW stand-in; an instance accepts ``.argtypes``."""
+
+    def __call__(self, base, buf, size):
+        buf.value = {0x9000: "KfeCo11X64.sys", 0x1000: "ntoskrnl.exe"}.get(base, "")
+        return len(buf.value)
+
+
+class _FakePsapi:
+    def __init__(self, bases, ok=True):
+        self.bases, self.ok = bases, ok
+        self.GetDeviceDriverBaseNameW = _FakeBaseName()
+
+    def EnumDeviceDrivers(self, arr, size, needed_ref):  # noqa: N802 -- Win32 name
+        import ctypes
+
+        for i, b in enumerate(self.bases):
+            arr[i] = b
+        needed_ref._obj.value = len(self.bases) * ctypes.sizeof(ctypes.c_void_p)
+        return 1 if self.ok else 0
+
+
+class TestEnumDeviceDrivers:
+    def _patch(self, mocker, monkeypatch, fake):
+        monkeypatch.setattr(kernel_cpu.sys, "platform", "win32")
+        mocker.patch("ctypes.WinDLL", return_value=fake, create=True)
+
+    def test_non_windows_is_empty(self, monkeypatch):
+        monkeypatch.setattr(kernel_cpu.sys, "platform", "linux")
+        assert kernel_cpu.enum_device_drivers() == []
+
+    def test_sorted_names_zero_bases_dropped(self, mocker, monkeypatch):
+        self._patch(mocker, monkeypatch, _FakePsapi([0x9000, 0, 0x1000, 0x3000]))
+        assert kernel_cpu.enum_device_drivers() == [
+            (0x1000, "ntoskrnl.exe"),
+            (0x3000, "(unnamed)"),
+            (0x9000, "KfeCo11X64.sys"),
+        ]
+
+    def test_enum_failure_is_empty(self, mocker, monkeypatch):
+        self._patch(mocker, monkeypatch, _FakePsapi([0x1000], ok=False))
+        assert kernel_cpu.enum_device_drivers() == []
+
+    def test_psapi_missing_is_empty(self, mocker, monkeypatch):
+        monkeypatch.setattr(kernel_cpu.sys, "platform", "win32")
+        mocker.patch("ctypes.WinDLL", side_effect=OSError("no psapi"), create=True)
+        assert kernel_cpu.enum_device_drivers() == []
+
+
+@pytest.fixture
+def app_dir(tmp_path, monkeypatch):
+    """Point kernel_cpu's session files + helper lookup at tmp_path."""
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "kernel_cpu_elevated.py").write_text("# stub", encoding="utf-8")
+    monkeypatch.setattr(kernel_cpu, "APP_DIR", str(tmp_path))
+    return tmp_path
+
+
+class TestRequestIdentify:
+    def _shell(self, mocker, rc):
+        windll = mocker.MagicMock()
+        windll.shell32.ShellExecuteW.return_value = rc
+        mocker.patch("ctypes.windll", windll, create=True)
+        return windll.shell32.ShellExecuteW
+
+    def test_accepted_prompt_returns_session_and_keeps_request(self, app_dir, mocker):
+        shell = self._shell(mocker, 42)
+        out = kernel_cpu.request_identify()
+        assert out["ok"] is True and kernel_cpu.SESSION_RE.fullmatch(out["session_id"])
+        req = json.loads((app_dir / f"kernel_identify_request_{out['session_id']}.json").read_text())
+        assert req == {"session_id": out["session_id"], "action": "identify", "seconds": kernel_cpu.IDENTIFY_SECONDS}
+        verb, params = shell.call_args[0][1], shell.call_args[0][3]
+        assert verb == "runas" and "kernel_cpu_elevated.py" in params and "--request" in params
+
+    def test_declined_prompt_errors_and_removes_request(self, app_dir, mocker):
+        self._shell(mocker, 5)
+        out = kernel_cpu.request_identify()
+        assert out["ok"] is False and "declined" in out["error"]
+        assert not list(app_dir.glob("kernel_identify_request_*.json"))
+
+    def test_no_shell32_errors_cleanly(self, app_dir, mocker):
+        mocker.patch("ctypes.windll", None, create=True)  # attribute access -> AttributeError
+        out = kernel_cpu.request_identify()
+        assert out["ok"] is False and "cannot launch" in out["error"]
+
+    def test_missing_helper(self, app_dir):
+        (app_dir / "scripts" / "kernel_cpu_elevated.py").unlink()
+        assert "not found" in kernel_cpu.request_identify()["error"]
+
+    def test_unwritable_request_file(self, app_dir, mocker):
+        mocker.patch("builtins.open", side_effect=OSError("disk full"))
+        assert "request file" in kernel_cpu.request_identify()["error"]
+
+
+class TestIdentifyStatus:
+    SID = "0123456789ab"
+
+    @pytest.mark.parametrize("sid", ["", "../../etc", "0123456789AB", "0123456789ab0", "zzzzzzzzzzzz"])
+    def test_invalid_session_rejected(self, sid, app_dir):
+        assert kernel_cpu.get_identify_status(sid)["error"] == "invalid session_id"
+
+    def test_pending_until_result(self, app_dir):
+        assert kernel_cpu.get_identify_status(self.SID)["state"] == "pending"
+
+    def test_done_returns_result_and_cleans_up(self, app_dir):
+        (app_dir / f"kernel_identify_request_{self.SID}.json").write_text("{}")
+        (app_dir / f"kernel_identify_result_{self.SID}.json").write_text(json.dumps({"ok": True, "rows": []}))
+        out = kernel_cpu.get_identify_status(self.SID)
+        assert out["state"] == "done" and out["result"]["ok"] is True
+        assert not list(app_dir.glob("kernel_identify_*.json"))
+
+    def test_unreadable_result(self, app_dir):
+        (app_dir / f"kernel_identify_result_{self.SID}.json").write_text("{not json")
+        out = kernel_cpu.get_identify_status(self.SID)
+        assert out["state"] == "missing" and "unreadable" in out["error"]
+
+
+class TestRunIdentify:
+    def _patch(self, monkeypatch, buffers, drivers=_DRIVERS):
+        it = iter(buffers)
+        monkeypatch.setattr(kernel_cpu, "_query_process_info", lambda: next(it))
+        monkeypatch.setattr(kernel_cpu, "enum_device_drivers", lambda: drivers)
+
+    def test_names_the_pinned_driver(self, monkeypatch):
+        self._patch(
+            monkeypatch,
+            [_entry_with_starts(4, [(7, 0, 0x9100)]), _entry_with_starts(4, [(7, 99 * _TEN_S_PCT, 0x9100)])],
+        )
+        clock = iter([100.0, 110.0])
+        monkeypatch.setattr(kernel_cpu.time, "monotonic", lambda: next(clock))
+        out = kernel_cpu.run_identify(10, sleep=lambda s: None)
+        assert out["ok"] is True and out["named"] is True and out["note"] == ""
+        assert out["rows"][0]["driver"] == "KfeCo11X64.sys"
+        assert out["rows"][0]["pct"] == 99.0
+
+    def test_hidden_addresses_flagged(self, monkeypatch):
+        self._patch(
+            monkeypatch,
+            [_entry_with_starts(4, [(7, 0, 0)]), _entry_with_starts(4, [(7, _TEN_S_PCT, 0)])],
+            drivers=[],
+        )
+        out = kernel_cpu.run_identify(0, sleep=lambda s: None)
+        assert out["named"] is False and "Administrator" in out["note"]
+
+    def test_unreadable_threads(self, monkeypatch):
+        self._patch(monkeypatch, [None, None])
+        out = kernel_cpu.run_identify(0, sleep=lambda s: None)
+        assert out == {"ok": False, "error": "could not read System process threads"}
+
+
+def _load_helper():
+    import importlib.util
+    import os
+
+    path = os.path.join(os.path.dirname(kernel_cpu.__file__), "scripts", "kernel_cpu_elevated.py")
+    spec = importlib.util.spec_from_file_location("kernel_cpu_elevated", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestElevatedHelper:
+    SID = "abcdef012345"
+
+    def _request(self, tmp_path, payload):
+        req = tmp_path / "req.json"
+        req.write_text(json.dumps(payload) if not isinstance(payload, str) else payload, encoding="utf-8")
+        return req
+
+    def test_writes_result_and_removes_request(self, app_dir, tmp_path, monkeypatch):
+        helper = _load_helper()
+        calls = []
+        monkeypatch.setattr(kernel_cpu, "run_identify", lambda s: calls.append(s) or {"ok": True, "rows": []})
+        req = self._request(tmp_path, {"session_id": self.SID, "action": "identify", "seconds": 999})
+        assert helper.main(["--request", str(req)]) == 0
+        assert calls == [helper.MAX_SECONDS]  # clamped
+        result = json.loads((app_dir / f"kernel_identify_result_{self.SID}.json").read_text())
+        assert result == {"ok": True, "rows": [], "session_id": self.SID}
+        assert not req.exists()
+
+    def test_invalid_session_writes_nothing(self, app_dir, tmp_path):
+        helper = _load_helper()
+        req = self._request(tmp_path, {"session_id": "..\\..\\evil", "action": "identify"})
+        assert helper.main(["--request", str(req)]) == 2
+        assert not list(app_dir.glob("kernel_identify_result_*.json"))
+
+    def test_unknown_action_reports_error(self, app_dir, tmp_path):
+        helper = _load_helper()
+        req = self._request(tmp_path, {"session_id": self.SID, "action": "unload_driver"})
+        assert helper.main(["--request", str(req)]) == 1
+        result = json.loads((app_dir / f"kernel_identify_result_{self.SID}.json").read_text())
+        assert "unknown action" in result["error"]
+
+    def test_crash_still_writes_result(self, app_dir, tmp_path, monkeypatch):
+        helper = _load_helper()
+
+        def boom(_s):
+            raise RuntimeError("psapi exploded")
+
+        monkeypatch.setattr(kernel_cpu, "run_identify", boom)
+        req = self._request(tmp_path, {"session_id": self.SID, "action": "identify", "seconds": "x"})
+        assert helper.main(["--request", str(req)]) == 1
+        result = json.loads((app_dir / f"kernel_identify_result_{self.SID}.json").read_text())
+        assert "psapi exploded" in result["error"]
+
+    @pytest.mark.parametrize("payload", ["{not json", "[1, 2]"])
+    def test_bad_request_file(self, app_dir, tmp_path, payload):
+        helper = _load_helper()
+        assert helper.main(["--request", str(self._request(tmp_path, payload))]) == 2
+
+    def test_result_write_failure_is_swallowed(self, app_dir, monkeypatch):
+        helper = _load_helper()
+        monkeypatch.setattr(helper.os, "replace", lambda *a: (_ for _ in ()).throw(OSError("locked")))
+        helper._write_result(self.SID, {"ok": True})  # must not raise
+        assert not list(app_dir.glob("kernel_identify_result_*"))
+
+
+class TestIdentifyRoutes:
+    def test_launch_ok(self, client, mocker):
+        mocker.patch.object(kernel_cpu, "request_identify", return_value={"ok": True, "session_id": "0123456789ab"})
+        resp = client.post("/api/thermals/kernel/identify")
+        assert resp.status_code == 200 and resp.get_json()["session_id"] == "0123456789ab"
+
+    def test_launch_declined_is_502(self, client, mocker):
+        mocker.patch.object(kernel_cpu, "request_identify", return_value={"ok": False, "error": "declined"})
+        assert client.post("/api/thermals/kernel/identify").status_code == 502
+
+    def test_status_requires_session(self, client):
+        assert client.get("/api/thermals/kernel/identify/status").status_code == 400
+
+    def test_status_invalid_session_is_400(self, client):
+        assert client.get("/api/thermals/kernel/identify/status?session_id=../x").status_code == 400
+
+    def test_status_pending_is_200(self, client, app_dir):
+        resp = client.get("/api/thermals/kernel/identify/status?session_id=0123456789ab")
+        assert resp.status_code == 200 and resp.get_json()["state"] == "pending"
