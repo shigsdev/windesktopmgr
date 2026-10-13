@@ -112,6 +112,103 @@ class TestVerify:
         assert (REPO_ROOT / "scripts" / "post_deploy_topology_check.py").exists()
 
 
+class TestDeploy:
+    """`python dev.py deploy` (#59): pull main into the primary checkout,
+    then verify. Must refuse -- touching nothing -- from a worktree, off
+    main, or with uncommitted tracked changes."""
+
+    PRIMARY = Path("C:/shigsapps/windesktopmgr")
+
+    def _git(self, mocker, branch="main", dirty="", shas=("aaa", "bbb")):
+        sha_iter = iter(shas)
+
+        def git_out(*args):
+            if args[0] == "rev-parse" and "--abbrev-ref" in args:
+                return branch
+            if args[0] == "status":
+                return dirty
+            if args[0] == "rev-parse":
+                return next(sha_iter)
+            return ""
+
+        return mocker.patch.object(dev, "_git_out", side_effect=git_out)
+
+    def test_refuses_from_a_worktree(self, mocker, capsys):
+        mocker.patch.object(dev, "_HERE", self.PRIMARY / ".claude" / "worktrees" / "wt")
+        run = mocker.patch.object(dev, "run")
+        assert dev.cmd_deploy() is False
+        run.assert_not_called()
+        assert "not a worktree" in capsys.readouterr().out
+
+    def test_refuses_off_main(self, mocker, capsys):
+        mocker.patch.object(dev, "_HERE", self.PRIMARY)
+        self._git(mocker, branch="feat/x")
+        run = mocker.patch.object(dev, "run")
+        assert dev.cmd_deploy() is False
+        run.assert_not_called()
+        assert "not 'main'" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("dirty", [" M dev.py", None])
+    def test_refuses_dirty_tree_or_git_failure(self, mocker, capsys, dirty):
+        mocker.patch.object(dev, "_HERE", self.PRIMARY)
+        self._git(mocker, dirty=dirty)
+        run = mocker.patch.object(dev, "run")
+        assert dev.cmd_deploy() is False
+        run.assert_not_called()
+        assert "uncommitted changes" in capsys.readouterr().out
+
+    def test_pulls_then_verifies(self, mocker, capsys):
+        mocker.patch.object(dev, "_HERE", self.PRIMARY)
+        self._git(mocker)
+        run = mocker.patch.object(dev, "run", return_value=True)
+        verify = mocker.patch.object(dev, "cmd_verify", return_value=True)
+        assert dev.cmd_deploy() is True
+        cmds = [c.args[1] for c in run.call_args_list]
+        assert cmds[0][-2:] == ["fetch", "origin"]
+        assert cmds[1][-3:] == ["merge", "--ff-only", "origin/main"]
+        verify.assert_called_once()
+        assert "aaa -> bbb" in capsys.readouterr().out
+
+    def test_already_up_to_date_still_verifies(self, mocker, capsys):
+        mocker.patch.object(dev, "_HERE", self.PRIMARY)
+        self._git(mocker, shas=("aaa", "aaa"))
+        mocker.patch.object(dev, "run", return_value=True)
+        verify = mocker.patch.object(dev, "cmd_verify", return_value=True)
+        assert dev.cmd_deploy() is True
+        verify.assert_called_once()
+        assert "already at aaa" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("fail_at", [0, 1])
+    def test_git_failure_stops_before_verify(self, mocker, fail_at):
+        mocker.patch.object(dev, "_HERE", self.PRIMARY)
+        self._git(mocker)
+        results = [True, True]
+        results[fail_at] = False
+        mocker.patch.object(dev, "run", side_effect=results)
+        verify = mocker.patch.object(dev, "cmd_verify")
+        assert dev.cmd_deploy() is False
+        verify.assert_not_called()
+
+    def test_git_out_returns_none_on_failure(self, mocker):
+        mocker.patch("dev.subprocess.run", return_value=_proc(1, "x"))
+        assert dev._git_out("status") is None
+        mocker.patch("dev.subprocess.run", return_value=_proc(0, " main \n"))
+        assert dev._git_out("rev-parse") == "main"
+
+    def test_deploy_is_a_registered_command(self, mocker, monkeypatch):
+        deploy = mocker.patch.object(dev, "cmd_deploy", return_value=True)
+        monkeypatch.setattr(sys, "argv", ["dev.py", "deploy"])
+        dev.main()  # success returns normally; failure would sys.exit(1)
+        deploy.assert_called_once()
+
+    def test_failed_deploy_exits_nonzero(self, mocker, monkeypatch):
+        mocker.patch.object(dev, "cmd_deploy", return_value=False)
+        monkeypatch.setattr(sys, "argv", ["dev.py", "deploy"])
+        with pytest.raises(SystemExit) as exc:
+            dev.main()
+        assert exc.value.code == 1
+
+
 class TestShip:
     def test_skips_verify_when_tests_fail(self, mocker):
         mocker.patch("dev.cmd_fix", return_value=True)

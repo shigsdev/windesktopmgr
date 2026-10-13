@@ -8,6 +8,7 @@ Usage:
     python dev.py fix                # Auto-fix lint + format issues
     python dev.py test               # Tests only
     python dev.py verify             # Restart running app + run /api/selftest
+    python dev.py deploy             # Pull merged main into the primary checkout + verify
     python dev.py ship               # fix + test + verify (post-deploy smoke)
     python dev.py post-update-check  # Post-Windows-Update regression runner (#25)
 """
@@ -15,6 +16,9 @@ Usage:
 import subprocess
 import sys
 import time
+from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
 
 TARGETS = [
     "windesktopmgr.py",
@@ -115,6 +119,45 @@ def cmd_verify():
     return ok and ok_sem
 
 
+def _git_out(*args):
+    """stdout of a git command run in this checkout, or None on failure."""
+    result = subprocess.run(["git", *args], capture_output=True, text=True, cwd=_HERE)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def cmd_deploy():
+    """Deploy merged main to the running tray: pull + restart + verify (#59).
+
+    The tray re-execs from the PRIMARY checkout, so a merged PR is not live
+    until main is pulled here (CLAUDE.md Step 6). Refuses -- changing nothing
+    -- when run from a .claude/worktrees copy, off main, or with uncommitted
+    changes to tracked files (never pull into a dirty tree). Untracked files
+    are fine. Fast-forward only, then the same gate as `verify`.
+    """
+    print(f"\n{BOLD}Deploy (pull main into the primary checkout + verify){RESET}")
+    if ".claude" in _HERE.parts and "worktrees" in _HERE.parts:
+        print(f"  {RED}refused{RESET}: run this from the primary checkout, not a worktree ({_HERE})")
+        return False
+    branch = _git_out("rev-parse", "--abbrev-ref", "HEAD")
+    if branch != "main":
+        print(f"  {RED}refused{RESET}: primary checkout is on {branch!r}, not 'main'")
+        return False
+    dirty = _git_out("status", "--porcelain", "--untracked-files=no")
+    if dirty is None or dirty:
+        print(f"  {RED}refused{RESET}: uncommitted changes to tracked files -- commit or discard them first")
+        for line in (dirty or "").splitlines()[:10]:
+            print(f"    {line}")
+        return False
+    before = _git_out("rev-parse", "--short", "HEAD")
+    if not run("git fetch origin", ["git", "-C", str(_HERE), "fetch", "origin"]):
+        return False
+    if not run("git merge --ff-only origin/main", ["git", "-C", str(_HERE), "merge", "--ff-only", "origin/main"]):
+        return False
+    after = _git_out("rev-parse", "--short", "HEAD")
+    print(f"  main: {before} -> {after}" if before != after else f"  main already at {after}")
+    return cmd_verify()
+
+
 def cmd_ship():
     """Full post-deploy smoke: fix → test → verify (assumes git push already done)."""
     ok = cmd_fix()
@@ -148,6 +191,7 @@ def main():
         "fix": cmd_fix,
         "test": cmd_test,
         "verify": cmd_verify,
+        "deploy": cmd_deploy,
         "ship": cmd_ship,
         "post-update-check": cmd_post_update_check,
     }
@@ -160,7 +204,7 @@ def main():
         ok = cmd_all()
     else:
         print(f"Unknown command: {arg}")
-        print("Usage: python dev.py [check|fix|test|all|verify|ship|post-update-check]")
+        print("Usage: python dev.py [check|fix|test|all|verify|deploy|ship|post-update-check]")
         sys.exit(1)
 
     print()

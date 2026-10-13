@@ -1,13 +1,14 @@
 {
   "hooks": {
-    "PostToolUse": [
+    "PreToolUse": [
       {
         "matcher": "Edit|Write",
         "hooks": [
           {
             "type": "command",
-            "command": "FILE=$(jq -r '.tool_input.file_path // empty'); if [ -n \"$FILE\" ] && echo \"$FILE\" | grep -qv 'architecture.html'; then echo '{\"hookSpecificOutput\": {\"hookEventName\": \"PostToolUse\", \"additionalContext\": \"ARCHITECTURE REMINDER: You just modified a source file. Check if this change affects the architecture diagram (architecture.html). If it adds/removes/changes routes, functions, components, data flows, or connections — update architecture.html to reflect the current state.\"}}'; fi",
-            "statusMessage": "Checking architecture diagram..."
+            "command": "python \"$CLAUDE_PROJECT_DIR/scripts/claude_hooks.py\" pre-edit 2>/dev/null || true",
+            "timeout": 10,
+            "statusMessage": "Checking worktree + architecture triggers..."
           }
         ]
       }
