@@ -508,10 +508,41 @@ class TestIdentifyStatus:
 
 
 class TestRunIdentify:
-    def _patch(self, monkeypatch, buffers, drivers=_DRIVERS):
+    def _patch(self, monkeypatch, buffers, drivers=_DRIVERS, admin=True, debug=True):
         it = iter(buffers)
         monkeypatch.setattr(kernel_cpu, "_query_process_info", lambda: next(it))
         monkeypatch.setattr(kernel_cpu, "enum_device_drivers", lambda: drivers)
+        monkeypatch.setattr(kernel_cpu, "is_admin", lambda: admin)
+        monkeypatch.setattr(kernel_cpu, "enable_debug_privilege", lambda: debug)
+
+    @pytest.mark.parametrize(
+        ("admin", "debug", "phrase"),
+        [
+            (False, False, "did not run as Administrator"),
+            (True, False, "refused the debug privilege"),  # the 2026-10-13 live result, now told apart
+            (True, True, "even with Administrator + debug privilege"),
+        ],
+    )
+    def test_hidden_note_says_why(self, monkeypatch, admin, debug, phrase):
+        self._patch(
+            monkeypatch,
+            [_entry_with_starts(4, [(7, 0, 0)]), _entry_with_starts(4, [(7, _TEN_S_PCT, 0)])],
+            drivers=[],
+            admin=admin,
+            debug=debug,
+        )
+        out = kernel_cpu.run_identify(0, sleep=lambda s: None)
+        assert out["named"] is False and phrase in out["note"]
+        assert out["admin"] is admin and out["debug_privilege"] is debug
+
+    def test_privilege_enabled_before_drivers_and_threads_are_read(self, monkeypatch):
+        order = []
+        monkeypatch.setattr(kernel_cpu, "is_admin", lambda: True)
+        monkeypatch.setattr(kernel_cpu, "enable_debug_privilege", lambda: order.append("priv") or True)
+        monkeypatch.setattr(kernel_cpu, "enum_device_drivers", lambda: order.append("drivers") or _DRIVERS)
+        monkeypatch.setattr(kernel_cpu, "_query_process_info", lambda: order.append("threads") or None)
+        kernel_cpu.run_identify(0, sleep=lambda s: None)
+        assert order[:3] == ["priv", "drivers", "threads"]
 
     def test_names_the_pinned_driver(self, monkeypatch):
         self._patch(
@@ -538,6 +569,79 @@ class TestRunIdentify:
         self._patch(monkeypatch, [None, None])
         out = kernel_cpu.run_identify(0, sleep=lambda s: None)
         assert out == {"ok": False, "error": "could not read System process threads"}
+
+
+class _Fn:
+    """Win32 function stand-in: callable, and accepts argtypes/restype."""
+
+    def __init__(self, impl):
+        self.impl = impl
+
+    def __call__(self, *args):
+        return self.impl(*args)
+
+
+class TestPrivileges:
+    def _patch_dlls(self, mocker, monkeypatch, open_ok=1, lookup_ok=1, adjust_ok=1, last_error=0):
+        import ctypes
+        import types
+
+        closed = []
+
+        def adjust(*_a):
+            ctypes.set_last_error(last_error)
+            return adjust_ok
+
+        advapi = types.SimpleNamespace(
+            OpenProcessToken=_Fn(lambda *_a: open_ok),
+            LookupPrivilegeValueW=_Fn(lambda *_a: lookup_ok),
+            AdjustTokenPrivileges=_Fn(adjust),
+        )
+        kernel = types.SimpleNamespace(
+            GetCurrentProcess=_Fn(lambda: -1),
+            CloseHandle=_Fn(lambda h: closed.append(h) or 1),
+        )
+        monkeypatch.setattr(kernel_cpu.sys, "platform", "win32")
+        mocker.patch(
+            "ctypes.WinDLL", side_effect=lambda name, **_kw: advapi if name == "advapi32" else kernel, create=True
+        )
+        return closed
+
+    def test_enabled_when_adjust_succeeds_cleanly(self, mocker, monkeypatch):
+        closed = self._patch_dlls(mocker, monkeypatch)
+        assert kernel_cpu.enable_debug_privilege() is True
+        assert len(closed) == 1  # token handle always closed
+
+    def test_not_all_assigned_means_not_enabled(self, mocker, monkeypatch):
+        # Unelevated: AdjustTokenPrivileges "succeeds" but sets ERROR_NOT_ALL_ASSIGNED.
+        self._patch_dlls(mocker, monkeypatch, last_error=1300)
+        assert kernel_cpu.enable_debug_privilege() is False
+
+    @pytest.mark.parametrize("field", ["lookup_ok", "adjust_ok"])
+    def test_api_failure_is_false_and_closes_token(self, mocker, monkeypatch, field):
+        closed = self._patch_dlls(mocker, monkeypatch, **{field: 0})
+        assert kernel_cpu.enable_debug_privilege() is False
+        assert len(closed) == 1
+
+    def test_open_token_failure(self, mocker, monkeypatch):
+        closed = self._patch_dlls(mocker, monkeypatch, open_ok=0)
+        assert kernel_cpu.enable_debug_privilege() is False
+        assert closed == []
+
+    def test_non_windows_and_missing_dll(self, mocker, monkeypatch):
+        monkeypatch.setattr(kernel_cpu.sys, "platform", "linux")
+        assert kernel_cpu.enable_debug_privilege() is False
+        monkeypatch.setattr(kernel_cpu.sys, "platform", "win32")
+        mocker.patch("ctypes.WinDLL", side_effect=OSError("no advapi32"), create=True)
+        assert kernel_cpu.enable_debug_privilege() is False
+
+    def test_is_admin(self, mocker):
+        windll = mocker.MagicMock()
+        windll.shell32.IsUserAnAdmin.return_value = 1
+        mocker.patch("ctypes.windll", windll, create=True)
+        assert kernel_cpu.is_admin() is True
+        mocker.patch("ctypes.windll", None, create=True)
+        assert kernel_cpu.is_admin() is False
 
 
 def _load_helper():
