@@ -2180,6 +2180,13 @@ class TestRegistryInvariants:
         assert len(network) == 15
         assert {k for k, p in _REGISTERED.items() if p.category == "crash"} == set(dcp.REGISTERED)
 
+    def test_storage_class_lists_exactly_the_storage_probes(self):
+        import diagnose_storage_probes as dsp
+
+        spec = diagnose.SYMPTOM_CLASSES["storage"]
+        assert {*spec["wave1"], *spec["escalate"]} == set(dsp.REGISTERED)
+        assert {k for k, p in _REGISTERED.items() if p.category == "storage"} == set(dsp.REGISTERED)
+
     def test_wave_one_runs_in_a_single_batch_of_workers(self):
         # Fewer workers than wave-1 probes would queue some behind the slow ones and eat their timeouts.
         assert dp._MAX_WORKERS == 10

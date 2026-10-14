@@ -28,6 +28,35 @@ CHROME_BLOB = (
 
 
 class TestClassify:
+    @pytest.mark.parametrize(
+        ("sentence", "expected_class", "expected_slots"),
+        [
+            ("C drive is full", "storage", {"drive": "C:"}),
+            ("E: is really slow", "storage", {"drive": "E:"}),
+            ("is my E: pool OK?", "storage", {"drive": "E:"}),
+            ("my e drive keeps disconnecting", "storage", {"drive": "E:"}),
+            ("my hard drive crashed", "storage", {}),
+            ("the disk died", "storage", {}),
+            ("the PC crashed while copying to E:", None, {}),
+            ("NAS unreachable", "storage", {}),
+            ("the NAS can't reach example.com", None, {}),
+            ("I drive to work and my PC is slow", None, {}),
+            ("I need a drive for backups", "storage", {}),
+            ("Google Drive won't sync", None, {}),
+            ("OneDrive is stuck", None, {}),
+            ("out of disk space", "storage", {}),
+            ("the computer crashed last evening - cna you investigate?", "crashes", {}),
+            ("example.com won't load", "network_dns", {"target_host": "example.com"}),
+            ("internet is slow when downloading to my D drive", None, {}),
+            ("my network drive Z: won't connect", None, {}),
+            ("the NAS is unreachable", "storage", {}),
+        ],
+    )
+    def test_storage_classification(self, sentence, expected_class, expected_slots):
+        r = diagnose.classify(sentence)
+        assert r["symptom_class"] == expected_class
+        assert r["slots"] == expected_slots
+
     def test_chrome_name_not_resolved_blob(self):
         r = diagnose.classify(CHROME_BLOB)
         assert r["symptom_class"] == "network_dns"
@@ -286,6 +315,9 @@ class TestRuleFixtures:
         if fx.get("symptom_class") == "crashes":
             self._check_crash_fixture(fx)
             return
+        if fx.get("symptom_class") == "storage":
+            self._check_storage_fixture(fx)
+            return
         cls = diagnose.classify(fx["symptom"])
         host = fx["expect"].get("target_host") or cls["slots"].get("target_host")
         if "target_host" in fx["expect"]:
@@ -298,6 +330,23 @@ class TestRuleFixtures:
             assert key not in verdict["suggested_actions"]
         if verdict["locus"] == "external_cause":
             assert verdict["suggested_actions"] == []
+
+    @staticmethod
+    def _check_storage_fixture(fx):
+        import diagnose_storage_rules as dsr
+
+        expect = fx["expect"]
+        verdict = dsr.evaluate_storage_rules(fx["evidence"])
+        assert verdict["rule_hits"][0] == expect["rule"]
+        assert (verdict["status"], verdict["locus"]) == (expect["status"], expect["locus"])
+        for key in expect["context"]:
+            assert key in verdict["rule_hits"], key
+        for key in expect["must_include"]:
+            assert key in verdict["suggested_actions"]
+        for key in expect["must_exclude"]:
+            assert key not in verdict["suggested_actions"]
+        assert set(verdict["suggested_actions"]) <= {"clear_temp"}
+        assert 1 <= len(verdict["manual_steps"]) <= diagnose.MAX_MANUAL_STEPS or expect["rule"] == "nothing_found"
 
     @staticmethod
     def _check_crash_fixture(fx):
@@ -861,6 +910,26 @@ class TestManualStepsFromModel:
         )
         assert kept["suggested_actions"] == ["repair_image"]
 
+    def test_clear_temp_needs_the_rules_to_offer_it(self):
+        """Review #2: clearing temp files only when the rules found a full system drive."""
+        v = {"status": "likely", "locus": "local", "suggested_actions": ["clear_temp"], "manual_steps": []}
+        dropped = diagnose.apply_guards(
+            v, {}, {"rule_hits": ["volume_full"], "suggested_actions": []}, class_key="storage"
+        )
+        assert dropped["suggested_actions"] == []
+        kept = diagnose.apply_guards(
+            v,
+            {},
+            {
+                "rule_hits": ["volume_full"],
+                "suggested_actions": ["clear_temp"],
+                "status": "confident",
+                "locus": "local",
+            },
+            class_key="storage",
+        )
+        assert kept["suggested_actions"] == ["clear_temp"]
+
     def test_parse_reply_cleans_steps(self):
         _, v = diagnose.parse_reply({**REPLY, "manual_steps": ["  Do X ", "Do X", 3]}, "network_dns")
         assert v["manual_steps"] == ["Do X"]
@@ -937,6 +1006,48 @@ class TestRedact:
         monkeypatch.setattr(diagnose.socket, "gethostname", lambda: "box")
         assert diagnose.redact("box", ["self_host", "username"]) == "<this-pc>"
 
+    def test_nas_name_redacts_configured_names_and_hosts(self, mocker):
+        mocker.patch(
+            "diagnose._nas_name_pattern",
+            return_value=re.compile(r"(?<![\w-])(?:QNAP-Shigs|192\.168\.1\.50)(?![\w-])", re.IGNORECASE),
+        )
+        out = diagnose.redact({"t": "NAS 'qnap-shigs' at 192.168.1.50 is hot"}, ["nas_name"])
+        assert out == {"t": "NAS 'the NAS' at the NAS is hot"}
+
+    def test_nas_name_absent_class_leaves_text(self, mocker):
+        mocker.patch("diagnose._nas_name_pattern", return_value=re.compile("QNAP-Shigs", re.IGNORECASE))
+        assert diagnose.redact("QNAP-Shigs", ["mac"]) == "QNAP-Shigs"
+
+    def test_nas_name_pattern_none_without_config(self, mocker):
+        mocker.patch("nas._load_nas_config", return_value={"nas": []})
+        assert diagnose._nas_name_pattern() is None
+
+    def test_nas_name_pattern_from_config_whole_token(self, mocker):
+        mocker.patch(
+            "nas._load_nas_config",
+            return_value={"nas": [{"name": "QNAP", "host": "192.168.1.50", "enabled": False}, {"name": ""}]},
+        )
+        pattern = diagnose._nas_name_pattern()
+        assert pattern.sub("X", "qnap at 192.168.1.50, QNAPS and 192.168.1.500") == "X at X, QNAPS and 192.168.1.500"
+
+    def test_nas_name_reaches_typed_symptom_when_class_redacts_it(self, mocker, monkeypatch):
+        mocker.patch("diagnose._nas_name_pattern", return_value=re.compile("QNAP-Shigs", re.IGNORECASE))
+        monkeypatch.setitem(
+            diagnose.dp.PROBES,
+            "t.nas",
+            diagnose.dp.Probe("t.nas", "T", "storage", lambda s: {}, redact=("nas_name",)),
+        )
+        monkeypatch.setitem(diagnose.SYMPTOM_CLASSES, "t_cls", {"label": "T", "slots": (), "wave1": ("t.nas",)})
+        payload = diagnose.build_payload(
+            {
+                "symptom": "QNAP-Shigs is slow",
+                "symptom_class": "t_cls",
+                "evidence": [{"key": "t.nas", "label": "T", "ok": True, "data": {"m": "qnap-shigs hot"}}],
+            }
+        )
+        assert "qnap-shigs" not in payload.lower()
+        assert "the NAS is slow" in payload
+
     def test_crash_style_evidence_leaks_nothing_into_the_payload(self, monkeypatch):
         """C4: planted user name, PC name, serial and MAC never reach the preview."""
         monkeypatch.setattr(diagnose.socket, "gethostname", lambda: "SHIGS78-PC24")
@@ -968,6 +1079,52 @@ class TestRedact:
             assert leak not in text, leak
         for placeholder in ("<this-pc>", "<serial>", "<mac>", "<user>"):
             assert placeholder in text, placeholder
+
+    def test_storage_evidence_leaks_nothing_into_the_payload(self, monkeypatch, mocker):
+        """S5 (spec 2026-10-13): no serial (not even the label tail), user name,
+        PC name or NAS name/host reaches the preview."""
+        monkeypatch.setattr(diagnose.socket, "gethostname", lambda: "SHIGS78-PC24")
+        mocker.patch(
+            "diagnose._nas_name_pattern",
+            return_value=re.compile(r"(?<![\w-])(?:QNAP-Shigs|192\.168\.1\.50)(?![\w-])", re.IGNORECASE),
+        )
+        session = {
+            "symptom": "QNAP-Shigs and E: are slow on SHIGS78-PC24",
+            "symptom_class": "storage",
+            "slots": {"drive": "E:"},
+            "evidence": [
+                {
+                    "key": "storage.physical_disks",
+                    "label": "Drives and their health",
+                    "ok": True,
+                    "data": {"drives": [{"disk_number": 5, "label_serial_tail": "838Z", "slot": "PCI Slot 13"}]},
+                },
+                {
+                    "key": "storage.nas",
+                    "label": "NAS (saved reading)",
+                    "ok": True,
+                    "data": {"concerns": [{"title": "NAS 'QNAP-Shigs' at 192.168.1.50 is hot"}]},
+                },
+                {
+                    "key": "storage.space_breakdown",
+                    "label": "What's using the space",
+                    "ok": True,
+                    "data": {"locations": [{"path": r"C:\Users\Al\Downloads"}]},
+                },
+            ],
+        }
+        text = diagnose.build_payload(session)
+        for leak in ("838Z", "SHIGS78-PC24", "QNAP-Shigs", "192.168.1.50", "\\\\Al\\\\"):
+            assert leak not in text, leak
+        for placeholder in ("<serial>", "<this-pc>", "the NAS", "<user>"):
+            assert placeholder in text, placeholder
+
+    def test_storage_prompt_does_not_ask_for_hidden_tails(self):
+        """Review #1: the label tail reaches the model as <serial>, so the hint
+        must not tell it to name drives by tail."""
+        prompt = diagnose.SYMPTOM_CLASSES["storage"]["prompt"]
+        assert "label serial tail" not in prompt
+        assert "model and slot" in prompt
 
     @pytest.mark.parametrize("value", [None, "", "   "])
     def test_username_unset_or_blank_leaves_input(self, monkeypatch, value):
@@ -2688,6 +2845,10 @@ class TestRoutes:
         assert net["label"] == diagnose.SYMPTOM_CLASSES["network_dns"]["label"]
         assert net["slots"] == ["target_host"]
         assert net["optional_slots"] == []
+        storage = next(c for c in data if c["key"] == "storage")
+        assert storage["label"] == "Storage & drives"
+        assert storage["slots"] == []
+        assert storage["optional_slots"] == ["drive"]
 
     # --- POST /api/diagnose/start ---
     def test_start_returns_session_id(self, client):

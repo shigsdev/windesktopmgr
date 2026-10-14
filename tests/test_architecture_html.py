@@ -88,6 +88,8 @@ TEST_FILES = [
     "test_diagnose_probes.py",
     "test_diagnose_crash_probes.py",
     "test_diagnose_crash_rules.py",
+    "test_diagnose_storage_probes.py",
+    "test_diagnose_storage_rules.py",
     "test_recurring_audits.py",
     "test_kernel_cpu.py",
     "test_claude_automation.py",

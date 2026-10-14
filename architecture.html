@@ -193,7 +193,7 @@
       <button type="button" onclick="exportPDF()" title="Open the browser print dialog — choose 'Save as PDF'" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--yellow);border:none;cursor:pointer;border-right:1px solid var(--border)">Export PDF</button>
       <button type="button" onclick="exportHTML()" title="Download a self-contained copy of this diagram" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--blue);border:none;cursor:pointer">Export HTML</button>
     </div>
-    <div class="badge" style="color:var(--green);border-color:#00e67633">4,816 tests · 89% coverage</div>
+    <div class="badge" style="color:var(--green);border-color:#00e67633">4,976 tests · 89% coverage</div>
     <div class="badge">
       <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
     </div>
@@ -798,7 +798,7 @@
           </div>
           <div class="fs-chip" style="border-color:#00d4ff33">
             <div class="fs-title" style="color:var(--cyan)">diagnose.py</div>
-            <div class="fs-sub">Diagnose engine Blueprint · ~1,858 lines · two symptom classes (Website or network unreachable · Crashes, freezes &amp; startup problems) with per-class rules + model prompt · optional slots · symptom classifier · deterministic DNS rules (+ interceptor location from the hop test) · "Steps you can take" manual_steps on every verdict (advice text, never run) · redaction + egress preview/consent gate · schema-constrained model call with server-side guards · session engine (per-diagnosis worker thread) · /api/diagnose/* routes (5) · audit trail in diagnose_history.json</div>
+            <div class="fs-sub">Diagnose engine Blueprint · ~1,933 lines · three symptom classes (Website or network unreachable · Crashes, freezes &amp; startup problems · Storage &amp; drives) with per-class rules + model prompt · optional slots · symptom classifier · deterministic DNS rules (+ interceptor location from the hop test) · "Steps you can take" manual_steps on every verdict (advice text, never run) · redaction + egress preview/consent gate · schema-constrained model call with server-side guards · session engine (per-diagnosis worker thread) · /api/diagnose/* routes (5) · audit trail in diagnose_history.json</div>
           </div>
           <div class="fs-chip" style="border-color:#00d4ff33">
             <div class="fs-title" style="color:var(--cyan)">diagnose_probes.py</div>
@@ -811,6 +811,14 @@
           <div class="fs-chip" style="border-color:#00d4ff33">
             <div class="fs-title" style="color:var(--cyan)">diagnose_crash_rules.py</div>
             <div class="fs-sub">Crash verdicts · ~536 lines · whole-word crash classifier + app-name extraction · 7 rules in order (hardware errors &gt; blue screen &gt; hung shutdown &gt; power button &gt; power loss/freeze &gt; boot failure &gt; repeat app crash) · context lines (BIOS/hardware change, recent install, storage trouble, Fast Startup) · local-time wording · repair_image only for crashes in Windows' own DLLs</div>
+          </div>
+          <div class="fs-chip" style="border-color:#00d4ff33">
+            <div class="fs-title" style="color:var(--cyan)">diagnose_storage_probes.py</div>
+            <div class="fs-sub">Storage &amp; drives probes · ~671 lines · physical disks via WMI MSFT_PhysicalDisk (PowerShell fallback) + drive letter → disk numbers (ctypes IOCTL) · label-serial tails only, never the NVMe EUI · LHM wear/temperature (drops 255 % sentinels + phantom nodes; never guesses between identical models) · 7 wave-one probes (disks, wear, Storage Spaces pool, 7-day disk errors, free space, 3 s IO sample, cached NAS) + 3 escalations (space breakdown, 30-day errors, 10 s sample) · all read-only</div>
+          </div>
+          <div class="fs-chip" style="border-color:#00d4ff33">
+            <div class="fs-title" style="color:var(--cyan)">diagnose_storage_rules.py</div>
+            <div class="fs-sub">Storage verdicts · ~577 lines · storage classifier + drive-letter slot (ignores cloud drives, the verb "drive", pasted paths) · 8 rules in order (pool trouble &gt; rebuilding &gt; failing drive &gt; drive errors &gt; hot &gt; full &gt; slow &gt; NAS) · named-drive first pass (E: → pool) · errors on vanished disks are a note · clear_temp only for a full system drive</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">bios_audit.py</div>
@@ -968,7 +976,7 @@
 
   <!-- ── LAYER 7: TEST SUITE ──────────────────────────────────── -->
   <div class="row row-tests" id="layer-tests">
-    <div class="row-label">🧪 Test Suite — 4,816 tests · pytest · 89% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
+    <div class="row-label">🧪 Test Suite — 4,976 tests · pytest · 89% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
       <div class="test-chip">
         <div class="test-title">test_routes.py</div>
@@ -1109,8 +1117,16 @@
         <div class="test-sub">26 tests · crash verdict rules in priority order (hardware errors &gt; blue screen &gt; hung shutdown &gt; power button &gt; power loss &gt; boot failure &gt; repeat app crash) · thresholds · context lines (hardware/BIOS change, recent installs, storage trouble, Fast Startup) · local-time wording · repair_image gate</div>
       </div>
       <div class="test-chip" style="border-color:#00d4ff33">
+        <div class="test-title">test_diagnose_storage_probes.py</div>
+        <div class="test-sub">storage &amp; drives bundle · physical disks via WMI with PowerShell fallback · label-serial tails only (never the NVMe EUI) · drive letter → disk numbers · LHM wear/temperature · pool, disk errors, free space, IO sample, cached NAS</div>
+      </div>
+      <div class="test-chip" style="border-color:#00d4ff33">
+        <div class="test-title">test_diagnose_storage_rules.py</div>
+        <div class="test-sub">storage verdict rules in priority order (pool trouble &gt; rebuilding &gt; failing drive &gt; drive errors &gt; hot &gt; full &gt; slow &gt; NAS) · named-drive focus (E: → pool) · never guesses between identical models · errors on vanished disks are a note · no disk-writing steps · clear_temp only for the system drive</div>
+      </div>
+      <div class="test-chip" style="border-color:#00d4ff33">
         <div class="test-title">tests/fixtures/diagnose/</div>
-        <div class="test-sub">19 scenario JSON files (network: dead_gateway · dns_filtered_by_network · dns_filtered_by_router · healthy_name_resolves · hosts_file_override · hynote_zone_missing_a · ip_literal_target · network_intercepts_everything · nxdomain_nonexistent_domain · stale_cache_direct_resolves; crashes: crash_hung_shutdown_2026_10_08 (real) · crash_bugcheck_repeat · crash_whea_beats_bugcheck · crash_power_button · crash_power_loss · crash_boot_failure · crash_app_repeat_chrome · crash_system_modules_multi_app · crash_nothing_found) · replayed by one parametrized test in test_diagnose.py</div>
+        <div class="test-sub">31 scenario JSON files (network: dead_gateway · dns_filtered_by_network · dns_filtered_by_router · healthy_name_resolves · hosts_file_override · hynote_zone_missing_a · ip_literal_target · network_intercepts_everything · nxdomain_nonexistent_domain · stale_cache_direct_resolves; crashes: crash_hung_shutdown_2026_10_08 (real) · crash_bugcheck_repeat · crash_whea_beats_bugcheck · crash_power_button · crash_power_loss · crash_boot_failure · crash_app_repeat_chrome · crash_system_modules_multi_app · crash_nothing_found; storage: storage_pool_degraded_2026_10_08 (real) · storage_pool_rebuilding · storage_drive_failing · storage_drive_errors · storage_drive_hot_ambiguous · storage_lhm_invalid_255 · storage_c_full · storage_e_full · storage_slow_now · storage_slow_now_plain · storage_nas_problem · storage_nothing_found) · replayed by one parametrized test in test_diagnose.py</div>
       </div>
     </div>
     <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">
@@ -1370,7 +1386,7 @@
           <div style="flex:0 0 auto;min-width:120px;background:#ff80ab0a;border:1px solid #ff80ab44;border-radius:8px;padding:10px 12px;text-align:center">
             <div style="font-size:16px;margin-bottom:4px">🧪</div>
             <div style="color:var(--pink);font-weight:700;font-size:10px">3. PYTEST</div>
-            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">4,816 tests · 89% cov · ~60s</div>
+            <div style="color:var(--muted);font-size:9px;margin-top:3px;line-height:1.3">4,976 tests · 89% cov · ~60s</div>
           </div>
           <div style="display:flex;align-items:center;padding:0 4px;color:var(--pink);font-size:14px">→</div>
 
@@ -1518,7 +1534,7 @@
        this number by changing what it measures. Regenerate with:
          python -c "import pathlib;S={'.git','.claude','.pytest_cache','.ruff_cache','__pycache__'};print(sum(sum(1 for _ in p.open(encoding='utf-8',errors='replace')) for p in pathlib.Path('.').rglob('*.py') if p.is_file() and not set(p.parts)&S and 'tests' not in p.parts))"
   -->
-  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 4,816 tests · ~41,452 lines</span>
+  <span>WinDesktopMgr · Dell XPS 8960 · i9-14900K · Windows 11 Pro · 4,976 tests · ~41,452 lines</span>
   <span>github.com/shigsdev/windesktopmgr · Updated 2026-10-02</span>
 </div>
 

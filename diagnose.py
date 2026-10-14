@@ -37,6 +37,8 @@ from flask import Blueprint, jsonify, request
 import diagnose_crash_probes  # noqa: F401 -- registers the crash probes into dp.PROBES
 import diagnose_crash_rules as dcr
 import diagnose_probes as dp
+import diagnose_storage_probes  # noqa: F401 -- registers the storage probes into dp.PROBES
+import diagnose_storage_rules as dsr
 import remediation
 
 try:
@@ -72,6 +74,17 @@ _CRASH_PROMPT = (
     "Hardware errors (crash.whea) outrank everything else. A rule_hits entry of nothing_found means no cause was "
     "recorded: say inconclusive rather than invent one. Suggest repair_image only when rule_hits includes "
     "system_modules (several different apps crashing inside Windows' own files)."
+)
+
+# The storage class's model hint.
+_STORAGE_PROMPT = (
+    "The evidence comes from this PC's drives, its Storage Spaces pool, the last 7 days of disk-error logs (times "
+    "UTC: convert them with local_utc_offset), free space, a short activity sample and the app's saved NAS reading "
+    "(storage.* probes). Risks of losing data (a degraded pool, a failing drive) outrank speed and space. Label "
+    "serials are hidden from you (<serial>): refer to a drive by its model and slot, and when a wear row is "
+    "ambiguous never say which drive. Never suggest a command that writes to a disk (chkdsk /f or /r, Repair-VirtualDisk, format, "
+    "Optimize-Volume). A rule_hits entry of nothing_found means inconclusive. Suggest clear_temp only for a full "
+    "system drive."
 )
 
 # What the engine can diagnose. ``wave1`` runs for every diagnosis of the
@@ -131,6 +144,25 @@ SYMPTOM_CLASSES = {
         "rules": lambda evidence, host: dcr.evaluate_crash_rules(evidence),
         "prompt": _CRASH_PROMPT,
         "actions": ("repair_image",),
+    },
+    "storage": {
+        "label": "Storage & drives",
+        "slots": (),
+        "optional_slots": ("drive",),
+        "wave1": (
+            "storage.physical_disks",
+            "storage.drive_wear",
+            "storage.pool",
+            "storage.disk_errors",
+            "storage.volumes",
+            "storage.io_sample",
+            "storage.nas",
+        ),
+        "escalate": ("storage.space_breakdown", "storage.errors_30d", "storage.io_sample_long"),
+        # Looked up at call time: the two diagnose modules import each other.
+        "rules": lambda evidence, host: dsr.evaluate_storage_rules(evidence),
+        "prompt": _STORAGE_PROMPT,
+        "actions": ("clear_temp",),
     },
 }
 
@@ -267,6 +299,20 @@ def classify(symptom: str) -> dict:
     network = bool(candidates) or any(k in lowered for k in _NETWORK_KEYWORDS)
     # A site or network word next to a weak crash word ("example.com is not
     # responding", "since I rebooted") is a network problem.
+    if dsr.is_storage(text):
+        # A storage word next to a site, or a crash whose subject is not a
+        # drive ("the PC crashed while copying to E:"): ask, never guess.
+        # A network word next to a drive ("downloading to my D drive", "network
+        # drive Z:") asks too; "the NAS is unreachable" stays storage.
+        network_words = any(k in lowered for k in _NETWORK_KEYWORDS)
+        if (
+            candidates
+            or (network_words and dsr.is_storage_beyond_nas(text))
+            or (dcr.CRASH_RE.search(text) and not dsr.is_storage_subject_crash(text))
+        ):
+            return {"symptom_class": None, "slots": {}, "candidates": candidates, "missing": []}
+        drive = dsr.extract_drive(text)
+        return {"symptom_class": "storage", "slots": {"drive": drive} if drive else {}, "candidates": [], "missing": []}
     if dcr.CRASH_RE.search(text) and not (network and not dcr.STRONG_CRASH_RE.search(text)):
         # A crash AND a site ("Chrome crashed loading example.com"): ask, never guess.
         if network:
@@ -918,14 +964,41 @@ def _self_host_pattern() -> re.Pattern | None:
     return re.compile(rf"(?<![\w-]){re.escape(name)}(?![\w-])", re.IGNORECASE)
 
 
+def _nas_name_pattern() -> re.Pattern | None:
+    """Every configured NAS name and host (nas_config.json, enabled or not) as
+    whole tokens, any case, or None when there are none. Never raises."""
+    try:
+        import nas
+
+        entries = nas._load_nas_config().get("nas", [])
+    except Exception:  # noqa: BLE001 -- no NAS config means nothing to hide
+        return None
+    tokens = {
+        str(entry.get(field) or "").strip()
+        for entry in entries
+        if isinstance(entry, dict)
+        for field in ("name", "host")
+    } - {""}
+    if not tokens:
+        return None
+    alternation = "|".join(re.escape(t) for t in sorted(tokens, key=len, reverse=True))
+    return re.compile(rf"(?<![\w-])(?:{alternation})(?![\w-])", re.IGNORECASE)
+
+
 def _redact_string(
-    text: str, classes: frozenset[str], user_re: re.Pattern | None, host_re: re.Pattern | None = None
+    text: str,
+    classes: frozenset[str],
+    user_re: re.Pattern | None,
+    host_re: re.Pattern | None = None,
+    nas_re: re.Pattern | None = None,
 ) -> str:
     # The user name goes last: running it first would eat hex pairs of a MAC
     # ("3c:ed:12..." for user Ed), and the placeholders it leaves alone then
     # protect <mac> / <private-ip> / <this-pc>.
     if host_re is not None:
         text = host_re.sub("<this-pc>", text)
+    if nas_re is not None:
+        text = nas_re.sub("the NAS", text)
     if "mac" in classes:
         text = _MAC_RE.sub("<mac>", text)
     if "local_ip" in classes:
@@ -936,24 +1009,28 @@ def _redact_string(
 
 
 def _redact_walk(
-    obj: Any, classes: frozenset[str], user_re: re.Pattern | None, host_re: re.Pattern | None = None
+    obj: Any,
+    classes: frozenset[str],
+    user_re: re.Pattern | None,
+    host_re: re.Pattern | None = None,
+    nas_re: re.Pattern | None = None,
 ) -> Any:
     if isinstance(obj, str):
-        return _redact_string(obj, classes, user_re, host_re)
+        return _redact_string(obj, classes, user_re, host_re, nas_re)
     if isinstance(obj, dict):
         out = {}
         for key, value in obj.items():
             if "serial" in classes and isinstance(key, str) and _SERIAL_KEY_RE.search(key):
                 value = "<serial>"
             else:
-                value = _redact_walk(value, classes, user_re, host_re)
+                value = _redact_walk(value, classes, user_re, host_re, nas_re)
             # Keys are authored by our code, so the user name is never applied to them.
             out[_redact_string(key, classes, None) if isinstance(key, str) else key] = value
         return out
     if isinstance(obj, list):
-        return [_redact_walk(v, classes, user_re, host_re) for v in obj]
+        return [_redact_walk(v, classes, user_re, host_re, nas_re) for v in obj]
     if isinstance(obj, tuple):
-        return tuple(_redact_walk(v, classes, user_re, host_re) for v in obj)
+        return tuple(_redact_walk(v, classes, user_re, host_re, nas_re) for v in obj)
     return copy.deepcopy(obj)
 
 
@@ -964,7 +1041,9 @@ def redact(obj: Any, classes: Iterable[str], protect: str | None = None) -> Any:
     "local alpha" survives a user called Al. ``mac``: MAC addresses with ``:``
     or ``-`` separators. ``serial``: the whole value of any dict key containing
     "serial". ``local_ip``: RFC1918 IPv4 addresses. ``self_host``: this PC's
-    own computer name, whole token, any case, as ``<this-pc>``. ``protect`` is a hostname
+    own computer name, whole token, any case, as ``<this-pc>``. ``nas_name``:
+    every configured NAS name and host, whole token, any case, as ``the NAS``.
+    ``protect`` is a hostname
     the ``username`` class must leave intact. Dict keys are never touched by
     ``username``; unknown classes are ignored; non-string scalars pass
     through. The input is never mutated.
@@ -972,7 +1051,8 @@ def redact(obj: Any, classes: Iterable[str], protect: str | None = None) -> Any:
     wanted = frozenset(classes)
     user_re = _username_pattern(protect) if "username" in wanted else None
     host_re = _self_host_pattern() if "self_host" in wanted else None
-    return _redact_walk(obj, wanted, user_re, host_re)
+    nas_re = _nas_name_pattern() if "nas_name" in wanted else None
+    return _redact_walk(obj, wanted, user_re, host_re, nas_re)
 
 
 def _local_utc_offset() -> str:
@@ -1013,6 +1093,8 @@ def build_payload(session: dict) -> str:
     # A class whose evidence hides this PC's name hides it in what the user
     # typed too; the network class keeps it (the name may be what it diagnoses).
     typed = ["username", "self_host"] if _class_redacts(spec, "self_host") else ["username"]
+    if _class_redacts(spec, "nas_name"):
+        typed.append("nas_name")
 
     def scrub(value: Any) -> Any:
         return redact(value, typed, protect=host)
@@ -1331,6 +1413,10 @@ def apply_guards(
     # Windows' own system modules; nothing else earns it, whatever the model says.
     if "system_modules" not in (rule_verdict.get("rule_hits") or []):
         out["suggested_actions"] = [a for a in out["suggested_actions"] if a != "repair_image"]
+    # For storage, clearing temp files only frees space on the system drive; the
+    # rules decide when that applies (a full system drive), never the model alone.
+    if class_key == "storage" and "clear_temp" not in (rule_verdict.get("suggested_actions") or []):
+        out["suggested_actions"] = [a for a in out["suggested_actions"] if a != "clear_temp"]
     # Allowlist, last line of defence: anything odd or missing carries no actions.
     if not (out.get("status") in ("confident", "likely") and out.get("locus") in ("local", "unknown")):
         out["suggested_actions"] = []
