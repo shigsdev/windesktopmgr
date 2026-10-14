@@ -19,6 +19,7 @@ functions, so either module can be imported first.
 from __future__ import annotations
 
 import os
+import re
 from typing import NamedTuple
 
 import diagnose as dg
@@ -42,6 +43,54 @@ class _Scope(NamedTuple):
     letters: frozenset[str]
     disks: frozenset[int]
     pool: bool
+
+
+# ── classifier helpers (spec §8; used by diagnose.classify) ──────────────
+
+# Cloud storage is not this PC's storage ("Google Drive won't sync").
+CLOUD_DRIVE_RE = re.compile(r"\b(?:google\s+drive|onedrive|icloud\s+drive|dropbox)\b", re.IGNORECASE)
+# A drive letter: "E:", "E drive", "drive E". A and I are left out of the
+# word forms because "a drive" and "I drive to work" are not drive letters.
+# "C:" or "C:\" on its own; "C:\Users\..." is a pasted path, not a drive mention.
+_LETTER_COLON = r"\b([A-Za-z]):\\?(?=\s|$|[?.!,])"
+_LETTER_WORD = r"\b(?![AaIi]\b)([A-Za-z])\s+drive\b"
+_WORD_LETTER = r"\bdrive\s+(?![AaIi]\b)([A-Za-z])\b"
+_DRIVE_LETTER_RE = re.compile(f"{_LETTER_COLON}|{_LETTER_WORD}|{_WORD_LETTER}")
+# "drive" is the noun, not the verb: never after I/we/you/they/to, never
+# before to/home/over/back.
+_DRIVE_NOUN = r"(?<!\bi )(?<!\bwe )(?<!\byou )(?<!\bthey )(?<!\bto )\bdrives?\b(?!\s+(?:to|home|over|back)\b)"
+STORAGE_RE = re.compile(
+    rf"{_DRIVE_NOUN}|\b(?:disks?|ssds?|nvme|hdds?|storage(?:\s+spaces)?|pool|raid|nas)\b|"
+    r"\b(?:out\s+of|no|low\s+on|disk)\s+space\b|\bcopying\b|\bfile\s+cop(?:y|ies)\b|"
+    f"{_LETTER_COLON}|{_LETTER_WORD}|{_WORD_LETTER}",
+    re.IGNORECASE,
+)
+# A storage noun as the subject of a crash word: "my hard drive crashed".
+_STORAGE_SUBJECT_CRASH_RE = re.compile(
+    r"\b(?:hard\s+drive|drive|disk|ssd|nvme|hdd|nas|pool|storage)s?\s+(?:\w+\s+){0,2}?"
+    r"(?:crash\w*|died|failed|dead|froze(?:n)?|stopped\s+working)\b",
+    re.IGNORECASE,
+)
+
+
+def _without_cloud(text: str) -> str:
+    return CLOUD_DRIVE_RE.sub(" ", text if isinstance(text, str) else "")
+
+
+def is_storage(text: str) -> bool:
+    return bool(STORAGE_RE.search(_without_cloud(text)))
+
+
+def extract_drive(text: str) -> str | None:
+    """The first drive letter written as ``X:``, ``X drive`` or ``drive X`` -> ``"X:"``."""
+    match = _DRIVE_LETTER_RE.search(_without_cloud(text))
+    if not match:
+        return None
+    return f"{next(g for g in match.groups() if g).upper()}:"
+
+
+def is_storage_subject_crash(text: str) -> bool:
+    return bool(_STORAGE_SUBJECT_CRASH_RE.search(_without_cloud(text)))
 
 
 # ── evidence access ──────────────────────────────────────────────────────

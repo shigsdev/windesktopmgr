@@ -76,6 +76,17 @@ _CRASH_PROMPT = (
     "system_modules (several different apps crashing inside Windows' own files)."
 )
 
+# The storage class's model hint.
+_STORAGE_PROMPT = (
+    "The evidence comes from this PC's drives, its Storage Spaces pool, the last 7 days of disk-error logs (times "
+    "UTC: convert them with local_utc_offset), free space, a short activity sample and the app's saved NAS reading "
+    "(storage.* probes). Risks of losing data (a degraded pool, a failing drive) outrank speed and space. Name a "
+    "drive only by the label serial tail, model and slot the evidence gives; when a wear row is ambiguous, never "
+    "say which drive. Never suggest a command that writes to a disk (chkdsk /f or /r, Repair-VirtualDisk, format, "
+    "Optimize-Volume). A rule_hits entry of nothing_found means inconclusive. Suggest clear_temp only for a full "
+    "system drive."
+)
+
 # What the engine can diagnose. ``wave1`` runs for every diagnosis of the
 # class; ``escalate`` holds the deeper probes a follow-up round may request.
 # Every key must exist in ``dp.PROBES`` and every probe's ``needs`` must be one
@@ -150,6 +161,7 @@ SYMPTOM_CLASSES = {
         "escalate": ("storage.space_breakdown", "storage.errors_30d", "storage.io_sample_long"),
         # Looked up at call time: the two diagnose modules import each other.
         "rules": lambda evidence, host: dsr.evaluate_storage_rules(evidence),
+        "prompt": _STORAGE_PROMPT,
         "actions": ("clear_temp",),
     },
 }
@@ -287,6 +299,13 @@ def classify(symptom: str) -> dict:
     network = bool(candidates) or any(k in lowered for k in _NETWORK_KEYWORDS)
     # A site or network word next to a weak crash word ("example.com is not
     # responding", "since I rebooted") is a network problem.
+    if dsr.is_storage(text):
+        # A storage word next to a site, or a crash whose subject is not a
+        # drive ("the PC crashed while copying to E:"): ask, never guess.
+        if candidates or (dcr.CRASH_RE.search(text) and not dsr.is_storage_subject_crash(text)):
+            return {"symptom_class": None, "slots": {}, "candidates": candidates, "missing": []}
+        drive = dsr.extract_drive(text)
+        return {"symptom_class": "storage", "slots": {"drive": drive} if drive else {}, "candidates": [], "missing": []}
     if dcr.CRASH_RE.search(text) and not (network and not dcr.STRONG_CRASH_RE.search(text)):
         # A crash AND a site ("Chrome crashed loading example.com"): ask, never guess.
         if network:

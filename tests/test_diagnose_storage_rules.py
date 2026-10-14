@@ -241,3 +241,29 @@ def test_storage_class_uses_these_rules():
 
     verdict = diagnose.SYMPTOM_CLASSES["storage"]["rules"](_load("storage_c_full"), None)
     assert verdict["rule_hits"][0] == "volume_full"
+
+
+class TestStorageClassifier:
+    @pytest.mark.parametrize(
+        ("text", "drive"),
+        [
+            ("copy to drive E please", "E:"),
+            ("c: and d: are full", "C:"),
+            ("see https://example.com/x", None),
+            ("it froze at 10:30", None),
+            ("Re: my disk", None),
+            ("I drive a car", None),
+            ("my Google Drive is full", None),
+            (r"see C:\Users\Zed\log.txt", None),
+            (r"free up C:\ please", "C:"),
+        ],
+    )
+    def test_extract_drive(self, text, drive):
+        assert dsr.extract_drive(text) == drive
+
+    @pytest.mark.parametrize(
+        ("text", "subject"),
+        [("my hard drive crashed", True), ("the ssd just died", True), ("the PC crashed while copying", False)],
+    )
+    def test_storage_subject_crash(self, text, subject):
+        assert dsr.is_storage_subject_crash(text) is subject

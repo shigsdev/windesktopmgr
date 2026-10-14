@@ -28,6 +28,32 @@ CHROME_BLOB = (
 
 
 class TestClassify:
+    @pytest.mark.parametrize(
+        ("sentence", "expected_class", "expected_slots"),
+        [
+            ("C drive is full", "storage", {"drive": "C:"}),
+            ("E: is really slow", "storage", {"drive": "E:"}),
+            ("is my E: pool OK?", "storage", {"drive": "E:"}),
+            ("my e drive keeps disconnecting", "storage", {"drive": "E:"}),
+            ("my hard drive crashed", "storage", {}),
+            ("the disk died", "storage", {}),
+            ("the PC crashed while copying to E:", None, {}),
+            ("NAS unreachable", "storage", {}),
+            ("the NAS can't reach example.com", None, {}),
+            ("I drive to work and my PC is slow", None, {}),
+            ("I need a drive for backups", "storage", {}),
+            ("Google Drive won't sync", None, {}),
+            ("OneDrive is stuck", None, {}),
+            ("out of disk space", "storage", {}),
+            ("the computer crashed last evening - cna you investigate?", "crashes", {}),
+            ("example.com won't load", "network_dns", {"target_host": "example.com"}),
+        ],
+    )
+    def test_storage_classification(self, sentence, expected_class, expected_slots):
+        r = diagnose.classify(sentence)
+        assert r["symptom_class"] == expected_class
+        assert r["slots"] == expected_slots
+
     def test_chrome_name_not_resolved_blob(self):
         r = diagnose.classify(CHROME_BLOB)
         assert r["symptom_class"] == "network_dns"
@@ -2750,6 +2776,10 @@ class TestRoutes:
         assert net["label"] == diagnose.SYMPTOM_CLASSES["network_dns"]["label"]
         assert net["slots"] == ["target_host"]
         assert net["optional_slots"] == []
+        storage = next(c for c in data if c["key"] == "storage")
+        assert storage["label"] == "Storage & drives"
+        assert storage["slots"] == []
+        assert storage["optional_slots"] == ["drive"]
 
     # --- POST /api/diagnose/start ---
     def test_start_returns_session_id(self, client):
