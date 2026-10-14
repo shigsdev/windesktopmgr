@@ -22,6 +22,7 @@ import psutil
 
 import diagnose_probes as dp
 import disk
+import lhm
 
 _REDACT = ("username", "serial", "mac", "self_host", "nas_name")
 MAX_DRIVES = 12
@@ -283,3 +284,107 @@ _storage_probe(
     timeout_s=12.0,
     needs_optional=("drive",),
 )
+
+
+# ── drive wear & temperature (LibreHardwareMonitor) ───────────────────────
+# Unelevated, Get-StorageReliabilityCounter returns null for every drive here
+# (checked 2026-10-13); LHM runs elevated and publishes the NVMe SMART log.
+
+_WEAR_MARKERS = frozenset({"Percentage Used", "Available Spare"})
+_LEVELS = {
+    "Percentage Used": "pct_used",
+    "Available Spare": "spare_pct",
+    "Available Spare Threshold": "spare_threshold_pct",
+}
+_TEMP_LIMITS = {"Warning Temperature": "warn_c", "Critical Temperature": "crit_c"}
+
+
+def _sensors(node: dict) -> list[dict]:
+    """Every leaf sensor under a hardware node (one level of grouping deep)."""
+    out = []
+    for group in node.get("Children") or []:
+        if isinstance(group, dict):
+            out.extend(c for c in group.get("Children") or [] if isinstance(c, dict) and c.get("Type"))
+    return out
+
+
+def _pct(value: object) -> float | None:
+    """A percentage, or None for LHM's invalid readings (255 % sentinels)."""
+    number = lhm._parse_temp_value(str(value or ""))
+    return number if number is not None and 0 <= number <= 100 else None
+
+
+def _lhm_row(node: dict) -> dict | None:
+    sensors = _sensors(node)
+    if not _WEAR_MARKERS & {s.get("Text") for s in sensors}:
+        return None
+    # A phantom node (live 2026-10-13: named by 40 NUL bytes, 0 °C, 0 % spare)
+    # is no drive at all.
+    model = "".join(ch for ch in str(node.get("Text") or "") if ch.isprintable()).strip()
+    if not model:
+        return None
+    row = {"model": model, "temp_c": None, "warn_c": None, "crit_c": None}
+    row.update(dict.fromkeys(_LEVELS.values()))
+    for s in sensors:
+        text = s.get("Text")
+        if text in _LEVELS:
+            row[_LEVELS[text]] = _pct(s.get("Value"))
+        elif s.get("Type") == "Temperature":
+            celsius = lhm._parse_temp_value(str(s.get("Value") or ""))
+            if not celsius or celsius < 0 or celsius > 150:  # 0 °C is LHM's "no reading"
+                celsius = None
+            if text in _TEMP_LIMITS:
+                row[_TEMP_LIMITS[text]] = celsius
+            elif row["temp_c"] is None or text == "Composite Temperature":
+                row["temp_c"] = celsius
+    return row
+
+
+def parse_lhm_storage(tree: object) -> list[dict]:
+    """Storage rows from LHM's data.json: hardware nodes carrying NVMe wear
+    levels (RAM DIMMs and other sensors have none). Never raises."""
+    rows: list[dict] = []
+
+    def walk(node: object, depth: int) -> None:
+        if not isinstance(node, dict) or depth > 4:
+            return
+        row = _lhm_row(node)
+        if row is not None:
+            rows.append(row)
+            return
+        children = node.get("Children")
+        for child in children if isinstance(children, list) else []:
+            walk(child, depth + 1)
+
+    walk(tree, 0)
+    return rows[:MAX_DRIVES]
+
+
+def _same_model(a: str, b: str) -> bool:
+    def norm(x: str) -> str:
+        x = x.strip().lower()
+        return x[5:] if x.startswith("nvme ") else x
+
+    return norm(a) == norm(b)
+
+
+def _p_drive_wear(slots: dict) -> dict:
+    try:
+        tree = lhm._fetch_data_json()
+    except Exception:  # noqa: BLE001 -- LHM feed unreadable -> treated as not running
+        tree = None
+    if not tree:
+        return {
+            "available": False,
+            "reason": "LibreHardwareMonitor isn't running, so drive wear and temperature couldn't be read.",
+            "drives": [],
+        }
+    drives = collect_physical_disks().get("drives", [])
+    rows = parse_lhm_storage(tree)
+    for row in rows:
+        row["match"] = sorted(d["disk_number"] for d in drives if _same_model(d.get("model", ""), row["model"]))
+        row["ambiguous"] = len(row["match"]) > 1
+    return {"available": True, "reason": "", "drives": rows}
+
+
+_storage_probe("storage.drive_wear", "Drive wear and temperature", _p_drive_wear, timeout_s=10.0)

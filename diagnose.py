@@ -137,7 +137,7 @@ SYMPTOM_CLASSES = {
         "label": "Storage & drives",
         "slots": (),
         "optional_slots": ("drive",),
-        "wave1": ("storage.physical_disks",),
+        "wave1": ("storage.physical_disks", "storage.drive_wear"),
         "escalate": (),
         # Placeholder until the storage rules land (#63 PR 3, plan Task 5).
         "rules": lambda evidence, host: _verdict(
