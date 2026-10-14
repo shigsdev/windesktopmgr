@@ -32,6 +32,7 @@ Running the suite::
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 import urllib.request
 
@@ -39,7 +40,9 @@ import pytest
 
 pytestmark = pytest.mark.playwright
 
-BASE_URL = "http://localhost:5000"
+# WDM_BASE_URL points the suite at another server, e.g. a branch's app on a
+# second port before merge; the live tray on :5000 is the default.
+BASE_URL = os.environ.get("WDM_BASE_URL", "http://localhost:5000").rstrip("/")
 
 # Tab IDs from templates/index.html -- kept in sync with the actual nav.
 # Adding a new tab? Add it here too so the parametrised smoke + the
@@ -3219,6 +3222,79 @@ class TestDiagnoseTab:
             assert '"symptom_class": "crashes"' in page.inner_text("#dx-preview-text")
             page.click("#dx-nosend")  # never send to Anthropic from a smoke test
             page.wait_for_selector("#dx-result[data-state=evidence_only]", timeout=30_000)
+
+    def test_storage_sentence_starts_without_asking(self, loaded_page):
+        """S1 (spec 2026-10-13): "C drive is full" goes straight to the storage
+        check with the drive filled in. Read-only probes; never sends (declines)."""
+        page, _ = loaded_page
+        self._open(page)
+        page.fill("#dx-symptom", "C drive is full")
+        page.click("#dx-run")
+        page.wait_for_function(
+            """
+            () => {
+                const p = document.getElementById('dx-preview');
+                const r = document.getElementById('dx-result');
+                return (p && p.style.display !== 'none') || (r && r.dataset.state === 'evidence_only');
+            }
+            """,
+            timeout=90_000,
+        )
+        assert not page.is_visible("#dx-ask"), "a storage sentence must not be asked about"
+        assert not page.is_visible("#dx-host-row")
+        if page.is_visible("#dx-preview"):
+            preview = page.inner_text("#dx-preview-text")
+            assert '"symptom_class": "storage"' in preview
+            assert '"drive": "C:"' in preview
+            page.click("#dx-nosend")  # never send to Anthropic from a smoke test
+            page.wait_for_selector("#dx-result[data-state=evidence_only]", timeout=30_000)
+
+    def test_drive_row_only_for_storage(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        page.fill("#dx-symptom", "my printer jams")
+        page.click("#dx-run")
+        page.wait_for_selector("#dx-class-row", state="visible", timeout=10_000)
+        assert "Storage & drives" in page.text_content("#dx-ask")
+        assert not page.is_visible("#dx-drive-row")
+        page.select_option("#dx-class", "storage")
+        assert page.is_visible("#dx-drive-row")
+        assert not page.is_visible("#dx-app-row")
+        assert not page.is_visible("#dx-host-row")
+        page.select_option("#dx-class", "crashes")
+        assert not page.is_visible("#dx-drive-row")
+        page.select_option("#dx-class", "network_dns")
+        assert not page.is_visible("#dx-drive-row")
+
+    def test_typed_drive_is_sent_only_for_the_storage_class(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        bodies = []
+        page.on(
+            "request",
+            lambda req: bodies.append(req.post_data_json) if req.url.endswith("/api/diagnose/start") else None,
+        )
+        page.fill("#dx-symptom", "my printer jams")
+        page.click("#dx-run")
+        page.wait_for_selector("#dx-class-row", state="visible", timeout=10_000)
+        page.select_option("#dx-class", "storage")
+        page.fill("#dx-drive", "E:")
+        page.click("#dx-run")
+        page.wait_for_timeout(1500)
+        assert bodies[-1]["symptom_class"] == "storage"
+        assert bodies[-1]["slots"] == {"drive": "E:"}
+        page.wait_for_function(
+            """
+            () => {
+                const p = document.getElementById('dx-preview');
+                const r = document.getElementById('dx-result');
+                return (p && p.style.display !== 'none') || (r && r.dataset.state === 'evidence_only');
+            }
+            """,
+            timeout=90_000,
+        )
+        if page.is_visible("#dx-preview"):
+            page.click("#dx-nosend")
 
     def test_typed_app_name_is_sent_only_for_the_crash_class(self, loaded_page):
         page, _ = loaded_page

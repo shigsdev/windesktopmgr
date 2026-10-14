@@ -10463,6 +10463,7 @@ async function dx_loadClasses() {
     sel.addEventListener("change", () => {
       dx_show("dx-host-row", dx_classNeedsHost(sel.value));
       dx_show("dx-app-row", dx_classHasOptional(sel.value, "app_name"));
+      dx_show("dx-drive-row", dx_classHasOptional(sel.value, "drive"));
     });
   }
   return _dxClasses;
@@ -10563,6 +10564,7 @@ async function dx_showAsk(res) {
   const sel = dx_el("dx-class");
   dx_show("dx-host-row", wantHost || (wantClass && !!sel && dx_classNeedsHost(sel.value)));
   dx_show("dx-app-row", wantClass && !!sel && dx_classHasOptional(sel.value, "app_name"));
+  dx_show("dx-drive-row", wantClass && !!sel && dx_classHasOptional(sel.value, "drive"));
   const chips = dx_el("dx-candidates");
   if (chips) {
     const cands = Array.isArray(res.candidates) ? res.candidates : [];
@@ -10603,6 +10605,10 @@ async function dx_start() {
   const appRow = dx_el("dx-app-row");
   const appName = (dx_el("dx-app").value || "").trim();
   if (appName && appRow && appRow.style.display !== "none") body.slots = {...(body.slots || {}), app_name: appName};
+  // Likewise the optional drive, only while the storage class's box is showing.
+  const driveRow = dx_el("dx-drive-row");
+  const drive = (dx_el("dx-drive").value || "").trim();
+  if (drive && driveRow && driveRow.style.display !== "none") body.slots = {...(body.slots || {}), drive};
   const classRow = dx_el("dx-class-row");
   const cls = dx_el("dx-class").value;
   if (cls && classRow && classRow.style.display !== "none") body.symptom_class = cls;
