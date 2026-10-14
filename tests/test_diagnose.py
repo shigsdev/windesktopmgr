@@ -937,6 +937,48 @@ class TestRedact:
         monkeypatch.setattr(diagnose.socket, "gethostname", lambda: "box")
         assert diagnose.redact("box", ["self_host", "username"]) == "<this-pc>"
 
+    def test_nas_name_redacts_configured_names_and_hosts(self, mocker):
+        mocker.patch(
+            "diagnose._nas_name_pattern",
+            return_value=re.compile(r"(?<![\w-])(?:QNAP-Shigs|192\.168\.1\.50)(?![\w-])", re.IGNORECASE),
+        )
+        out = diagnose.redact({"t": "NAS 'qnap-shigs' at 192.168.1.50 is hot"}, ["nas_name"])
+        assert out == {"t": "NAS 'the NAS' at the NAS is hot"}
+
+    def test_nas_name_absent_class_leaves_text(self, mocker):
+        mocker.patch("diagnose._nas_name_pattern", return_value=re.compile("QNAP-Shigs", re.IGNORECASE))
+        assert diagnose.redact("QNAP-Shigs", ["mac"]) == "QNAP-Shigs"
+
+    def test_nas_name_pattern_none_without_config(self, mocker):
+        mocker.patch("nas._load_nas_config", return_value={"nas": []})
+        assert diagnose._nas_name_pattern() is None
+
+    def test_nas_name_pattern_from_config_whole_token(self, mocker):
+        mocker.patch(
+            "nas._load_nas_config",
+            return_value={"nas": [{"name": "QNAP", "host": "192.168.1.50", "enabled": False}, {"name": ""}]},
+        )
+        pattern = diagnose._nas_name_pattern()
+        assert pattern.sub("X", "qnap at 192.168.1.50, QNAPS and 192.168.1.500") == "X at X, QNAPS and 192.168.1.500"
+
+    def test_nas_name_reaches_typed_symptom_when_class_redacts_it(self, mocker, monkeypatch):
+        mocker.patch("diagnose._nas_name_pattern", return_value=re.compile("QNAP-Shigs", re.IGNORECASE))
+        monkeypatch.setitem(
+            diagnose.dp.PROBES,
+            "t.nas",
+            diagnose.dp.Probe("t.nas", "T", "storage", lambda s: {}, redact=("nas_name",)),
+        )
+        monkeypatch.setitem(diagnose.SYMPTOM_CLASSES, "t_cls", {"label": "T", "slots": (), "wave1": ("t.nas",)})
+        payload = diagnose.build_payload(
+            {
+                "symptom": "QNAP-Shigs is slow",
+                "symptom_class": "t_cls",
+                "evidence": [{"key": "t.nas", "label": "T", "ok": True, "data": {"m": "qnap-shigs hot"}}],
+            }
+        )
+        assert "qnap-shigs" not in payload.lower()
+        assert "the NAS is slow" in payload
+
     def test_crash_style_evidence_leaks_nothing_into_the_payload(self, monkeypatch):
         """C4: planted user name, PC name, serial and MAC never reach the preview."""
         monkeypatch.setattr(diagnose.socket, "gethostname", lambda: "SHIGS78-PC24")

@@ -918,14 +918,41 @@ def _self_host_pattern() -> re.Pattern | None:
     return re.compile(rf"(?<![\w-]){re.escape(name)}(?![\w-])", re.IGNORECASE)
 
 
+def _nas_name_pattern() -> re.Pattern | None:
+    """Every configured NAS name and host (nas_config.json, enabled or not) as
+    whole tokens, any case, or None when there are none. Never raises."""
+    try:
+        import nas
+
+        entries = nas._load_nas_config().get("nas", [])
+    except Exception:  # noqa: BLE001 -- no NAS config means nothing to hide
+        return None
+    tokens = {
+        str(entry.get(field) or "").strip()
+        for entry in entries
+        if isinstance(entry, dict)
+        for field in ("name", "host")
+    } - {""}
+    if not tokens:
+        return None
+    alternation = "|".join(re.escape(t) for t in sorted(tokens, key=len, reverse=True))
+    return re.compile(rf"(?<![\w-])(?:{alternation})(?![\w-])", re.IGNORECASE)
+
+
 def _redact_string(
-    text: str, classes: frozenset[str], user_re: re.Pattern | None, host_re: re.Pattern | None = None
+    text: str,
+    classes: frozenset[str],
+    user_re: re.Pattern | None,
+    host_re: re.Pattern | None = None,
+    nas_re: re.Pattern | None = None,
 ) -> str:
     # The user name goes last: running it first would eat hex pairs of a MAC
     # ("3c:ed:12..." for user Ed), and the placeholders it leaves alone then
     # protect <mac> / <private-ip> / <this-pc>.
     if host_re is not None:
         text = host_re.sub("<this-pc>", text)
+    if nas_re is not None:
+        text = nas_re.sub("the NAS", text)
     if "mac" in classes:
         text = _MAC_RE.sub("<mac>", text)
     if "local_ip" in classes:
@@ -936,24 +963,28 @@ def _redact_string(
 
 
 def _redact_walk(
-    obj: Any, classes: frozenset[str], user_re: re.Pattern | None, host_re: re.Pattern | None = None
+    obj: Any,
+    classes: frozenset[str],
+    user_re: re.Pattern | None,
+    host_re: re.Pattern | None = None,
+    nas_re: re.Pattern | None = None,
 ) -> Any:
     if isinstance(obj, str):
-        return _redact_string(obj, classes, user_re, host_re)
+        return _redact_string(obj, classes, user_re, host_re, nas_re)
     if isinstance(obj, dict):
         out = {}
         for key, value in obj.items():
             if "serial" in classes and isinstance(key, str) and _SERIAL_KEY_RE.search(key):
                 value = "<serial>"
             else:
-                value = _redact_walk(value, classes, user_re, host_re)
+                value = _redact_walk(value, classes, user_re, host_re, nas_re)
             # Keys are authored by our code, so the user name is never applied to them.
             out[_redact_string(key, classes, None) if isinstance(key, str) else key] = value
         return out
     if isinstance(obj, list):
-        return [_redact_walk(v, classes, user_re, host_re) for v in obj]
+        return [_redact_walk(v, classes, user_re, host_re, nas_re) for v in obj]
     if isinstance(obj, tuple):
-        return tuple(_redact_walk(v, classes, user_re, host_re) for v in obj)
+        return tuple(_redact_walk(v, classes, user_re, host_re, nas_re) for v in obj)
     return copy.deepcopy(obj)
 
 
@@ -964,7 +995,9 @@ def redact(obj: Any, classes: Iterable[str], protect: str | None = None) -> Any:
     "local alpha" survives a user called Al. ``mac``: MAC addresses with ``:``
     or ``-`` separators. ``serial``: the whole value of any dict key containing
     "serial". ``local_ip``: RFC1918 IPv4 addresses. ``self_host``: this PC's
-    own computer name, whole token, any case, as ``<this-pc>``. ``protect`` is a hostname
+    own computer name, whole token, any case, as ``<this-pc>``. ``nas_name``:
+    every configured NAS name and host, whole token, any case, as ``the NAS``.
+    ``protect`` is a hostname
     the ``username`` class must leave intact. Dict keys are never touched by
     ``username``; unknown classes are ignored; non-string scalars pass
     through. The input is never mutated.
@@ -972,7 +1005,8 @@ def redact(obj: Any, classes: Iterable[str], protect: str | None = None) -> Any:
     wanted = frozenset(classes)
     user_re = _username_pattern(protect) if "username" in wanted else None
     host_re = _self_host_pattern() if "self_host" in wanted else None
-    return _redact_walk(obj, wanted, user_re, host_re)
+    nas_re = _nas_name_pattern() if "nas_name" in wanted else None
+    return _redact_walk(obj, wanted, user_re, host_re, nas_re)
 
 
 def _local_utc_offset() -> str:
@@ -1013,6 +1047,8 @@ def build_payload(session: dict) -> str:
     # A class whose evidence hides this PC's name hides it in what the user
     # typed too; the network class keeps it (the name may be what it diagnoses).
     typed = ["username", "self_host"] if _class_redacts(spec, "self_host") else ["username"]
+    if _class_redacts(spec, "nas_name"):
+        typed.append("nas_name")
 
     def scrub(value: Any) -> Any:
         return redact(value, typed, protect=host)
