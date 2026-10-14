@@ -286,6 +286,9 @@ class TestRuleFixtures:
         if fx.get("symptom_class") == "crashes":
             self._check_crash_fixture(fx)
             return
+        if fx.get("symptom_class") == "storage":
+            self._check_storage_fixture(fx)
+            return
         cls = diagnose.classify(fx["symptom"])
         host = fx["expect"].get("target_host") or cls["slots"].get("target_host")
         if "target_host" in fx["expect"]:
@@ -298,6 +301,23 @@ class TestRuleFixtures:
             assert key not in verdict["suggested_actions"]
         if verdict["locus"] == "external_cause":
             assert verdict["suggested_actions"] == []
+
+    @staticmethod
+    def _check_storage_fixture(fx):
+        import diagnose_storage_rules as dsr
+
+        expect = fx["expect"]
+        verdict = dsr.evaluate_storage_rules(fx["evidence"])
+        assert verdict["rule_hits"][0] == expect["rule"]
+        assert (verdict["status"], verdict["locus"]) == (expect["status"], expect["locus"])
+        for key in expect["context"]:
+            assert key in verdict["rule_hits"], key
+        for key in expect["must_include"]:
+            assert key in verdict["suggested_actions"]
+        for key in expect["must_exclude"]:
+            assert key not in verdict["suggested_actions"]
+        assert set(verdict["suggested_actions"]) <= {"clear_temp"}
+        assert 1 <= len(verdict["manual_steps"]) <= diagnose.MAX_MANUAL_STEPS or expect["rule"] == "nothing_found"
 
     @staticmethod
     def _check_crash_fixture(fx):

@@ -38,6 +38,7 @@ import diagnose_crash_probes  # noqa: F401 -- registers the crash probes into dp
 import diagnose_crash_rules as dcr
 import diagnose_probes as dp
 import diagnose_storage_probes  # noqa: F401 -- registers the storage probes into dp.PROBES
+import diagnose_storage_rules as dsr
 import remediation
 
 try:
@@ -147,10 +148,8 @@ SYMPTOM_CLASSES = {
             "storage.nas",
         ),
         "escalate": ("storage.space_breakdown", "storage.errors_30d", "storage.io_sample_long"),
-        # Placeholder until the storage rules land (#63 PR 3, plan Task 5).
-        "rules": lambda evidence, host: _verdict(
-            "inconclusive", "unknown", "The storage check is still being built", "", rule_hits=["nothing_found"]
-        ),
+        # Looked up at call time: the two diagnose modules import each other.
+        "rules": lambda evidence, host: dsr.evaluate_storage_rules(evidence),
         "actions": ("clear_temp",),
     },
 }

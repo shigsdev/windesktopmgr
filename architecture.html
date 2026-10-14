@@ -1113,6 +1113,10 @@
         <div class="test-sub">storage &amp; drives bundle · physical disks via WMI with PowerShell fallback · label-serial tails only (never the NVMe EUI) · drive letter → disk numbers · LHM wear/temperature · pool, disk errors, free space, IO sample, cached NAS</div>
       </div>
       <div class="test-chip" style="border-color:#00d4ff33">
+        <div class="test-title">test_diagnose_storage_rules.py</div>
+        <div class="test-sub">storage verdict rules in priority order (pool trouble &gt; rebuilding &gt; failing drive &gt; drive errors &gt; hot &gt; full &gt; slow &gt; NAS) · named-drive focus (E: → pool) · never guesses between identical models · errors on vanished disks are a note · no disk-writing steps · clear_temp only for the system drive</div>
+      </div>
+      <div class="test-chip" style="border-color:#00d4ff33">
         <div class="test-title">tests/fixtures/diagnose/</div>
         <div class="test-sub">19 scenario JSON files (network: dead_gateway · dns_filtered_by_network · dns_filtered_by_router · healthy_name_resolves · hosts_file_override · hynote_zone_missing_a · ip_literal_target · network_intercepts_everything · nxdomain_nonexistent_domain · stale_cache_direct_resolves; crashes: crash_hung_shutdown_2026_10_08 (real) · crash_bugcheck_repeat · crash_whea_beats_bugcheck · crash_power_button · crash_power_loss · crash_boot_failure · crash_app_repeat_chrome · crash_system_modules_multi_app · crash_nothing_found) · replayed by one parametrized test in test_diagnose.py</div>
       </div>

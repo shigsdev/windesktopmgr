@@ -1,0 +1,422 @@
+{
+  "symptom": "copies to E: are really slow",
+  "symptom_class": "storage",
+  "evidence": {
+    "storage.physical_disks": {
+      "key": "storage.physical_disks",
+      "label": "storage.physical_disks",
+      "ok": true,
+      "data": {
+        "source": "wmi",
+        "unavailable": [],
+        "drives": [
+          {
+            "disk_number": 0,
+            "model": "NVMe PC811 SK hynix 1024GB",
+            "media": "SSD",
+            "bus": "NVMe",
+            "size_gb": 1863.0,
+            "health": "Healthy",
+            "operational": [
+              "OK"
+            ],
+            "label_serial_tail": "",
+            "slot": "Integrated"
+          },
+          {
+            "disk_number": 1,
+            "model": "NVMe Samsung SSD 990 PRO with Heatsink 1TB",
+            "media": "SSD",
+            "bus": "NVMe",
+            "size_gb": 1863.0,
+            "health": "Healthy",
+            "operational": [
+              "OK"
+            ],
+            "label_serial_tail": "",
+            "slot": "Integrated"
+          },
+          {
+            "disk_number": 2,
+            "model": "Samsung SSD 990 PRO 2TB",
+            "media": "SSD",
+            "bus": "NVMe",
+            "size_gb": 1863.0,
+            "health": "Healthy",
+            "operational": [
+              "OK"
+            ],
+            "label_serial_tail": "984N",
+            "slot": "PCI Slot 1"
+          },
+          {
+            "disk_number": 3,
+            "model": "Samsung SSD 990 PRO 2TB",
+            "media": "SSD",
+            "bus": "NVMe",
+            "size_gb": 1863.0,
+            "health": "Healthy",
+            "operational": [
+              "OK"
+            ],
+            "label_serial_tail": "163R",
+            "slot": "PCI Slot 5"
+          },
+          {
+            "disk_number": 4,
+            "model": "Samsung SSD 970 EVO Plus 2TB",
+            "media": "SSD",
+            "bus": "NVMe",
+            "size_gb": 1863.0,
+            "health": "Healthy",
+            "operational": [
+              "OK"
+            ],
+            "label_serial_tail": "576W",
+            "slot": "PCI Slot 9"
+          },
+          {
+            "disk_number": 5,
+            "model": "Samsung SSD 970 EVO Plus 2TB",
+            "media": "SSD",
+            "bus": "NVMe",
+            "size_gb": 1863.0,
+            "health": "Healthy",
+            "operational": [
+              "OK"
+            ],
+            "label_serial_tail": "838Z",
+            "slot": "PCI Slot 13"
+          }
+        ],
+        "letters": {
+          "C:": [
+            0
+          ],
+          "D:": [
+            1
+          ],
+          "E:": [
+            6
+          ]
+        },
+        "focus": null
+      },
+      "elapsed_ms": 1.0
+    },
+    "storage.drive_wear": {
+      "key": "storage.drive_wear",
+      "label": "storage.drive_wear",
+      "ok": true,
+      "data": {
+        "available": true,
+        "reason": "",
+        "drives": [
+          {
+            "model": "Samsung SSD 990 PRO with Heatsink 1TB",
+            "temp_c": 36.0,
+            "warn_c": 69.0,
+            "crit_c": 74.0,
+            "pct_used": null,
+            "spare_pct": 100.0,
+            "spare_threshold_pct": null,
+            "match": [
+              1
+            ],
+            "ambiguous": false
+          },
+          {
+            "model": "Samsung SSD 990 PRO 2TB",
+            "temp_c": 42.0,
+            "warn_c": 81.0,
+            "crit_c": 84.0,
+            "pct_used": 5.0,
+            "spare_pct": 100.0,
+            "spare_threshold_pct": 10.0,
+            "match": [
+              2,
+              3
+            ],
+            "ambiguous": true
+          },
+          {
+            "model": "Samsung SSD 990 PRO 2TB",
+            "temp_c": 42.0,
+            "warn_c": 81.0,
+            "crit_c": 84.0,
+            "pct_used": 0.0,
+            "spare_pct": 100.0,
+            "spare_threshold_pct": 10.0,
+            "match": [
+              2,
+              3
+            ],
+            "ambiguous": true
+          },
+          {
+            "model": "Samsung SSD 970 EVO Plus 2TB",
+            "temp_c": 42.0,
+            "warn_c": 81.0,
+            "crit_c": 84.0,
+            "pct_used": 3.0,
+            "spare_pct": 100.0,
+            "spare_threshold_pct": 10.0,
+            "match": [
+              4,
+              5
+            ],
+            "ambiguous": true
+          },
+          {
+            "model": "Samsung SSD 970 EVO Plus 2TB",
+            "temp_c": 42.0,
+            "warn_c": 81.0,
+            "crit_c": 84.0,
+            "pct_used": 1.0,
+            "spare_pct": 100.0,
+            "spare_threshold_pct": 10.0,
+            "match": [
+              4,
+              5
+            ],
+            "ambiguous": true
+          }
+        ]
+      },
+      "elapsed_ms": 1.0
+    },
+    "storage.pool": {
+      "key": "storage.pool",
+      "label": "storage.pool",
+      "ok": true,
+      "data": {
+        "has_spaces": true,
+        "pools": [
+          {
+            "name": "Storage pool",
+            "health": "Healthy",
+            "operational": "OK"
+          }
+        ],
+        "virtual_disks": [
+          {
+            "name": "Storage space",
+            "health": "Healthy",
+            "operational": "OK",
+            "resiliency": "Parity"
+          }
+        ],
+        "members": [
+          {
+            "pool": "Storage pool",
+            "model": "Samsung SSD 990 PRO 2TB",
+            "health": "Healthy",
+            "operational": "OK",
+            "usage": "Auto-Select",
+            "label_serial_tail": "984N",
+            "slot": "PCI Slot 1"
+          },
+          {
+            "pool": "Storage pool",
+            "model": "Samsung SSD 990 PRO 2TB",
+            "health": "Healthy",
+            "operational": "OK",
+            "usage": "Auto-Select",
+            "label_serial_tail": "163R",
+            "slot": "PCI Slot 5"
+          },
+          {
+            "pool": "Storage pool",
+            "model": "Samsung SSD 970 EVO Plus 2TB",
+            "health": "Healthy",
+            "operational": "OK",
+            "usage": "Auto-Select",
+            "label_serial_tail": "576W",
+            "slot": "PCI Slot 9"
+          },
+          {
+            "pool": "Storage pool",
+            "model": "Samsung SSD 970 EVO Plus 2TB",
+            "health": "Healthy",
+            "operational": "OK",
+            "usage": "Auto-Select",
+            "label_serial_tail": "838Z",
+            "slot": "PCI Slot 13"
+          }
+        ],
+        "repair_jobs": [
+          {
+            "name": "Regeneration",
+            "state": "Running",
+            "pct": 63
+          }
+        ]
+      },
+      "elapsed_ms": 1.0
+    },
+    "storage.disk_errors": {
+      "key": "storage.disk_errors",
+      "label": "storage.disk_errors",
+      "ok": true,
+      "data": {
+        "window_days": 7,
+        "by_provider": {},
+        "by_disk": {},
+        "ntfs_corruption": 0,
+        "pool_events": 0,
+        "unavailable": []
+      },
+      "elapsed_ms": 1.0
+    },
+    "storage.volumes": {
+      "key": "storage.volumes",
+      "label": "storage.volumes",
+      "ok": true,
+      "data": {
+        "volumes": [
+          {
+            "letter": "C:",
+            "label": "OS",
+            "fs": "NTFS",
+            "total_gb": 911.7,
+            "free_gb": 194.8,
+            "free_pct": 21.4,
+            "fixed": true
+          },
+          {
+            "letter": "D:",
+            "label": "",
+            "fs": "NTFS",
+            "total_gb": 931.5,
+            "free_gb": 892.7,
+            "free_pct": 95.8,
+            "fixed": true
+          },
+          {
+            "letter": "E:",
+            "label": "Storage space",
+            "fs": "NTFS",
+            "total_gb": 5583.0,
+            "free_gb": 3000.0,
+            "free_pct": 53.7,
+            "fixed": true
+          }
+        ]
+      },
+      "elapsed_ms": 1.0
+    },
+    "storage.io_sample": {
+      "key": "storage.io_sample",
+      "label": "storage.io_sample",
+      "ok": true,
+      "data": {
+        "seconds": 3,
+        "disks": [
+          {
+            "disk_number": 0,
+            "reads_s": 0.0,
+            "writes_s": 0.0,
+            "mb_s": 0.0,
+            "busy_pct": 0,
+            "avg_read_ms": null,
+            "avg_write_ms": null
+          },
+          {
+            "disk_number": 1,
+            "reads_s": 0.0,
+            "writes_s": 0.0,
+            "mb_s": 0.0,
+            "busy_pct": 0,
+            "avg_read_ms": null,
+            "avg_write_ms": null
+          },
+          {
+            "disk_number": 2,
+            "reads_s": 0.0,
+            "writes_s": 0.0,
+            "mb_s": 0.0,
+            "busy_pct": 0,
+            "avg_read_ms": null,
+            "avg_write_ms": null
+          },
+          {
+            "disk_number": 3,
+            "reads_s": 0.0,
+            "writes_s": 0.0,
+            "mb_s": 0.0,
+            "busy_pct": 0,
+            "avg_read_ms": null,
+            "avg_write_ms": null
+          },
+          {
+            "disk_number": 4,
+            "reads_s": 0.0,
+            "writes_s": 0.0,
+            "mb_s": 0.0,
+            "busy_pct": 0,
+            "avg_read_ms": null,
+            "avg_write_ms": null
+          },
+          {
+            "disk_number": 5,
+            "reads_s": 0.0,
+            "writes_s": 0.0,
+            "mb_s": 0.0,
+            "busy_pct": 0,
+            "avg_read_ms": null,
+            "avg_write_ms": null
+          },
+          {
+            "disk_number": 6,
+            "reads_s": 0.0,
+            "writes_s": 0.0,
+            "mb_s": 0.0,
+            "busy_pct": 0,
+            "avg_read_ms": null,
+            "avg_write_ms": null
+          }
+        ]
+      },
+      "elapsed_ms": 1.0
+    },
+    "storage.nas": {
+      "key": "storage.nas",
+      "label": "storage.nas",
+      "ok": true,
+      "data": {
+        "configured": 1,
+        "pending": false,
+        "nas": [
+          {
+            "label": "NAS 1",
+            "reachable": true,
+            "age_s": 120,
+            "disks": [
+              {
+                "bay": "HDD1",
+                "health": "Good",
+                "temp_c": 38
+              }
+            ],
+            "volumes": [
+              {
+                "status": "Ready",
+                "free_pct": 40.0
+              }
+            ]
+          }
+        ],
+        "concerns": []
+      },
+      "elapsed_ms": 1.0
+    }
+  },
+  "expect": {
+    "rule": "pool_rebuilding",
+    "status": "confident",
+    "locus": "local",
+    "must_include": [],
+    "must_exclude": [],
+    "context": []
+  }
+}
