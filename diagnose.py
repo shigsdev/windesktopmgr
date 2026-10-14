@@ -37,6 +37,7 @@ from flask import Blueprint, jsonify, request
 import diagnose_crash_probes  # noqa: F401 -- registers the crash probes into dp.PROBES
 import diagnose_crash_rules as dcr
 import diagnose_probes as dp
+import diagnose_storage_probes  # noqa: F401 -- registers the storage probes into dp.PROBES
 import remediation
 
 try:
@@ -131,6 +132,18 @@ SYMPTOM_CLASSES = {
         "rules": lambda evidence, host: dcr.evaluate_crash_rules(evidence),
         "prompt": _CRASH_PROMPT,
         "actions": ("repair_image",),
+    },
+    "storage": {
+        "label": "Storage & drives",
+        "slots": (),
+        "optional_slots": ("drive",),
+        "wave1": ("storage.physical_disks",),
+        "escalate": (),
+        # Placeholder until the storage rules land (#63 PR 3, plan Task 5).
+        "rules": lambda evidence, host: _verdict(
+            "inconclusive", "unknown", "The storage check is still being built", "", rule_hits=["nothing_found"]
+        ),
+        "actions": ("clear_temp",),
     },
 }
 
