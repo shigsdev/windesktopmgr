@@ -137,8 +137,16 @@ SYMPTOM_CLASSES = {
         "label": "Storage & drives",
         "slots": (),
         "optional_slots": ("drive",),
-        "wave1": ("storage.physical_disks", "storage.drive_wear"),
-        "escalate": (),
+        "wave1": (
+            "storage.physical_disks",
+            "storage.drive_wear",
+            "storage.pool",
+            "storage.disk_errors",
+            "storage.volumes",
+            "storage.io_sample",
+            "storage.nas",
+        ),
+        "escalate": ("storage.space_breakdown", "storage.errors_30d", "storage.io_sample_long"),
         # Placeholder until the storage rules land (#63 PR 3, plan Task 5).
         "rules": lambda evidence, host: _verdict(
             "inconclusive", "unknown", "The storage check is still being built", "", rule_hits=["nothing_found"]

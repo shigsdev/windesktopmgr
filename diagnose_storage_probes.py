@@ -20,9 +20,11 @@ import time
 
 import psutil
 
+import diagnose_crash_probes as dcp
 import diagnose_probes as dp
 import disk
 import lhm
+import nas
 
 _REDACT = ("username", "serial", "mac", "self_host", "nas_name")
 MAX_DRIVES = 12
@@ -388,3 +390,282 @@ def _p_drive_wear(slots: dict) -> dict:
 
 
 _storage_probe("storage.drive_wear", "Drive wear and temperature", _p_drive_wear, timeout_s=10.0)
+
+
+# ── Storage Spaces pool ──────────────────────────────────────────────────
+
+
+def _s(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _p_pool(slots: dict) -> dict:
+    try:
+        raw = disk.get_storage_spaces() or {}
+    except Exception:  # noqa: BLE001 -- the reader already degrades; belt and braces
+        raw = {}
+    return {
+        "has_spaces": bool(raw.get("has_spaces")),
+        "pools": [
+            {"name": _s(p.get("Name")), "health": _s(p.get("Health")), "operational": _s(p.get("Operational"))}
+            for p in raw.get("pools") or []
+        ],
+        "virtual_disks": [
+            {
+                "name": _s(v.get("Name")),
+                "health": _s(v.get("Health")),
+                "operational": _s(v.get("Operational")),
+                "resiliency": _s(v.get("Resiliency")),
+            }
+            for v in raw.get("virtual_disks") or []
+        ],
+        # Full serials stay behind: only the label tail leaves this probe.
+        "members": [
+            {
+                "pool": _s(m.get("Pool")),
+                "model": _s(m.get("Name")),
+                "health": _s(m.get("Health")),
+                "operational": _s(m.get("Operational")),
+                "usage": _s(m.get("Usage")),
+                "label_serial_tail": _label_tail(m.get("LabelSerial")),
+                "slot": _slot(_s(m.get("Location")), ""),
+            }
+            for m in (raw.get("members") or [])[:MAX_DRIVES]
+        ],
+        "repair_jobs": [
+            {"name": _s(j.get("Name")), "state": _s(j.get("State")), "pct": max(0, _int(j.get("Pct"), 0))}
+            for j in raw.get("repair_jobs") or []
+        ],
+    }
+
+
+# ── disk errors in the event log ─────────────────────────────────────────
+
+WINDOW_DAYS = 7
+ESCALATION_DAYS = 30
+_DISK_IDS = frozenset({7, 11, 51, 153, 157})
+_NTFS_IDS = frozenset({50, 55, 98})
+_NTFS_CORRUPTION_IDS = frozenset({55, 98})
+# Older NTFS events log as "Ntfs", newer ones as "Microsoft-Windows-Ntfs".
+_ERROR_PROVIDERS = ("disk", "stornvme", "storahci", "Ntfs", "Microsoft-Windows-Ntfs")
+_HARDDISK_RE = re.compile(r"\\Device\\Harddisk(\d+)", re.IGNORECASE)
+
+
+def _provider_key(provider: str) -> str:
+    return "Ntfs" if provider in ("Ntfs", "Microsoft-Windows-Ntfs") else provider
+
+
+def _counted(provider: str, eid: int) -> bool:
+    if provider == "disk":
+        return eid in _DISK_IDS
+    if provider == "Ntfs":
+        return eid in _NTFS_IDS
+    return provider in ("stornvme", "storahci")
+
+
+def _bump(slot: dict, when: str) -> None:
+    slot["count"] += 1
+    slot["first"] = min(slot["first"], when) if slot["first"] else when
+    slot["last"] = max(slot["last"], when)
+
+
+def _disk_errors(days: int) -> dict:
+    unavailable: list[str] = []
+    by_provider: dict[str, dict] = {}
+    by_disk: dict[str, dict] = {}
+    corruption = 0
+    xpath = dcp.window_xpath(providers=list(_ERROR_PROVIDERS), levels=[1, 2, 3], days=days)
+    for ev in dcp._query("System", xpath, unavailable, max_events=500):
+        provider = _provider_key(ev.get("provider", ""))
+        eid = _int(ev.get("id"))
+        if not _counted(provider, eid):
+            continue
+        when = ev.get("time", "")
+        _bump(by_provider.setdefault(provider, {"count": 0, "first": "", "last": ""}), when)
+        if provider == "Ntfs" and eid in _NTFS_CORRUPTION_IDS:
+            corruption += 1
+        values = [*(ev.get("data_list") or []), *(ev.get("data") or {}).values()]
+        number = next((m.group(1) for v in values if (m := _HARDDISK_RE.search(str(v)))), None)
+        if number is not None:
+            _bump(by_disk.setdefault(number, {"count": 0, "first": "", "last": ""}), when)
+    pool_events = dcp._query(
+        dcp.STORAGE_SPACES_CHANNEL, dcp.window_xpath(levels=[1, 2, 3], days=days), unavailable, max_events=200
+    )
+    return {
+        "window_days": days,
+        "by_provider": by_provider,
+        "by_disk": by_disk,
+        "ntfs_corruption": corruption,
+        "pool_events": len(pool_events),
+        "unavailable": unavailable,
+    }
+
+
+# ── free space ───────────────────────────────────────────────────────────
+
+MAX_VOLUMES = 26
+
+
+def _p_volumes(slots: dict) -> dict:
+    volumes = []
+    try:
+        drives = disk._enumerate_logical_drives()
+    except Exception:  # noqa: BLE001 -- psutil unavailable -> no volumes
+        drives = []
+    for d in drives:
+        total = float(d.get("TotalGB") or 0)
+        if d.get("DriveType") == 4 or total <= 0:  # network drives are the NAS probe's job
+            continue
+        free = float(d.get("FreeGB") or 0)
+        volumes.append(
+            {
+                "letter": f"{_s(d.get('Letter')).upper()}:",
+                "label": _s(d.get("Label")),
+                "fs": _s(d.get("FileSystem")),
+                "total_gb": total,
+                "free_gb": free,
+                "free_pct": round(free / total * 100, 1),
+                "fixed": d.get("DriveType") == 3,
+            }
+        )
+    return {"volumes": volumes[:MAX_VOLUMES]}
+
+
+# ── live IO sample ───────────────────────────────────────────────────────
+
+SAMPLE_S = 3
+LONG_SAMPLE_S = 10
+MIN_OPS = 20
+_PHYSICAL_DRIVE_RE = re.compile(r"PhysicalDrive(\d+)$", re.IGNORECASE)
+
+
+def _counters() -> dict | None:
+    try:
+        return psutil.disk_io_counters(perdisk=True)
+    except Exception:  # noqa: BLE001 -- counters disabled / unreadable
+        return None
+
+
+def _io_sample(seconds: int) -> dict:
+    before = _counters()
+    time.sleep(seconds)
+    after = _counters()
+    disks = []
+    for name, now in (after or {}).items():
+        match = _PHYSICAL_DRIVE_RE.search(name)
+        then = (before or {}).get(name)
+        if not match or then is None:
+            continue
+        reads = now.read_count - then.read_count
+        writes = now.write_count - then.write_count
+        read_ms = now.read_time - then.read_time
+        write_ms = now.write_time - then.write_time
+        moved = (now.read_bytes - then.read_bytes) + (now.write_bytes - then.write_bytes)
+        disks.append(
+            {
+                "disk_number": int(match.group(1)),
+                "reads_s": round(reads / seconds, 1),
+                "writes_s": round(writes / seconds, 1),
+                "mb_s": round(moved / 1024**2 / seconds, 1),
+                "busy_pct": min(100, round((read_ms + write_ms) / (seconds * 1000) * 100)),
+                "avg_read_ms": round(read_ms / reads, 1) if reads >= MIN_OPS else None,
+                "avg_write_ms": round(write_ms / writes, 1) if writes >= MIN_OPS else None,
+            }
+        )
+    disks.sort(key=lambda d: d["disk_number"])
+    return {"seconds": seconds, "disks": disks}
+
+
+# ── NAS (the app's saved reading; never waits on SNMP) ─────────────────────
+
+
+def _p_nas(slots: dict) -> dict:
+    try:
+        data = nas.get_nas_storage(wait=False) or {}
+        concerns = nas.nas_storage_concerns(data)
+    except Exception:  # noqa: BLE001 -- NAS cache unreadable -> nothing to report
+        return {"configured": 0, "pending": False, "nas": [], "concerns": []}
+    stamp = getattr(nas, "_nas_cache_ts", 0) or 0
+    age_s = round(time.time() - stamp) if stamp else None
+    entries = []
+    for i, n in enumerate(data.get("nas") or [], 1):
+        volumes = []
+        for v in n.get("volumes") or []:
+            used = v.get("pct_used")
+            free_pct = round(100 - used, 1) if isinstance(used, (int, float)) else None
+            volumes.append({"status": _s(v.get("status")), "free_pct": free_pct})
+        entries.append(
+            {
+                # Never the configured name or address: the probe numbers them.
+                "label": f"NAS {i}",
+                "reachable": bool(n.get("reachable")),
+                "age_s": age_s,
+                "disks": [
+                    {"bay": _s(d.get("bay")), "health": _s(d.get("health")), "temp_c": d.get("temp_c")}
+                    for d in n.get("disks") or []
+                ],
+                "volumes": volumes,
+            }
+        )
+    return {
+        "configured": _int(data.get("configured"), len(entries)),
+        "pending": bool(data.get("pending")),
+        "nas": entries,
+        "concerns": [
+            {"level": _s(c.get("level")), "title": _s(c.get("title")), "detail": _s(c.get("detail"))}
+            for c in concerns or []
+        ],
+    }
+
+
+# ── escalation: what's using the space ─────────────────────────────────────
+
+MAX_LOCATIONS = 10
+
+
+def _p_space_breakdown(slots: dict) -> dict:
+    drive = norm_drive(slots.get("drive"))
+    if drive is None:
+        fixed = [v for v in _p_volumes({})["volumes"] if v["fixed"]]
+        drive = min(fixed, key=lambda v: v["free_pct"])["letter"] if fixed else None
+    if drive is None:
+        return {"drive": None, "locations": []}
+    try:
+        result = disk.get_disk_quickwins(drive) or {}
+    except Exception:  # noqa: BLE001 -- analysis failed -> no breakdown
+        result = {}
+    found = [loc for loc in result.get("locations") or [] if loc.get("exists", True)]
+    found.sort(key=lambda loc: -(loc.get("size_bytes") or 0))
+    return {
+        "drive": drive,
+        "locations": [
+            {
+                "label": _s(loc.get("label")),
+                "path": _s(loc.get("path")),
+                "size_gb": round((loc.get("size_bytes") or 0) / 1024**3, 1),
+            }
+            for loc in found[:MAX_LOCATIONS]
+        ],
+    }
+
+
+_storage_probe("storage.pool", "Storage Spaces pool", _p_pool, timeout_s=20.0)
+_storage_probe(
+    "storage.disk_errors", "Disk errors in the event log", lambda s: _disk_errors(WINDOW_DAYS), timeout_s=12.0
+)
+_storage_probe("storage.volumes", "Free space", _p_volumes, timeout_s=8.0)
+_storage_probe("storage.io_sample", "Live drive activity", lambda s: _io_sample(SAMPLE_S), timeout_s=8.0)
+_storage_probe("storage.nas", "NAS (saved reading)", _p_nas, timeout_s=8.0)
+_storage_probe(
+    "storage.space_breakdown",
+    "What's using the space",
+    _p_space_breakdown,
+    timeout_s=20.0,
+    needs_optional=("drive",),
+)
+_storage_probe(
+    "storage.errors_30d", "Disk errors, last 30 days", lambda s: _disk_errors(ESCALATION_DAYS), timeout_s=15.0
+)
+_storage_probe(
+    "storage.io_sample_long", "Live drive activity (10 s)", lambda s: _io_sample(LONG_SAMPLE_S), timeout_s=15.0
+)
