@@ -34,6 +34,7 @@ NAS_STALE_S = 3600
 _OK_STATES = ("", "OK")
 _HEALTHY = ("", "Healthy")
 _FAILED_JOB_STATES = ("Exception", "Killed")
+_DATA_LOSS = ("pool_trouble", "drive_failing")
 _COUNT_WORDS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six"}
 
 
@@ -79,6 +80,14 @@ def _without_cloud(text: str) -> str:
 
 def is_storage(text: str) -> bool:
     return bool(STORAGE_RE.search(_without_cloud(text)))
+
+
+_NAS_RE = re.compile(r"\bnas\b", re.IGNORECASE)
+
+
+def is_storage_beyond_nas(text: str) -> bool:
+    """Storage words other than "NAS" (which the network words may describe)."""
+    return is_storage(_NAS_RE.sub(" ", text if isinstance(text, str) else ""))
 
 
 def extract_drive(text: str) -> str | None:
@@ -155,6 +164,16 @@ def _disk_ok(scope: _Scope | None, number: object) -> bool:
     return scope is None or number in scope.disks
 
 
+def _row_in_scope(row: dict, scope: _Scope | None) -> bool:
+    """An LHM row belongs to a focused pass only when it can't point outside it:
+    for identical models, every drive it could be must be in focus."""
+    match = row.get("match") or []
+    if scope is None:
+        return True
+    in_scope = [n for n in match if n in scope.disks]
+    return bool(in_scope) and (not row.get("ambiguous") or len(in_scope) == len(match))
+
+
 # ── wording ──────────────────────────────────────────────────────────────
 
 
@@ -219,6 +238,10 @@ def _rule_pool_trouble(ev: dict, scope: _Scope | None):
             for d in _drives(ev)
             if d.get("label_serial_tail") and d.get("label_serial_tail") == member.get("label_serial_tail")
         ]
+    elif bad_pool is not None and _running_job(ev) is not None:
+        # Storage Spaces marks the virtual disk Warning / In Service while it
+        # repairs: that is the rebuild, which pool_rebuilding reports.
+        return None
     elif bad_pool is not None:
         headline = f"Your {letter} pool is degraded"
         reasoning = f"Storage Spaces reports '{bad_pool.get('name', 'the pool')}' as {bad_pool.get('health')}."
@@ -262,9 +285,9 @@ def _rule_drive_failing(ev: dict, scope: _Scope | None):
             verdict = dg._verdict("confident", "local", f"{_name(drive)} is failing", reasoning)
             return "drive_failing", verdict, ["storage.physical_disks"], [drive["disk_number"]]
     for row in _list(_d(ev, "storage.drive_wear"), "drives"):
-        match = [n for n in row.get("match") or [] if _disk_ok(scope, n)]
-        if scope is not None and not match:
+        if not _row_in_scope(row, scope):
             continue
+        match = list(row.get("match") or [])
         spare, threshold, used = row.get("spare_pct"), row.get("spare_threshold_pct"), row.get("pct_used")
         low_spare = spare is not None and threshold is not None and spare < threshold
         worn = used is not None and used >= WEAR_FAIL_PCT
@@ -300,13 +323,26 @@ def _rule_drive_errors(ev: dict, scope: _Scope | None):
         except (TypeError, ValueError):
             continue
         if number in present and _disk_ok(scope, number) and count >= DRIVE_ERROR_THRESHOLD:
-            hits.append((count, number))
+            hits.append((count, number, int((slot or {}).get("since_boot") or 0)))
     if hits:
-        count, number = max(hits)
-        headline = f"{_disk_name(ev, number)} logged {count} disk errors {_period(days)}"
+        count, number, since_boot = max(hits)
         reasoning = "Windows logged repeated read, write or controller errors for this drive."
+        # Disk numbers change when drives are added or swapped, so only errors
+        # logged since this boot are tied to today's drive (by its label).
+        if number in _known(ev) and since_boot < DRIVE_ERROR_THRESHOLD:
+            headline = (
+                f"Disk {number} (as numbered when the errors were logged) logged {count} disk errors {_period(days)}"
+            )
+            reasoning += (
+                " Most were logged before the PC last started, and drive numbers change when drives are added or "
+                "swapped, so they can't be tied to one drive's label."
+            )
+            disks = []
+        else:
+            headline = f"{_disk_name(ev, number)} logged {count} disk errors {_period(days)}"
+            disks = [number]
         verdict = dg._verdict("likely", "local", headline, reasoning)
-        return "drive_errors", verdict, ["storage.disk_errors"], [number]
+        return "drive_errors", verdict, ["storage.disk_errors"], disks
     corruption = int(errors.get("ntfs_corruption") or 0)
     if corruption and scope is None:
         times = "once" if corruption == 1 else f"{corruption} times"
@@ -320,8 +356,8 @@ def _rule_drive_hot(ev: dict, scope: _Scope | None):
     hot = []
     for row in _list(_d(ev, "storage.drive_wear"), "drives"):
         temp, warn = row.get("temp_c"), row.get("warn_c")
-        match = [n for n in row.get("match") or [] if _disk_ok(scope, n)]
-        if temp is None or warn is None or temp < warn or (scope is not None and not match):
+        match = list(row.get("match") or [])
+        if temp is None or warn is None or temp < warn or not _row_in_scope(row, scope):
             continue
         hot.append((temp, row, match))
     if not hot:
@@ -488,7 +524,7 @@ def _context(ev: dict, key: str, disks: list[int]) -> tuple[list[str], list[str]
         )
     by_disk = _d(ev, "storage.disk_errors").get("by_disk") or {}
     if key in ("drive_failing", "pool_trouble") and any(
-        int((by_disk.get(str(n)) or {}).get("count") or 0) > 0 for n in disks
+        int((by_disk.get(str(n)) or {}).get("since_boot") or 0) > 0 for n in disks
     ):
         hits.append("errors_on_same_drive")
         lines.append("Windows also logged disk errors for this drive.")
@@ -538,7 +574,11 @@ def evaluate_storage_rules(evidence: dict[str, dict]) -> dict:
     """Evidence-only verdict for the ``storage`` class; always a full verdict."""
     ev = evidence if isinstance(evidence, dict) else {}
     scope = _scope_for(ev, _d(ev, "storage.physical_disks").get("focus"))
-    hit = (_first_hit(ev, scope) if scope is not None else None) or _first_hit(ev, None)
+    scoped = _first_hit(ev, scope) if scope is not None else None
+    wide = _first_hit(ev, None)
+    hit = scoped or wide
+    # The named drive leads, but a data-loss risk elsewhere is still said.
+    also = wide if scoped is not None and wide is not None and wide[0] in _DATA_LOSS and wide[0] != scoped[0] else None
     if hit is None:
         verdict = dg._verdict(
             "inconclusive",
@@ -573,5 +613,9 @@ def evaluate_storage_rules(evidence: dict[str, dict]) -> dict:
     if key == "volume_full" and full_letter == os.environ.get("SYSTEMDRIVE", "C:").upper():
         verdict["suggested_actions"] = ["clear_temp"]
         steps.append("The Clear temp files button below removes Windows' temporary files from this drive.")
+    if also is not None:
+        verdict["rule_hits"].append(f"also_{also[0]}")
+        verdict["reasoning"] += f" Also: {also[1]['headline']}."
+        steps.insert(0, f"Look at this first: {also[1]['headline']}.")
     verdict["manual_steps"] = dg.clean_steps(steps)
     return verdict

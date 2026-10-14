@@ -194,15 +194,15 @@
         "pools": [
           {
             "name": "Storage pool",
-            "health": "Healthy",
-            "operational": "OK"
+            "health": "Warning",
+            "operational": "Degraded"
           }
         ],
         "virtual_disks": [
           {
             "name": "Storage space",
-            "health": "Healthy",
-            "operational": "OK",
+            "health": "Warning",
+            "operational": "In Service",
             "resiliency": "Parity"
           }
         ],

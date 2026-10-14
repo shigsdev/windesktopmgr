@@ -267,3 +267,62 @@ class TestStorageClassifier:
     )
     def test_storage_subject_crash(self, text, subject):
         assert dsr.is_storage_subject_crash(text) is subject
+
+
+class TestReviewFixes:
+    """Final-review findings (2026-10-13), each pinned before its fix."""
+
+    def test_rebuild_with_pool_in_service_is_rebuilding_not_trouble(self, healthy):
+        """#3: Storage Spaces marks the virtual disk Warning / In Service while it repairs."""
+        _rebuild(healthy)
+        _data(healthy, "storage.pool")["virtual_disks"][0].update(health="Warning", operational="In Service")
+        assert dsr.evaluate_storage_rules(healthy)["rule_hits"][0] == "pool_rebuilding"
+
+    def test_degraded_pool_without_a_job_is_still_trouble(self, healthy):
+        _data(healthy, "storage.pool")["virtual_disks"][0].update(health="Warning", operational="Degraded")
+        assert dsr.evaluate_storage_rules(healthy)["rule_hits"][0] == "pool_trouble"
+
+    def test_old_errors_are_not_pinned_on_todays_drive(self, healthy):
+        """#4: disk numbers change when drives are swapped; errors from before this boot
+        must not be blamed on whichever drive holds that number now."""
+        _data(healthy, "storage.disk_errors")["by_disk"] = {
+            "3": {"count": 14, "since_boot": 0, "first": "2026-10-08T14:00:00Z", "last": "2026-10-08T15:00:00Z"}
+        }
+        verdict = dsr.evaluate_storage_rules(healthy)
+        assert verdict["rule_hits"][0] == "drive_errors"
+        assert "…" not in verdict["headline"]
+        assert verdict["headline"].startswith("Disk 3 (as numbered when the errors were logged)")
+
+    def test_errors_this_boot_name_the_drive(self, healthy):
+        _data(healthy, "storage.disk_errors")["by_disk"] = {
+            "3": {"count": 14, "since_boot": 6, "first": "x", "last": "x"}
+        }
+        assert "…163R" in dsr.evaluate_storage_rules(healthy)["headline"]
+
+    def test_old_errors_do_not_mark_the_same_drive(self):
+        ev = copy.deepcopy(_load("storage_pool_degraded_2026_10_08"))
+        _data(ev, "storage.disk_errors")["by_disk"]["4"]["since_boot"] = 0
+        assert "errors_on_same_drive" not in dsr.evaluate_storage_rules(ev)["rule_hits"]
+
+    def test_scoped_pass_never_picks_one_of_identical_models(self, healthy):
+        """#5: C:'s drive shares a model with a drive outside the focus; the hot
+        reading can't be pinned on C:, and the count stays the real count."""
+        drives = _data(healthy, "storage.physical_disks")["drives"]
+        drives[0].update(model="Samsung SSD 990 PRO 2TB")
+        wear = _data(healthy, "storage.drive_wear")["drives"]
+        wear[1].update(match=[0, 2], ambiguous=True, temp_c=82.0)
+        verdict = dsr.evaluate_storage_rules(_focus(healthy, "C:"))
+        assert verdict["rule_hits"][0] == "drive_hot"
+        assert verdict["headline"].startswith("One of your two Samsung SSD 990 PRO 2TB drives")
+
+    def test_named_drive_still_mentions_a_degraded_pool(self):
+        """#7: "C drive is full" must not hide a data-loss risk on another drive."""
+        ev = _focus(_c_full(copy.deepcopy(_load("storage_pool_degraded_2026_10_08"))), "C:")
+        verdict = dsr.evaluate_storage_rules(ev)
+        assert verdict["rule_hits"][0] == "volume_full"
+        assert "also_pool_trouble" in verdict["rule_hits"]
+        assert "pool is degraded" in verdict["reasoning"]
+
+    def test_unnamed_drive_has_no_also_note(self):
+        verdict = dsr.evaluate_storage_rules(_load("storage_pool_degraded_2026_10_08"))
+        assert not any(h.startswith("also_") for h in verdict["rule_hits"])

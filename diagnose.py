@@ -80,9 +80,9 @@ _CRASH_PROMPT = (
 _STORAGE_PROMPT = (
     "The evidence comes from this PC's drives, its Storage Spaces pool, the last 7 days of disk-error logs (times "
     "UTC: convert them with local_utc_offset), free space, a short activity sample and the app's saved NAS reading "
-    "(storage.* probes). Risks of losing data (a degraded pool, a failing drive) outrank speed and space. Name a "
-    "drive only by the label serial tail, model and slot the evidence gives; when a wear row is ambiguous, never "
-    "say which drive. Never suggest a command that writes to a disk (chkdsk /f or /r, Repair-VirtualDisk, format, "
+    "(storage.* probes). Risks of losing data (a degraded pool, a failing drive) outrank speed and space. Label "
+    "serials are hidden from you (<serial>): refer to a drive by its model and slot, and when a wear row is "
+    "ambiguous never say which drive. Never suggest a command that writes to a disk (chkdsk /f or /r, Repair-VirtualDisk, format, "
     "Optimize-Volume). A rule_hits entry of nothing_found means inconclusive. Suggest clear_temp only for a full "
     "system drive."
 )
@@ -302,7 +302,14 @@ def classify(symptom: str) -> dict:
     if dsr.is_storage(text):
         # A storage word next to a site, or a crash whose subject is not a
         # drive ("the PC crashed while copying to E:"): ask, never guess.
-        if candidates or (dcr.CRASH_RE.search(text) and not dsr.is_storage_subject_crash(text)):
+        # A network word next to a drive ("downloading to my D drive", "network
+        # drive Z:") asks too; "the NAS is unreachable" stays storage.
+        network_words = any(k in lowered for k in _NETWORK_KEYWORDS)
+        if (
+            candidates
+            or (network_words and dsr.is_storage_beyond_nas(text))
+            or (dcr.CRASH_RE.search(text) and not dsr.is_storage_subject_crash(text))
+        ):
             return {"symptom_class": None, "slots": {}, "candidates": candidates, "missing": []}
         drive = dsr.extract_drive(text)
         return {"symptom_class": "storage", "slots": {"drive": drive} if drive else {}, "candidates": [], "missing": []}
@@ -1406,6 +1413,10 @@ def apply_guards(
     # Windows' own system modules; nothing else earns it, whatever the model says.
     if "system_modules" not in (rule_verdict.get("rule_hits") or []):
         out["suggested_actions"] = [a for a in out["suggested_actions"] if a != "repair_image"]
+    # For storage, clearing temp files only frees space on the system drive; the
+    # rules decide when that applies (a full system drive), never the model alone.
+    if class_key == "storage" and "clear_temp" not in (rule_verdict.get("suggested_actions") or []):
+        out["suggested_actions"] = [a for a in out["suggested_actions"] if a != "clear_temp"]
     # Allowlist, last line of defence: anything odd or missing carries no actions.
     if not (out.get("status") in ("confident", "likely") and out.get("locus") in ("local", "unknown")):
         out["suggested_actions"] = []

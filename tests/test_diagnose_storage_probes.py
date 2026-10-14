@@ -589,3 +589,29 @@ class TestRegistry:
             assert "nas_name" in probe.redact
             assert "serial" in probe.redact
             assert 8 <= probe.timeout_s <= 20
+
+
+class TestDiskErrorsSinceBoot:
+    """Review #4: disk numbers are only trustworthy for errors logged since this boot."""
+
+    def test_since_boot_counts_only_events_after_boot(self, mocker):
+        events = [
+            _ev("disk", 153, time="2026-10-12T08:00:00Z", data_list=[r"\Device\Harddisk3\DR3"]),
+            _ev("disk", 153, time="2026-10-12T10:00:00Z", data_list=[r"\Device\Harddisk3\DR3"]),
+            _ev("disk", 153, time="2026-10-12T11:00:00Z", data_list=[r"\Device\Harddisk3\DR3"]),
+        ]
+        mocker.patch("diagnose_storage_probes.dcp._query", side_effect=lambda ch, xp, un=None, **kw: list(events))
+        boot = dsp.datetime(2026, 10, 12, 9, 0, tzinfo=dsp.timezone.utc).timestamp()
+        mocker.patch("diagnose_storage_probes.psutil.boot_time", return_value=boot)
+        data = dsp.REGISTERED["storage.disk_errors"].fn({})
+        assert data["boot"] == "2026-10-12T09:00:00Z"
+        assert data["by_disk"]["3"]["count"] == 3
+        assert data["by_disk"]["3"]["since_boot"] == 2
+
+    def test_boot_time_unreadable_means_nothing_since_boot(self, mocker):
+        events = [_ev("disk", 153, data_list=[r"\Device\Harddisk3\DR3"])]
+        mocker.patch("diagnose_storage_probes.dcp._query", side_effect=lambda ch, xp, un=None, **kw: list(events))
+        mocker.patch("diagnose_storage_probes.psutil.boot_time", side_effect=OSError("no"))
+        data = dsp.REGISTERED["storage.disk_errors"].fn({})
+        assert data["boot"] is None
+        assert data["by_disk"]["3"]["since_boot"] == 0

@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 import sys
 import time
+from datetime import datetime, timezone
 
 import psutil
 
@@ -469,8 +470,16 @@ def _bump(slot: dict, when: str) -> None:
     slot["last"] = max(slot["last"], when)
 
 
+def _boot_iso() -> str | None:
+    try:
+        return datetime.fromtimestamp(psutil.boot_time(), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except Exception:  # noqa: BLE001 -- boot time unreadable -> nothing counts as "since boot"
+        return None
+
+
 def _disk_errors(days: int) -> dict:
     unavailable: list[str] = []
+    boot = _boot_iso()
     by_provider: dict[str, dict] = {}
     by_disk: dict[str, dict] = {}
     corruption = 0
@@ -487,12 +496,16 @@ def _disk_errors(days: int) -> dict:
         values = [*(ev.get("data_list") or []), *(ev.get("data") or {}).values()]
         number = next((m.group(1) for v in values if (m := _HARDDISK_RE.search(str(v)))), None)
         if number is not None:
-            _bump(by_disk.setdefault(number, {"count": 0, "first": "", "last": ""}), when)
+            slot = by_disk.setdefault(number, {"count": 0, "since_boot": 0, "first": "", "last": ""})
+            _bump(slot, when)
+            if boot and when >= boot:
+                slot["since_boot"] += 1
     pool_events = dcp._query(
         dcp.STORAGE_SPACES_CHANNEL, dcp.window_xpath(levels=[1, 2, 3], days=days), unavailable, max_events=200
     )
     return {
         "window_days": days,
+        "boot": boot,
         "by_provider": by_provider,
         "by_disk": by_disk,
         "ntfs_corruption": corruption,

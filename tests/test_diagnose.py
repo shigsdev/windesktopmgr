@@ -47,6 +47,9 @@ class TestClassify:
             ("out of disk space", "storage", {}),
             ("the computer crashed last evening - cna you investigate?", "crashes", {}),
             ("example.com won't load", "network_dns", {"target_host": "example.com"}),
+            ("internet is slow when downloading to my D drive", None, {}),
+            ("my network drive Z: won't connect", None, {}),
+            ("the NAS is unreachable", "storage", {}),
         ],
     )
     def test_storage_classification(self, sentence, expected_class, expected_slots):
@@ -907,6 +910,26 @@ class TestManualStepsFromModel:
         )
         assert kept["suggested_actions"] == ["repair_image"]
 
+    def test_clear_temp_needs_the_rules_to_offer_it(self):
+        """Review #2: clearing temp files only when the rules found a full system drive."""
+        v = {"status": "likely", "locus": "local", "suggested_actions": ["clear_temp"], "manual_steps": []}
+        dropped = diagnose.apply_guards(
+            v, {}, {"rule_hits": ["volume_full"], "suggested_actions": []}, class_key="storage"
+        )
+        assert dropped["suggested_actions"] == []
+        kept = diagnose.apply_guards(
+            v,
+            {},
+            {
+                "rule_hits": ["volume_full"],
+                "suggested_actions": ["clear_temp"],
+                "status": "confident",
+                "locus": "local",
+            },
+            class_key="storage",
+        )
+        assert kept["suggested_actions"] == ["clear_temp"]
+
     def test_parse_reply_cleans_steps(self):
         _, v = diagnose.parse_reply({**REPLY, "manual_steps": ["  Do X ", "Do X", 3]}, "network_dns")
         assert v["manual_steps"] == ["Do X"]
@@ -1056,6 +1079,52 @@ class TestRedact:
             assert leak not in text, leak
         for placeholder in ("<this-pc>", "<serial>", "<mac>", "<user>"):
             assert placeholder in text, placeholder
+
+    def test_storage_evidence_leaks_nothing_into_the_payload(self, monkeypatch, mocker):
+        """S5 (spec 2026-10-13): no serial (not even the label tail), user name,
+        PC name or NAS name/host reaches the preview."""
+        monkeypatch.setattr(diagnose.socket, "gethostname", lambda: "SHIGS78-PC24")
+        mocker.patch(
+            "diagnose._nas_name_pattern",
+            return_value=re.compile(r"(?<![\w-])(?:QNAP-Shigs|192\.168\.1\.50)(?![\w-])", re.IGNORECASE),
+        )
+        session = {
+            "symptom": "QNAP-Shigs and E: are slow on SHIGS78-PC24",
+            "symptom_class": "storage",
+            "slots": {"drive": "E:"},
+            "evidence": [
+                {
+                    "key": "storage.physical_disks",
+                    "label": "Drives and their health",
+                    "ok": True,
+                    "data": {"drives": [{"disk_number": 5, "label_serial_tail": "838Z", "slot": "PCI Slot 13"}]},
+                },
+                {
+                    "key": "storage.nas",
+                    "label": "NAS (saved reading)",
+                    "ok": True,
+                    "data": {"concerns": [{"title": "NAS 'QNAP-Shigs' at 192.168.1.50 is hot"}]},
+                },
+                {
+                    "key": "storage.space_breakdown",
+                    "label": "What's using the space",
+                    "ok": True,
+                    "data": {"locations": [{"path": r"C:\Users\Al\Downloads"}]},
+                },
+            ],
+        }
+        text = diagnose.build_payload(session)
+        for leak in ("838Z", "SHIGS78-PC24", "QNAP-Shigs", "192.168.1.50", "\\\\Al\\\\"):
+            assert leak not in text, leak
+        for placeholder in ("<serial>", "<this-pc>", "the NAS", "<user>"):
+            assert placeholder in text, placeholder
+
+    def test_storage_prompt_does_not_ask_for_hidden_tails(self):
+        """Review #1: the label tail reaches the model as <serial>, so the hint
+        must not tell it to name drives by tail."""
+        prompt = diagnose.SYMPTOM_CLASSES["storage"]["prompt"]
+        assert "label serial tail" not in prompt
+        assert "model and slot" in prompt
 
     @pytest.mark.parametrize("value", [None, "", "   "])
     def test_username_unset_or_blank_leaves_input(self, monkeypatch, value):
