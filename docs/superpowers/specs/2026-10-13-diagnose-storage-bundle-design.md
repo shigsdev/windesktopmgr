@@ -135,7 +135,9 @@ on an ambiguous model names the model and count only (S3).
 
 **Context annotations** (attach to the winner as reasoning lines):
 
-- `rebuild_in_progress`: a running repair job, attached to `slow_now`.
+- `rebuild_in_progress`: a running repair job, attached to `slow_now`. Only
+  reachable when a named drive makes `slow_now` lead; otherwise
+  `pool_rebuilding` outranks it.
 - `errors_on_same_drive`: `drive_errors` evidence on the drive a
   `drive_failing` / `pool_trouble` verdict names.
 - `wear_unavailable`: LHM not running, so wear/temperature were not checked.
@@ -226,7 +228,8 @@ existing parametrized fixture test):
 | `storage_lhm_invalid_255.json` (C: 990 PRO sentinel values) | no wear verdict from the bogus readings (S4) |
 | `storage_c_full.json` | `volume_full` + `clear_temp` |
 | `storage_e_full.json` | `volume_full`, no action |
-| `storage_slow_now.json` + rebuild running | `slow_now` with `rebuild_in_progress` |
+| `storage_slow_now.json` + rebuild running, no drive named | `pool_rebuilding` (it outranks and explains the slowness) |
+| `storage_slow_now_plain.json` (busy, no rebuild) | `slow_now` |
 | `storage_nas_problem.json` | `nas_problem` |
 | `storage_nothing_found.json` | inconclusive (S6) |
 
