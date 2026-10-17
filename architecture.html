@@ -193,7 +193,7 @@
       <button type="button" onclick="exportPDF()" title="Open the browser print dialog — choose 'Save as PDF'" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--yellow);border:none;cursor:pointer;border-right:1px solid var(--border)">Export PDF</button>
       <button type="button" onclick="exportHTML()" title="Download a self-contained copy of this diagram" style="padding:7px 14px;font-size:11px;font-family:var(--font-mono);background:transparent;color:var(--blue);border:none;cursor:pointer">Export HTML</button>
     </div>
-    <div class="badge" style="color:var(--green);border-color:#00e67633">4,976 tests · 89% coverage</div>
+    <div class="badge" style="color:var(--green);border-color:#00e67633">4,976 tests · 90% coverage</div>
     <div class="badge">
       <a href="https://github.com/shigsdev/windesktopmgr">github.com/shigsdev/windesktopmgr</a>
     </div>
@@ -798,7 +798,7 @@
           </div>
           <div class="fs-chip" style="border-color:#00d4ff33">
             <div class="fs-title" style="color:var(--cyan)">diagnose.py</div>
-            <div class="fs-sub">Diagnose engine Blueprint · ~1,933 lines · three symptom classes (Website or network unreachable · Crashes, freezes &amp; startup problems · Storage &amp; drives) with per-class rules + model prompt · optional slots · symptom classifier · deterministic DNS rules (+ interceptor location from the hop test) · "Steps you can take" manual_steps on every verdict (advice text, never run) · redaction + egress preview/consent gate · schema-constrained model call with server-side guards · session engine (per-diagnosis worker thread) · /api/diagnose/* routes (5) · audit trail in diagnose_history.json</div>
+            <div class="fs-sub">Diagnose engine Blueprint · ~1,995 lines · four symptom classes (Website or network unreachable · Crashes, freezes &amp; startup problems · Storage &amp; drives · Speed &amp; heat) with per-class rules + model prompt · optional slots · symptom classifier · deterministic DNS rules (+ interceptor location from the hop test) · "Steps you can take" manual_steps on every verdict (advice text, never run) · redaction + egress preview/consent gate · schema-constrained model call with server-side guards · session engine (per-diagnosis worker thread) · /api/diagnose/* routes (5) · audit trail in diagnose_history.json</div>
           </div>
           <div class="fs-chip" style="border-color:#00d4ff33">
             <div class="fs-title" style="color:var(--cyan)">diagnose_probes.py</div>
@@ -814,11 +814,19 @@
           </div>
           <div class="fs-chip" style="border-color:#00d4ff33">
             <div class="fs-title" style="color:var(--cyan)">diagnose_storage_probes.py</div>
-            <div class="fs-sub">Storage &amp; drives probes · ~671 lines · physical disks via WMI MSFT_PhysicalDisk (PowerShell fallback) + drive letter → disk numbers (ctypes IOCTL) · label-serial tails only, never the NVMe EUI · LHM wear/temperature (drops 255 % sentinels + phantom nodes; never guesses between identical models) · 7 wave-one probes (disks, wear, Storage Spaces pool, 7-day disk errors, free space, 3 s IO sample, cached NAS) + 3 escalations (space breakdown, 30-day errors, 10 s sample) · all read-only</div>
+            <div class="fs-sub">Storage &amp; drives probes · ~684 lines · physical disks via WMI MSFT_PhysicalDisk (PowerShell fallback) + drive letter → disk numbers (ctypes IOCTL) · label-serial tails only, never the NVMe EUI · LHM wear/temperature (drops 255 % sentinels + phantom nodes; never guesses between identical models) · 7 wave-one probes (disks, wear, Storage Spaces pool, 7-day disk errors, free space, 3 s IO sample, cached NAS) + 3 escalations (space breakdown, 30-day errors, 10 s sample) · all read-only</div>
           </div>
           <div class="fs-chip" style="border-color:#00d4ff33">
             <div class="fs-title" style="color:var(--cyan)">diagnose_storage_rules.py</div>
-            <div class="fs-sub">Storage verdicts · ~577 lines · storage classifier + drive-letter slot (ignores cloud drives, the verb "drive", pasted paths) · 8 rules in order (pool trouble &gt; rebuilding &gt; failing drive &gt; drive errors &gt; hot &gt; full &gt; slow &gt; NAS) · named-drive first pass (E: → pool) · errors on vanished disks are a note · clear_temp only for a full system drive</div>
+            <div class="fs-sub">Storage verdicts · ~621 lines · storage classifier + drive-letter slot (ignores cloud drives, the verb "drive", pasted paths) · 8 rules in order (pool trouble &gt; rebuilding &gt; failing drive &gt; drive errors &gt; hot &gt; full &gt; slow &gt; NAS) · named-drive first pass (E: → pool) · errors on vanished disks are a note · clear_temp only for a full system drive</div>
+          </div>
+          <div class="fs-chip" style="border-color:#00d4ff33">
+            <div class="fs-title" style="color:var(--cyan)">diagnose_perf_probes.py</div>
+            <div class="fs-sub">Speed &amp; heat probes · ~603 lines · psutil CPU share of the whole CPU + memory per program (same-name processes summed, program name only, never titles/paths/command lines) · LHM temps incl. per-core Distance to TjMax (Windows sensors fallback) · 10 wave-one probes (CPU, memory, temps, GPU, stuck driver, drive activity, since restart, startup time, power plan, WHEA) + 3 escalations (15 s CPU, one app's detail, 7-day trend) · all read-only, no PowerShell</div>
+          </div>
+          <div class="fs-chip" style="border-color:#00d4ff33">
+            <div class="fs-title" style="color:var(--cyan)">diagnose_perf_rules.py</div>
+            <div class="fs-sub">Speed &amp; heat verdicts · ~500 lines · speed/heat classifier + app-name slot (weak "slow" defers to the network class) · 11 rules in order (throttling &gt; hot &gt; stuck driver &gt; CPU hog &gt; memory low &gt; memory creep &gt; disk busy &gt; GPU busy &gt; power saver &gt; slow startup &gt; long uptime) · named-app first pass · hardware-error + sensor-fallback notes · reboot_system only for memory creep / long uptime</div>
           </div>
           <div class="fs-chip">
             <div class="fs-title">bios_audit.py</div>
@@ -976,7 +984,7 @@
 
   <!-- ── LAYER 7: TEST SUITE ──────────────────────────────────── -->
   <div class="row row-tests" id="layer-tests">
-    <div class="row-label">🧪 Test Suite — 4,976 tests · pytest · 89% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
+    <div class="row-label">🧪 Test Suite — 4,976 tests · pytest · 90% coverage · pre-commit hooks · Flask + PowerShell + Python + NLQ + Tray + Remediation + HomeNet + Logging + Snapshots + PostUpdateCheck + E2E + Trends</div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
       <div class="test-chip">
         <div class="test-title">test_routes.py</div>
@@ -1125,8 +1133,16 @@
         <div class="test-sub">storage verdict rules in priority order (pool trouble &gt; rebuilding &gt; failing drive &gt; drive errors &gt; hot &gt; full &gt; slow &gt; NAS) · named-drive focus (E: → pool) · never guesses between identical models · errors on vanished disks are a note · no disk-writing steps · clear_temp only for the system drive</div>
       </div>
       <div class="test-chip" style="border-color:#00d4ff33">
+        <div class="test-title">test_diagnose_perf_probes.py</div>
+        <div class="test-sub">speed &amp; heat bundle · CPU share math + same-name grouping · idle/own-process/AccessDenied skipped · never asks psutil for identifying fields · live-shape LHM tree (no PC name kept) · Windows sensor fallback · startup gap pairing · power plan GUIDs · escalations</div>
+      </div>
+      <div class="test-chip" style="border-color:#00d4ff33">
+        <div class="test-title">test_diagnose_perf_rules.py</div>
+        <div class="test-sub">speed &amp; heat rules at every threshold boundary · hardware risk first · named-app focus with also_ notes · one long sign-in gap is not a slow startup · reboot_system only for memory creep / long uptime · classifier strength + app extraction</div>
+      </div>
+      <div class="test-chip" style="border-color:#00d4ff33">
         <div class="test-title">tests/fixtures/diagnose/</div>
-        <div class="test-sub">31 scenario JSON files (network: dead_gateway · dns_filtered_by_network · dns_filtered_by_router · healthy_name_resolves · hosts_file_override · hynote_zone_missing_a · ip_literal_target · network_intercepts_everything · nxdomain_nonexistent_domain · stale_cache_direct_resolves; crashes: crash_hung_shutdown_2026_10_08 (real) · crash_bugcheck_repeat · crash_whea_beats_bugcheck · crash_power_button · crash_power_loss · crash_boot_failure · crash_app_repeat_chrome · crash_system_modules_multi_app · crash_nothing_found; storage: storage_pool_degraded_2026_10_08 (real) · storage_pool_rebuilding · storage_drive_failing · storage_drive_errors · storage_drive_hot_ambiguous · storage_lhm_invalid_255 · storage_c_full · storage_e_full · storage_slow_now · storage_slow_now_plain · storage_nas_problem · storage_nothing_found) · replayed by one parametrized test in test_diagnose.py</div>
+        <div class="test-sub">44 scenario JSON files (network: dead_gateway · dns_filtered_by_network · dns_filtered_by_router · healthy_name_resolves · hosts_file_override · hynote_zone_missing_a · ip_literal_target · network_intercepts_everything · nxdomain_nonexistent_domain · stale_cache_direct_resolves; crashes: crash_hung_shutdown_2026_10_08 (real) · crash_bugcheck_repeat · crash_whea_beats_bugcheck · crash_power_button · crash_power_loss · crash_boot_failure · crash_app_repeat_chrome · crash_system_modules_multi_app · crash_nothing_found; storage: storage_pool_degraded_2026_10_08 (real) · storage_pool_rebuilding · storage_drive_failing · storage_drive_errors · storage_drive_hot_ambiguous · storage_lhm_invalid_255 · storage_c_full · storage_e_full · storage_slow_now · storage_slow_now_plain · storage_nas_problem · storage_nothing_found; speed &amp; heat: perf_throttling_whea_2026_10 · perf_running_hot · perf_gpu_hot · perf_stuck_driver · perf_cpu_hog_chrome · perf_memory_low · perf_memory_creep · perf_disk_busy · perf_gpu_busy · perf_power_saver · perf_slow_startup · perf_long_uptime · perf_idle_2026_10_17 (real)) · replayed by one parametrized test in test_diagnose.py</div>
       </div>
     </div>
     <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap">
