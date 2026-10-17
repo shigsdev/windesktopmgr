@@ -1,0 +1,223 @@
+{
+  "symptom": "my PC is slow",
+  "symptom_class": "performance",
+  "evidence": {
+    "perf.cpu": {
+      "key": "perf.cpu",
+      "label": "What's using the CPU",
+      "ok": true,
+      "data": {
+        "seconds": 3,
+        "total_pct": 4.1,
+        "busiest_core_pct": 38.0,
+        "cores": 32,
+        "top": [
+          {
+            "name": "chrome.exe",
+            "pid": 4120,
+            "count": 14,
+            "cpu_pct": 1.4
+          },
+          {
+            "name": "Code.exe",
+            "pid": 9932,
+            "count": 9,
+            "cpu_pct": 0.6
+          },
+          {
+            "name": "MsMpEng.exe",
+            "pid": 5100,
+            "count": 1,
+            "cpu_pct": 0.3
+          }
+        ],
+        "focus_app": null,
+        "focus": null
+      },
+      "elapsed_ms": 3000
+    },
+    "perf.memory": {
+      "key": "perf.memory",
+      "label": "Memory use",
+      "ok": true,
+      "data": {
+        "used_pct": 25.0,
+        "available_gb": 47.9,
+        "total_gb": 63.7,
+        "swap_used_pct": 3.0,
+        "top": [
+          {
+            "name": "chrome.exe",
+            "pid": 4120,
+            "count": 14,
+            "rss_gb": 2.1,
+            "running_h": 0.3
+          },
+          {
+            "name": "ms-teams.exe",
+            "pid": 7720,
+            "count": 3,
+            "rss_gb": 0.9,
+            "running_h": 0.3
+          }
+        ],
+        "focus": null
+      },
+      "elapsed_ms": 3000
+    },
+    "perf.thermals": {
+      "key": "perf.thermals",
+      "label": "Temperatures and fans",
+      "ok": true,
+      "data": {
+        "source": "lhm",
+        "package_c": 70.0,
+        "core_max_c": 70.0,
+        "min_tjmax_distance_c": 31.0,
+        "tjmax_c": 100.0,
+        "package_w": 48.9,
+        "p_core_mhz": 5179.2,
+        "fans": [
+          {
+            "name": "GPU Fan 1",
+            "rpm": 0.0
+          }
+        ],
+        "gpu_temp_c": 45.0
+      },
+      "elapsed_ms": 3000
+    },
+    "perf.gpu": {
+      "key": "perf.gpu",
+      "label": "Graphics card",
+      "ok": true,
+      "data": {
+        "available": true,
+        "name": "NVIDIA GeForce RTX 4060 Ti",
+        "util_pct": 5,
+        "temp_c": 45,
+        "vram_pct": 12
+      },
+      "elapsed_ms": 3000
+    },
+    "perf.kernel": {
+      "key": "perf.kernel",
+      "label": "Stuck driver check",
+      "ok": true,
+      "data": {
+        "available": true,
+        "warming_up": false,
+        "busiest": {
+          "tid": 412,
+          "pct": 2.0
+        },
+        "stuck": []
+      },
+      "elapsed_ms": 3000
+    },
+    "perf.disk_busy": {
+      "key": "perf.disk_busy",
+      "label": "Drive activity",
+      "ok": true,
+      "data": {
+        "seconds": 3,
+        "disks": [
+          {
+            "disk_number": 0,
+            "reads_s": 4.0,
+            "writes_s": 11.0,
+            "mb_s": 0.4,
+            "busy_pct": 3,
+            "avg_read_ms": null,
+            "avg_write_ms": null,
+            "name": "Drive …5B40 (Samsung SSD 990 PRO 2TB, M.2 slot 1)"
+          }
+        ]
+      },
+      "elapsed_ms": 3000
+    },
+    "perf.since_boot": {
+      "key": "perf.since_boot",
+      "label": "Since the last restart",
+      "ok": true,
+      "data": {
+        "uptime_h": 5.0,
+        "boot": "2026-10-17T12:08:53Z",
+        "memory_first_pct": 24.0,
+        "memory_now_pct": 25.0,
+        "temp_max_c": 75.0,
+        "samples": 10
+      },
+      "elapsed_ms": 3000
+    },
+    "perf.startup": {
+      "key": "perf.startup",
+      "label": "Startup time",
+      "ok": true,
+      "data": {
+        "boots": [
+          {
+            "boot": "2026-10-17T12:08:53Z",
+            "signin": "2026-10-17T12:25:10Z",
+            "gap_s": 977
+          },
+          {
+            "boot": "2026-10-16T12:24:48Z",
+            "signin": "2026-10-16T12:26:14Z",
+            "gap_s": 86
+          },
+          {
+            "boot": "2026-10-14T15:57:52Z",
+            "signin": "2026-10-14T15:58:07Z",
+            "gap_s": 15
+          }
+        ],
+        "fastest_gap_s": 15,
+        "median_gap_s": 86,
+        "last_gap_s": 977,
+        "startup_programs": 12,
+        "program_names": [
+          "OneDrive",
+          "SecurityHealth",
+          "RtkAudUService"
+        ],
+        "unavailable": []
+      },
+      "elapsed_ms": 3000
+    },
+    "perf.power_plan": {
+      "key": "perf.power_plan",
+      "label": "Power plan",
+      "ok": true,
+      "data": {
+        "scheme_guid": "a1841308-3541-4fab-bc81-f71556f20b4a",
+        "name": "Power saver"
+      },
+      "elapsed_ms": 3000
+    },
+    "perf.hw_errors": {
+      "key": "perf.hw_errors",
+      "label": "Hardware error reports",
+      "ok": true,
+      "data": {
+        "processor": 0,
+        "memory": 0,
+        "pcie": 0,
+        "fatal": 0,
+        "corrected": 0,
+        "last": null
+      },
+      "elapsed_ms": 3000
+    }
+  },
+  "expect": {
+    "rule": "power_saver",
+    "status": "confident",
+    "locus": "local",
+    "must_include": [],
+    "must_exclude": [
+      "reboot_system"
+    ],
+    "context": []
+  }
+}

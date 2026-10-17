@@ -91,6 +91,7 @@ TEST_FILES = [
     "test_diagnose_storage_probes.py",
     "test_diagnose_storage_rules.py",
     "test_diagnose_perf_probes.py",
+    "test_diagnose_perf_rules.py",
     "test_recurring_audits.py",
     "test_kernel_cpu.py",
     "test_claude_automation.py",
