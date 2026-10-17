@@ -1,6 +1,9 @@
 """
 tests/test_system_health_diag.py — Unit tests for SystemHealthDiag.py
 
+Reviewed 2026-10-17 (weekly tech-debt audit, stale-tests): SystemHealthDiag.py has had only a ruff UP038 modernization (0dd63ac) since;
+the tests still describe what the code does.
+
 Now that SystemHealthDiag.py is refactored into proper functions with a
 `if __name__ == "__main__"` guard, we can directly import and test every function.
 

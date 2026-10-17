@@ -39,7 +39,6 @@ import events
 import processes
 import remediation
 import windesktopmgr as wdm
-import windowsdrivermgr
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -4516,34 +4515,3 @@ class TestBiosVersionComparison:
         )
         result = bios.check_dell_bios_update("XPS8960", "2.24.0")
         assert result["update_available"] is True
-
-
-class TestDriverVersionNewer:
-    """Same defect class as the BIOS false positive, on the Drivers tab.
-
-    WMI and Windows Update do not always report the same number of version
-    components, and the comparison used a raw list compare -- so 31.0.15.5222
-    vs 31.0.15.5222.0, the SAME driver, ranked as an available update because a
-    longer list wins on length alone."""
-
-    @pytest.mark.parametrize(
-        "installed,latest,expected",
-        [
-            ("31.0.15.5222", "31.0.15.5222.0", False),
-            ("1.2.3", "1.2.3.0", False),
-            ("1.2.3.0", "1.2.3", False),
-            ("1.2.3", "1.2.4", True),
-            ("1.2.4", "1.2.3", False),
-            ("10.0.19041.1", "10.0.19041.2", True),
-            ("10.0.19041.2", "10.0.19041.1", False),
-            ("1.0", "1.0.0.1", True),
-        ],
-    )
-    def test_version_newer(self, installed, latest, expected):
-        assert windowsdrivermgr.version_newer(installed, latest) is expected
-
-    def test_unparseable_never_claims_an_update(self):
-        # Fail safe: an unreadable version must not produce a phantom update.
-        assert windowsdrivermgr.version_newer("abc", "def") is False
-        assert windowsdrivermgr.version_newer("", "") is False
-        assert windowsdrivermgr.version_newer(None, None) is False

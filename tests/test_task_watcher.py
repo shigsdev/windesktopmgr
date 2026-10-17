@@ -1,5 +1,8 @@
 """tests/test_task_watcher.py -- tests for scheduled-task health observer.
 
+Reviewed 2026-10-17 (weekly tech-debt audit, stale-tests): task_watcher.py has not changed since these tests were written;
+the tests still describe what the code does.
+
 All file I/O is tmp_path-based and all schtasks calls are mocked so nothing
 touches the real filesystem or Windows Task Scheduler.
 """

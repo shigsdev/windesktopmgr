@@ -601,6 +601,8 @@ EVERY run via Brevo, clean or not — a missing email means the audit stopped.
 | monthly-security-audit | 1st 13:30 | `scripts/check_security_posture.py` |
 
 - Run any of them locally with `--no-email`. Exit 0 clean / 1 findings / 2 a check crashed.
+- Scheduled runs pass `--report-only` (exit 0 even with findings), so a red X on
+  GitHub means a check crashed (exit 2) -- findings arrive by email, not as a failed job.
 - After intentionally raising coverage: `python scripts/check_test_coverage.py --write-baseline`.
 - After reviewing a new `# noqa: S…`: `python scripts/check_security_posture.py --write-baseline`.
 - Email needs the `BREVO_API_KEY` secret and `DIGEST_FROM_EMAIL` / `DIGEST_TO_EMAIL` variables on the repo.

@@ -1,6 +1,9 @@
 """
 Tests for the HEADLESS_MODE subprocess wrapper in windesktopmgr.py.
 
+Reviewed 2026-10-17 (weekly tech-debt audit, stale-tests): the HEADLESS_MODE wrapper has not changed since these tests were written;
+the tests still describe what the code does.
+
 Tests cover:
 - Monkey-patch installation (subprocess.run is wrapped)
 - CREATE_NO_WINDOW flag added when HEADLESS_MODE is True + Windows

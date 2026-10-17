@@ -696,6 +696,16 @@ def run_scan():
         drv_date = drv.get("DriverDate", "")
         dev_class = drv.get("DeviceClass", "")
         mfr = drv.get("Manufacturer", "")
+        # Global rule: an unnamed device gets auto-identified (non-blocking;
+        # AI fills the cache and the next scan shows the description). WMI
+        # almost always supplies DeviceName, so this rarely fires.
+        description = ""
+        if not name or name == "Unknown Device":
+            ctx = ", ".join(p for p in (mfr, dev_class) if p)
+            info = identify.identify("driver", name or (ctx or "unknown device"), context=ctx)
+            description = info.get("what", "")
+            if info.get("plain") and info["plain"] not in ("", name):
+                name = info["plain"]
         category = categorize(name, dev_class)
 
         is_nvidia = "nvidia" in name.lower()
@@ -743,6 +753,7 @@ def run_scan():
         results.append(
             {
                 "name": name,
+                "description": description,
                 "version": version,
                 "date": drv_date,
                 "category": category,

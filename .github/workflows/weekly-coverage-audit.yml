@@ -45,5 +45,5 @@ jobs:
           DIGEST_FROM_EMAIL: ${{ vars.DIGEST_FROM_EMAIL }}
           DIGEST_TO_EMAIL: ${{ vars.DIGEST_TO_EMAIL }}
           PYTHONIOENCODING: utf-8
-          PR_FLAGS: ${{ github.event_name == 'pull_request' && '--no-email --report-only' || '' }}
+          PR_FLAGS: ${{ github.event_name == 'pull_request' && '--no-email --report-only' || '--report-only' }}
         run: python scripts/check_test_coverage.py $PR_FLAGS
