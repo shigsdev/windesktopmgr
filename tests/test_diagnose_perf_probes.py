@@ -427,3 +427,228 @@ class TestHwErrors:
             "corrected": 110,
             "last": "2026-10-17T11:00:00Z",
         }
+
+
+# ── Task 3: history, startup, power plan, escalations ───────────────────────
+
+NOW = 1_800_000_000.0
+
+
+class TestSinceBoot:
+    def test_since_boot_memory_movement(self, mocker):
+        mocker.patch("diagnose_perf_probes.time.time", return_value=NOW)
+        mocker.patch("diagnose_perf_probes.psutil.boot_time", return_value=NOW - 96 * 3600)
+        series = {
+            "memory_percent": [{"ts": "a", "value": 40.0}, {"ts": "b", "value": 60.0}, {"ts": "c", "value": 85.0}],
+            "cpu_temp_c": [{"ts": "a", "value": 70.0}, {"ts": "b", "value": 99.0}],
+        }
+        get = mocker.patch(
+            "diagnose_perf_probes.metrics_history.get_series", side_effect=lambda metric, window: series[metric]
+        )
+        data = dpp.REGISTERED["perf.since_boot"].fn({})
+        assert data["uptime_h"] == 96.0
+        assert data["memory_first_pct"] == 40.0
+        assert data["memory_now_pct"] == 85.0
+        assert data["temp_max_c"] == 99.0
+        assert data["samples"] == 3
+        assert data["boot"].endswith("Z")
+        assert abs(get.call_args.kwargs["window"].total_seconds() - 96 * 3600) < 5
+
+    def test_since_boot_empty_history(self, mocker):
+        mocker.patch("diagnose_perf_probes.time.time", return_value=NOW)
+        mocker.patch("diagnose_perf_probes.psutil.boot_time", return_value=NOW - 3600)
+        mocker.patch("diagnose_perf_probes.metrics_history.get_series", return_value=[])
+        data = dpp.REGISTERED["perf.since_boot"].fn({})
+        assert data["samples"] == 0
+        assert data["memory_first_pct"] is None
+        assert data["memory_now_pct"] is None
+        assert data["temp_max_c"] is None
+        assert data["uptime_h"] == 1.0
+
+
+class TestStartup:
+    def test_pair_startups_live_shape(self):
+        rows = dpp.pair_startups(
+            ["2026-10-16T12:24:48Z", "2026-10-17T12:08:53Z"],
+            ["2026-10-16T12:26:14Z", "2026-10-17T12:25:10Z"],
+        )
+        assert [r["gap_s"] for r in rows] == [977, 86]
+        assert rows[0]["boot"] == "2026-10-17T12:08:53Z"
+
+    def test_startup_boot_without_signin_is_skipped(self):
+        rows = dpp.pair_startups(["2026-10-16T08:00:00Z", "2026-10-16T09:00:00Z"], ["2026-10-16T09:00:30Z"])
+        assert rows == [{"boot": "2026-10-16T09:00:00Z", "signin": "2026-10-16T09:00:30Z", "gap_s": 30}]
+
+    def test_pair_startups_caps_at_five(self):
+        boots = [f"2026-10-1{d}T08:00:00Z" for d in range(7)]
+        signins = [f"2026-10-1{d}T08:01:00Z" for d in range(7)]
+        assert len(dpp.pair_startups(boots, signins)) == 5
+
+    @pytest.fixture
+    def events(self, mocker):
+        def load(boots, signins, unreadable=False):
+            def fake_query(channel, xpath, unavailable=None, **kw):
+                if unreadable:
+                    if unavailable is not None:
+                        unavailable.append(channel)
+                    return []
+                stamps = signins if "7001" in xpath else boots
+                return [{"time": t} for t in stamps]
+
+            return mocker.patch("diagnose_perf_probes.dcp._query", side_effect=fake_query)
+
+        return load
+
+    def test_startup_fastest_and_median(self, events, mocker):
+        mocker.patch("windesktopmgr.get_startup_items", return_value=[])
+        q = events(
+            ["2026-10-14T08:00:00Z", "2026-10-15T08:00:00Z", "2026-10-16T08:00:00Z"],
+            ["2026-10-14T08:03:10Z", "2026-10-15T08:03:20Z", "2026-10-16T08:06:40Z"],
+        )
+        data = dpp.REGISTERED["perf.startup"].fn({})
+        assert data["fastest_gap_s"] == 190
+        assert data["median_gap_s"] == 200
+        assert data["last_gap_s"] == 400
+        xpaths = " ".join(c.args[1] for c in q.call_args_list)
+        assert "Microsoft-Windows-Kernel-General" in xpaths
+        assert "Microsoft-Windows-Winlogon" in xpaths
+
+    def test_startup_names_only(self, events, mocker):
+        events([], [])
+        mocker.patch(
+            "windesktopmgr.get_startup_items",
+            return_value=[
+                {"Name": "OneDrive", "Command": "C:\\Users\\higs7\\OneDrive.exe /background", "Enabled": True},
+                {"Name": "Spotify", "Command": "C:\\Users\\higs7\\Spotify.exe", "Enabled": False},
+            ],
+        )
+        data = dpp.REGISTERED["perf.startup"].fn({})
+        assert data["startup_programs"] == 1
+        assert data["program_names"] == ["OneDrive"]
+        assert "higs7" not in json.dumps(data)
+
+    def test_startup_unreadable_log(self, events, mocker):
+        mocker.patch("windesktopmgr.get_startup_items", side_effect=OSError("no"))
+        events([], [], unreadable=True)
+        data = dpp.REGISTERED["perf.startup"].fn({})
+        assert data["fastest_gap_s"] is None
+        assert data["median_gap_s"] is None
+        assert data["boots"] == []
+        assert "System" in data["unavailable"]
+        assert data["startup_programs"] is None
+
+
+class TestPowerPlan:
+    @pytest.mark.parametrize(
+        ("guid", "name"),
+        [
+            ("381b4222-f694-41f0-9685-ff5bb260df2e", "Balanced"),
+            ("8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c", "High performance"),
+            ("a1841308-3541-4fab-bc81-f71556f20b4a", "Power saver"),
+            ("E9A42B02-D5DF-448D-AA00-03F14749EB61", "Ultimate performance"),
+            ("12345678-0000-0000-0000-000000000000", "Custom"),
+        ],
+    )
+    def test_power_plan_known_and_custom(self, mocker, guid, name):
+        mocker.patch("diagnose_perf_probes.winreg.OpenKey")
+        mocker.patch("diagnose_perf_probes.winreg.QueryValueEx", return_value=(guid, 1))
+        assert dpp.REGISTERED["perf.power_plan"].fn({}) == {"scheme_guid": guid.lower(), "name": name}
+
+    def test_power_plan_unreadable(self, mocker):
+        mocker.patch("diagnose_perf_probes.winreg.OpenKey", side_effect=OSError("denied"))
+        assert dpp.REGISTERED["perf.power_plan"].fn({}) == {"scheme_guid": None, "name": "Unknown"}
+
+
+class TestEscalation:
+    def test_cpu_long_uses_15s(self, mocker):
+        sample = mocker.patch("diagnose_perf_probes.cpu_sample", return_value={"seconds": 15, "top": [], "_all": []})
+        data = dpp.REGISTERED["perf.cpu_long"].fn({})
+        sample.assert_called_once_with(15)
+        assert "_all" not in data
+
+    def _groups(self, mocker):
+        mocker.patch(
+            "diagnose_perf_probes.cpu_sample",
+            side_effect=lambda seconds: {
+                "seconds": seconds,
+                "top": [{"name": "chrome.exe", "pid": 1, "count": 4, "cpu_pct": 30.0}],
+                "_all": [
+                    {"name": "chrome.exe", "pid": 1, "count": 4, "cpu_pct": 30.0},
+                    {"name": "Teams.exe", "pid": 9, "count": 2, "cpu_pct": 2.5},
+                ],
+            },
+        )
+        mocker.patch(
+            "diagnose_perf_probes._memory_groups",
+            return_value=[
+                {"name": "chrome.exe", "pid": 1, "count": 4, "rss_gb": 3.0, "running_h": 5.0, "_rss": 3 * GIB},
+                {"name": "Teams.exe", "pid": 9, "count": 2, "rss_gb": 1.5, "running_h": 30.0, "_rss": int(1.5 * GIB)},
+            ],
+        )
+
+    def test_app_detail_matches_named_app(self, mocker):
+        self._groups(mocker)
+        data = dpp.REGISTERED["perf.app_detail"].fn({"app_name": "Teams"})
+        assert data == {
+            "app": "Teams",
+            "matched": 2,
+            "cpu_pct": 2.5,
+            "rss_gb": 1.5,
+            "running_h": 30.0,
+            "children": 1,
+        }
+
+    def test_app_detail_defaults_to_top_cpu_app(self, mocker):
+        self._groups(mocker)
+        data = dpp.REGISTERED["perf.app_detail"].fn({})
+        assert data["app"] == "chrome.exe"
+        assert data["matched"] == 4
+        assert data["children"] == 3
+
+    def test_app_detail_no_match(self, mocker):
+        self._groups(mocker)
+        data = dpp.REGISTERED["perf.app_detail"].fn({"app_name": "Photoshop"})
+        assert data["matched"] == 0
+        assert data["cpu_pct"] is None
+
+    def test_trend_daily_max_median(self, mocker):
+        series = {
+            "memory_percent": [
+                {"ts": "2026-10-16T08:00:00", "value": 40.0},
+                {"ts": "2026-10-16T12:00:00", "value": 60.0},
+                {"ts": "2026-10-16T18:00:00", "value": 90.0},
+                {"ts": "2026-10-17T08:00:00", "value": 50.0},
+            ],
+            "cpu_percent": [],
+            "cpu_temp_c": [{"ts": "2026-10-17T08:00:00", "value": 99.0}],
+        }
+        get = mocker.patch(
+            "diagnose_perf_probes.metrics_history.get_series", side_effect=lambda metric, window: series[metric]
+        )
+        data = dpp.REGISTERED["perf.trend_7d"].fn({})
+        assert data["memory_percent"] == [
+            {"day": "2026-10-16", "max": 90.0, "median": 60.0},
+            {"day": "2026-10-17", "max": 50.0, "median": 50.0},
+        ]
+        assert data["cpu_percent"] == []
+        assert data["cpu_temp_c"] == [{"day": "2026-10-17", "max": 99.0, "median": 99.0}]
+        assert get.call_args.kwargs["window"].days == 7
+
+
+def test_wave1_and_escalate_complete():
+    import diagnose
+
+    c = diagnose.SYMPTOM_CLASSES["performance"]
+    assert c["wave1"] == (
+        "perf.cpu",
+        "perf.memory",
+        "perf.thermals",
+        "perf.gpu",
+        "perf.kernel",
+        "perf.disk_busy",
+        "perf.since_boot",
+        "perf.startup",
+        "perf.power_plan",
+        "perf.hw_errors",
+    )
+    assert c["escalate"] == ("perf.cpu_long", "perf.app_detail", "perf.trend_7d")

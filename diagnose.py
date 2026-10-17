@@ -186,9 +186,12 @@ SYMPTOM_CLASSES = {
             "perf.gpu",
             "perf.kernel",
             "perf.disk_busy",
+            "perf.since_boot",
+            "perf.startup",
+            "perf.power_plan",
             "perf.hw_errors",
         ),
-        "escalate": (),
+        "escalate": ("perf.cpu_long", "perf.app_detail", "perf.trend_7d"),
         # Looked up at call time: the two diagnose modules import each other.
         "rules": lambda evidence, host: dpr.evaluate_perf_rules(evidence),
         "prompt": _PERF_PROMPT,

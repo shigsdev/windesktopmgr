@@ -17,7 +17,10 @@ from __future__ import annotations
 
 import os
 import re
+import statistics
 import time
+import winreg
+from datetime import datetime, timedelta, timezone
 
 import psutil
 
@@ -27,6 +30,7 @@ import diagnose_storage_probes as dsp
 import gpu
 import kernel_cpu
 import lhm
+import metrics_history
 import thermals
 
 _REDACT = ("username", "serial", "mac", "self_host")
@@ -419,3 +423,181 @@ def _p_hw_errors(slots: dict) -> dict:
 
 
 _perf_probe("perf.hw_errors", "Hardware error reports", _p_hw_errors)
+
+
+# ── since the last restart ────────────────────────────────────────────────
+
+_ISO = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def _values(series: list) -> list[float]:
+    return [float(p["value"]) for p in series or [] if isinstance(p, dict) and isinstance(p.get("value"), (int, float))]
+
+
+def _p_since_boot(slots: dict) -> dict:
+    boot = psutil.boot_time()
+    up_s = max(0.0, time.time() - boot)
+    window = timedelta(seconds=up_s)
+    memory = _values(metrics_history.get_series("memory_percent", window=window))
+    temps = _values(metrics_history.get_series("cpu_temp_c", window=window))
+    return {
+        "uptime_h": round(up_s / 3600, 1),
+        "boot": datetime.fromtimestamp(boot, tz=timezone.utc).strftime(_ISO),
+        "memory_first_pct": memory[0] if memory else None,
+        "memory_now_pct": memory[-1] if memory else None,
+        "temp_max_c": max(temps) if temps else None,
+        "samples": len(memory),
+    }
+
+
+_perf_probe("perf.since_boot", "Since the last restart", _p_since_boot)
+
+
+# ── startup time ──────────────────────────────────────────────────────────
+
+STARTUP_DAYS = 14
+MAX_STARTUPS = 5
+MAX_PROGRAM_NAMES = 30
+
+
+def _utc(stamp: str) -> datetime:
+    return datetime.strptime(stamp, _ISO).replace(tzinfo=timezone.utc)
+
+
+def pair_startups(boots: list[str], signins: list[str]) -> list[dict]:
+    """Each start (newest first, at most 5) with the first sign-in after it
+    and before the next start. A start nobody signed in after is skipped
+    rather than paired with a later start's sign-in."""
+    starts = sorted({b for b in boots if isinstance(b, str)})
+    logons = sorted({s for s in signins if isinstance(s, str)})
+    rows = []
+    for i, boot in enumerate(starts):
+        nxt = starts[i + 1] if i + 1 < len(starts) else None
+        signin = next((s for s in logons if s > boot and (nxt is None or s < nxt)), None)
+        if signin is None:
+            continue
+        rows.append({"boot": boot, "signin": signin, "gap_s": round((_utc(signin) - _utc(boot)).total_seconds())})
+    return list(reversed(rows))[:MAX_STARTUPS]
+
+
+def _event_times(provider: str, event_id: int, unavailable: list[str]) -> list[str]:
+    xpath = dcp.window_xpath(ids=[event_id], providers=[provider], days=STARTUP_DAYS)
+    return [e.get("time") for e in dcp._query("System", xpath, unavailable, max_events=50) if isinstance(e, dict)]
+
+
+def _startup_programs() -> tuple[int | None, list[str]]:
+    """Enabled startup programs by NAME only; their command lines carry user paths."""
+    import windesktopmgr  # noqa: PLC0415 -- windesktopmgr imports diagnose, which imports this module
+
+    try:
+        items = windesktopmgr.get_startup_items() or []
+    except Exception:  # noqa: BLE001 -- unreadable startup list -> unknown, not zero
+        return None, []
+    names = [str(i.get("Name")) for i in items if isinstance(i, dict) and i.get("Enabled") and i.get("Name")]
+    return len(names), names[:MAX_PROGRAM_NAMES]
+
+
+def _p_startup(slots: dict) -> dict:
+    unavailable: list[str] = []
+    boots = _event_times("Microsoft-Windows-Kernel-General", 12, unavailable)
+    signins = _event_times("Microsoft-Windows-Winlogon", 7001, unavailable)
+    rows = pair_startups(boots, signins)
+    gaps = [r["gap_s"] for r in rows]
+    count, names = _startup_programs()
+    return {
+        "boots": rows,
+        "fastest_gap_s": min(gaps) if gaps else None,
+        "median_gap_s": round(statistics.median(gaps)) if gaps else None,
+        "last_gap_s": gaps[0] if gaps else None,
+        "startup_programs": count,
+        "program_names": names,
+        "unavailable": list(dict.fromkeys(unavailable)),
+    }
+
+
+_perf_probe("perf.startup", "Startup time", _p_startup)
+
+
+# ── power plan ────────────────────────────────────────────────────────────
+
+_POWER_SCHEMES_KEY = r"SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes"
+POWER_PLANS = {
+    "381b4222-f694-41f0-9685-ff5bb260df2e": "Balanced",
+    "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c": "High performance",
+    "a1841308-3541-4fab-bc81-f71556f20b4a": "Power saver",
+    "e9a42b02-d5df-448d-aa00-03f14749eb61": "Ultimate performance",
+}
+
+
+def _p_power_plan(slots: dict) -> dict:
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _POWER_SCHEMES_KEY) as key:
+            value, _kind = winreg.QueryValueEx(key, "ActivePowerScheme")
+    except OSError:
+        return {"scheme_guid": None, "name": "Unknown"}
+    guid = str(value).strip().lower()
+    return {"scheme_guid": guid, "name": POWER_PLANS.get(guid, "Custom")}
+
+
+_perf_probe("perf.power_plan", "Power plan", _p_power_plan)
+
+
+# ── escalation probes ─────────────────────────────────────────────────────
+
+CPU_LONG_S = 15
+APP_DETAIL_S = 10
+TREND_DAYS = 7
+
+
+def _p_cpu_long(slots: dict) -> dict:
+    data = cpu_sample(CPU_LONG_S)
+    data.pop("_all", None)
+    return data
+
+
+_perf_probe("perf.cpu_long", "What's using the CPU (15 s)", _p_cpu_long, timeout_s=20.0)
+
+
+def _p_app_detail(slots: dict) -> dict:
+    app = _focus_slot(slots)
+    if app is None:
+        top = cpu_sample(1).get("top") or []
+        app = top[0]["name"] if top else None
+    cpu_rows = [r for r in cpu_sample(APP_DETAIL_S).get("_all") or [] if app_matches(app, r["name"])]
+    mem_rows = [r for r in _memory_groups() if app_matches(app, r["name"])]
+    matched = sum(r["count"] for r in mem_rows) or sum(r["count"] for r in cpu_rows)
+    ages = [r["running_h"] for r in mem_rows if r.get("running_h") is not None]
+    return {
+        "app": app,
+        "matched": matched,
+        "cpu_pct": round(sum(r["cpu_pct"] for r in cpu_rows), 1) if cpu_rows else None,
+        "rss_gb": _gb(sum(r["_rss"] for r in mem_rows)) if mem_rows else None,
+        "running_h": max(ages) if ages else None,
+        # Helper processes beyond the first: Chrome's tabs, Teams' renderers.
+        "children": max(0, matched - 1),
+    }
+
+
+_perf_probe("perf.app_detail", "App detail", _p_app_detail, timeout_s=15.0, needs_optional=("app_name",))
+
+
+def _daily(series: list) -> list[dict]:
+    days: dict[str, list[float]] = {}
+    for point in series or []:
+        if isinstance(point, dict) and isinstance(point.get("value"), (int, float)):
+            days.setdefault(str(point.get("ts", ""))[:10], []).append(float(point["value"]))
+    return [
+        {"day": day, "max": max(vals), "median": round(statistics.median(vals), 1)}
+        for day, vals in sorted(days.items())
+        if day
+    ][-TREND_DAYS:]
+
+
+def _p_trend_7d(slots: dict) -> dict:
+    window = timedelta(days=TREND_DAYS)
+    return {
+        m: _daily(metrics_history.get_series(m, window=window)) for m in ("memory_percent", "cpu_percent", "cpu_temp_c")
+    }
+
+
+_perf_probe("perf.trend_7d", "Last 7 days", _p_trend_7d)
