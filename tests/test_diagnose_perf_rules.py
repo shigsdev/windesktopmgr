@@ -215,3 +215,45 @@ def test_steps_capped_and_never_drastic(path):
     assert len(v["manual_steps"]) <= diagnose.MAX_MANUAL_STEPS
     for step in v["manual_steps"]:
         assert not re.search(r"taskkill|end task|bios|overclock", step, re.IGNORECASE), step
+
+
+class TestPerfClassifier:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("Chrome is slow", "Chrome"),
+            ("Microsoft Teams is laggy", "Microsoft Teams"),
+            ("Teams is eating my RAM", "Teams"),
+            ("Photoshop is using all my memory", "Photoshop"),
+            ("Chrome is really slow", "Chrome"),
+            ("my computer is slow", None),
+            ("my PC is slow and running hot", None),
+            ("the fans are hot", None),
+            ("Word and Excel are slow", None),
+            ("everything is slow", None),
+            ("", None),
+        ],
+    )
+    def test_extract_perf_app(self, text, expected):
+        assert dpr.extract_perf_app(text) == expected
+
+    @pytest.mark.parametrize(
+        ("text", "kind"),
+        [
+            ("it overheats", "strong"),
+            ("the CPU is throttling", "strong"),
+            ("high cpu", "strong"),
+            ("out of memory", "strong"),
+            ("loud fans", "strong"),
+            ("fans keep spinning up", "strong"),
+            ("slow boot", "strong"),
+            ("it's sluggish", "weak"),
+            ("games stutter", "weak"),
+            ("video is lagging", "weak"),
+            ("clear the temp folder", None),
+            ("I'm a fan of this app", None),
+            ("hotspot won't connect", None),
+        ],
+    )
+    def test_perf_strength(self, text, kind):
+        assert dpr.perf_strength(text) == kind

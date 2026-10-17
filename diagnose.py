@@ -346,12 +346,27 @@ def classify(symptom: str) -> dict:
             return {"symptom_class": None, "slots": {}, "candidates": candidates, "missing": []}
         drive = dsr.extract_drive(text)
         return {"symptom_class": "storage", "slots": {"drive": drive} if drive else {}, "candidates": [], "missing": []}
-    if dcr.CRASH_RE.search(text) and not (network and not dcr.STRONG_CRASH_RE.search(text)):
+    perf = dpr.perf_strength(text)
+    strong_crash = bool(dcr.STRONG_CRASH_RE.search(text))
+    # A weak crash word next to a speed word is timing, not a crash ("slow since I rebooted").
+    if dcr.CRASH_RE.search(text) and not (network and not strong_crash) and (strong_crash or not perf):
         # A crash AND a site ("Chrome crashed loading example.com"): ask, never guess.
         if network:
             return {"symptom_class": None, "slots": {}, "candidates": candidates, "missing": []}
         app = dcr.extract_app_name(text)
         return {"symptom_class": "crashes", "slots": {"app_name": app} if app else {}, "candidates": [], "missing": []}
+    if perf and network:
+        # "The internet is slow" is the network's; heat next to a site is ambiguous: ask.
+        if perf == "strong":
+            return {"symptom_class": None, "slots": {}, "candidates": candidates, "missing": []}
+    elif perf:
+        app = dpr.extract_perf_app(text)
+        return {
+            "symptom_class": "performance",
+            "slots": {"app_name": app} if app else {},
+            "candidates": [],
+            "missing": [],
+        }
     if not network:
         return {"symptom_class": None, "slots": {}, "candidates": [], "missing": []}
     if len(candidates) == 1:

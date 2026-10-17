@@ -40,7 +40,8 @@ class TestClassify:
             ("the PC crashed while copying to E:", None, {}),
             ("NAS unreachable", "storage", {}),
             ("the NAS can't reach example.com", None, {}),
-            ("I drive to work and my PC is slow", None, {}),
+            # Not storage and no drive slot; "my PC is slow" is the speed & heat class (spec 2026-10-17 P1).
+            ("I drive to work and my PC is slow", "performance", {}),
             ("I need a drive for backups", "storage", {}),
             ("Google Drive won't sync", None, {}),
             ("OneDrive is stuck", None, {}),
@@ -53,6 +54,35 @@ class TestClassify:
         ],
     )
     def test_storage_classification(self, sentence, expected_class, expected_slots):
+        r = diagnose.classify(sentence)
+        assert r["symptom_class"] == expected_class
+        assert r["slots"] == expected_slots
+
+    @pytest.mark.parametrize(
+        ("sentence", "expected_class", "expected_slots"),
+        [
+            ("my PC is slow and running hot", "performance", {}),
+            ("Chrome is slow", "performance", {"app_name": "Chrome"}),
+            ("Teams is eating my RAM", "performance", {"app_name": "Teams"}),
+            ("Chrome is really slow", "performance", {"app_name": "Chrome"}),
+            ("my computer is slow", "performance", {}),
+            ("the fans are really loud", "performance", {}),
+            ("100% cpu all the time", "performance", {}),
+            ("my PC is slow to start", "performance", {}),
+            ("it takes forever to boot", "performance", {}),
+            ("my PC won't start", "crashes", {}),
+            ("the internet is slow", "network_dns", {}),
+            ("E: is slow", "storage", {"drive": "E:"}),
+            ("the PC froze", "crashes", {}),
+            ("the internet is slow and my PC is hot", None, {}),
+            ("my PC is slow since I rebooted", "performance", {}),
+            ("I love my fans", None, {}),
+            ("clear my temp files", None, {}),
+            ("example.com won't load", "network_dns", {"target_host": "example.com"}),
+            ("the computer crashed last evening - cna you investigate?", "crashes", {}),
+        ],
+    )
+    def test_perf_classification(self, sentence, expected_class, expected_slots):
         r = diagnose.classify(sentence)
         assert r["symptom_class"] == expected_class
         assert r["slots"] == expected_slots
@@ -2928,6 +2958,10 @@ class TestRoutes:
         assert storage["label"] == "Storage & drives"
         assert storage["slots"] == []
         assert storage["optional_slots"] == ["drive"]
+        perf = next(c for c in data if c["key"] == "performance")
+        assert perf["label"] == "Speed & heat"
+        assert perf["slots"] == []
+        assert perf["optional_slots"] == ["app_name"]
 
     # --- POST /api/diagnose/start ---
     def test_start_returns_session_id(self, client):

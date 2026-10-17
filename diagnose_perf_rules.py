@@ -15,7 +15,10 @@ functions, so either module can be imported first.
 
 from __future__ import annotations
 
+import re
+
 import diagnose as dg
+import diagnose_crash_rules as dcr
 
 THROTTLE_DISTANCE_C = 2
 HOT_CPU_C = 90
@@ -37,6 +40,85 @@ LONG_UPTIME_H = 168
 SINCE_BOOT_NOTE_POINTS = 10
 _HEAT_RISKS = ("thermal_throttling", "running_hot")
 _REBOOT_RULES = ("memory_creep", "long_uptime")
+
+
+# ── classifier helpers (spec §8; used by diagnose.classify) ──────────────
+
+# Words that only ever describe this PC's speed or heat. Whole words: "hot"
+# not "hotspot"; "temp" not "temp files"; a fan only when it is loud or busy.
+_FAN_NOISE = r"(?:loud|noisy|racing|roaring|spinning|running|whirring)"
+PERF_STRONG_RE = re.compile(
+    r"\b(?:hot|overheat\w*|temperatures?|temps?(?!\s+(?:files?|folders?|director(?:y|ies)))|throttl\w*|"
+    r"high\s+cpu|\d+\s?%\s*(?:of\s+(?:the\s+|my\s+)?)?(?:cpu|memory|ram)|cpu\s+usage|memory|ram|"
+    r"slow\s+to\s+(?:start|boot)\w*|slow\s+(?:startup|boot\w*)|takes\s+forever\s+to\s+(?:start|boot)|"
+    rf"fans?(?:\W+\w+){{0,3}}?\W+{_FAN_NOISE}|{_FAN_NOISE}\W+(?:\w+\W+){{0,2}}?fans?)\b",
+    re.IGNORECASE,
+)
+# Slowness words that also describe a website or a drive ("the internet is
+# slow"): next to a network word they defer to the network class.
+PERF_WEAK_RE = re.compile(r"\b(?:slow\w*|sluggish|lag\w*|stutter\w*)\b", re.IGNORECASE)
+
+_APP_SLOW_RE = re.compile(
+    r"(?P<name>(?:[\w\"“”'.+-]+\s+){0,3}[\w\"“”'.+-]+)\s+"
+    r"(?:slow\w*|laggy|lagging|sluggish|hot|"
+    r"(?:using|eating|hogging)\s+(?:up\s+)?(?:all\s+)?(?:of\s+)?(?:my|the)\s+(?:cpu|memory|ram))\b",
+    re.IGNORECASE,
+)
+# Words between the app and the verb ("Chrome is really slow").
+_TRAILING = frozenset(
+    {*dcr._AUXILIARY, "are", "keeps", "keep", "been", "seems", "so", "really", "very", "getting", "running", "being"}
+)
+# Not an app: the PC's own parts and the words people use for "everything".
+_NOT_AN_APP = frozenset(
+    {
+        *dcr._GENERIC,
+        "fan",
+        "fans",
+        "cpu",
+        "processor",
+        "memory",
+        "ram",
+        "gpu",
+        "graphics",
+        "card",
+        "temperature",
+        "temps",
+        "startup",
+        "boot",
+        "games",
+        "things",
+        "internet",
+        "wifi",
+        "network",
+    }
+)
+
+
+def perf_strength(text: str) -> str | None:
+    """``"strong"``, ``"weak"`` or None: how surely ``text`` is about speed or heat."""
+    text = text if isinstance(text, str) else ""
+    if PERF_STRONG_RE.search(text):
+        return "strong"
+    return "weak" if PERF_WEAK_RE.search(text) else None
+
+
+def extract_perf_app(text: str) -> str | None:
+    """The app a sentence says is slow or hungry ("Teams is eating my RAM" ->
+    "Teams"), or None for the PC itself, several apps or no app at all."""
+    m = _APP_SLOW_RE.search(text if isinstance(text, str) else "")
+    if not m:
+        return None
+    words = [w.strip("\"“”'.,!?") for w in m.group("name").split()]
+    words = [w for w in words if w]
+    if any(w.lower() in dcr._LIST_WORDS for w in words):
+        return None
+    while words and words[-1].lower() in _TRAILING:
+        words.pop()
+    while words and words[0].lower() in dcr._LEADING_FILLER:
+        words.pop(0)
+    if not words or words[-1].lower() in _NOT_AN_APP:
+        return None
+    return " ".join(words)
 
 
 # ── evidence helpers ──────────────────────────────────────────────────────
