@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import re
 import statistics
+import struct
 import time
 import winreg
 from datetime import datetime, timedelta, timezone
@@ -81,10 +82,64 @@ def _focus_slot(slots: dict) -> str | None:
 # ── CPU ───────────────────────────────────────────────────────────────────
 
 
+# x64 SYSTEM_PROCESS_INFORMATION fields (verified live against psutil on
+# Windows 11 25H2, 2026-10-17): CreateTime 0x20, UserTime 0x28, KernelTime
+# 0x30 (100-ns ticks), ImageName UNICODE_STRING (Length 0x38, Buffer 0x40),
+# UniqueProcessId 0x50, WorkingSetSize 0x90.
+_SPI_HEADER = 0x100
+_FILETIME_UNIX_S = 11_644_473_600
+_MAX_ENTRIES = 100_000
+
+
+def parse_process_table(raw: bytes, base: int) -> dict[int, dict]:
+    """``{pid: {"name", "cpu_s", "rss", "create_time"}}`` for every process in
+    a raw SystemProcessInformation buffer read at address ``base``.
+    Bounds-checked: an entry or name that runs past ``raw`` is dropped, never
+    read. Image names only -- no paths, command lines or users."""
+    out: dict[int, dict] = {}
+    off, size = 0, len(raw)
+    for _ in range(_MAX_ENTRIES):
+        if off + _SPI_HEADER > size:
+            break
+        nxt = struct.unpack_from("<I", raw, off)[0]
+        created, user, kernel = struct.unpack_from("<qqq", raw, off + 0x20)
+        length = struct.unpack_from("<H", raw, off + 0x38)[0]
+        ptr = struct.unpack_from("<Q", raw, off + 0x40)[0]
+        pid = struct.unpack_from("<Q", raw, off + 0x50)[0]
+        rss = struct.unpack_from("<Q", raw, off + 0x90)[0]
+        name = ""
+        start = ptr - base
+        if ptr and start >= 0 and start + length <= size:
+            name = raw[start : start + length].decode("utf-16-le", errors="replace")
+        out[pid] = {
+            "name": name,
+            "cpu_s": (user + kernel) / 1e7,
+            "rss": rss,
+            "create_time": created / 1e7 - _FILETIME_UNIX_S if created else None,
+        }
+        if nxt == 0:
+            break
+        off += nxt
+    return out
+
+
+def _nt_processes() -> dict[int, dict] | None:
+    """Every process from ONE NtQuerySystemInformation snapshot (~5 ms for
+    500 processes, protected ones included), or None to fall back to psutil,
+    whose per-process reads take ~1.6 s here and pushed perf.cpu past its
+    timeout when ten probes ran at once."""
+    try:
+        result = kernel_cpu.query_process_buffer()
+    except Exception:  # noqa: BLE001 -- ctypes/OS failure -> psutil fallback
+        return None
+    table = parse_process_table(*result) if result else {}
+    return table or None
+
+
 def _proc_fields(attrs: list[str]):
-    """Each live process's ``attrs`` as a dict read on THIS thread. Never
-    ``process_iter(attrs=...)``: it writes ``proc.info`` on Process objects
-    psutil shares between threads, and two probes run at once."""
+    """psutil fallback: each live process's ``attrs`` read on THIS thread.
+    Never ``process_iter(attrs=...)``: it writes ``proc.info`` on Process
+    objects psutil shares between threads, and two probes run at once."""
     for proc in psutil.process_iter():
         try:
             yield proc.as_dict(attrs=attrs, ad_value=None)
@@ -97,6 +152,13 @@ def _cpu_snapshot() -> dict[int, tuple[str, float]]:
     leaving out the idle pseudo-process and this app's own process."""
     me = os.getpid()
     out: dict[int, tuple[str, float]] = {}
+    table = _nt_processes()
+    if table is not None:
+        for pid, proc in table.items():
+            name = proc["name"]
+            if name and pid not in (0, me) and name.lower() not in _IDLE_NAMES:
+                out[pid] = (name, proc["cpu_s"])
+        return out
     for info in _proc_fields(["pid", "name", "cpu_times"]):
         pid, name, times = info.get("pid"), info.get("name"), info.get("cpu_times")
         if times is None or not name or pid in (0, me) or name.lower() in _IDLE_NAMES:
@@ -168,6 +230,25 @@ def _gb(n: float) -> float:
     return round(n / 1024**3, 1)
 
 
+def _memory_rows():
+    """``{"pid", "name", "rss", "create_time"}`` per process: one system
+    snapshot, else psutil."""
+    table = _nt_processes()
+    if table is not None:
+        for pid, proc in table.items():
+            if pid:
+                yield {"pid": pid, "name": proc["name"], "rss": proc["rss"], "create_time": proc["create_time"]}
+        return
+    for info in _proc_fields(["pid", "name", "memory_info", "create_time"]):
+        mem = info.get("memory_info")
+        yield {
+            "pid": info.get("pid"),
+            "name": info.get("name"),
+            "rss": mem.rss if mem is not None else None,
+            "create_time": info.get("create_time"),
+        }
+
+
 def _memory_groups() -> list[dict]:
     """Programs by resident memory, same-name processes summed; ``running_h``
     is the oldest instance's age, ``max_proc_gb`` / ``max_proc_h`` the biggest
@@ -175,18 +256,18 @@ def _memory_groups() -> list[dict]:
     small ones adding up)."""
     now = time.time()
     groups: dict[str, dict] = {}
-    for info in _proc_fields(["pid", "name", "memory_info", "create_time"]):
-        name, mem = info.get("name"), info.get("memory_info")
-        if not name or mem is None or name.lower() in _IDLE_NAMES:
+    for info in _memory_rows():
+        name, rss = info["name"], info["rss"]
+        if not name or rss is None or name.lower() in _IDLE_NAMES:
             continue
         row = groups.setdefault(
-            name, {"name": name, "pid": info.get("pid"), "count": 0, "rss": 0, "_big": -1, "_t": None, "_big_t": None}
+            name, {"name": name, "pid": info["pid"], "count": 0, "rss": 0, "_big": -1, "_t": None, "_big_t": None}
         )
         row["count"] += 1
-        row["rss"] += mem.rss
-        created = info.get("create_time")
-        if mem.rss > row["_big"]:
-            row["_big"], row["pid"] = mem.rss, info.get("pid")
+        row["rss"] += rss
+        created = info["create_time"]
+        if rss > row["_big"]:
+            row["_big"], row["pid"] = rss, info["pid"]
             row["_big_t"] = created if isinstance(created, (int, float)) else None
         if isinstance(created, (int, float)) and (row["_t"] is None or created < row["_t"]):
             row["_t"] = created
