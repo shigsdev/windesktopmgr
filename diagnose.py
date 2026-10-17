@@ -1450,6 +1450,9 @@ def apply_guards(
     # rules decide when that applies (a full system drive), never the model alone.
     if class_key == "storage" and "clear_temp" not in (rule_verdict.get("suggested_actions") or []):
         out["suggested_actions"] = [a for a in out["suggested_actions"] if a != "clear_temp"]
+    # For speed & heat, a restart only helps memory built up over time; the rules decide that.
+    if class_key == "performance" and "reboot_system" not in (rule_verdict.get("suggested_actions") or []):
+        out["suggested_actions"] = [a for a in out["suggested_actions"] if a != "reboot_system"]
     # Allowlist, last line of defence: anything odd or missing carries no actions.
     if not (out.get("status") in ("confident", "likely") and out.get("locus") in ("local", "unknown")):
         out["suggested_actions"] = []

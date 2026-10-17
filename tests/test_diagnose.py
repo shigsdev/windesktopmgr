@@ -950,6 +950,29 @@ class TestManualStepsFromModel:
         )
         assert kept["suggested_actions"] == ["clear_temp"]
 
+    def test_perf_reboot_dropped_unless_rules_offered(self):
+        """Spec 2026-10-17 §6: restarting only for memory creep or a long uptime, as the rules decide."""
+        v = {"status": "likely", "locus": "local", "suggested_actions": ["reboot_system"], "manual_steps": []}
+        rule = {"rule_hits": ["cpu_hog"], "suggested_actions": [], "status": "likely", "locus": "local"}
+        assert diagnose.apply_guards(v, {}, rule, class_key="performance")["suggested_actions"] == []
+        offered = {**rule, "rule_hits": ["memory_creep"], "suggested_actions": ["reboot_system"]}
+        assert diagnose.apply_guards(v, {}, offered, class_key="performance")["suggested_actions"] == ["reboot_system"]
+
+    def test_perf_other_actions_dropped(self):
+        v = {"status": "likely", "locus": "local", "suggested_actions": ["clear_temp", "flush_dns"], "manual_steps": []}
+        rule = {
+            "rule_hits": ["long_uptime"],
+            "suggested_actions": ["reboot_system"],
+            "status": "likely",
+            "locus": "local",
+        }
+        assert diagnose.apply_guards(v, {}, rule, class_key="performance")["suggested_actions"] == []
+
+    def test_reboot_guard_leaves_unrestricted_classes(self):
+        v = {"status": "likely", "locus": "local", "suggested_actions": ["reboot_system"], "manual_steps": []}
+        rule = {"rule_hits": ["dns_filtered"], "suggested_actions": [], "status": "likely", "locus": "local"}
+        assert diagnose.apply_guards(v, {}, rule, class_key="network_dns")["suggested_actions"] == ["reboot_system"]
+
     def test_parse_reply_cleans_steps(self):
         _, v = diagnose.parse_reply({**REPLY, "manual_steps": ["  Do X ", "Do X", 3]}, "network_dns")
         assert v["manual_steps"] == ["Do X"]
@@ -1138,6 +1161,42 @@ class TestRedact:
             assert leak not in text, leak
         for placeholder in ("<serial>", "<this-pc>", "the NAS", "<user>"):
             assert placeholder in text, placeholder
+
+    def test_perf_evidence_leaks_nothing_into_the_payload(self, monkeypatch):
+        """P4 (spec 2026-10-17): no user name, PC name or serial reaches the
+        preview; program names and readings do."""
+        monkeypatch.setattr(diagnose.socket, "gethostname", lambda: "SHIGS78-PC24")
+        monkeypatch.setenv("USERNAME", "higs7")
+        session = {
+            "symptom": "Chrome is slow on SHIGS78-PC24",
+            "symptom_class": "performance",
+            "slots": {"app_name": "Chrome"},
+            "evidence": [
+                {
+                    "key": "perf.cpu",
+                    "label": "What's using the CPU",
+                    "ok": True,
+                    "data": {"top": [{"name": "chrome.exe", "pid": 4120, "count": 14, "cpu_pct": 62.0}]},
+                },
+                {
+                    "key": "perf.startup",
+                    "label": "Startup time",
+                    "ok": True,
+                    "data": {"program_names": ["higs7 sync helper", "OneDrive"], "startup_programs": 2},
+                },
+                {
+                    "key": "perf.gpu",
+                    "label": "Graphics card",
+                    "ok": True,
+                    "data": {"name": "RTX 4060 Ti on SHIGS78-PC24", "serial": "1324021012345", "temp_c": 98},
+                },
+            ],
+        }
+        text = diagnose.build_payload(session)
+        for leak in ("higs7", "SHIGS78-PC24", "1324021012345"):
+            assert leak not in text, leak
+        for kept in ("chrome.exe", "OneDrive", "98"):
+            assert kept in text, kept
 
     def test_storage_prompt_does_not_ask_for_hidden_tails(self):
         """Review #1: the label tail reaches the model as <serial>, so the hint
