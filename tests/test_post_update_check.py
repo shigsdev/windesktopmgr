@@ -138,6 +138,20 @@ class TestGetLatestHotfix:
         self._mock_wmi(mocker, [])
         assert puc.get_latest_hotfix() is None
 
+    def test_query_is_bounded(self, mocker):
+        """cb833e5 (2026-06-06): the hotfix query runs through bounded_wmi_query
+        so a wedged Winmgmt can't hang the post-deploy check."""
+        bounded = mocker.patch("windesktopmgr.bounded_wmi_query", return_value=None)
+        assert puc.get_latest_hotfix() is None
+        kwargs = bounded.call_args.kwargs
+        assert kwargs["timeout_s"] == 8.0
+        assert kwargs["fallback"] is None
+
+    def test_wedged_wmi_returns_none_not_hang(self, mocker):
+        """The bounded runner's fallback (a timed-out COM call) reaches the caller as None."""
+        mocker.patch("windesktopmgr.bounded_wmi_query", side_effect=lambda fn, timeout_s, fallback, label: fallback)
+        assert puc.get_latest_hotfix() is None
+
     def test_wmi_missing_returns_none(self, mocker):
         """wmi import failure must not crash the caller."""
         # Force the `import wmi` inside the function to raise.

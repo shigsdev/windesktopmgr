@@ -65,7 +65,9 @@ JSCPD_VERSION = "5.4.1"
 
 _SOURCE_SUFFIXES = (".py", ".js", ".html", ".css")
 _MINIFIED_SUFFIXES = (".min.js", ".min.css")
-_TODO_RE = re.compile(r"\b(TODO|FIXME|XXX|HACK)\b")
+# A marker counts only inside a comment (#, //, /*, <!--, or a " * " block
+# line): a variable named TODO is code, not a to-do note (sop_report.py, 2026-10-17).
+_TODO_RE = re.compile(r"(?:#|//|/\*|<!--|^[ \t]*\*)[^\n]*?\b(TODO|FIXME|XXX|HACK)\b", re.MULTILINE)
 # Files that talk ABOUT the markers (scanners and their docs), not debt.
 _TODO_SKIP = frozenset({"codehealth.py", "scripts/check_tech_debt.py", "architecture.html"})
 

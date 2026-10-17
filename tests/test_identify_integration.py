@@ -11,7 +11,7 @@ import bsod
 import events
 import homenet
 import processes
-import windowsdrivermgr
+import windesktopmgr
 
 # ── Process lookup chain (the vmmem fix) ────────────────────────────────────
 
@@ -74,32 +74,34 @@ class TestProcessAiFallback:
 class TestDriverIdentification:
     def test_unknown_device_gets_ai_description(self, mocker):
         mocker.patch.object(
-            windowsdrivermgr,
+            windesktopmgr,
             "get_installed_drivers",
             return_value=[{"DeviceName": "Unknown Device", "DriverVersion": "1.0", "Manufacturer": "Acme"}],
         )
-        mocker.patch.object(windowsdrivermgr, "get_windows_update_drivers", return_value={})
+        mocker.patch.object(windesktopmgr, "get_windows_update_drivers", return_value={})
+        mocker.patch.object(windesktopmgr, "get_nvidia_update_info", return_value=None)
         mocker.patch.object(
-            windowsdrivermgr.identify,
+            windesktopmgr.identify,
             "identify",
             return_value={"source": "claude_ai", "plain": "Acme Widget Controller", "what": "Controls the widget."},
         )
-        windowsdrivermgr.run_scan()
-        drv = windowsdrivermgr._scan_results[0]
+        windesktopmgr.run_scan()
+        drv = windesktopmgr._scan_results[0]
         assert drv["description"] == "Controls the widget."
         assert drv["name"] == "Acme Widget Controller"
 
     def test_named_driver_not_sent_to_ai(self, mocker):
         mocker.patch.object(
-            windowsdrivermgr,
+            windesktopmgr,
             "get_installed_drivers",
             return_value=[{"DeviceName": "NVIDIA GeForce RTX 4060 Ti", "DriverVersion": "5", "Manufacturer": "NVIDIA"}],
         )
-        mocker.patch.object(windowsdrivermgr, "get_windows_update_drivers", return_value={})
-        spy = mocker.patch.object(windowsdrivermgr.identify, "identify")
-        windowsdrivermgr.run_scan()
+        mocker.patch.object(windesktopmgr, "get_windows_update_drivers", return_value={})
+        mocker.patch.object(windesktopmgr, "get_nvidia_update_info", return_value=None)
+        spy = mocker.patch.object(windesktopmgr.identify, "identify")
+        windesktopmgr.run_scan()
         spy.assert_not_called()
-        assert windowsdrivermgr._scan_results[0]["description"] == ""
+        assert windesktopmgr._scan_results[0]["description"] == ""
 
 
 # ── BIOS firmware note (version-unknown gap) ────────────────────────────────

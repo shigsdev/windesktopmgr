@@ -425,6 +425,16 @@ class TestTechDebt:
         assert [f.path for f in findings] == ["hot.py", ""]
         assert "26 TODO/FIXME markers across the tree" in findings[1].detail
 
+    def test_todo_counts_comment_markers_not_code(self, mocker):
+        """2026-10-17: scripts/sop_report.py was flagged for 19 'markers' that
+        were a variable named TODO -- only comments are to-do notes."""
+        code = 'DONE, TODO = "x", "[ ]"\nline = f"{TODO} label"\nclass HACKS: pass\n' * 4
+        notes = "# TODO tidy\nx = 1  # FIXME later\n// XXX check\n/* HACK */\n<!-- TODO -->\n * TODO in a block\n"
+        _fake_repo(mocker, ctd, {"code.py": code, "notes.js": notes})
+        per_file = {f.path: f for f in ctd.check_todo_fixme_accumulation()}
+        assert "code.py" not in per_file
+        assert "notes.js" in per_file and per_file["notes.js"].detail.startswith("6 ")
+
     def test_todo_under_thresholds_is_clean(self, mocker):
         _fake_repo(mocker, ctd, {"a.py": "# TODO\n", "b.py": None})
         assert ctd.check_todo_fixme_accumulation() == []
@@ -739,3 +749,21 @@ class TestSecurityPosture:
         """The monthly run crashes (exit 2) without a readable register."""
         register = json.loads(csp.SUPPRESSIONS_PATH.read_text(encoding="utf-8"))["suppressions"]
         assert register and all(isinstance(n, int) for n in register.values())
+
+
+class TestWorkflowExitCodes:
+    """2026-10-17: every scheduled audit showed a red 'failed' X whenever it
+    found something, because findings exit 1. The email (sent on every run)
+    is the signal; a scheduled run fails only when a check crashes (exit 2)."""
+
+    WORKFLOWS = sorted((Path(__file__).resolve().parent.parent / ".github" / "workflows").glob("*.yml"))
+
+    def test_every_audit_workflow_found(self):
+        assert len(self.WORKFLOWS) == 5
+
+    @pytest.mark.parametrize("path", WORKFLOWS, ids=lambda p: p.stem)
+    def test_scheduled_runs_report_only(self, path):
+        line = next(ln for ln in path.read_text(encoding="utf-8").splitlines() if "PR_FLAGS:" in ln)
+        scheduled_branch = line.split("||", 1)[1]
+        assert "--report-only" in scheduled_branch
+        assert "--no-email" not in scheduled_branch
