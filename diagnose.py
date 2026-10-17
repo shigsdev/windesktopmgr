@@ -36,6 +36,8 @@ from flask import Blueprint, jsonify, request
 
 import diagnose_crash_probes  # noqa: F401 -- registers the crash probes into dp.PROBES
 import diagnose_crash_rules as dcr
+import diagnose_perf_probes  # noqa: F401 -- registers the perf probes into dp.PROBES
+import diagnose_perf_rules as dpr
 import diagnose_probes as dp
 import diagnose_storage_probes  # noqa: F401 -- registers the storage probes into dp.PROBES
 import diagnose_storage_rules as dsr
@@ -85,6 +87,15 @@ _STORAGE_PROMPT = (
     "ambiguous never say which drive. Never suggest a command that writes to a disk (chkdsk /f or /r, Repair-VirtualDisk, format, "
     "Optimize-Volume). A rule_hits entry of nothing_found means inconclusive. Suggest clear_temp only for a full "
     "system drive."
+)
+
+# The speed & heat class's model hint.
+_PERF_PROMPT = (
+    "The evidence is this PC's live CPU, memory, temperature, graphics card, drive and stuck-driver readings "
+    "(perf.* probes), plus its history since the last restart and its recent startups (times UTC: convert them "
+    "with local_utc_offset). Heat and hardware errors outrank slowness. Name apps by program name only. Never "
+    "suggest killing system processes, changing BIOS settings or overclocking. A rule_hits entry of nothing_found "
+    "means inconclusive. Suggest reboot_system only for memory creep or a long time since the last restart."
 )
 
 # What the engine can diagnose. ``wave1`` runs for every diagnosis of the
@@ -163,6 +174,17 @@ SYMPTOM_CLASSES = {
         "rules": lambda evidence, host: dsr.evaluate_storage_rules(evidence),
         "prompt": _STORAGE_PROMPT,
         "actions": ("clear_temp",),
+    },
+    "performance": {
+        "label": "Speed & heat",
+        "slots": (),
+        "optional_slots": ("app_name",),
+        "wave1": ("perf.cpu", "perf.memory"),
+        "escalate": (),
+        # Looked up at call time: the two diagnose modules import each other.
+        "rules": lambda evidence, host: dpr.evaluate_perf_rules(evidence),
+        "prompt": _PERF_PROMPT,
+        "actions": ("reboot_system",),
     },
 }
 
