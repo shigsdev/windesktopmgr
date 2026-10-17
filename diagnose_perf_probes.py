@@ -81,13 +81,23 @@ def _focus_slot(slots: dict) -> str | None:
 # ── CPU ───────────────────────────────────────────────────────────────────
 
 
+def _proc_fields(attrs: list[str]):
+    """Each live process's ``attrs`` as a dict read on THIS thread. Never
+    ``process_iter(attrs=...)``: it writes ``proc.info`` on Process objects
+    psutil shares between threads, and two probes run at once."""
+    for proc in psutil.process_iter():
+        try:
+            yield proc.as_dict(attrs=attrs, ad_value=None)
+        except (psutil.NoSuchProcess, psutil.ZombieProcess):
+            continue  # exited while being read
+
+
 def _cpu_snapshot() -> dict[int, tuple[str, float]]:
     """``{pid: (name, user+system seconds)}`` for every readable process,
     leaving out the idle pseudo-process and this app's own process."""
     me = os.getpid()
     out: dict[int, tuple[str, float]] = {}
-    for proc in psutil.process_iter(attrs=["pid", "name", "cpu_times"], ad_value=None):
-        info = proc.info
+    for info in _proc_fields(["pid", "name", "cpu_times"]):
         pid, name, times = info.get("pid"), info.get("name"), info.get("cpu_times")
         if times is None or not name or pid in (0, me) or name.lower() in _IDLE_NAMES:
             continue
@@ -160,22 +170,24 @@ def _gb(n: float) -> float:
 
 def _memory_groups() -> list[dict]:
     """Programs by resident memory, same-name processes summed; ``running_h``
-    is the oldest instance's age."""
+    is the oldest instance's age, ``max_proc_gb`` / ``max_proc_h`` the biggest
+    single process and its own age (a leak is one process growing, not many
+    small ones adding up)."""
     now = time.time()
     groups: dict[str, dict] = {}
-    for proc in psutil.process_iter(attrs=["pid", "name", "memory_info", "create_time"], ad_value=None):
-        info = proc.info
+    for info in _proc_fields(["pid", "name", "memory_info", "create_time"]):
         name, mem = info.get("name"), info.get("memory_info")
         if not name or mem is None or name.lower() in _IDLE_NAMES:
             continue
         row = groups.setdefault(
-            name, {"name": name, "pid": info.get("pid"), "count": 0, "rss": 0, "_big": -1, "_t": None}
+            name, {"name": name, "pid": info.get("pid"), "count": 0, "rss": 0, "_big": -1, "_t": None, "_big_t": None}
         )
         row["count"] += 1
         row["rss"] += mem.rss
+        created = info.get("create_time")
         if mem.rss > row["_big"]:
             row["_big"], row["pid"] = mem.rss, info.get("pid")
-        created = info.get("create_time")
+            row["_big_t"] = created if isinstance(created, (int, float)) else None
         if isinstance(created, (int, float)) and (row["_t"] is None or created < row["_t"]):
             row["_t"] = created
     rows = []
@@ -188,6 +200,8 @@ def _memory_groups() -> list[dict]:
                 "count": row["count"],
                 "rss_gb": _gb(row["rss"]),
                 "running_h": round((now - started) / 3600, 1) if started else None,
+                "max_proc_gb": _gb(row["_big"]),
+                "max_proc_h": round((now - row["_big_t"]) / 3600, 1) if row["_big_t"] else None,
                 "_rss": row["rss"],
             }
         )
@@ -204,11 +218,14 @@ def _p_memory(slots: dict) -> dict:
     focus = None
     if matched:
         ages = [r["running_h"] for r in matched if r["running_h"] is not None]
+        biggest = max(matched, key=lambda r: r["max_proc_gb"])
         focus = {
             "name": matched[0]["name"],
             "rss_gb": _gb(sum(r["_rss"] for r in matched)),
             "count": sum(r["count"] for r in matched),
             "running_h": max(ages) if ages else None,
+            "max_proc_gb": biggest["max_proc_gb"],
+            "max_proc_h": biggest["max_proc_h"],
         }
     for row in rows:
         row.pop("_rss")
@@ -485,6 +502,11 @@ def _event_times(provider: str, event_id: int, unavailable: list[str]) -> list[s
     return [e.get("time") for e in dcp._query("System", xpath, unavailable, max_events=50) if isinstance(e, dict)]
 
 
+# Per-user scheduled tasks end in the account's SID ("...Task-S-1-5-21-..."),
+# which identifies the account; the redaction classes do not know it.
+_SID_RE = re.compile(r"-?\bS-1-\d+(?:-\d+)+")
+
+
 def _startup_programs() -> tuple[int | None, list[str]]:
     """Enabled startup programs by NAME only; their command lines carry user paths."""
     import windesktopmgr  # noqa: PLC0415 -- windesktopmgr imports diagnose, which imports this module
@@ -493,7 +515,11 @@ def _startup_programs() -> tuple[int | None, list[str]]:
         items = windesktopmgr.get_startup_items() or []
     except Exception:  # noqa: BLE001 -- unreadable startup list -> unknown, not zero
         return None, []
-    names = [str(i.get("Name")) for i in items if isinstance(i, dict) and i.get("Enabled") and i.get("Name")]
+    names = [
+        _SID_RE.sub("", str(i.get("Name"))).strip()
+        for i in items
+        if isinstance(i, dict) and i.get("Enabled") and i.get("Name")
+    ]
     return len(names), names[:MAX_PROGRAM_NAMES]
 
 

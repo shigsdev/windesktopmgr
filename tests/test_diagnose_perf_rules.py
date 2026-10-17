@@ -86,8 +86,70 @@ class TestBoundaries:
 
     @pytest.mark.parametrize(("hours", "rule"), [(24.0, "memory_creep"), (23.9, "nothing_found")])
     def test_memory_creep_one_app(self, hours, rule):
-        top = [{"name": "Teams.exe", "pid": 2, "count": 2, "rss_gb": 4.0, "running_h": hours}]
+        top = [
+            {
+                "name": "Teams.exe",
+                "pid": 2,
+                "count": 2,
+                "rss_gb": 4.5,
+                "running_h": 40.0,
+                "max_proc_gb": 4.0,
+                "max_proc_h": hours,
+            }
+        ]
         assert _rule(_ev(perf_memory={"top": top})) == rule
+
+    def test_many_small_processes_are_not_a_leak(self):
+        """Final review #1: 29 python.exe processes summing 7.8 GB after a day is not one app leaking."""
+        top = [
+            {
+                "name": "python.exe",
+                "pid": 3,
+                "count": 29,
+                "rss_gb": 7.8,
+                "running_h": 26.0,
+                "max_proc_gb": 0.8,
+                "max_proc_h": 2.0,
+            },
+            {
+                "name": "svchost.exe",
+                "pid": 4,
+                "count": 103,
+                "rss_gb": 1.8,
+                "running_h": 26.0,
+                "max_proc_gb": 0.2,
+                "max_proc_h": 26.0,
+            },
+        ]
+        assert _rule(_ev(perf_memory={"top": top})) == "nothing_found"
+
+    def test_system_processes_never_leak(self):
+        top = [
+            {
+                "name": "svchost.exe",
+                "pid": 4,
+                "count": 1,
+                "rss_gb": 5.0,
+                "running_h": 90.0,
+                "max_proc_gb": 5.0,
+                "max_proc_h": 90.0,
+            }
+        ]
+        assert _rule(_ev(perf_memory={"top": top})) == "nothing_found"
+
+    @pytest.mark.parametrize(("share", "rule"), [(3.0, "cpu_hog"), (2.8, "nothing_found")])
+    def test_one_core_runaway(self, share, rule):
+        """Final review #4: on 32 threads one pinned core is ~3% of the whole CPU."""
+        ev = _ev(perf_cpu={"cores": 32, "busiest_core_pct": 100.0, **_top("python.exe", share)})
+        assert _rule(ev) == rule
+
+    def test_one_core_runaway_headline(self):
+        ev = _ev(perf_cpu={"cores": 32, "busiest_core_pct": 100.0, **_top("python.exe", 3.1)})
+        assert dpr.evaluate_perf_rules(ev)["headline"] == "python.exe is keeping one CPU core fully busy"
+
+    def test_one_core_needs_a_busy_core(self):
+        ev = _ev(perf_cpu={"cores": 32, "busiest_core_pct": 60.0, **_top("python.exe", 3.1)})
+        assert _rule(ev) == "nothing_found"
 
     @pytest.mark.parametrize(("busy", "rule"), [(90, "disk_busy"), (89, "nothing_found")])
     def test_disk_busy(self, busy, rule):
@@ -153,7 +215,14 @@ class TestVerdicts:
         assert v["headline"] == "Memory has crept from 40% to 85% over the 4 days since the last restart"
 
     def test_focus_app_leads_with_also(self):
-        focus = {"name": "ms-teams.exe", "rss_gb": 6.0, "count": 3, "running_h": 30.0}
+        focus = {
+            "name": "ms-teams.exe",
+            "rss_gb": 6.0,
+            "count": 3,
+            "running_h": 30.0,
+            "max_proc_gb": 6.0,
+            "max_proc_h": 30.0,
+        }
         ev = _ev(
             perf_cpu={"focus_app": "Teams", "focus": {"name": "ms-teams.exe", "cpu_pct": 1.0, "count": 3}},
             perf_memory={"focus": focus},
@@ -231,6 +300,14 @@ class TestPerfClassifier:
             ("the fans are hot", None),
             ("Word and Excel are slow", None),
             ("everything is slow", None),
+            ("my PC got hot", None),
+            ("my computer gets hot", None),
+            ("my PC runs hot", None),
+            ("the CPU gets very hot", None),
+            ("my PC is extremely slow", None),
+            ("it gets really hot when gaming", None),
+            ("my PC rebooted itself when it got hot", None),
+            ("Spotify gets really slow", "Spotify"),
             ("", None),
         ],
     )

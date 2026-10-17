@@ -38,6 +38,25 @@ GPU_BUSY_PCT = 95
 SLOW_START_S = 120
 LONG_UPTIME_H = 168
 SINCE_BOOT_NOTE_POINTS = 10
+# Windows' own processes: big and long-running by design, never "an app to restart".
+_SYSTEM_PROCESSES = frozenset(
+    {
+        "system",
+        "registry",
+        "memory compression",
+        "svchost.exe",
+        "csrss.exe",
+        "lsass.exe",
+        "services.exe",
+        "wininit.exe",
+        "winlogon.exe",
+        "smss.exe",
+        "dwm.exe",
+        "msmpeng.exe",
+        "searchindexer.exe",
+    }
+)
+ONE_CORE_PCT = 90
 _HEAT_RISKS = ("thermal_throttling", "running_hot")
 _REBOOT_RULES = ("memory_creep", "long_uptime")
 
@@ -66,7 +85,36 @@ _APP_SLOW_RE = re.compile(
 )
 # Words between the app and the verb ("Chrome is really slow").
 _TRAILING = frozenset(
-    {*dcr._AUXILIARY, "are", "keeps", "keep", "been", "seems", "so", "really", "very", "getting", "running", "being"}
+    {
+        *dcr._AUXILIARY,
+        "are",
+        "keeps",
+        "keep",
+        "been",
+        "seems",
+        "so",
+        "really",
+        "very",
+        "getting",
+        "running",
+        "being",
+        "gets",
+        "got",
+        "get",
+        "runs",
+        "ran",
+        "run",
+        "becomes",
+        "became",
+        "feels",
+        "extremely",
+        "super",
+        "pretty",
+        "quite",
+        "too",
+        "always",
+        "incredibly",
+    }
 )
 # Not an app: the PC's own parts and the words people use for "everything".
 _NOT_AN_APP = frozenset(
@@ -94,6 +142,22 @@ _NOT_AN_APP = frozenset(
 )
 
 
+# Words that never sit inside an app's name: "my PC rebooted itself when it got hot".
+_NOT_IN_A_NAME = frozenset({"itself", "when", "because", "after", "before", "while", "then", "but", "if", *_TRAILING})
+
+# "since I rebooted" / "after the last restart": a crash word used only as a time.
+_TIMING_RE = re.compile(
+    r"\b(?:ever\s+)?(?:since|after)\s+(?:(?:i|we|the|a|my|last|its)\s+)*(?:reboot\w*|restart\w*|shut\s*down\w*)",
+    re.IGNORECASE,
+)
+
+
+def crash_word_is_timing(text: str) -> bool:
+    """True when every crash word in ``text`` only says when it started."""
+    text = text if isinstance(text, str) else ""
+    return dcr.CRASH_RE.search(_TIMING_RE.sub(" ", text)) is None
+
+
 def perf_strength(text: str) -> str | None:
     """``"strong"``, ``"weak"`` or None: how surely ``text`` is about speed or heat."""
     text = text if isinstance(text, str) else ""
@@ -116,7 +180,7 @@ def extract_perf_app(text: str) -> str | None:
         words.pop()
     while words and words[0].lower() in dcr._LEADING_FILLER:
         words.pop(0)
-    if not words or words[-1].lower() in _NOT_AN_APP:
+    if not words or any(w.lower() in _NOT_AN_APP or w.lower() in _NOT_IN_A_NAME for w in words):
         return None
     return " ".join(words)
 
@@ -231,9 +295,19 @@ def _rule_cpu_hog(ev: dict, focus: bool):
     top = max(rows, key=lambda r: _num(r.get("cpu_pct")) or 0)
     pct = _num(top.get("cpu_pct")) or 0
     total = _num(c.get("total_pct")) or 0
-    if not (pct >= HOG_PCT or (total >= HOG_TOTAL_PCT and pct >= HOG_TOP_PCT)):
-        return None
     app = str(top.get("name") or "One app")
+    if not (pct >= HOG_PCT or (total >= HOG_TOTAL_PCT and pct >= HOG_TOP_PCT)):
+        # One program pinning one core is ~3% of a 32-thread CPU but still a runaway.
+        cores = _num(c.get("cores")) or 0
+        busiest = _num(c.get("busiest_core_pct")) or 0
+        if app.lower() == "system" or pct * cores < ONE_CORE_PCT or busiest < ONE_CORE_PCT:
+            return None
+        reasoning = (
+            f"During a {_whole(_num(c.get('seconds')) or 3)}-second sample {app} kept about one of the "
+            f"{_whole(cores)} CPU threads fully busy, which is how a stuck or runaway program looks."
+        )
+        verdict = dg._verdict("likely", "local", f"{app} is keeping one CPU core fully busy", reasoning)
+        return "cpu_hog", verdict, ["perf.cpu"], app
     count = int(top.get("count") or 1)
     copies = f" across {count} processes" if count > 1 else ""
     reasoning = f"During a {_whole(_num(c.get('seconds')) or 3)}-second sample {app} used {_whole(pct)}% of the whole CPU{copies}; the PC as a whole was {_whole(total)}% busy."
@@ -268,7 +342,10 @@ def _rule_memory_low(ev: dict, focus: bool):
 
 def _rule_memory_creep(ev: dict, focus: bool):
     for row in _rows(_d(ev, "perf.memory"), focus):
-        gb, hours = _num(row.get("rss_gb")), _num(row.get("running_h"))
+        # One process that has grown, not many small ones adding up (29 python.exe).
+        gb, hours = _num(row.get("max_proc_gb")), _num(row.get("max_proc_h"))
+        if str(row.get("name") or "").lower() in _SYSTEM_PROCESSES:
+            continue
         if gb is not None and hours is not None and gb >= CREEP_APP_GB and hours >= CREEP_APP_H:
             app = str(row.get("name"))
             headline = f"{app} has grown to {_gb(gb)} GB after {_whole(hours)} hours"

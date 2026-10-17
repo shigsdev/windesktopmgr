@@ -349,6 +349,10 @@ def classify(symptom: str) -> dict:
     perf = dpr.perf_strength(text)
     strong_crash = bool(dcr.STRONG_CRASH_RE.search(text))
     # A weak crash word next to a speed word is timing, not a crash ("slow since I rebooted").
+    # A crash event next to heat or slowness ("shut down because it overheated"):
+    # neither class sees the whole story, so ask.
+    if perf and not strong_crash and dcr.CRASH_RE.search(text) and not dpr.crash_word_is_timing(text):
+        return {"symptom_class": None, "slots": {}, "candidates": candidates, "missing": []}
     if dcr.CRASH_RE.search(text) and not (network and not strong_crash) and (strong_crash or not perf):
         # A crash AND a site ("Chrome crashed loading example.com"): ask, never guess.
         if network:

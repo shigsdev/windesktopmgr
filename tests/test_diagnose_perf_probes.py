@@ -11,6 +11,7 @@ import json
 import os
 import types
 
+import psutil
 import pytest
 
 import diagnose_perf_probes as dpp
@@ -19,14 +20,30 @@ import diagnose_probes as dp
 GIB = 1024**3
 
 
+class _Proc:
+    """A psutil.Process stand-in with NO shared ``.info``: probes must read
+    their fields with ``as_dict`` (``proc.info`` is shared between threads)."""
+
+    calls: list = []
+
+    def __init__(self, fields, gone=False):
+        self._fields, self._gone = fields, gone
+
+    def as_dict(self, attrs, ad_value=None):
+        _Proc.calls.append(tuple(attrs))
+        if self._gone:
+            raise psutil.NoSuchProcess(self._fields.get("pid", 0))
+        return {a: self._fields.get(a, ad_value) for a in attrs}
+
+
 def _cpu_proc(pid, name, seconds):
     times = None if seconds is None else types.SimpleNamespace(user=seconds * 0.75, system=seconds * 0.25)
-    return types.SimpleNamespace(info={"pid": pid, "name": name, "cpu_times": times})
+    return _Proc({"pid": pid, "name": name, "cpu_times": times})
 
 
 def _mem_proc(pid, name, rss_gb, created):
     mem = None if rss_gb is None else types.SimpleNamespace(rss=int(rss_gb * GIB))
-    return types.SimpleNamespace(info={"pid": pid, "name": name, "memory_info": mem, "create_time": created})
+    return _Proc({"pid": pid, "name": name, "memory_info": mem, "create_time": created})
 
 
 @pytest.fixture
@@ -136,11 +153,17 @@ class TestCpu:
         assert data["focus"] is None
 
     def test_cpu_never_asks_for_identifying_attrs(self, cpu_env, mocker):
-        it = cpu_env(*_chrome_and_code())
+        cpu_env(*_chrome_and_code())
+        _Proc.calls.clear()
         dpp.REGISTERED["perf.cpu"].fn({})
-        for call in it.call_args_list:
-            attrs = call.kwargs.get("attrs") or (call.args[0] if call.args else [])
+        assert _Proc.calls
+        for attrs in _Proc.calls:
             assert set(attrs) <= dpp.ALLOWED_PROC_ATTRS
+
+    def test_cpu_skips_a_process_that_exits_mid_read(self, cpu_env):
+        before, after = _chrome_and_code()
+        cpu_env(before, [*after, _Proc({"pid": 900, "name": "gone.exe"}, gone=True)])
+        assert dpp.REGISTERED["perf.cpu"].fn({})["top"][0]["name"] == "chrome.exe"
 
 
 class TestMemory:
@@ -167,13 +190,28 @@ class TestMemory:
         assert data["available_gb"] == 1.5
         assert data["total_gb"] == 64.0
         assert data["swap_used_pct"] == 85.0
-        assert data["top"][0] == {"name": "Teams.exe", "pid": 10, "count": 2, "rss_gb": 5.0, "running_h": 30.0}
+        assert data["top"][0] == {
+            "name": "Teams.exe",
+            "pid": 10,
+            "count": 2,
+            "rss_gb": 5.0,
+            "running_h": 30.0,
+            "max_proc_gb": 3.0,
+            "max_proc_h": 30.0,
+        }
         assert [row["name"] for row in data["top"]] == ["Teams.exe", "code.exe"]
         assert data["focus"] is None
 
     def test_memory_focus_app(self, mem_env):
         data = dpp.REGISTERED["perf.memory"].fn({"app_name": "teams"})
-        assert data["focus"] == {"name": "Teams.exe", "rss_gb": 5.0, "count": 2, "running_h": 30.0}
+        assert data["focus"] == {
+            "name": "Teams.exe",
+            "rss_gb": 5.0,
+            "count": 2,
+            "running_h": 30.0,
+            "max_proc_gb": 3.0,
+            "max_proc_h": 30.0,
+        }
 
     def test_memory_psutil_failure_raises_for_the_engine(self, mocker):
         mocker.patch("diagnose_perf_probes.psutil.virtual_memory", side_effect=OSError("no"))
@@ -181,9 +219,10 @@ class TestMemory:
             dpp.REGISTERED["perf.memory"].fn({})
 
     def test_memory_never_asks_for_identifying_attrs(self, mem_env):
+        _Proc.calls.clear()
         dpp.REGISTERED["perf.memory"].fn({})
-        for call in mem_env.call_args_list:
-            attrs = call.kwargs.get("attrs") or (call.args[0] if call.args else [])
+        assert _Proc.calls
+        for attrs in _Proc.calls:
             assert set(attrs) <= dpp.ALLOWED_PROC_ATTRS
 
 
@@ -526,6 +565,20 @@ class TestStartup:
         assert data["startup_programs"] == 1
         assert data["program_names"] == ["OneDrive"]
         assert "higs7" not in json.dumps(data)
+
+    def test_startup_names_drop_account_sid(self, events, mocker):
+        events([], [])
+        mocker.patch(
+            "windesktopmgr.get_startup_items",
+            return_value=[
+                {
+                    "Name": "OneDrive Standalone Update Task-S-1-5-21-1234567890-2345678901-3456789012-1001",
+                    "Enabled": True,
+                }
+            ],
+        )
+        names = dpp.REGISTERED["perf.startup"].fn({})["program_names"]
+        assert names == ["OneDrive Standalone Update Task"]
 
     def test_startup_unreadable_log(self, events, mocker):
         mocker.patch("windesktopmgr.get_startup_items", side_effect=OSError("no"))
