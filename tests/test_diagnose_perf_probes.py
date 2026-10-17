@@ -107,7 +107,7 @@ class TestCpu:
     def test_cpu_groups_by_name_and_shares_whole_cpu(self, cpu_env):
         cpu_env(*_chrome_and_code())
         data = dpp.REGISTERED["perf.cpu"].fn({})
-        assert data["top"][0] == {"name": "chrome.exe", "pid": 101, "count": 3, "cpu_pct": 50.0}
+        assert data["top"][0] == {"name": "chrome.exe", "pid": 101, "count": 3, "cpu_pct": 50.0, "max_proc_pct": 25.0}
         assert data["top"][1]["name"] == "code.exe"
         assert data["top"][1]["cpu_pct"] == 5.0
         assert data["cores"] == 8
@@ -151,7 +151,7 @@ class TestCpu:
         cpu_env(*_chrome_and_code())
         data = dpp.REGISTERED["perf.cpu"].fn({"app_name": " Chrome "})
         assert data["focus_app"] == "Chrome"
-        assert data["focus"] == {"name": "chrome.exe", "cpu_pct": 50.0, "count": 3}
+        assert data["focus"] == {"name": "chrome.exe", "cpu_pct": 50.0, "count": 3, "max_proc_pct": 25.0}
 
     def test_cpu_focus_none_without_app(self, cpu_env):
         cpu_env(*_chrome_and_code())
@@ -796,8 +796,8 @@ class TestProcessTable:
         }
         mocker.patch("diagnose_perf_probes._nt_processes", side_effect=[before, after])
         top = dpp.REGISTERED["perf.cpu"].fn({})["top"]
-        assert top[0] == {"name": "MsMpEng.exe", "pid": 10, "count": 1, "cpu_pct": 25.0}
-        assert top[1] == {"name": "System", "pid": 4, "count": 1, "cpu_pct": 5.0}
+        assert top[0] == {"name": "MsMpEng.exe", "pid": 10, "count": 1, "cpu_pct": 25.0, "max_proc_pct": 25.0}
+        assert top[1] == {"name": "System", "pid": 4, "count": 1, "cpu_pct": 5.0, "max_proc_pct": 5.0}
         assert len(top) == 2
         iters.assert_not_called()
 
