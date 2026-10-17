@@ -36,6 +36,8 @@ from flask import Blueprint, jsonify, request
 
 import diagnose_crash_probes  # noqa: F401 -- registers the crash probes into dp.PROBES
 import diagnose_crash_rules as dcr
+import diagnose_perf_probes  # noqa: F401 -- registers the perf probes into dp.PROBES
+import diagnose_perf_rules as dpr
 import diagnose_probes as dp
 import diagnose_storage_probes  # noqa: F401 -- registers the storage probes into dp.PROBES
 import diagnose_storage_rules as dsr
@@ -85,6 +87,15 @@ _STORAGE_PROMPT = (
     "ambiguous never say which drive. Never suggest a command that writes to a disk (chkdsk /f or /r, Repair-VirtualDisk, format, "
     "Optimize-Volume). A rule_hits entry of nothing_found means inconclusive. Suggest clear_temp only for a full "
     "system drive."
+)
+
+# The speed & heat class's model hint.
+_PERF_PROMPT = (
+    "The evidence is this PC's live CPU, memory, temperature, graphics card, drive and stuck-driver readings "
+    "(perf.* probes), plus its history since the last restart and its recent startups (times UTC: convert them "
+    "with local_utc_offset). Heat and hardware errors outrank slowness. Name apps by program name only. Never "
+    "suggest killing system processes, changing BIOS settings or overclocking. A rule_hits entry of nothing_found "
+    "means inconclusive. Suggest reboot_system only for memory creep or a long time since the last restart."
 )
 
 # What the engine can diagnose. ``wave1`` runs for every diagnosis of the
@@ -163,6 +174,28 @@ SYMPTOM_CLASSES = {
         "rules": lambda evidence, host: dsr.evaluate_storage_rules(evidence),
         "prompt": _STORAGE_PROMPT,
         "actions": ("clear_temp",),
+    },
+    "performance": {
+        "label": "Speed & heat",
+        "slots": (),
+        "optional_slots": ("app_name",),
+        "wave1": (
+            "perf.cpu",
+            "perf.memory",
+            "perf.thermals",
+            "perf.gpu",
+            "perf.kernel",
+            "perf.disk_busy",
+            "perf.since_boot",
+            "perf.startup",
+            "perf.power_plan",
+            "perf.hw_errors",
+        ),
+        "escalate": ("perf.cpu_long", "perf.app_detail", "perf.trend_7d"),
+        # Looked up at call time: the two diagnose modules import each other.
+        "rules": lambda evidence, host: dpr.evaluate_perf_rules(evidence),
+        "prompt": _PERF_PROMPT,
+        "actions": ("reboot_system",),
     },
 }
 
@@ -313,12 +346,31 @@ def classify(symptom: str) -> dict:
             return {"symptom_class": None, "slots": {}, "candidates": candidates, "missing": []}
         drive = dsr.extract_drive(text)
         return {"symptom_class": "storage", "slots": {"drive": drive} if drive else {}, "candidates": [], "missing": []}
-    if dcr.CRASH_RE.search(text) and not (network and not dcr.STRONG_CRASH_RE.search(text)):
+    perf = dpr.perf_strength(text)
+    strong_crash = bool(dcr.STRONG_CRASH_RE.search(text))
+    # A weak crash word next to a speed word is timing, not a crash ("slow since I rebooted").
+    # A crash event next to heat or slowness ("shut down because it overheated"):
+    # neither class sees the whole story, so ask.
+    if perf and not strong_crash and dcr.CRASH_RE.search(text) and not dpr.crash_word_is_timing(text):
+        return {"symptom_class": None, "slots": {}, "candidates": candidates, "missing": []}
+    if dcr.CRASH_RE.search(text) and not (network and not strong_crash) and (strong_crash or not perf):
         # A crash AND a site ("Chrome crashed loading example.com"): ask, never guess.
         if network:
             return {"symptom_class": None, "slots": {}, "candidates": candidates, "missing": []}
         app = dcr.extract_app_name(text)
         return {"symptom_class": "crashes", "slots": {"app_name": app} if app else {}, "candidates": [], "missing": []}
+    if perf and network:
+        # "The internet is slow" is the network's; heat next to a site is ambiguous: ask.
+        if perf == "strong":
+            return {"symptom_class": None, "slots": {}, "candidates": candidates, "missing": []}
+    elif perf:
+        app = dpr.extract_perf_app(text)
+        return {
+            "symptom_class": "performance",
+            "slots": {"app_name": app} if app else {},
+            "candidates": [],
+            "missing": [],
+        }
     if not network:
         return {"symptom_class": None, "slots": {}, "candidates": [], "missing": []}
     if len(candidates) == 1:
@@ -1417,6 +1469,9 @@ def apply_guards(
     # rules decide when that applies (a full system drive), never the model alone.
     if class_key == "storage" and "clear_temp" not in (rule_verdict.get("suggested_actions") or []):
         out["suggested_actions"] = [a for a in out["suggested_actions"] if a != "clear_temp"]
+    # For speed & heat, a restart only helps memory built up over time; the rules decide that.
+    if class_key == "performance" and "reboot_system" not in (rule_verdict.get("suggested_actions") or []):
+        out["suggested_actions"] = [a for a in out["suggested_actions"] if a != "reboot_system"]
     # Allowlist, last line of defence: anything odd or missing carries no actions.
     if not (out.get("status") in ("confident", "likely") and out.get("locus") in ("local", "unknown")):
         out["suggested_actions"] = []
