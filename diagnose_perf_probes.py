@@ -191,7 +191,8 @@ def cpu_sample(seconds: float) -> dict:
             row["_best"], row["pid"] = share, pid
     rows = []
     for row in groups.values():
-        row.pop("_best")
+        # The busiest single process: one runaway, not many small ones adding up.
+        row["max_proc_pct"] = round(row.pop("_best"), 1)
         row["cpu_pct"] = round(row["cpu_pct"], 1)
         rows.append(row)
     rows.sort(key=lambda r: -r["cpu_pct"])
@@ -216,6 +217,7 @@ def _p_cpu(slots: dict) -> dict:
             "name": matched[0]["name"],
             "cpu_pct": round(sum(r["cpu_pct"] for r in matched), 1),
             "count": sum(r["count"] for r in matched),
+            "max_proc_pct": max(r["max_proc_pct"] for r in matched),
         }
     return {**data, "focus_app": app, "focus": focus}
 

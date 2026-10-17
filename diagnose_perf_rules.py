@@ -297,16 +297,24 @@ def _rule_cpu_hog(ev: dict, focus: bool):
     total = _num(c.get("total_pct")) or 0
     app = str(top.get("name") or "One app")
     if not (pct >= HOG_PCT or (total >= HOG_TOTAL_PCT and pct >= HOG_TOP_PCT)):
-        # One program pinning one core is ~3% of a 32-thread CPU but still a runaway.
+        # One process pinning one core is ~3% of a 32-thread CPU but still a
+        # runaway. Judged by the process's own CPU time, never by one core's
+        # load: Windows moves a busy thread between cores (live: 99% of a core
+        # while no single core passed 64%).
         cores = _num(c.get("cores")) or 0
-        busiest = _num(c.get("busiest_core_pct")) or 0
-        if app.lower() == "system" or pct * cores < ONE_CORE_PCT or busiest < ONE_CORE_PCT:
+        single = _num(top.get("max_proc_pct"))
+        if single is None and int(top.get("count") or 1) == 1:
+            single = pct
+        core_pct = (single or 0) * cores
+        if app.lower() == "system" or core_pct < ONE_CORE_PCT:
             return None
+        n = round(core_pct / 100)
+        busy = "one CPU core fully busy" if n <= 1 else f"about {n} CPU cores busy"
         reasoning = (
-            f"During a {_whole(_num(c.get('seconds')) or 3)}-second sample {app} kept about one of the "
-            f"{_whole(cores)} CPU threads fully busy, which is how a stuck or runaway program looks."
+            f"During a {_whole(_num(c.get('seconds')) or 3)}-second sample one {app} process kept {busy} "
+            f"(of {_whole(cores)} CPU threads), which is how a stuck or runaway program looks."
         )
-        verdict = dg._verdict("likely", "local", f"{app} is keeping one CPU core fully busy", reasoning)
+        verdict = dg._verdict("likely", "local", f"{app} is keeping {busy}", reasoning)
         return "cpu_hog", verdict, ["perf.cpu"], app
     count = int(top.get("count") or 1)
     copies = f" across {count} processes" if count > 1 else ""

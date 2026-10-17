@@ -34,8 +34,19 @@ def _rule(ev):
     return dpr.evaluate_perf_rules(ev)["rule_hits"][0]
 
 
-def _top(name, pct):
-    return {"top": [{"name": name, "pid": 1, "count": 1, "cpu_pct": pct}]}
+def _top(name, pct, max_proc=None, count=1):
+    """One top-CPU row; ``max_proc`` is its busiest single process's share."""
+    return {
+        "top": [
+            {
+                "name": name,
+                "pid": 1,
+                "count": count,
+                "cpu_pct": pct,
+                "max_proc_pct": pct if max_proc is None else max_proc,
+            }
+        ]
+    }
 
 
 class TestBoundaries:
@@ -53,11 +64,11 @@ class TestBoundaries:
 
     @pytest.mark.parametrize(("pct", "rule"), [(50.0, "cpu_hog"), (49.9, "nothing_found")])
     def test_hog_share(self, pct, rule):
-        assert _rule(_ev(perf_cpu=_top("chrome.exe", pct))) == rule
+        assert _rule(_ev(perf_cpu=_top("chrome.exe", pct, max_proc=1.0, count=40))) == rule
 
     @pytest.mark.parametrize(("total", "rule"), [(90.0, "cpu_hog"), (89.9, "nothing_found")])
     def test_hog_busy_total(self, total, rule):
-        assert _rule(_ev(perf_cpu={"total_pct": total, **_top("chrome.exe", 25.0)})) == rule
+        assert _rule(_ev(perf_cpu={"total_pct": total, **_top("chrome.exe", 25.0, max_proc=1.0, count=40)})) == rule
 
     @pytest.mark.parametrize(
         ("fields", "rule"),
@@ -147,9 +158,19 @@ class TestBoundaries:
         ev = _ev(perf_cpu={"cores": 32, "busiest_core_pct": 100.0, **_top("python.exe", 3.1)})
         assert dpr.evaluate_perf_rules(ev)["headline"] == "python.exe is keeping one CPU core fully busy"
 
-    def test_one_core_needs_a_busy_core(self):
-        ev = _ev(perf_cpu={"cores": 32, "busiest_core_pct": 60.0, **_top("python.exe", 3.1)})
+    def test_one_core_counts_when_windows_moves_the_thread(self):
+        """Live 2026-10-17: a one-core busy loop read 3.1 % of 32 threads while
+        no single core passed 64 % (Windows moves the thread between cores)."""
+        ev = _ev(perf_cpu={"cores": 32, "busiest_core_pct": 64.0, **_top("python.exe", 3.1)})
+        assert _rule(ev) == "cpu_hog"
+
+    def test_many_small_processes_are_not_one_core(self):
+        ev = _ev(perf_cpu={"cores": 32, "busiest_core_pct": 64.0, **_top("chrome.exe", 3.1, max_proc=0.2, count=49)})
         assert _rule(ev) == "nothing_found"
+
+    def test_several_cores_wording(self):
+        ev = _ev(perf_cpu={"cores": 32, "total_pct": 30.0, **_top("ffmpeg.exe", 12.5)})
+        assert dpr.evaluate_perf_rules(ev)["headline"] == "ffmpeg.exe is keeping about 4 CPU cores busy"
 
     @pytest.mark.parametrize(("busy", "rule"), [(90, "disk_busy"), (89, "nothing_found")])
     def test_disk_busy(self, busy, rule):
