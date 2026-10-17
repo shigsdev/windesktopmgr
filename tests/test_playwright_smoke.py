@@ -3266,6 +3266,46 @@ class TestDiagnoseTab:
         page.select_option("#dx-class", "network_dns")
         assert not page.is_visible("#dx-drive-row")
 
+    def test_perf_sentence_starts_without_asking(self, loaded_page):
+        """P1 (spec 2026-10-17): "my PC is slow and running hot" goes straight to
+        the speed & heat check. Read-only probes; never sends (declines)."""
+        page, _ = loaded_page
+        self._open(page)
+        page.fill("#dx-symptom", "my PC is slow and running hot")
+        page.click("#dx-run")
+        page.wait_for_function(
+            """
+            () => {
+                const p = document.getElementById('dx-preview');
+                const r = document.getElementById('dx-result');
+                return (p && p.style.display !== 'none') || (r && r.dataset.state === 'evidence_only');
+            }
+            """,
+            timeout=90_000,
+        )
+        assert not page.is_visible("#dx-ask"), "a speed & heat sentence must not be asked about"
+        assert not page.is_visible("#dx-host-row")
+        if page.is_visible("#dx-preview"):
+            assert '"symptom_class": "performance"' in page.inner_text("#dx-preview-text")
+            page.click("#dx-nosend")  # never send to Anthropic from a smoke test
+            page.wait_for_selector("#dx-result[data-state=evidence_only]", timeout=30_000)
+
+    def test_app_row_shows_for_performance(self, loaded_page):
+        page, _ = loaded_page
+        self._open(page)
+        page.fill("#dx-symptom", "my printer jams")
+        page.click("#dx-run")
+        page.wait_for_selector("#dx-class-row", state="visible", timeout=10_000)
+        assert "Speed & heat" in page.text_content("#dx-ask")
+        page.select_option("#dx-class", "performance")
+        assert page.is_visible("#dx-app-row")
+        assert not page.is_visible("#dx-drive-row")
+        assert not page.is_visible("#dx-host-row")
+        page.select_option("#dx-class", "storage")
+        assert not page.is_visible("#dx-app-row")
+        page.select_option("#dx-class", "network_dns")
+        assert not page.is_visible("#dx-app-row")
+
     def test_typed_drive_is_sent_only_for_the_storage_class(self, loaded_page):
         page, _ = loaded_page
         self._open(page)
