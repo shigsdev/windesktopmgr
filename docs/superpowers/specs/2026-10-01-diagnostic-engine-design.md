@@ -401,7 +401,7 @@ test that would have prevented the hour the user spent flushing a cache.
 | **1** | Engine, probe registry, redaction, egress gate, evidence-only mode, Network & DNS bundle, tab, tests, `architecture.html` |
 | 2 | Crashes & instability bundle — designed in [`2026-10-09-diagnose-crash-bundle-design.md`](2026-10-09-diagnose-crash-bundle-design.md) (one `crashes` class; adds optional slots and per-class rules/prompt to the engine) |
 | 3 | Storage & drives bundle — designed in [`2026-10-13-diagnose-storage-bundle-design.md`](2026-10-13-diagnose-storage-bundle-design.md) (one `storage` class, optional `drive` slot, no engine change) |
-| 4 | Performance & thermals bundle |
+| 4 | Speed & heat bundle — designed in [`2026-10-17-diagnose-perf-bundle-design.md`](2026-10-17-diagnose-perf-bundle-design.md) (one `performance` class, optional `app_name` slot, `reboot_system` guard) |
 
 PRs 2–4 are "add probes, add a bundle, add tests" against a frozen engine. If
 the abstraction is wrong, that surfaces on bundle two rather than after four
