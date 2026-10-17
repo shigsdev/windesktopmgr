@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import struct
 import types
 
 import psutil
@@ -18,6 +19,12 @@ import diagnose_perf_probes as dpp
 import diagnose_probes as dp
 
 GIB = 1024**3
+
+
+@pytest.fixture(autouse=True)
+def _no_system_snapshot(mocker):
+    """Tests use the psutil path unless they hand the probe a process table."""
+    mocker.patch("diagnose_perf_probes.kernel_cpu.query_process_buffer", return_value=None)
 
 
 class _Proc:
@@ -705,3 +712,118 @@ def test_wave1_and_escalate_complete():
         "perf.hw_errors",
     )
     assert c["escalate"] == ("perf.cpu_long", "perf.app_detail", "perf.trend_7d")
+
+
+# ── live fix: one SystemProcessInformation snapshot, not ~500 per-process reads ──
+
+
+_BASE = 0x7FF6_0000_0000
+
+
+def _nt_buffer(procs, truncate=0):
+    """A SystemProcessInformation buffer (x64 layout, no threads) for
+    ``procs = [(pid, name, cpu_s, rss_bytes, create_unix)]``, names stored
+    after each header the way Windows does."""
+    entries = []
+    for pid, name, cpu_s, rss, created in procs:
+        entries.append((pid, name.encode("utf-16-le"), cpu_s, rss, created))
+    out = bytearray()
+    for i, (pid, name, cpu_s, rss, created) in enumerate(entries):
+        size = 0x100 + len(name) + 8
+        start = len(out)
+        rec = bytearray(size)
+        nxt = 0 if i == len(entries) - 1 else size
+        struct.pack_into("<II", rec, 0, nxt, 0)
+        ticks = round(cpu_s * 1e7)
+        filetime = round((created + 11644473600) * 1e7) if created else 0
+        struct.pack_into("<qqq", rec, 0x20, filetime, ticks // 2, ticks - ticks // 2)
+        struct.pack_into("<HH", rec, 0x38, len(name), len(name))
+        struct.pack_into("<Q", rec, 0x40, (_BASE + start + 0x100) if name else 0)
+        struct.pack_into("<Q", rec, 0x50, pid)
+        struct.pack_into("<Q", rec, 0x90, rss)
+        rec[0x100 : 0x100 + len(name)] = name
+        out += rec
+    return bytes(out[: len(out) - truncate] if truncate else out)
+
+
+class TestProcessTable:
+    def test_parse_process_table_reads_all_fields(self):
+        raw = _nt_buffer(
+            [
+                (0, "", 99.0, 8192, 0),
+                (4, "System", 3500.5, 10 * 2**20, 1_792_000_000.0),
+                (7720, "ms-teams.exe", 12.25, 900 * 2**20, 1_792_260_000.0),
+            ]
+        )
+        table = dpp.parse_process_table(raw, _BASE)
+        assert table[4] == {"name": "System", "cpu_s": 3500.5, "rss": 10 * 2**20, "create_time": 1_792_000_000.0}
+        assert table[7720]["name"] == "ms-teams.exe"
+        assert table[7720]["cpu_s"] == 12.25
+        assert table[0]["name"] == ""
+
+    def test_parse_process_table_name_outside_buffer(self):
+        raw = bytearray(_nt_buffer([(42, "x.exe", 1.0, 1, 0)]))
+        struct.pack_into("<Q", raw, 0x40, _BASE + 10_000_000)
+        assert dpp.parse_process_table(bytes(raw), _BASE)[42]["name"] == ""
+
+    @pytest.mark.parametrize("raw", [b"", b"\x00" * 50])
+    def test_parse_process_table_malformed(self, raw):
+        assert dpp.parse_process_table(raw, _BASE) == {}
+
+    def test_parse_process_table_truncated_keeps_whole_entries(self):
+        raw = _nt_buffer([(4, "System", 1.0, 1, 0), (8, "a.exe", 2.0, 2, 0)], truncate=20)
+        assert set(dpp.parse_process_table(raw, _BASE)) == {4}
+
+    def test_cpu_uses_one_system_snapshot(self, mocker):
+        mocker.patch("diagnose_perf_probes.time.sleep")
+        mocker.patch("diagnose_perf_probes.psutil.cpu_count", return_value=8)
+        mocker.patch(
+            "diagnose_perf_probes.psutil.cpu_percent", side_effect=lambda percpu=False: [50.0] * 8 if percpu else 30.0
+        )
+        iters = mocker.patch("diagnose_perf_probes.psutil.process_iter")
+        me = os.getpid()
+        before = {
+            4: {"name": "System", "cpu_s": 100.0, "rss": 1, "create_time": 1.0},
+            10: {"name": "MsMpEng.exe", "cpu_s": 5.0, "rss": 1, "create_time": 1.0},
+            me: {"name": "python.exe", "cpu_s": 1.0, "rss": 1, "create_time": 1.0},
+            0: {"name": "", "cpu_s": 900.0, "rss": 1, "create_time": 0},
+        }
+        after = {
+            4: dict(before[4], cpu_s=101.2),
+            10: dict(before[10], cpu_s=11.0),
+            me: dict(before[me], cpu_s=20.0),
+            0: dict(before[0], cpu_s=920.0),
+        }
+        mocker.patch("diagnose_perf_probes._nt_processes", side_effect=[before, after])
+        top = dpp.REGISTERED["perf.cpu"].fn({})["top"]
+        assert top[0] == {"name": "MsMpEng.exe", "pid": 10, "count": 1, "cpu_pct": 25.0}
+        assert top[1] == {"name": "System", "pid": 4, "count": 1, "cpu_pct": 5.0}
+        assert len(top) == 2
+        iters.assert_not_called()
+
+    def test_memory_uses_system_snapshot(self, mocker):
+        mocker.patch("diagnose_perf_probes.time.time", return_value=1_000_000.0)
+        mocker.patch(
+            "diagnose_perf_probes.psutil.virtual_memory",
+            return_value=types.SimpleNamespace(total=32 * GIB, available=12 * GIB, percent=63.0),
+        )
+        mocker.patch("diagnose_perf_probes.psutil.swap_memory", return_value=types.SimpleNamespace(percent=7.0))
+        iters = mocker.patch("diagnose_perf_probes.psutil.process_iter")
+        mocker.patch(
+            "diagnose_perf_probes._nt_processes",
+            return_value={
+                21: {"name": "claude.exe", "cpu_s": 1.0, "rss": int(0.6 * GIB), "create_time": 1_000_000.0 - 3600},
+                22: {"name": "claude.exe", "cpu_s": 1.0, "rss": int(0.4 * GIB), "create_time": 1_000_000.0 - 1800},
+            },
+        )
+        top = dpp.REGISTERED["perf.memory"].fn({})["top"]
+        assert top[0]["name"] == "claude.exe"
+        assert top[0]["count"] == 2
+        assert top[0]["rss_gb"] == 1.0
+        assert top[0]["max_proc_gb"] == 0.6
+        assert top[0]["max_proc_h"] == 1.0
+        iters.assert_not_called()
+
+    def test_nt_processes_none_when_query_fails(self, mocker):
+        mocker.patch("diagnose_perf_probes.kernel_cpu.query_process_buffer", side_effect=OSError("ntdll"))
+        assert dpp._nt_processes() is None

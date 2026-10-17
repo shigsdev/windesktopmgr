@@ -100,6 +100,15 @@ def parse_process_threads(raw: bytes, pid: int) -> dict[int, int] | None:
 
 def _query_process_info() -> bytes | None:
     """Raw SystemProcessInformation buffer, or None off-Windows / on error."""
+    result = query_process_buffer()
+    return result[0] if result else None
+
+
+def query_process_buffer() -> tuple[bytes, int] | None:
+    """``(raw SystemProcessInformation buffer, the address it was read at)``,
+    or None off-Windows / on error. The address turns the image-name pointers
+    inside the buffer into offsets (diagnose_perf_probes reads every process
+    from one snapshot)."""
     if sys.platform != "win32":
         return None
     import ctypes
@@ -112,7 +121,7 @@ def _query_process_info() -> bytes | None:
         status = ntdll.NtQuerySystemInformation(_SYSTEM_PROCESS_INFORMATION, buf, size, ctypes.byref(ret))
         status &= 0xFFFFFFFF
         if status == 0:
-            return buf.raw[: ret.value or size]
+            return buf.raw[: ret.value or size], ctypes.addressof(buf)
         if status != _STATUS_INFO_LENGTH_MISMATCH:
             return None
         size = max(size * 2, ret.value + 65536)
