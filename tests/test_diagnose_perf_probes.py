@@ -7,6 +7,7 @@ replaced, so each test states exactly what Windows would have reported.
 
 from __future__ import annotations
 
+import json
 import os
 import types
 
@@ -216,3 +217,213 @@ class TestRegistry:
         verdict = diagnose.SYMPTOM_CLASSES["performance"]["rules"]({}, None)
         assert verdict["status"] == "inconclusive"
         assert verdict["rule_hits"][0] == "nothing_found"
+
+
+# ── Task 2: readers of the app's existing monitors ──────────────────────────
+
+
+def _leaf(text, kind, value, sid):
+    return {"Text": text, "Type": kind, "Value": value, "SensorId": sid, "Children": []}
+
+
+def _group(text, *children):
+    return {"Text": text, "Children": list(children)}
+
+
+def _lhm_tree(distances=True):
+    """Trimmed from the live 2026-10-17 LHM tree on this PC."""
+    temps = [
+        _leaf("Core Max", "Temperature", "51.0 °C", "/intelcpu/0/temperature/0"),
+        _leaf("P-Core #1", "Temperature", "41.0 °C", "/intelcpu/0/temperature/2"),
+        _leaf("P-Core #5", "Temperature", "50.0 °C", "/intelcpu/0/temperature/6"),
+        _leaf("CPU Package", "Temperature", "51.0 °C", "/intelcpu/0/temperature/26"),
+    ]
+    if distances:
+        temps += [
+            _leaf("P-Core #1 Distance to TjMax", "Temperature", "59.0 °C", "/intelcpu/0/temperature/27"),
+            _leaf("P-Core #5 Distance to TjMax", "Temperature", "49.0 °C", "/intelcpu/0/temperature/31"),
+            _leaf("E-Core #1 Distance to TjMax", "Temperature", "58.0 °C", "/intelcpu/0/temperature/35"),
+        ]
+    cpu = _group(
+        "Intel Core i9-14900K",
+        _group("Temperatures", *temps),
+        _group("Powers", _leaf("CPU Package", "Power", "48.9 W", "/intelcpu/0/power/0")),
+        _group(
+            "Clocks",
+            _leaf("P-Core #1", "Clock", "1394.4 MHz", "/intelcpu/0/clock/1"),
+            _leaf("E-Core #1", "Clock", "4400.0 MHz", "/intelcpu/0/clock/9"),
+        ),
+    )
+    gpu = _group(
+        "NVIDIA GeForce RTX 4060 Ti",
+        _group("Temperatures", _leaf("GPU Core", "Temperature", "45.0 °C", "/gpu-nvidia/0/temperature/0")),
+        _group("Fans", _leaf("GPU Fan 1", "Fan", "0 RPM", "/gpu-nvidia/0/fan/1")),
+    )
+    board = _group("Dell 0XYZ", _group("Fans", _leaf("CPU Fan", "Fan", "1250 RPM", "/lpc/nct6687d/fan/0")))
+    return {"Text": "Sensor", "Children": [_group("SHIGS78-PC24", cpu, gpu, board)]}
+
+
+class TestThermals:
+    def test_parse_lhm_cpu_live_shape(self):
+        out = dpp.parse_lhm_cpu(_lhm_tree())
+        assert out["package_c"] == 51.0
+        assert out["core_max_c"] == 51.0
+        assert out["min_tjmax_distance_c"] == 49.0
+        assert out["tjmax_c"] == 100.0
+        assert out["package_w"] == 48.9
+        assert out["p_core_mhz"] == 1394.4
+        assert out["gpu_temp_c"] == 45.0
+        assert {"name": "CPU Fan", "rpm": 1250.0} in out["fans"]
+
+    def test_thermals_lhm_source(self, mocker):
+        mocker.patch("diagnose_perf_probes.lhm._fetch_data_json", return_value=_lhm_tree())
+        data = dpp.REGISTERED["perf.thermals"].fn({})
+        assert data["source"] == "lhm"
+        assert data["min_tjmax_distance_c"] == 49.0
+
+    def test_thermals_never_carries_pc_name(self, mocker):
+        mocker.patch("diagnose_perf_probes.lhm._fetch_data_json", return_value=_lhm_tree())
+        assert "SHIGS78-PC24" not in json.dumps(dpp.REGISTERED["perf.thermals"].fn({}))
+
+    def test_thermals_no_distance_sensors(self):
+        out = dpp.parse_lhm_cpu(_lhm_tree(distances=False))
+        assert out["min_tjmax_distance_c"] is None
+        assert out["tjmax_c"] is None
+        assert out["core_max_c"] == 51.0
+
+    def test_thermals_windows_fallback(self, mocker):
+        mocker.patch("diagnose_perf_probes.lhm._fetch_data_json", return_value=None)
+        mocker.patch(
+            "diagnose_perf_probes.thermals.get_thermals",
+            return_value={
+                "temps": [{"Name": "TZ00", "TempC": 88.0}, {"Name": "TZ01", "TempC": 61.0}],
+                "fans": [{"Name": "Fan 1", "DesiredSpeed": 1800}],
+            },
+        )
+        data = dpp.REGISTERED["perf.thermals"].fn({})
+        assert data["source"] == "windows"
+        assert data["core_max_c"] == 88.0
+        assert data["min_tjmax_distance_c"] is None
+        assert data["fans"] == [{"name": "Fan 1", "rpm": 1800.0}]
+
+    def test_thermals_none_when_both_fail(self, mocker):
+        mocker.patch("diagnose_perf_probes.lhm._fetch_data_json", return_value=None)
+        mocker.patch("diagnose_perf_probes.thermals.get_thermals", side_effect=RuntimeError("wmi wedged"))
+        data = dpp.REGISTERED["perf.thermals"].fn({})
+        assert data["source"] == "none"
+        assert data["core_max_c"] is None
+
+    @pytest.mark.parametrize("tree", [None, [], {"Children": "x"}, "garbage"])
+    def test_parse_lhm_cpu_malformed(self, tree):
+        out = dpp.parse_lhm_cpu(tree)
+        assert out["core_max_c"] is None
+        assert out["fans"] == []
+
+    def test_parse_lhm_cpu_depth_cap(self):
+        node = _leaf("CPU Package", "Temperature", "99.0 °C", "/intelcpu/0/temperature/26")
+        for _ in range(70):
+            node = _group("x", node)
+        assert dpp.parse_lhm_cpu(node)["package_c"] is None
+
+
+class TestGpu:
+    def test_gpu_maps_utilization(self, mocker):
+        mocker.patch(
+            "diagnose_perf_probes.gpu.get_gpu_metrics",
+            return_value={
+                "available": True,
+                "name": "RTX 4060 Ti",
+                "utilization_pct": 97,
+                "temp_c": 70,
+                "vram_pct": 40,
+            },
+        )
+        assert dpp.REGISTERED["perf.gpu"].fn({}) == {
+            "available": True,
+            "name": "RTX 4060 Ti",
+            "util_pct": 97,
+            "temp_c": 70,
+            "vram_pct": 40,
+        }
+
+    def test_gpu_reader_failure(self, mocker):
+        mocker.patch("diagnose_perf_probes.gpu.get_gpu_metrics", side_effect=RuntimeError("nvidia-smi gone"))
+        data = dpp.REGISTERED["perf.gpu"].fn({})
+        assert data["available"] is False
+        assert data["util_pct"] is None
+
+
+class TestKernel:
+    def test_kernel_stuck_passthrough(self, mocker):
+        mocker.patch(
+            "diagnose_perf_probes.kernel_cpu.sample",
+            return_value={
+                "available": True,
+                "busiest": {"tid": 8, "pct": 96.0},
+                "stuck": [{"tid": 8, "pct": 96.0, "minutes": 12.0}],
+            },
+        )
+        data = dpp.REGISTERED["perf.kernel"].fn({})
+        assert data["available"] is True
+        assert data["warming_up"] is False
+        assert data["stuck"] == [{"tid": 8, "pct": 96.0, "minutes": 12.0}]
+
+    def test_kernel_warming_up(self, mocker):
+        mocker.patch(
+            "diagnose_perf_probes.kernel_cpu.sample",
+            return_value={"available": False, "reason": "warming up", "warming_up": True},
+        )
+        data = dpp.REGISTERED["perf.kernel"].fn({})
+        assert data == {"available": False, "warming_up": True, "busiest": None, "stuck": []}
+
+
+class TestDiskBusy:
+    def test_disk_busy_names_drives(self, mocker):
+        sample = mocker.patch(
+            "diagnose_perf_probes.dsp._io_sample",
+            return_value={
+                "seconds": 3,
+                "disks": [{"disk_number": 0, "busy_pct": 100}, {"disk_number": 9, "busy_pct": 4}],
+            },
+        )
+        mocker.patch(
+            "diagnose_perf_probes.dsp.collect_physical_disks",
+            return_value={
+                "drives": [
+                    {
+                        "disk_number": 0,
+                        "model": "Samsung SSD 990 PRO 2TB",
+                        "slot": "M.2 slot 1",
+                        "label_serial_tail": "5B40",
+                    }
+                ]
+            },
+        )
+        data = dpp.REGISTERED["perf.disk_busy"].fn({})
+        sample.assert_called_once_with(3)
+        assert "…5B40" in data["disks"][0]["name"]
+        assert data["disks"][1]["name"] == "Disk 9"
+
+
+class TestHwErrors:
+    def test_hw_errors_counts(self, mocker):
+        whea = mocker.patch(
+            "diagnose_perf_probes.dcp._p_whea",
+            return_value={
+                "fatal": 0,
+                "corrected": 110,
+                "by_component": {"processor": 110, "memory": 0, "pcie": 0, "other": 0},
+                "first": "2026-10-13T09:00:00Z",
+                "last": "2026-10-17T11:00:00Z",
+            },
+        )
+        data = dpp.REGISTERED["perf.hw_errors"].fn({})
+        assert whea.call_args.kwargs["days"] == 7
+        assert data == {
+            "processor": 110,
+            "memory": 0,
+            "pcie": 0,
+            "fatal": 0,
+            "corrected": 110,
+            "last": "2026-10-17T11:00:00Z",
+        }

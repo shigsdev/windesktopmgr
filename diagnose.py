@@ -179,7 +179,15 @@ SYMPTOM_CLASSES = {
         "label": "Speed & heat",
         "slots": (),
         "optional_slots": ("app_name",),
-        "wave1": ("perf.cpu", "perf.memory"),
+        "wave1": (
+            "perf.cpu",
+            "perf.memory",
+            "perf.thermals",
+            "perf.gpu",
+            "perf.kernel",
+            "perf.disk_busy",
+            "perf.hw_errors",
+        ),
         "escalate": (),
         # Looked up at call time: the two diagnose modules import each other.
         "rules": lambda evidence, host: dpr.evaluate_perf_rules(evidence),

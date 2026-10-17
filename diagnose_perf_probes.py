@@ -21,7 +21,13 @@ import time
 
 import psutil
 
+import diagnose_crash_probes as dcp
 import diagnose_probes as dp
+import diagnose_storage_probes as dsp
+import gpu
+import kernel_cpu
+import lhm
+import thermals
 
 _REDACT = ("username", "serial", "mac", "self_host")
 CPU_SAMPLE_S = 3
@@ -213,3 +219,203 @@ def _p_memory(slots: dict) -> dict:
 
 
 _perf_probe("perf.memory", "Memory use", _p_memory, needs_optional=("app_name",))
+
+
+# ── temperatures and fans ─────────────────────────────────────────────────
+
+_CPU_SENSOR_PREFIXES = ("/intelcpu/", "/amdcpu/")
+_DISTANCE_SUFFIX = " Distance to TjMax"
+_PACKAGE_NAMES = ("CPU Package", "Core (Tctl/Tdie)")
+_MAX_DEPTH = 64
+
+
+def _blank_thermals() -> dict:
+    return {
+        "package_c": None,
+        "core_max_c": None,
+        "min_tjmax_distance_c": None,
+        "tjmax_c": None,
+        "package_w": None,
+        "p_core_mhz": None,
+        "fans": [],
+        "gpu_temp_c": None,
+    }
+
+
+def _leaves(tree: object):
+    """Every sensor leaf of an LHM tree, depth-capped (the tree comes over
+    HTTP from a process this app does not control)."""
+    stack = [(tree, 0)]
+    while stack:
+        node, depth = stack.pop()
+        if not isinstance(node, dict) or depth > _MAX_DEPTH:
+            continue
+        children = node.get("Children")
+        if isinstance(children, list) and children:
+            stack.extend((child, depth + 1) for child in children)
+        elif isinstance(node.get("SensorId"), str):
+            yield node
+
+
+def parse_lhm_cpu(tree: object) -> dict:
+    """CPU temperatures, headroom to TjMax, power, clock, fans and the GPU
+    temperature from an LHM ``data.json`` tree. Only sensor values are read:
+    no node names above the hardware level (the PC's name) are kept."""
+    out = _blank_thermals()
+    cores: dict[str, float] = {}
+    distances: dict[str, float] = {}
+    p_clocks: list[float] = []
+    clocks: list[float] = []
+    try:
+        for leaf in _leaves(tree):
+            sid, kind, text = leaf["SensorId"], leaf.get("Type"), str(leaf.get("Text") or "")
+            value = lhm._parse_temp_value(leaf.get("Value", ""))
+            if value is None:
+                continue
+            is_cpu = sid.startswith(_CPU_SENSOR_PREFIXES)
+            if kind == "Fan":
+                out["fans"].append({"name": text, "rpm": value})
+            elif is_cpu and kind == "Temperature":
+                if text.endswith(_DISTANCE_SUFFIX):
+                    distances[text[: -len(_DISTANCE_SUFFIX)]] = value
+                elif text in _PACKAGE_NAMES:
+                    out["package_c"] = value
+                elif text == "Core Max":
+                    out["core_max_c"] = value
+                else:
+                    cores[text] = value
+            elif is_cpu and kind == "Power" and text == "CPU Package":
+                out["package_w"] = value
+            elif is_cpu and kind == "Clock":
+                (p_clocks if text.startswith("P-Core") else clocks).append(value)
+            elif sid.startswith("/gpu-") and kind == "Temperature" and text == "GPU Core":
+                out["gpu_temp_c"] = value
+    except Exception:  # noqa: BLE001 -- a malformed tree reads as "no sensors", never an error
+        return _blank_thermals()
+    if out["core_max_c"] is None and cores:
+        out["core_max_c"] = max(cores.values())
+    if distances:
+        out["min_tjmax_distance_c"] = min(distances.values())
+        limits = [cores[name] + gap for name, gap in distances.items() if name in cores]
+        out["tjmax_c"] = max(limits) if limits else None
+    if p_clocks or clocks:
+        out["p_core_mhz"] = max(p_clocks or clocks)
+    return out
+
+
+def _windows_thermals() -> dict | None:
+    """Windows' own (rougher) sensors, used when LibreHardwareMonitor is not running."""
+    try:
+        data = thermals.get_thermals() or {}
+    except Exception:  # noqa: BLE001 -- WMI wedged or missing -> no reading
+        return None
+    temps = [t.get("TempC") for t in data.get("temps") or [] if isinstance(t, dict)]
+    temps = [float(t) for t in temps if isinstance(t, (int, float))]
+    fans = []
+    for fan in data.get("fans") or []:
+        if isinstance(fan, dict):
+            speed = fan.get("DesiredSpeed")
+            fans.append(
+                {
+                    "name": str(fan.get("Name") or "Fan"),
+                    "rpm": float(speed) if isinstance(speed, (int, float)) else None,
+                }
+            )
+    if not temps and not fans:
+        return None
+    out = _blank_thermals()
+    out["core_max_c"] = max(temps) if temps else None
+    out["fans"] = fans
+    return out
+
+
+def _p_thermals(slots: dict) -> dict:
+    tree = lhm._fetch_data_json()
+    if tree:
+        return {"source": "lhm", **parse_lhm_cpu(tree)}
+    windows = _windows_thermals()
+    if windows is not None:
+        return {"source": "windows", **windows}
+    return {"source": "none", **_blank_thermals()}
+
+
+_perf_probe("perf.thermals", "Temperatures and fans", _p_thermals)
+
+
+# ── graphics card ─────────────────────────────────────────────────────────
+
+
+def _p_gpu(slots: dict) -> dict:
+    try:
+        data = gpu.get_gpu_metrics() or {}
+    except Exception:  # noqa: BLE001 -- no GPU reader -> not available
+        data = {}
+    return {
+        "available": bool(data.get("available")),
+        "name": data.get("name") or "",
+        "util_pct": data.get("utilization_pct"),
+        "temp_c": data.get("temp_c"),
+        "vram_pct": data.get("vram_pct"),
+    }
+
+
+_perf_probe("perf.gpu", "Graphics card", _p_gpu)
+
+
+# ── stuck driver (#75 detector) ───────────────────────────────────────────
+
+
+def _p_kernel(slots: dict) -> dict:
+    # The same call the Temps & Power tab makes every 10 s; its minimum-interval
+    # guard means an extra call never disturbs the stuck streaks.
+    state = kernel_cpu.sample() or {}
+    return {
+        "available": bool(state.get("available")),
+        "warming_up": bool(state.get("warming_up")),
+        "busiest": state.get("busiest"),
+        "stuck": list(state.get("stuck") or []),
+    }
+
+
+_perf_probe("perf.kernel", "Stuck driver check", _p_kernel)
+
+
+# ── drive activity ────────────────────────────────────────────────────────
+
+
+def _p_disk_busy(slots: dict) -> dict:
+    import diagnose_storage_rules as dsr  # noqa: PLC0415 -- dsr imports diagnose, which imports this module
+
+    data = dsp._io_sample(CPU_SAMPLE_S)
+    try:
+        drives = {d.get("disk_number"): d for d in dsp.collect_physical_disks().get("drives") or []}
+    except Exception:  # noqa: BLE001 -- no drive list -> numbers only
+        drives = {}
+    for row in data.get("disks") or []:
+        drive = drives.get(row.get("disk_number"))
+        row["name"] = dsr._name(drive) if drive else f"Disk {row.get('disk_number')}"
+    return data
+
+
+_perf_probe("perf.disk_busy", "Drive activity", _p_disk_busy)
+
+
+# ── hardware errors (crash bundle's WHEA reader) ──────────────────────────
+
+WHEA_DAYS = 7
+
+
+def _p_hw_errors(slots: dict) -> dict:
+    whea = dcp._p_whea({}, days=WHEA_DAYS)
+    parts = whea.get("by_component") or {}
+    return {
+        "processor": int(parts.get("processor") or 0),
+        "memory": int(parts.get("memory") or 0),
+        "pcie": int(parts.get("pcie") or 0),
+        "fatal": int(whea.get("fatal") or 0),
+        "corrected": int(whea.get("corrected") or 0),
+        "last": whea.get("last"),
+    }
+
+
+_perf_probe("perf.hw_errors", "Hardware error reports", _p_hw_errors)
