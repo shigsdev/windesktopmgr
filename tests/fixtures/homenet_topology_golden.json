@@ -1,0 +1,473 @@
+{
+ "full": {
+  "aps": [
+   {
+    "clients": [
+     "02:00:00:00:00:31"
+    ],
+    "id": "ap-28:94:01:00:00:10",
+    "is_base": true,
+    "mac": "28:94:01:00:00:10",
+    "name": "orbi"
+   },
+   {
+    "clients": [
+     "02:00:00:00:00:33"
+    ],
+    "id": "ap-A8:A1:59:00:00:20",
+    "is_base": false,
+    "mac": "A8:A1:59:00:00:20",
+    "name": "Kitchen"
+   },
+   {
+    "clients": [
+     "02:00:00:00:00:34"
+    ],
+    "id": "ap-A8:A1:59:00:00:99",
+    "is_base": false,
+    "mac": "A8:A1:59:00:00:99",
+    "name": "Orbi satellite (0099)"
+   }
+  ],
+  "devices": {
+   "00:03:7F:00:00:50": {
+    "active": true,
+    "friendly_name": "Den MoCA",
+    "ip": "192.168.1.50",
+    "mac": "00:03:7F:00:00:50",
+    "network": "wired",
+    "wired_via": "moca_bridge"
+   },
+   "02:00:00:00:00:31": {
+    "active": true,
+    "conn_ap_mac": "28:94:01:00:00:10",
+    "ip": "10.0.0.31",
+    "mac": "02:00:00:00:00:31",
+    "network": "wireless",
+    "source": "orbi"
+   },
+   "02:00:00:00:00:32": {
+    "active": true,
+    "conn_ap_mac": "5A:71:11:11:11:11",
+    "ip": "10.0.0.32",
+    "mac": "02:00:00:00:00:32",
+    "network": "wireless",
+    "source": "orbi"
+   },
+   "02:00:00:00:00:33": {
+    "active": true,
+    "ip": "10.0.0.33",
+    "mac": "02:00:00:00:00:33",
+    "network": "wireless",
+    "source": "orbi",
+    "via_orbi_satellite": "A8:A1:59:00:00:20"
+   },
+   "02:00:00:00:00:34": {
+    "active": true,
+    "conn_ap_mac": "A8:A1:59:00:00:99",
+    "ip": "10.0.0.34",
+    "mac": "02:00:00:00:00:34",
+    "network": "wireless",
+    "source": "orbi"
+   },
+   "02:00:00:00:00:35": {
+    "active": true,
+    "ip": "10.0.0.35",
+    "mac": "02:00:00:00:00:35",
+    "network": "wireless",
+    "source": "arp"
+   },
+   "02:00:00:00:00:41": {
+    "active": true,
+    "ip": "192.168.1.41",
+    "mac": "02:00:00:00:00:41",
+    "network": "wired"
+   },
+   "02:00:00:00:00:42": {
+    "active": true,
+    "ip": "192.168.1.42",
+    "mac": "02:00:00:00:00:42",
+    "network": "wired",
+    "wired_via": "moca"
+   },
+   "02:00:00:00:00:43": {
+    "active": true,
+    "ip": "192.168.1.43",
+    "mac": "02:00:00:00:00:43",
+    "network": "wired",
+    "wired_via": "switch"
+   },
+   "02:00:00:00:00:44": {
+    "active": true,
+    "ip": "192.168.1.44",
+    "mac": "02:00:00:00:00:44",
+    "network": "wired"
+   },
+   "02:00:00:00:00:45": {
+    "active": true,
+    "ip": "192.168.1.45",
+    "mac": "02:00:00:00:00:45",
+    "network": "wired",
+    "wired_via": "verizon_lan"
+   },
+   "02:00:00:00:00:51": {
+    "active": true,
+    "behind_moca_bridge": "00:03:7F:00:00:50",
+    "ip": "192.168.1.51",
+    "mac": "02:00:00:00:00:51",
+    "network": "wired"
+   },
+   "02:00:00:00:00:52": {
+    "active": true,
+    "behind_moca_bridge": "00:03:7F:00:00:99",
+    "ip": "192.168.1.52",
+    "mac": "02:00:00:00:00:52",
+    "network": "wired"
+   },
+   "28:94:01:00:00:10": {
+    "active": true,
+    "hostname": "orbi",
+    "ip": "10.0.0.1",
+    "mac": "28:94:01:00:00:10",
+    "network": "wired"
+   },
+   "A8:A1:59:00:00:20": {
+    "active": true,
+    "ip": "",
+    "mac": "A8:A1:59:00:00:20",
+    "network": "wireless",
+    "wired_via": "orbi_satellite"
+   },
+   "A8:A1:59:00:00:99": {
+    "active": true,
+    "category": "Network",
+    "friendly_name": "",
+    "hostname": "",
+    "ip": "",
+    "last_seen": "<ts>",
+    "location": "",
+    "mac": "A8:A1:59:00:00:99",
+    "network": "wireless",
+    "notes": "Orbi satellite — auto-added by topology builder. Open this row to set a friendly name (e.g. 'Living Room Orbi').",
+    "source": "topology_synthesised",
+    "vendor": "Netgear"
+   },
+   "AA:00:00:00:00:01": {
+    "active": true,
+    "hostname": "cr1000a",
+    "ip": "192.168.1.1",
+    "mac": "AA:00:00:00:00:01",
+    "network": "wired"
+   },
+   "BA:5E:00:00:00:01": {
+    "active": true,
+    "ip": "10.0.0.1",
+    "mac": "BA:5E:00:00:00:01",
+    "network": "wireless"
+   }
+  },
+  "moca_bridges": [
+   "00:03:7F:00:00:50"
+  ],
+  "moca_children": {
+   "00:03:7F:00:00:50": [
+    "02:00:00:00:00:51"
+   ]
+  },
+  "ok": true,
+  "orbi_mesh_unknown_ap": [
+   "02:00:00:00:00:32"
+  ],
+  "router": {
+   "id": "router",
+   "ip": "192.168.1.1",
+   "mac": "AA:00:00:00:00:01",
+   "name": "Verizon CR1000A"
+  },
+  "stats": {
+   "moca_bridges": 1,
+   "orbi_mesh_unknown_ap": 1,
+   "switch_available": true,
+   "total": 18,
+   "unmapped": 3,
+   "verizon_lan": 3,
+   "via_moca": 1,
+   "via_verizon_or_moca": 4,
+   "wired_mapped": 3,
+   "wireless_mapped": 3
+  },
+  "switches": [
+   {
+    "available": true,
+    "error": "",
+    "id": "switch-DC:62:79:F3:52:5C",
+    "mac": "DC:62:79:F3:52:5C",
+    "name": "TP-Link TL-SG2218 (Switch)",
+    "ports": {
+     "0": [
+      "02:00:00:00:00:43"
+     ],
+     "3": [
+      "02:00:00:00:00:41"
+     ],
+     "8": [
+      "02:00:00:00:00:31",
+      "28:94:01:00:00:10"
+     ]
+    }
+   }
+  ],
+  "unmapped": [
+   "02:00:00:00:00:35",
+   "02:00:00:00:00:51",
+   "BA:5E:00:00:00:01"
+  ],
+  "verizon_lan": [
+   "02:00:00:00:00:44",
+   "02:00:00:00:00:45",
+   "02:00:00:00:00:52"
+  ],
+  "via_moca": [
+   "02:00:00:00:00:42"
+  ],
+  "via_verizon_or_moca": [
+   "02:00:00:00:00:42",
+   "02:00:00:00:00:44",
+   "02:00:00:00:00:45",
+   "02:00:00:00:00:52"
+  ]
+ },
+ "switch_down": {
+  "aps": [
+   {
+    "clients": [
+     "02:00:00:00:00:31"
+    ],
+    "id": "ap-28:94:01:00:00:10",
+    "is_base": true,
+    "mac": "28:94:01:00:00:10",
+    "name": "orbi"
+   },
+   {
+    "clients": [
+     "02:00:00:00:00:33"
+    ],
+    "id": "ap-A8:A1:59:00:00:20",
+    "is_base": false,
+    "mac": "A8:A1:59:00:00:20",
+    "name": "Kitchen"
+   },
+   {
+    "clients": [
+     "02:00:00:00:00:34"
+    ],
+    "id": "ap-A8:A1:59:00:00:99",
+    "is_base": false,
+    "mac": "A8:A1:59:00:00:99",
+    "name": "Orbi satellite (0099)"
+   }
+  ],
+  "devices": {
+   "00:03:7F:00:00:50": {
+    "active": true,
+    "friendly_name": "Den MoCA",
+    "ip": "192.168.1.50",
+    "mac": "00:03:7F:00:00:50",
+    "network": "wired",
+    "wired_via": "moca_bridge"
+   },
+   "02:00:00:00:00:31": {
+    "active": true,
+    "conn_ap_mac": "28:94:01:00:00:10",
+    "ip": "10.0.0.31",
+    "mac": "02:00:00:00:00:31",
+    "network": "wireless",
+    "source": "orbi"
+   },
+   "02:00:00:00:00:32": {
+    "active": true,
+    "conn_ap_mac": "5A:71:11:11:11:11",
+    "ip": "10.0.0.32",
+    "mac": "02:00:00:00:00:32",
+    "network": "wireless",
+    "source": "orbi"
+   },
+   "02:00:00:00:00:33": {
+    "active": true,
+    "ip": "10.0.0.33",
+    "mac": "02:00:00:00:00:33",
+    "network": "wireless",
+    "source": "orbi",
+    "via_orbi_satellite": "A8:A1:59:00:00:20"
+   },
+   "02:00:00:00:00:34": {
+    "active": true,
+    "conn_ap_mac": "A8:A1:59:00:00:99",
+    "ip": "10.0.0.34",
+    "mac": "02:00:00:00:00:34",
+    "network": "wireless",
+    "source": "orbi"
+   },
+   "02:00:00:00:00:35": {
+    "active": true,
+    "ip": "10.0.0.35",
+    "mac": "02:00:00:00:00:35",
+    "network": "wireless",
+    "source": "arp"
+   },
+   "02:00:00:00:00:41": {
+    "active": true,
+    "ip": "192.168.1.41",
+    "mac": "02:00:00:00:00:41",
+    "network": "wired"
+   },
+   "02:00:00:00:00:42": {
+    "active": true,
+    "ip": "192.168.1.42",
+    "mac": "02:00:00:00:00:42",
+    "network": "wired",
+    "wired_via": "moca"
+   },
+   "02:00:00:00:00:43": {
+    "active": true,
+    "ip": "192.168.1.43",
+    "mac": "02:00:00:00:00:43",
+    "network": "wired",
+    "wired_via": "switch"
+   },
+   "02:00:00:00:00:44": {
+    "active": true,
+    "ip": "192.168.1.44",
+    "mac": "02:00:00:00:00:44",
+    "network": "wired"
+   },
+   "02:00:00:00:00:45": {
+    "active": true,
+    "ip": "192.168.1.45",
+    "mac": "02:00:00:00:00:45",
+    "network": "wired",
+    "wired_via": "verizon_lan"
+   },
+   "02:00:00:00:00:51": {
+    "active": true,
+    "behind_moca_bridge": "00:03:7F:00:00:50",
+    "ip": "192.168.1.51",
+    "mac": "02:00:00:00:00:51",
+    "network": "wired"
+   },
+   "02:00:00:00:00:52": {
+    "active": true,
+    "behind_moca_bridge": "00:03:7F:00:00:99",
+    "ip": "192.168.1.52",
+    "mac": "02:00:00:00:00:52",
+    "network": "wired"
+   },
+   "28:94:01:00:00:10": {
+    "active": true,
+    "hostname": "orbi",
+    "ip": "10.0.0.1",
+    "mac": "28:94:01:00:00:10",
+    "network": "wired"
+   },
+   "A8:A1:59:00:00:20": {
+    "active": true,
+    "ip": "",
+    "mac": "A8:A1:59:00:00:20",
+    "network": "wireless",
+    "wired_via": "orbi_satellite"
+   },
+   "A8:A1:59:00:00:99": {
+    "active": true,
+    "category": "Network",
+    "friendly_name": "",
+    "hostname": "",
+    "ip": "",
+    "last_seen": "<ts>",
+    "location": "",
+    "mac": "A8:A1:59:00:00:99",
+    "network": "wireless",
+    "notes": "Orbi satellite — auto-added by topology builder. Open this row to set a friendly name (e.g. 'Living Room Orbi').",
+    "source": "topology_synthesised",
+    "vendor": "Netgear"
+   },
+   "AA:00:00:00:00:01": {
+    "active": true,
+    "hostname": "cr1000a",
+    "ip": "192.168.1.1",
+    "mac": "AA:00:00:00:00:01",
+    "network": "wired"
+   },
+   "BA:5E:00:00:00:01": {
+    "active": true,
+    "ip": "10.0.0.1",
+    "mac": "BA:5E:00:00:00:01",
+    "network": "wireless"
+   }
+  },
+  "moca_bridges": [
+   "00:03:7F:00:00:50"
+  ],
+  "moca_children": {
+   "00:03:7F:00:00:50": [
+    "02:00:00:00:00:51"
+   ]
+  },
+  "ok": true,
+  "orbi_mesh_unknown_ap": [
+   "02:00:00:00:00:32"
+  ],
+  "router": {
+   "id": "router",
+   "ip": "192.168.1.1",
+   "mac": "AA:00:00:00:00:01",
+   "name": "Verizon CR1000A"
+  },
+  "stats": {
+   "moca_bridges": 1,
+   "orbi_mesh_unknown_ap": 1,
+   "switch_available": true,
+   "total": 18,
+   "unmapped": 3,
+   "verizon_lan": 4,
+   "via_moca": 1,
+   "via_verizon_or_moca": 5,
+   "wired_mapped": 1,
+   "wireless_mapped": 3
+  },
+  "switches": [
+   {
+    "available": true,
+    "error": "snmp down",
+    "id": "switch-DC:62:79:F3:52:5C",
+    "mac": "DC:62:79:F3:52:5C",
+    "name": "TP-Link TL-SG2218 (Switch)",
+    "ports": {
+     "0": [
+      "02:00:00:00:00:43"
+     ]
+    }
+   }
+  ],
+  "unmapped": [
+   "02:00:00:00:00:35",
+   "02:00:00:00:00:51",
+   "BA:5E:00:00:00:01"
+  ],
+  "verizon_lan": [
+   "02:00:00:00:00:41",
+   "02:00:00:00:00:44",
+   "02:00:00:00:00:45",
+   "02:00:00:00:00:52"
+  ],
+  "via_moca": [
+   "02:00:00:00:00:42"
+  ],
+  "via_verizon_or_moca": [
+   "02:00:00:00:00:41",
+   "02:00:00:00:00:42",
+   "02:00:00:00:00:44",
+   "02:00:00:00:00:45",
+   "02:00:00:00:00:52"
+  ]
+ }
+}

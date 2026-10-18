@@ -3503,43 +3503,15 @@ def _label_orbi_node(
     return f"Orbi satellite ({suffix})"
 
 
-def build_topology(inventory: dict | None = None, switch_data: dict | None = None) -> dict:
-    """Join the device inventory + switch MAC table + Orbi satellite mapping
-    into a hierarchical topology suitable for SVG rendering.
+def _topology_switch_ports(switch_data: dict | None) -> tuple[dict, dict[int, list[str]]]:
+    """``(switch_data, {port: [macs seen on that port]})``.
 
-    The shape::
-
-        {
-            "ok": True,
-            "router": {"id": "router", "name": "Verizon CR1000A", "ip": "192.168.1.1"},
-            "switches": [
-                {"id": "switch-DC:62:..", "name": "TP-Link TL-SG2218 (Switch)",
-                 "ports": {1: [<mac>, ...], 2: [...], ...}}
-            ],
-            "aps": [
-                {"id": "ap-OO:RR:..", "name": "Orbi RBRE960 (Router)", "mac": "..",
-                 "is_base": True, "clients": [<mac>, ...]},
-                {"id": "ap-SA:T1:..", "name": "Orbi satellite (XYZW)", "mac": "..",
-                 "is_base": False, "clients": [<mac>, ...]},
-            ],
-            "devices": {<mac>: {<full inventory device dict>}},
-            "unmapped": [<mac>, ...],   # devices we couldn't place under any infra node
-            "stats": {"total": N, "wired_mapped": N, "wireless_mapped": N, "unmapped": N},
-        }
-
-    All inputs are injectable so unit tests don't have to hit the network --
-    the production callers default to live inventory + live switch query.
+    _tplink_snmp_query returns mac_table = [{mac: "AA:BB:..", port_index: N}].
+    We invert to {port: [macs_seen_on_that_port]}. A trunk port may carry
+    many MACs (the Orbi router on its uplink port carries every wireless
+    client) -- the renderer treats those as "see AP for client list" rather
+    than draw 80 lines.
     """
-    if inventory is None:
-        inventory = _load_homenet_inventory()
-    devices_by_mac = dict(inventory.get("devices", {}))
-
-    # ── Switch / wired-port mapping ────────────────────────────────────
-    # _tplink_snmp_query returns mac_table = [{mac: "AA:BB:..", port_index: N}].
-    # We invert to {port: [macs_seen_on_that_port]}. A trunk port may carry
-    # many MACs (the Orbi router on its uplink port carries every wireless
-    # client) -- the renderer treats those as "see AP for client list" rather
-    # than draw 80 lines.
     switch_ports: dict[int, list[str]] = {}
     if switch_data is None:
         try:
@@ -3556,8 +3528,13 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
             if not mac or port is None:
                 continue
             switch_ports.setdefault(int(port), []).append(mac)
+    return switch_data, switch_ports
 
-    # ── Orbi satellite mapping ─────────────────────────────────────────
+
+def _topology_ap_clients(devices_by_mac: dict) -> dict[str, list[str]]:
+    """``{orbi_ap_mac: [client macs]}`` from three sources: each wireless
+    device's ``conn_ap_mac``, user-attested satellites, and per-client
+    ``via_orbi_satellite`` tags."""
     # Each wireless device's ``conn_ap_mac`` field tells us which Orbi node
     # (router or satellite) it's associated with. Bucket clients by AP MAC.
     # Bogus ConnAPMACs (randomized client MACs misreported as APs, sentinel
@@ -3600,21 +3577,27 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
             kids = aps_by_mac.setdefault(sat_parent, [])
             if mac.upper() not in kids:
                 kids.append(mac.upper())
+    return aps_by_mac
 
-    # Orbi base router lookup. Multiple inventory entries may share IP
-    # 10.0.0.1 (a real Orbi BSSID + a transient randomized-MAC client
-    # both observed at that IP across scans), so prefer the entry with a
-    # universal/non-locally-admin MAC over the random one. Falls back to
-    # whichever-came-first if no plausible candidate exists.
-    orbi_base_mac = ""
+
+def _topology_orbi_base_mac(devices_by_mac: dict) -> str:
+    """The Orbi base router's MAC.
+
+    Multiple inventory entries may share IP 10.0.0.1 (a real Orbi BSSID + a
+    transient randomized-MAC client both observed at that IP across scans),
+    so prefer the entry with a universal/non-locally-admin MAC over the
+    random one. Falls back to whichever-came-first if no plausible candidate
+    exists.
+    """
     candidates_at_orbi_ip = [m.upper() for m, dev in devices_by_mac.items() if dev.get("ip") == "10.0.0.1"]
     for m in candidates_at_orbi_ip:
         if _is_plausible_orbi_ap_mac(m):
-            orbi_base_mac = m
-            break
-    if not orbi_base_mac and candidates_at_orbi_ip:
-        orbi_base_mac = candidates_at_orbi_ip[0]
+            return m
+    return candidates_at_orbi_ip[0] if candidates_at_orbi_ip else ""
 
+
+def _topology_aps(aps_by_mac: dict[str, list[str]], orbi_base_mac: str, devices_by_mac: dict) -> list[dict]:
+    """AP columns, sorted by MAC, with the Orbi base always present."""
     # Pull cached satellite names from the Orbi (if reachable). 5-min TTL
     # means at most one extra SOAP call per topology refresh in practice.
     sat_names_from_orbi = _get_orbi_satellite_names_cached()
@@ -3644,22 +3627,24 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
                 "clients": [],
             },
         )
+    return aps_out
 
-    # ── Satellite-name plumbing (#9) ──────────────────────────────────
-    # Synthesise a placeholder inventory entry for every satellite MAC that
-    # isn't already in the inventory. The Orbi SOAP endpoint returns clients
-    # only -- it never returns the satellites themselves -- so without this
-    # step the user has nothing to point the device-edit modal at when they
-    # want to name "Living Room Orbi" / "Kitchen Orbi" / etc. Once the entry
-    # exists the existing /api/homenet/device/update flow handles the rest.
+
+def _topology_synthesise_aps(aps_out: list[dict], devices_by_mac: dict, inventory: dict | None) -> None:
+    """Satellite-name plumbing (#9).
+
+    Synthesise a placeholder inventory entry for every AP MAC that isn't
+    already in the inventory -- satellites AND the base when the inventory
+    hasn't captured the base via ARP yet. The Orbi SOAP endpoint returns
+    clients only -- it never returns the satellites themselves -- so without
+    this step the user has nothing to point the device-edit modal at when
+    they want to name "Living Room Orbi" / "Kitchen Orbi" / etc. Once the
+    entry exists the existing /api/homenet/device/update flow handles the
+    rest.
+    """
     inventory_dirty = False
     for ap in aps_out:
         ap_mac = ap["mac"]
-        # Synthesise an entry for any AP that's not in inventory -- this
-        # includes BOTH satellites AND the base when the inventory hasn't
-        # captured the base via ARP yet. Without the base entry, the user
-        # can't rename "Orbi RBRE960 (Base)" to e.g. "Living Room Orbi" via
-        # the existing edit modal.
         if ap_mac and ap_mac not in devices_by_mac:
             devices_by_mac[ap_mac] = {
                 "mac": ap_mac,
@@ -3690,35 +3675,28 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
         except Exception:  # noqa: BLE001 -- save failure is non-fatal
             pass
 
-    # ── Switch wrapper ────────────────────────────────────────────────
-    switch_mac = "DC:62:79:F3:52:5C"
-    switches_out = [
-        {
-            "id": f"switch-{switch_mac}",
-            "mac": switch_mac,
-            "name": _INFRA_LABELS[switch_mac]["name"],
-            "ports": {p: sorted(macs) for p, macs in sorted(switch_ports.items())},
-            "available": bool(switch_ports),
-            "error": (switch_data or {}).get("error", ""),
-        }
-    ]
 
-    # ── Identify the router (do this BEFORE classification) ───────────
+def _topology_router(devices_by_mac: dict) -> dict:
+    """The Verizon router, with its MAC when the inventory has 192.168.1.1."""
     router = {"id": "router", "name": "Verizon CR1000A", "ip": "192.168.1.1", "mac": ""}
     for mac, dev in devices_by_mac.items():
         if dev.get("ip") == "192.168.1.1":
             router["mac"] = mac.upper()
             break
+    return router
 
-    # ── Build the runtime infrastructure-MAC set ──────────────────────
-    # Anything in here is excluded from device-tier classification (it's
-    # rendered as a tier-2 infra node instead). Three sources contribute:
-    #   1. Hard-pinned MACs from _INFRA_LABELS (the TP-Link switch)
-    #   2. The router's MAC (resolved from inventory by IP lookup above)
-    #   3. Every AP MAC we discovered (Orbi base + satellites)
-    #   4. Devices whose hostname matches a known infra pattern -- catches
-    #      the case where a router/AP is in the inventory under multiple
-    #      MACs (Orbi WAN-side at 192.x AND LAN-side at 10.0.0.1)
+
+def _topology_infra_macs(router: dict, aps_out: list[dict], devices_by_mac: dict) -> set[str]:
+    """Infrastructure MACs, rendered as tier-2 nodes rather than devices.
+
+    Four sources contribute:
+      1. Hard-pinned MACs from _INFRA_LABELS (the TP-Link switch)
+      2. The router's MAC (resolved from inventory by IP lookup)
+      3. Every AP MAC we discovered (Orbi base + satellites)
+      4. Devices whose hostname matches a known infra pattern -- catches
+         the case where a router/AP is in the inventory under multiple
+         MACs (Orbi WAN-side at 192.x AND LAN-side at 10.0.0.1)
+    """
     infra_macs: set[str] = set(_INFRA_LABELS.keys())
     if router["mac"]:
         infra_macs.add(router["mac"])
@@ -3727,31 +3705,24 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
     for mac, dev in devices_by_mac.items():
         if _is_infra_by_hostname(dev):
             infra_macs.add(mac.upper())
+    return infra_macs
 
-    # ── Compute mapped / unmapped sets ────────────────────────────────
-    mapped_wired: set[str] = set()
-    for port_macs in switch_ports.values():
-        for m in port_macs:
-            if m in devices_by_mac and m not in infra_macs:
-                mapped_wired.add(m)
-    mapped_wireless: set[str] = set()
-    for ap in aps_out:
-        for m in ap["clients"]:
-            if m in devices_by_mac:
-                mapped_wireless.add(m)
 
-    all_macs = set(devices_by_mac.keys())
-    # Don't count infrastructure as "unmapped" -- we render it explicitly.
-    candidate = all_macs - infra_macs
-    leftover = candidate - mapped_wired - mapped_wireless
+def _topology_moca(
+    leftover: set[str], devices_by_mac: dict
+) -> tuple[list[str], set[str], dict[str, list[str]], set[str]]:
+    """``(moca_bridges, leftover_after_moca, moca_children, devices_behind_a_bridge)``.
 
-    # ── MoCA bridges ──────────────────────────────────────────────────
-    # Devices we recognise as MoCA endpoints (Actiontec ECB6200, FiOS Set-
-    # Top Boxes, etc.) get their own bucket. They're "wired" but not on the
-    # switch's MAC table because they sit on the coax → Verizon path. The
-    # remaining wired devices that are leftover AND not MoCA bridges go
-    # into "Verizon-direct or via MoCA" -- the catch-all explanation for
-    # "wired but not seen by the switch".
+    Devices we recognise as MoCA endpoints (Actiontec ECB6200, FiOS Set-Top
+    Boxes, etc.) get their own bucket. They're "wired" but not on the
+    switch's MAC table because they sit on the coax → Verizon path.
+
+    The bridge -> [downstream device MACs] mapping comes from each device's
+    behind_moca_bridge field (set in the edit modal). Devices pointing to a
+    bridge MAC that's no longer in moca_bridges (e.g. the user removed it
+    from inventory) are silently dropped from the tree but still show up in
+    via_moca/verizon_lan via the leftover bucketing.
+    """
     moca_bridges: list[str] = []
     leftover_after_moca: set[str] = set()
     for m in leftover:
@@ -3762,12 +3733,6 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
             leftover_after_moca.add(m)
     moca_bridges.sort()
 
-    # Build the bridge -> [downstream device MACs] mapping. The user marks
-    # each downstream device's parent via behind_moca_bridge in the edit
-    # modal; we just collect by bridge MAC. Devices pointing to a bridge
-    # MAC that's no longer in moca_bridges (e.g. the user removed it from
-    # inventory) are silently dropped from the tree but still show up in
-    # via_moca/verizon_lan via the leftover bucketing below.
     moca_bridge_set = set(moca_bridges)
     moca_children: dict[str, list[str]] = {b: [] for b in moca_bridges}
     devices_behind_a_bridge: set[str] = set()
@@ -3778,34 +3743,31 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
             devices_behind_a_bridge.add(m)
     for k in moca_children:
         moca_children[k].sort()
+    return moca_bridges, leftover_after_moca, moca_children, devices_behind_a_bridge
 
-    # Wired devices that aren't on the switch AND aren't a MoCA bridge.
-    # The user explicitly asked for these to be split into two columns
-    # (2026-04-25) -- "Verizon LAN" and "via MoCA" are physically distinct
-    # paths (the MoCA traffic never traverses the Verizon's LAN ports;
-    # it rides the coax from a downstream MoCA bridge into the Verizon's
-    # built-in MoCA bridge). Without TP-Link SNMP OR Verizon API topology
-    # data we can't auto-classify, so we honour the per-device user-set
-    # ``wired_via`` field set via the device-edit modal:
-    #   - "moca"        -> via_moca bucket
-    #   - "verizon_lan" -> verizon_lan bucket
-    #   - "switch"      -> stays out of these buckets (force into switch
-    #                      column; useful when SNMP works but the MAC
-    #                      table is stale and missed this device)
-    #   - "" (unknown)  -> verizon_lan by default. Most home setups have
-    #                      far more Verizon-LAN-attached devices than
-    #                      MoCA-attached ones (MoCA is usually 1-2 STBs),
-    #                      so this default minimises the user's tagging
-    #                      burden -- they only have to mark the MoCA
-    #                      devices, not all the Verizon ones.
-    # Devices the user has nested under a specific MoCA bridge live in the
-    # MoCA Bridges column tree; exclude them from the flat via_moca /
-    # verizon_lan buckets to avoid double-rendering.
-    wired_leftover = [
-        m
-        for m in leftover_after_moca
-        if devices_by_mac.get(m, {}).get("network") == "wired" and m not in devices_behind_a_bridge
-    ]
+
+def _topology_wired_buckets(
+    wired_leftover: list[str], devices_by_mac: dict, switch: dict, mapped_wired: set[str]
+) -> tuple[list[str], list[str], set[str]]:
+    """``(via_moca, verizon_lan, switch_forced)`` for wired devices that are
+    neither on the switch nor a MoCA bridge.
+
+    The user explicitly asked for these to be split into two columns
+    (2026-04-25) -- "Verizon LAN" and "via MoCA" are physically distinct
+    paths (the MoCA traffic never traverses the Verizon's LAN ports; it
+    rides the coax from a downstream MoCA bridge into the Verizon's built-in
+    MoCA bridge). Without TP-Link SNMP OR Verizon API topology data we can't
+    auto-classify, so we honour the per-device user-set ``wired_via`` field:
+      - "moca"        -> via_moca bucket
+      - "verizon_lan" -> verizon_lan bucket
+      - "switch"      -> forced into the switch column (useful when SNMP
+                         works but the MAC table is stale and missed it)
+      - "" (unknown)  -> verizon_lan by default. Most home setups have far
+                         more Verizon-LAN-attached devices than MoCA-attached
+                         ones (MoCA is usually 1-2 STBs), so this default
+                         minimises the user's tagging burden.
+    ``switch`` and ``mapped_wired`` are updated in place for forced devices.
+    """
     via_moca: list[str] = []
     verizon_lan: list[str] = []
     switch_forced: set[str] = set()
@@ -3817,16 +3779,92 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
             # User force-mapped to switch -- treat as if SNMP had reported
             # them. Add to a synthetic port-0 bucket on the switch so they
             # render in the switch column AND get excluded from the wireless
-            # -leftover -> unmapped path computed below.
+            # -leftover -> unmapped path.
             switch_forced.add(m)
-            switches_out[0]["ports"].setdefault(0, []).append(m)
+            switch["ports"].setdefault(0, []).append(m)
             mapped_wired.add(m)
         else:
             verizon_lan.append(m)
     via_moca.sort()
     verizon_lan.sort()
     if switch_forced:
-        switches_out[0]["available"] = True
+        switch["available"] = True
+    return via_moca, verizon_lan, switch_forced
+
+
+def build_topology(inventory: dict | None = None, switch_data: dict | None = None) -> dict:
+    """Join the device inventory + switch MAC table + Orbi satellite mapping
+    into a hierarchical topology suitable for SVG rendering.
+
+    The shape::
+
+        {
+            "ok": True,
+            "router": {"id": "router", "name": "Verizon CR1000A", "ip": "192.168.1.1"},
+            "switches": [
+                {"id": "switch-DC:62:..", "name": "TP-Link TL-SG2218 (Switch)",
+                 "ports": {1: [<mac>, ...], 2: [...], ...}}
+            ],
+            "aps": [
+                {"id": "ap-OO:RR:..", "name": "Orbi RBRE960 (Router)", "mac": "..",
+                 "is_base": True, "clients": [<mac>, ...]},
+                {"id": "ap-SA:T1:..", "name": "Orbi satellite (XYZW)", "mac": "..",
+                 "is_base": False, "clients": [<mac>, ...]},
+            ],
+            "devices": {<mac>: {<full inventory device dict>}},
+            "unmapped": [<mac>, ...],   # devices we couldn't place under any infra node
+            "stats": {"total": N, "wired_mapped": N, "wireless_mapped": N, "unmapped": N},
+        }
+
+    All inputs are injectable so unit tests don't have to hit the network --
+    the production callers default to live inventory + live switch query.
+    Each step lives in a ``_topology_*`` helper above.
+    """
+    if inventory is None:
+        inventory = _load_homenet_inventory()
+    devices_by_mac = dict(inventory.get("devices", {}))
+
+    switch_data, switch_ports = _topology_switch_ports(switch_data)
+    aps_out = _topology_aps(
+        _topology_ap_clients(devices_by_mac), _topology_orbi_base_mac(devices_by_mac), devices_by_mac
+    )
+    _topology_synthesise_aps(aps_out, devices_by_mac, inventory)
+
+    switch_mac = "DC:62:79:F3:52:5C"
+    switches_out = [
+        {
+            "id": f"switch-{switch_mac}",
+            "mac": switch_mac,
+            "name": _INFRA_LABELS[switch_mac]["name"],
+            "ports": {p: sorted(macs) for p, macs in sorted(switch_ports.items())},
+            "available": bool(switch_ports),
+            "error": (switch_data or {}).get("error", ""),
+        }
+    ]
+    # Identify the router BEFORE classification: its MAC is infrastructure.
+    router = _topology_router(devices_by_mac)
+    infra_macs = _topology_infra_macs(router, aps_out, devices_by_mac)
+
+    # ── Mapped / unmapped sets ───────────────────────────────────────────
+    mapped_wired = {
+        m for port_macs in switch_ports.values() for m in port_macs if m in devices_by_mac and m not in infra_macs
+    }
+    mapped_wireless = {m for ap in aps_out for m in ap["clients"] if m in devices_by_mac}
+    # Don't count infrastructure as "unmapped" -- we render it explicitly.
+    leftover = set(devices_by_mac.keys()) - infra_macs - mapped_wired - mapped_wireless
+
+    moca_bridges, leftover_after_moca, moca_children, devices_behind_a_bridge = _topology_moca(leftover, devices_by_mac)
+    # Devices the user has nested under a specific MoCA bridge live in the
+    # MoCA Bridges column tree; exclude them from the flat via_moca /
+    # verizon_lan buckets to avoid double-rendering.
+    wired_leftover = [
+        m
+        for m in leftover_after_moca
+        if devices_by_mac.get(m, {}).get("network") == "wired" and m not in devices_behind_a_bridge
+    ]
+    via_moca, verizon_lan, switch_forced = _topology_wired_buckets(
+        wired_leftover, devices_by_mac, switches_out[0], mapped_wired
+    )
     # Backwards-compatible alias retained so callers/tests that still
     # reference the combined list don't break. New code should use the
     # split buckets above.
@@ -3890,7 +3928,7 @@ def build_topology(inventory: dict | None = None, switch_data: dict | None = Non
             "via_moca": len(via_moca),
             "orbi_mesh_unknown_ap": len(orbi_mesh_unknown_ap),
             "unmapped": len(unmapped),
-            "switch_available": switches_out[0]["available"] if switches_out else False,
+            "switch_available": switches_out[0]["available"],
         },
     }
 
