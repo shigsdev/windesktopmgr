@@ -1863,3 +1863,92 @@ class TestTopologyDiagramPerBridgeColumns:
             "missing -- bridges without friendly_name will render as "
             "the bare MAC instead of 'Vendor XXXX'."
         )
+
+
+class TestBuildTopologyGolden:
+    """Pins build_topology's whole output on one network that walks every
+    branch, recorded from the code before it was split into helpers
+    (tech-debt audit 2026-10-17, complexity 47). The golden file holds the
+    exact result; ``last_seen`` (a timestamp) is blanked before comparing."""
+
+    GOLDEN = os.path.join(os.path.dirname(__file__), "fixtures", "homenet_topology_golden.json")
+
+    @staticmethod
+    def _network():
+        def dev(mac, ip="", **kw):
+            return {"mac": mac, "ip": ip, "active": True, **kw}
+
+        devices = [
+            dev("AA:00:00:00:00:01", "192.168.1.1", hostname="cr1000a", network="wired"),  # Verizon router
+            dev("BA:5E:00:00:00:01", "10.0.0.1", network="wireless"),  # random MAC at the Orbi IP
+            dev("28:94:01:00:00:10", "10.0.0.1", network="wired", hostname="orbi"),  # real Orbi base
+            dev("A8:A1:59:00:00:20", "", network="wireless", wired_via="orbi_satellite"),  # attested satellite
+            dev("02:00:00:00:00:31", "10.0.0.31", network="wireless", source="orbi", conn_ap_mac="28:94:01:00:00:10"),
+            dev("02:00:00:00:00:32", "10.0.0.32", network="wireless", source="orbi", conn_ap_mac="5A:71:11:11:11:11"),
+            dev(
+                "02:00:00:00:00:33",
+                "10.0.0.33",
+                network="wireless",
+                source="orbi",
+                via_orbi_satellite="A8:A1:59:00:00:20",
+            ),
+            dev("02:00:00:00:00:34", "10.0.0.34", network="wireless", source="orbi", conn_ap_mac="A8:A1:59:00:00:99"),
+            dev("02:00:00:00:00:35", "10.0.0.35", network="wireless", source="arp"),  # ARP ghost
+            dev("02:00:00:00:00:41", "192.168.1.41", network="wired"),  # on switch port 3
+            dev("02:00:00:00:00:42", "192.168.1.42", network="wired", wired_via="moca"),
+            dev("02:00:00:00:00:43", "192.168.1.43", network="wired", wired_via="switch"),
+            dev("02:00:00:00:00:44", "192.168.1.44", network="wired"),  # default -> Verizon LAN
+            dev("02:00:00:00:00:45", "192.168.1.45", network="wired", wired_via="verizon_lan"),
+            dev(
+                "00:03:7F:00:00:50", "192.168.1.50", network="wired", wired_via="moca_bridge", friendly_name="Den MoCA"
+            ),
+            dev("02:00:00:00:00:51", "192.168.1.51", network="wired", behind_moca_bridge="00:03:7F:00:00:50"),
+            dev("02:00:00:00:00:52", "192.168.1.52", network="wired", behind_moca_bridge="00:03:7F:00:00:99"),
+        ]
+        inventory = {"devices": {d["mac"]: d for d in devices}, "last_scan": "2026-10-17T00:00:00"}
+        switch = {
+            "mac_table": [
+                {"mac": "02:00:00:00:00:41", "port_index": 3},
+                {"mac": "28:94:01:00:00:10", "port_index": 8},
+                {"mac": "02:00:00:00:00:31", "port_index": 8},
+                {"mac": "", "port_index": 9},
+            ]
+        }
+        return inventory, switch
+
+    @staticmethod
+    def _normalise(result):
+        for d in result["devices"].values():
+            if "last_seen" in d:
+                d["last_seen"] = "<ts>"
+        result["switches"][0]["ports"] = {str(k): v for k, v in result["switches"][0]["ports"].items()}
+        return result
+
+    def _build(self, mocker, switch_error=False):
+        import homenet
+
+        mocker.patch.object(homenet, "_get_orbi_satellite_names_cached", return_value={"A8:A1:59:00:00:20": "Kitchen"})
+        save = mocker.patch.object(homenet, "_save_homenet_inventory")
+        inventory, switch = self._network()
+        if switch_error:
+            mocker.patch.object(homenet, "_tplink_get_data", side_effect=RuntimeError("snmp down"))
+            switch = None
+        return self._normalise(homenet.build_topology(inventory, switch)), save, inventory
+
+    def test_whole_topology_matches_golden(self, mocker):
+        import json
+
+        result, save, inventory = self._build(mocker)
+        with open(self.GOLDEN, encoding="utf-8") as fh:
+            golden = json.load(fh)
+        assert json.loads(json.dumps(result)) == golden["full"]
+        save.assert_called_once()
+        assert inventory["devices"]["A8:A1:59:00:00:99"]["source"] == "topology_synthesised"
+
+    def test_switch_unreachable_matches_golden(self, mocker):
+        import json
+
+        result, _, _ = self._build(mocker, switch_error=True)
+        with open(self.GOLDEN, encoding="utf-8") as fh:
+            golden = json.load(fh)
+        assert json.loads(json.dumps(result)) == golden["switch_down"]
