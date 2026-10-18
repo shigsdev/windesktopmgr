@@ -984,3 +984,44 @@ EXPECTED_ALL_CRASH = [
     ("warning", "drivers", "NVIDIA driver update available: 1.0 → 2.0"),
     ("info", "drivers", "4 third-party drivers are over 2 years old"),
 ]
+
+
+class TestSummaryPartialFailures:
+    """A source that fails half-way keeps the concerns it already produced."""
+
+    @pytest.fixture(autouse=True)
+    def _everything(self, mocker):
+        TestSummaryCharacterization()._everything(mocker)
+        import alerts
+
+        mocker.patch.object(alerts, "evaluate_rules", return_value=[])
+
+    @staticmethod
+    def _rows(mocker):
+        return [(c["tab"], c["title"]) for c in dashboard._compute_dashboard_summary()["concerns"]]
+
+    def test_baseline_cluster_failure_keeps_drift_concern(self, mocker):
+        import baseline
+
+        mocker.patch.object(baseline, "correlation_alert", side_effect=RuntimeError("boom"))
+        tabs = [t for t, _ in self._rows(mocker) if t == "baseline"]
+        assert tabs == ["baseline"]
+
+    def test_bios_audit_error_read_failure_keeps_change_concern(self, mocker):
+        import bios_audit
+
+        mocker.patch.object(bios_audit, "recent_errors", side_effect=RuntimeError("boom"))
+        rows = self._rows(mocker)
+        assert ("bios", "BIOS/firmware setting change detected (1 in 24h)") in rows
+        assert not any(t == "logs" for t, _ in rows)
+
+    def test_orbi_failure_keeps_verizon_concern(self, mocker):
+        import homenet
+
+        mocker.patch.object(
+            homenet,
+            "get_backup_health",
+            return_value={"verizon_stale": True, "verizon_age_days": 10, "orbi_stale": True, "orbi_age_days": "bad"},
+        )
+        titles = [title for t, title in self._rows(mocker) if t == "homenet"]
+        assert titles == ["Verizon CR1000A config backup is stale (10 days old)"]
