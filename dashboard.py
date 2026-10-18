@@ -432,18 +432,11 @@ def memory_config_concerns(cfg: dict) -> list[dict]:
     return concerns
 
 
-def _compute_dashboard_summary() -> dict:
-    """Synchronous fan-out over every dashboard collector.
-
-    Returns the full response dict (not a Flask Response) so the route
-    handler and the background refresher can share one implementation.
-    """
+def _collect_dashboard_results(wdm) -> dict:
+    """Run every dashboard collector: thermals first and alone, the rest in
+    parallel with a 45 s budget. A collector that raises or times out reads
+    as ``{"error": ...}``."""
     import concurrent.futures
-
-    # Collectors are resolved from the windesktopmgr namespace at call
-    # time so existing `mocker.patch("windesktopmgr.get_*")` test hooks
-    # keep intercepting the fan-out after the extraction (PR E, #54).
-    import windesktopmgr as wdm
 
     results = {}
 
@@ -495,11 +488,20 @@ def _compute_dashboard_summary() -> dict:
                             results[name] = {"error": str(e)}
                     else:
                         results[name] = {"error": "timed out"}
+    return results
 
-    # ── Pull key signals from each area ──────────────────────────────────────
+
+def _best_effort(build, *args) -> list[dict]:
+    """``build(*args)`` or ``[]`` if it raises: an optional source must never
+    break the dashboard."""
+    try:
+        return list(build(*args) or [])
+    except Exception:  # noqa: BLE001 -- best-effort by design
+        return []
+
+
+def _credential_concerns(results: dict) -> list[dict]:
     concerns = []
-
-    # Credentials / Auth
     cred = results.get("credentials", {})
     if cred.get("onedrive_suspended"):
         concerns.append(
@@ -553,12 +555,13 @@ def _compute_dashboard_summary() -> dict:
                 "action_fn": "switchTab('credentials')",
             }
         )
+    return concerns
 
-    # Thermals
-    therm = results.get("thermals", {})
+
+def _thermal_concerns(therm: dict) -> list[dict]:
+    concerns = []
     crit_temps = [t for t in therm.get("temps", []) if t.get("status") == "critical"]
     warn_temps = [t for t in therm.get("temps", []) if t.get("status") == "warning"]
-    cpu_pct = therm.get("perf", {}).get("CPUPct", 0)
     if crit_temps:
         concerns.append(
             {
@@ -592,15 +595,14 @@ def _compute_dashboard_summary() -> dict:
             concerns.append(kernel_concern)
     except Exception:  # noqa: BLE001 -- best-effort, never block the dashboard
         pass
-    # Hoist mem/mem_pct OUT of the try/except so downstream code (per-process
-    # memory concerns loop at line ~8605) can't hit NameError if the alerts
-    # block is ever refactored. Audit finding (2026-04-19 security review).
-    mem = results.get("memory", {})
-    mem_pct = round(mem.get("used_mb", 0) / max(mem.get("total_mb", 1), 1) * 100, 1)
+    return concerns
 
-    # CPU + Memory system pressure concerns now flow through alerts.py
-    # (backlog #5) so the user can tune thresholds without editing code.
-    # Per-drive disk percents also join the rule-driven stream.
+
+def _pressure_concerns(results: dict, cpu_pct, mem: dict, mem_pct: float) -> list[dict]:
+    """CPU, memory and per-drive fullness through the user-tunable alerts.py
+    rules (backlog #5), with the legacy hardcoded thresholds as the fallback
+    so the dashboard is never silent about real pressure."""
+    concerns = []
     try:
         import alerts
 
@@ -671,20 +673,26 @@ def _compute_dashboard_summary() -> dict:
                     "action_fn": "switchTab('disk')",
                 }
             )
+    return concerns
 
-    # Physical-disk SMART/health status. The drive loops above only cover
-    # logical-volume *fullness* (disk_percent); a physical disk reporting
-    # a non-Healthy HealthStatus (Warning / Unhealthy / an "IO Error"
-    # OperationalStatus) never reached the dashboard concerns feed before
-    # this block, so a failing disk showed up in the daily health report
-    # (SystemHealthDiag.check_disk_health) and on the Disk tab
-    # (disk.summarize_disk) but was silently absent from the dashboard.
-    # Mirror those two surfaces: any non-Healthy physical disk is a
-    # critical, data-loss-risk concern. (Bug: dashboard/daily-report
-    # disagreement, 2026-07-04.)
-    # A drive the user has explicitly PAUSED (e.g. a known-failing one mid-
-    # replacement) is suppressed here so it stops nagging — but only that
-    # drive, by serial, and only until the snooze expires.
+
+def _physical_disk_concerns(results: dict) -> list[dict]:
+    """Physical-disk SMART/health status.
+
+    The drive loops in _pressure_concerns only cover logical-volume
+    *fullness* (disk_percent); a physical disk reporting a non-Healthy
+    HealthStatus (Warning / Unhealthy / an "IO Error" OperationalStatus)
+    never reached the dashboard concerns feed before this block, so a failing
+    disk showed up in the daily health report
+    (SystemHealthDiag.check_disk_health) and on the Disk tab
+    (disk.summarize_disk) but was silently absent from the dashboard. Mirror
+    those two surfaces: any non-Healthy physical disk is a critical,
+    data-loss-risk concern. (Bug: dashboard/daily-report disagreement,
+    2026-07-04.) A drive the user has explicitly PAUSED (e.g. a known-failing
+    one mid-replacement) is suppressed here so it stops nagging — but only
+    that drive, by serial, and only until the snooze expires.
+    """
+    concerns = []
     try:
         import disk as _disk_mod
 
@@ -718,61 +726,39 @@ def _compute_dashboard_summary() -> dict:
                 "disk_serial": serial,
             }
         )
+    return concerns
 
-    # Network health — internet reachability / DNS / adapter status. Parity
-    # with the daily health report (SystemHealthDiag.check_network_health),
-    # which flags internet-down / DNS-fail / no-active-adapter as critical.
-    # The `network` collector above only samples throughput/latency for the
-    # Trends card and can't answer "is the internet usable?"; `network_health`
-    # is the dedicated reachability probe. Best-effort — never break the
-    # dashboard on a network hiccup.
-    try:
-        import network as _network_mod
 
-        nh = results.get("network_health") or {}
-        if nh and not nh.get("error"):
-            concerns.extend(_network_mod.network_health_concerns(nh))
-    except Exception:  # noqa: BLE001 -- network health is best-effort
-        pass
+def _network_health_concerns(results: dict) -> list[dict]:
+    """Internet reachability / DNS / adapter status. Parity with the daily
+    health report (SystemHealthDiag.check_network_health), which flags
+    internet-down / DNS-fail / no-active-adapter as critical. The `network`
+    collector only samples throughput/latency for the Trends card and can't
+    answer "is the internet usable?"; `network_health` is the dedicated
+    reachability probe."""
+    import network as _network_mod
 
-    # Hardware advisories — Intel 13th/14th-gen microcode/BIOS degradation risk
-    # + WHEA hardware errors. Parity with the daily report
-    # (SystemHealthDiag.check_intel_cpu / check_events); reads the SAME
-    # get_warranty_data() collector the /api/warranty/data route uses, so the
-    # two surfaces can't disagree. Best-effort — never break the dashboard.
-    try:
-        concerns.extend(hardware_advisory_concerns(results.get("warranty") or {}))
-    except Exception:  # noqa: BLE001 -- hardware advisories are best-effort
-        pass
+    nh = results.get("network_health") or {}
+    if nh and not nh.get("error"):
+        return _network_mod.network_health_concerns(nh)
+    return []
 
-    # RAM config advisory — speed/capacity mismatch + above-spec XMP. Parity
-    # with SystemHealthDiag.check_memory. Best-effort.
-    try:
-        concerns.extend(memory_config_concerns(results.get("memory_config") or {}))
-    except Exception:  # noqa: BLE001 -- memory config is best-effort
-        pass
 
-    # Storage Spaces pool health — a degraded pool/space means a drive dropped
-    # and redundancy is lost. Windows itself never alerts on this. Best-effort.
-    try:
-        concerns.extend(storage_pool_concerns(results.get("storage_spaces") or {}))
-    except Exception:  # noqa: BLE001 -- storage spaces is best-effort
-        pass
+def _nas_concerns(results: dict) -> list[dict]:
+    """NAS storage (QNAP over SNMP) — unhealthy NAS disk / not-Ready volume /
+    unreachable NAS. Only active when nas_config.json is filled in."""
+    import nas as _nas_mod
 
-    # NAS storage (QNAP over SNMP) — unhealthy NAS disk / not-Ready volume /
-    # unreachable NAS. Only active when nas_config.json is filled in. Best-effort.
-    try:
-        import nas as _nas_mod
+    return _nas_mod.nas_storage_concerns(results.get("nas_storage") or {})
 
-        concerns.extend(_nas_mod.nas_storage_concerns(results.get("nas_storage") or {}))
-    except Exception:  # noqa: BLE001 -- NAS is best-effort
-        pass
 
-    # Memory — per-process hogs (backlog #19). Each concern carries
-    # pid/process_name/mem_mb so the frontend can render inline action
-    # buttons (Kill / Investigate / Snooze 24h). Snoozed processes are
-    # filtered here so the user's dismissal actually suppresses the
-    # warning for the snooze window.
+def _process_memory_concerns(mem: dict) -> list[dict]:
+    """Per-process memory hogs (backlog #19). Each concern carries
+    pid/process_name/mem_mb so the frontend can render inline action buttons
+    (Kill / Investigate / Snooze 24h). Snoozed processes are filtered here so
+    the user's dismissal actually suppresses the warning for the snooze
+    window."""
+    concerns = []
     try:
         snoozes = processes._load_memory_snoozes()
     except Exception:  # noqa: BLE001
@@ -805,12 +791,14 @@ def _compute_dashboard_summary() -> dict:
                 "mem_mb": mb,
             }
         )
+    return concerns
 
-    # BIOS
+
+def _bios_update_concerns(results: dict) -> list[dict]:
     bios = results.get("bios", {})
     if bios.get("update", {}).get("update_available"):
         latest = bios.get("update", {}).get("latest_version", "")
-        concerns.append(
+        return [
             {
                 "level": "critical",
                 "tab": "bios",
@@ -820,153 +808,162 @@ def _compute_dashboard_summary() -> dict:
                 "action": "View BIOS & Firmware",
                 "action_fn": "switchTab('bios')",
             }
+        ]
+    return []  # no update, or BIOS confirmed current -- no concern needed
+
+
+def _task_concerns() -> list[dict]:
+    """Scheduled-task health concerns (crashloops, stale successes, missing tasks)."""
+    import task_watcher
+
+    return task_watcher.concerns_from_health(task_watcher.get_all_task_health())
+
+
+def _baseline_concerns() -> list[dict]:
+    """Baseline drift concerns (backlog #14).
+
+    Reads the drift history file (fast), NOT the live compute_drift() call
+    (~5 s: too slow for the dashboard fan-out). The history is appended by
+    /api/baseline/drift whenever the user opens the Baseline tab, which is
+    also the place they act on it. Concern fires at "info" level because
+    drift is often benign (Windows Update installed a service); critical
+    only if the user has explicitly marked something suspicious.
+    """
+    import baseline
+
+    concerns = []
+    # drop_reconciled() removes every change that no longer needs review
+    # -- cleared by "accept current as baseline", accepted one entry or
+    # cluster at a time, or undone on the PC -- by the same rule as the
+    # Baseline tab timeline. Without it, settled drift kept showing as
+    # open on the dashboard for up to 24h (bugs 2026-06-03, 2026-10-10).
+    history = baseline.load_history()
+    drift_entries = baseline.drop_reconciled(baseline.recent_drift(), history)
+    if drift_entries:
+        latest = drift_entries[-1]
+        total = latest.get("total_changes", 0)
+        breakdown = latest.get("drift", {})
+        parts = []
+        for cat in ("startup", "services", "tasks"):
+            cat_d = breakdown.get(cat) or {}
+            a = len(cat_d.get("added", []))
+            r = len(cat_d.get("removed", []))
+            c = len(cat_d.get("changed", []))
+            if a + r + c:
+                parts.append(f"{cat}: +{a}/-{r}/~{c}")
+        detail = "; ".join(parts) if parts else f"{total} change(s) vs baseline"
+        concerns.append(
+            {
+                "level": "info",
+                "tab": "baseline",
+                "icon": "📐",
+                "title": f"System baseline drift detected ({total} change(s) in 24h)",
+                "detail": detail,
+                "action": "Review baseline drift",
+                "action_fn": "switchTab('baseline')",
+            }
         )
-    elif bios.get("update", {}).get("confirmed_current"):
-        pass  # BIOS confirmed current — no concern needed
 
-    # Scheduled-task health concerns (crashloops, stale successes, missing tasks)
     try:
-        import task_watcher
-
-        task_results = task_watcher.get_all_task_health()
-        concerns.extend(task_watcher.concerns_from_health(task_results))
-    except Exception:  # noqa: BLE001
-        pass  # best-effort — never break dashboard
-
-    # Baseline drift concerns (backlog #14). Reads the drift history file
-    # (fast), NOT the live compute_drift() call (~5 s: too slow for the
-    # dashboard fan-out). The history is appended by /api/baseline/drift
-    # whenever the user opens the Baseline tab, which is also the place
-    # they act on it. Concern fires at "info" level because drift is
-    # often benign (Windows Update installed a service); critical only
-    # if the user has explicitly marked something suspicious.
-    try:
-        import baseline
-
-        # drop_reconciled() removes every change that no longer needs review
-        # -- cleared by "accept current as baseline", accepted one entry or
-        # cluster at a time, or undone on the PC -- by the same rule as the
-        # Baseline tab timeline. Without it, settled drift kept showing as
-        # open on the dashboard for up to 24h (bugs 2026-06-03, 2026-10-10).
-        history = baseline.load_history()
-        drift_entries = baseline.drop_reconciled(baseline.recent_drift(), history)
-        if drift_entries:
-            latest = drift_entries[-1]
-            total = latest.get("total_changes", 0)
-            breakdown = latest.get("drift", {})
-            parts = []
-            for cat in ("startup", "services", "tasks"):
-                cat_d = breakdown.get(cat) or {}
-                a = len(cat_d.get("added", []))
-                r = len(cat_d.get("removed", []))
-                c = len(cat_d.get("changed", []))
-                if a + r + c:
-                    parts.append(f"{cat}: +{a}/-{r}/~{c}")
-            detail = "; ".join(parts) if parts else f"{total} change(s) vs baseline"
-            concerns.append(
-                {
-                    "level": "info",
-                    "tab": "baseline",
-                    "icon": "📐",
-                    "title": f"System baseline drift detected ({total} change(s) in 24h)",
-                    "detail": detail,
-                    "action": "Review baseline drift",
-                    "action_fn": "switchTab('baseline')",
-                }
-            )
-
-        # Backlog #44 cross-surface correlation concern. Distinct from
-        # the info-level "drift detected" concern above — that one fires
-        # on ANY drift; this one fires on the security-relevant pattern
-        # where the most-recent cluster touched ≥3 categories within
-        # 60 s. That's the canonical install / malware fingerprint and
-        # warrants warning-level attention even if the underlying drift
-        # count is small.
-        history_all = baseline.drop_reconciled(history, history)
-        alert = baseline.correlation_alert(history_all, window_seconds=60, min_categories=3)
-        if alert:
-            cat_label = ", ".join(alert["categories"])
-            span = alert["span_seconds"]
-            span_label = f"{int(span)} s" if span >= 1 else "simultaneously"
-            concerns.append(
-                {
-                    "level": "warning",
-                    "tab": "baseline",
-                    "icon": "🚨",
-                    "title": f"Cross-surface baseline drift cluster ({alert['event_count']} events, {span_label})",
-                    "detail": f"Touched {len(alert['categories'])} categories: {cat_label}. Review the Change Timeline.",
-                    "action": "Review change timeline",
-                    "action_fn": "switchTab('baseline')",
-                }
-            )
-    except Exception:  # noqa: BLE001 -- baseline is best-effort
+        concerns += _baseline_cluster_concerns(baseline, history)
+    except Exception:  # noqa: BLE001 -- keep the drift concern already found
         pass
+    return concerns
 
-    # Backup health concerns (backlog #47). Fires when File History is
-    # configured + enabled but the target backup store is unreachable
-    # (silent-failure mode that wastes the user's mental "I'm backed up"
-    # reassurance), when the WindowsImageBackup catalog is empty, or when
-    # the Backup and Restore schedule's last success is stale.
-    # Best-effort: NEVER block dashboard rendering on this.
+
+def _baseline_cluster_concerns(baseline, history: list) -> list[dict]:
+    # Backlog #44 cross-surface correlation concern. Distinct from the
+    # info-level "drift detected" concern in _baseline_concerns — that one fires on ANY
+    # drift; this one fires on the security-relevant pattern where the
+    # most-recent cluster touched ≥3 categories within 60 s. That's the
+    # canonical install / malware fingerprint and warrants warning-level
+    # attention even if the underlying drift count is small.
+    history_all = baseline.drop_reconciled(history, history)
+    alert = baseline.correlation_alert(history_all, window_seconds=60, min_categories=3)
+    if alert:
+        cat_label = ", ".join(alert["categories"])
+        span = alert["span_seconds"]
+        span_label = f"{int(span)} s" if span >= 1 else "simultaneously"
+        return [
+            {
+                "level": "warning",
+                "tab": "baseline",
+                "icon": "🚨",
+                "title": f"Cross-surface baseline drift cluster ({alert['event_count']} events, {span_label})",
+                "detail": f"Touched {len(alert['categories'])} categories: {cat_label}. Review the Change Timeline.",
+                "action": "Review change timeline",
+                "action_fn": "switchTab('baseline')",
+            }
+        ]
+    return []
+
+
+def _backup_concerns() -> list[dict]:
+    """Backup health concerns (backlog #47). Fires when File History is
+    configured + enabled but the target backup store is unreachable
+    (silent-failure mode that wastes the user's mental "I'm backed up"
+    reassurance), when the WindowsImageBackup catalog is empty, or when the
+    Backup and Restore schedule's last success is stale."""
+    import backup as backup_mod
+
+    backup_summary = backup_mod.summarize_backup()
+    overall = backup_summary.get("overall_health") or {}
+    level = overall.get("level", "info")
+    if level not in ("warning", "critical"):
+        return []
+    # Detail line shows every failing surface so the user sees the
+    # full picture from the concern card without opening the tab.
+    detail_parts = []
+    for key, label in (
+        ("file_history", "File History"),
+        ("windows_backups", "WindowsImageBackup"),
+        ("windows_backup_schedule", "Backup and Restore"),
+    ):
+        health = (backup_summary.get(key) or {}).get("health") or {}
+        if health.get("reason") and health.get("level") in ("warning", "critical"):
+            detail_parts.append(f"{label}: {health['reason']}")
+    return [
+        {
+            "level": level,
+            "tab": "backup",
+            "icon": "📦",
+            "title": (
+                "Backup health: critical -- backups are not being saved or are out of date"
+                if level == "critical"
+                else "Backup health: warning"
+            ),
+            "detail": " · ".join(detail_parts) or overall.get("reason", ""),
+            "action": "Review backups",
+            "action_fn": "switchTab('backup')",
+        }
+    ]
+
+
+def _bios_audit_concerns() -> list[dict]:
+    """BIOS audit-trail concerns: logged changes + collection errors in the last 24h."""
+    import bios_audit
+
+    concerns = []
+    bios_changes = bios_audit.recent_changes()
+    if bios_changes:
+        latest = bios_changes[-1]
+        fields = [c["field"] for c in latest.get("changes", [])[:3]]
+        fields_label = ", ".join(fields) if fields else "(details)"
+        extra = len(latest.get("changes", [])) - 3
+        if extra > 0:
+            fields_label += f" (+{extra} more)"
+        concerns.append(
+            {
+                "level": "info",
+                "tab": "bios",
+                "icon": "📋",
+                "title": f"BIOS/firmware setting change detected ({len(bios_changes)} in 24h)",
+                "detail": f"Fields: {fields_label}",
+                "action": "View BIOS audit trail",
+                "action_fn": "switchTab('bios')",
+            }
+        )
     try:
-        import backup as backup_mod
-
-        backup_summary = backup_mod.summarize_backup()
-        overall = backup_summary.get("overall_health") or {}
-        level = overall.get("level", "info")
-        if level in ("warning", "critical"):
-            # Detail line shows every failing surface so the user sees the
-            # full picture from the concern card without opening the tab.
-            detail_parts = []
-            for key, label in (
-                ("file_history", "File History"),
-                ("windows_backups", "WindowsImageBackup"),
-                ("windows_backup_schedule", "Backup and Restore"),
-            ):
-                health = (backup_summary.get(key) or {}).get("health") or {}
-                if health.get("reason") and health.get("level") in ("warning", "critical"):
-                    detail_parts.append(f"{label}: {health['reason']}")
-            concerns.append(
-                {
-                    "level": level,
-                    "tab": "backup",
-                    "icon": "📦",
-                    "title": (
-                        "Backup health: critical -- backups are not being saved or are out of date"
-                        if level == "critical"
-                        else "Backup health: warning"
-                    ),
-                    "detail": " · ".join(detail_parts) or overall.get("reason", ""),
-                    "action": "Review backups",
-                    "action_fn": "switchTab('backup')",
-                }
-            )
-    except Exception:  # noqa: BLE001 -- backup health is best-effort
-        pass
-
-    # BIOS audit-trail concerns: logged changes + collection errors in the last 24h
-    try:
-        import bios_audit
-
-        bios_changes = bios_audit.recent_changes()
-        if bios_changes:
-            latest = bios_changes[-1]
-            fields = [c["field"] for c in latest.get("changes", [])[:3]]
-            fields_label = ", ".join(fields) if fields else "(details)"
-            extra = len(latest.get("changes", [])) - 3
-            if extra > 0:
-                fields_label += f" (+{extra} more)"
-            concerns.append(
-                {
-                    "level": "info",
-                    "tab": "bios",
-                    "icon": "📋",
-                    "title": f"BIOS/firmware setting change detected ({len(bios_changes)} in 24h)",
-                    "detail": f"Fields: {fields_label}",
-                    "action": "View BIOS audit trail",
-                    "action_fn": "switchTab('bios')",
-                }
-            )
         # Collection errors: PowerShell/WMI calls that failed during a
         # BIOS snapshot. Surfaced so the user sees "we couldn't read
         # field X" rather than a silent gap followed by a fake "change".
@@ -989,14 +986,14 @@ def _compute_dashboard_summary() -> dict:
                     "action_fn": "switchTab('logs')",
                 }
             )
-    except Exception:  # noqa: BLE001
-        pass  # audit trail is best-effort — never break dashboard
+    except Exception:  # noqa: BLE001 -- keep the change concern already found
+        pass
+    return concerns
 
-    # Disk usage is now driven by alerts.py (backlog #5) — see the
-    # per-drive points appended in the CPU/memory block above. Thresholds
-    # are user-configurable via /api/alerts/rules.
 
-    # Driver health
+def _driver_concerns(results: dict) -> list[dict]:
+    """Device errors, very old third-party drivers, and an NVIDIA driver update."""
+    concerns = []
     drv = results.get("drivers", {})
     prob_drivers = drv.get("problematic_drivers", [])
     old_drivers = drv.get("old_drivers", [])
@@ -1026,8 +1023,6 @@ def _compute_dashboard_summary() -> dict:
                 "action_fn": "switchTab('drivers')",
             }
         )
-
-    # NVIDIA GPU driver update
     if nv and nv.get("UpdateAvailable"):
         installed = nv.get("InstalledVersion", "?")
         latest = nv.get("LatestVersion", "?")
@@ -1043,41 +1038,48 @@ def _compute_dashboard_summary() -> dict:
                 "action_fn": "switchTab('drivers')",
             }
         )
+    return concerns
 
-    # Sort by level
-    level_order = {"critical": 0, "warning": 1, "info": 2, "ok": 3}
-    concerns.sort(key=lambda c: level_order.get(c.get("level", "info"), 2))
 
-    # Router config backup staleness. Both vendors require manual backups
-    # via their admin Save/Restore page (Orbi RBRE960 firmware rejects the
-    # documented SOAP backup endpoint; Verizon CR1000A's SPA needs browser
-    # interaction). The dashboard surfaces an info-level concern when the
-    # newest file in backups/<vendor>/ crosses the staleness threshold so
-    # the user knows it's time to re-run the manual backup. Best-effort --
-    # import failure mustn't kill the dashboard.
+def _router_backup_concerns() -> list[dict]:
+    """Router config backup staleness.
+
+    Both vendors require manual backups via their admin Save/Restore page
+    (Orbi RBRE960 firmware rejects the documented SOAP backup endpoint;
+    Verizon CR1000A's SPA needs browser interaction). The dashboard surfaces
+    an info-level concern when the newest file in backups/<vendor>/ crosses
+    the staleness threshold so the user knows it's time to re-run the manual
+    backup.
+
+    (The "Orbi reporting N wireless devices with unknown AP" concern was
+    removed 2026-05-13: the RBRE960 firmware's corrupted ConnAPMAC sentinel
+    is a static hardware fact, not an actionable issue, so it lives on the
+    topology stats line and the Unknown column subtitle instead.)
+    """
+    from homenet import get_backup_health
+
+    concerns = []
+    bh = get_backup_health()
+    if bh.get("verizon_stale"):
+        age = bh.get("verizon_age_days")
+        age_msg = "never backed up" if age is None else f"{age:.0f} days old"
+        concerns.append(
+            {
+                "level": "info",
+                "tab": "homenet",
+                "icon": "🗄",
+                "title": f"Verizon CR1000A config backup is stale ({age_msg})",
+                "detail": (
+                    f"Last backup: {age_msg}. Verizon backups are manual -- "
+                    "click Backup → Verizon on the Home Network tab to open "
+                    "the admin Save/Restore page, then drop the downloaded "
+                    "file into backups/verizon/ to track it here."
+                ),
+                "action": "Open Home Network tab",
+                "action_fn": "switchTab('homenet')",
+            }
+        )
     try:
-        from homenet import get_backup_health
-
-        bh = get_backup_health()
-        if bh.get("verizon_stale"):
-            age = bh.get("verizon_age_days")
-            age_msg = "never backed up" if age is None else f"{age:.0f} days old"
-            concerns.append(
-                {
-                    "level": "info",
-                    "tab": "homenet",
-                    "icon": "🗄",
-                    "title": f"Verizon CR1000A config backup is stale ({age_msg})",
-                    "detail": (
-                        f"Last backup: {age_msg}. Verizon backups are manual -- "
-                        "click Backup → Verizon on the Home Network tab to open "
-                        "the admin Save/Restore page, then drop the downloaded "
-                        "file into backups/verizon/ to track it here."
-                    ),
-                    "action": "Open Home Network tab",
-                    "action_fn": "switchTab('homenet')",
-                }
-            )
         if bh.get("orbi_stale"):
             age = bh.get("orbi_age_days")
             age_msg = "never backed up" if age is None else f"{age:.0f} days old"
@@ -1098,39 +1100,14 @@ def _compute_dashboard_summary() -> dict:
                     "action_fn": "switchTab('homenet')",
                 }
             )
-    except Exception:  # noqa: BLE001 -- never let backup-status break the dashboard
+    except Exception:  # noqa: BLE001 -- keep the Verizon concern already found
         pass
+    return concerns
 
-    # Orbi mesh-unknown bucket (bug 2026-05-12). When the RBRE960 firmware
-    # emits corrupted ConnAPMAC values for satellite-connected clients, the
-    # topology builder can't tell which Orbi node those clients belong to
-    # and they all collapse into the "Orbi mesh (AP unknown)" column. The
-    # parser captures a sample to ~/homenet_orbi_debug.xml so we can debug,
-    # but the user needs to know WHY their satellite columns disappeared.
-    # Surface as INFO when the unknown bucket dominates wireless mappings.
-    #
-    # NOTE 2026-05-13: removed the "Orbi reporting N wireless devices with
-    # unknown AP" dashboard concern. The Orbi RBRE960 firmware emits a
-    # corrupted ConnAPMAC sentinel for satellite-connected clients -- this
-    # is a STATIC fact about the user's hardware, not an actionable issue.
-    # Surfacing it as a dashboard concern that re-fires every poll was
-    # nagging without action. Moved to the topology stats line + the
-    # Unknown column subtitle where it's contextual. The raw response
-    # sample at ~/homenet_orbi_debug.xml is still captured by the parser
-    # on first occurrence per process for anyone investigating the
-    # firmware quirk further. User feedback 2026-05-13: "I still see this
-    # error... are you checking post-deploy?".
 
-    overall = (
-        "critical"
-        if any(c["level"] == "critical" for c in concerns)
-        else "warning"
-        if any(c["level"] == "warning" for c in concerns)
-        else "ok"
-    )
-
-    # Trend sampler (backlog #4). Best-effort, throttled internally to one
-    # sample per SAMPLE_INTERVAL — must never break the dashboard response.
+def _record_trend_sample(concerns: list[dict], results: dict) -> None:
+    """Trend sampler (backlog #4). Best-effort, throttled internally to one
+    sample per SAMPLE_INTERVAL — must never break the dashboard response."""
     try:
         import metrics_history
 
@@ -1146,6 +1123,65 @@ def _compute_dashboard_summary() -> dict:
         )
     except Exception:  # noqa: BLE001
         pass
+
+
+_LEVEL_ORDER = {"critical": 0, "warning": 1, "info": 2, "ok": 3}
+
+
+def _compute_dashboard_summary() -> dict:
+    """Synchronous fan-out over every dashboard collector.
+
+    Returns the full response dict (not a Flask Response) so the route
+    handler and the background refresher can share one implementation.
+    Each area's concerns come from its own helper above; the order they are
+    gathered in is the order equal-level concerns are shown in.
+    """
+    # Collectors are resolved from the windesktopmgr namespace at call
+    # time so existing `mocker.patch("windesktopmgr.get_*")` test hooks
+    # keep intercepting the fan-out after the extraction (PR E, #54).
+    import windesktopmgr as wdm
+
+    results = _collect_dashboard_results(wdm)
+
+    therm = results.get("thermals", {})
+    cpu_pct = therm.get("perf", {}).get("CPUPct", 0)
+    # mem / mem_pct are shared by the pressure and per-process concerns.
+    mem = results.get("memory", {})
+    mem_pct = round(mem.get("used_mb", 0) / max(mem.get("total_mb", 1), 1) * 100, 1)
+
+    concerns = [
+        *_credential_concerns(results),
+        *_thermal_concerns(therm),
+        *_pressure_concerns(results, cpu_pct, mem, mem_pct),
+        *_physical_disk_concerns(results),
+        # Parity with the daily report: network reachability, Intel CPU /
+        # WHEA advisories, RAM config, Storage Spaces pool, NAS. Each reads
+        # the same collector its tab uses, so the surfaces can't disagree.
+        *_best_effort(_network_health_concerns, results),
+        *_best_effort(hardware_advisory_concerns, results.get("warranty") or {}),
+        *_best_effort(memory_config_concerns, results.get("memory_config") or {}),
+        *_best_effort(storage_pool_concerns, results.get("storage_spaces") or {}),
+        *_best_effort(_nas_concerns, results),
+        *_process_memory_concerns(mem),
+        *_bios_update_concerns(results),
+        *_best_effort(_task_concerns),
+        *_best_effort(_baseline_concerns),
+        *_best_effort(_backup_concerns),
+        *_best_effort(_bios_audit_concerns),
+        *_driver_concerns(results),
+    ]
+    concerns.sort(key=lambda c: _LEVEL_ORDER.get(c.get("level", "info"), 2))
+    # Router backups are appended after the sort (info level, always last).
+    concerns += _best_effort(_router_backup_concerns)
+
+    overall = (
+        "critical"
+        if any(c["level"] == "critical" for c in concerns)
+        else "warning"
+        if any(c["level"] == "warning" for c in concerns)
+        else "ok"
+    )
+    _record_trend_sample(concerns, results)
 
     return {
         "concerns": concerns,

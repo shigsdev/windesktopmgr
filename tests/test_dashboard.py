@@ -758,3 +758,270 @@ class TestDashboardThermalsSampledFirst:
         assert gauges["cpu_temp"]["value"] is None
         assert gauges["cpu_temp"]["sub"] == "no sensor"
         assert result["concerns"] is not None  # the other collectors still ran
+
+
+class TestSummaryCharacterization:
+    """Pins _compute_dashboard_summary's exact concern list before it is split
+    into helpers (tech-debt audit 2026-10-17, complexity 67): every concern
+    branch fires, the alerts-engine fallback runs, and every best-effort
+    source can crash without breaking the dashboard."""
+
+    @staticmethod
+    def _rows(result):
+        return [(c["level"], c["tab"], c["title"]) for c in result["concerns"]]
+
+    def _everything(self, mocker):
+        TestDashboardPhysicalDiskHealth._mock_deps(
+            TestDashboardPhysicalDiskHealth(),
+            mocker,
+            {
+                "drives": [
+                    {"Letter": "C", "PctUsed": 96, "FreeGB": 10.5},
+                    {"Letter": "D", "PctUsed": 86, "FreeGB": 100.0},
+                ],
+                "physical": [{"Name": "SSD", "Health": "Healthy", "Status": "OK"}],
+                "io": [],
+            },
+        )
+        mocker.patch(
+            "windesktopmgr.get_credentials_network_health",
+            return_value={
+                "onedrive_suspended": True,
+                "msal_token_stale": True,
+                "msal_token_age_h": 30,
+                "fast_startup": True,
+                "drives_down": [{"Name": "Z:", "DisplayRoot": "\\\\nas\\share"}],
+            },
+        )
+        mocker.patch(
+            "windesktopmgr.get_thermals",
+            return_value={
+                "temps": [{"Name": "CPU Package", "TempC": 96, "status": "critical"}],
+                "perf": {"CPUPct": 85},
+                "fans": [],
+                "has_rich": True,
+            },
+        )
+        mocker.patch(
+            "windesktopmgr.get_memory_analysis",
+            return_value={
+                "total_mb": 32000,
+                "used_mb": 30000,
+                "top_procs": [{"name": "chrome", "mem": 3500, "pid": 42}],
+            },
+        )
+        mocker.patch(
+            "windesktopmgr.get_bios_status",
+            return_value={"current": {}, "update": {"update_available": True, "latest_version": "2.25.0"}},
+        )
+        mocker.patch(
+            "windesktopmgr.get_driver_health",
+            return_value={
+                "problematic_drivers": [{"DeviceName": "Bad Device"}],
+                "old_drivers": [{}, {}, {}, {}],
+                "nvidia": {"UpdateAvailable": True, "InstalledVersion": "1.0", "LatestVersion": "2.0", "Name": "RTX"},
+            },
+        )
+        import task_watcher
+
+        mocker.patch.object(
+            task_watcher,
+            "concerns_from_health",
+            return_value=[{"level": "warning", "tab": "tasks", "title": "Task X failing"}],
+        )
+        import baseline
+
+        mocker.patch.object(baseline, "load_history", return_value=[])
+        mocker.patch.object(
+            baseline,
+            "recent_drift",
+            return_value=[{"total_changes": 3, "drift": {"startup": {"added": [1], "changed": [2, 3]}}}],
+        )
+        mocker.patch.object(baseline, "drop_reconciled", side_effect=lambda entries, history=None: entries)
+        mocker.patch.object(
+            baseline,
+            "correlation_alert",
+            return_value={"categories": ["startup", "services", "tasks"], "span_seconds": 12, "event_count": 5},
+        )
+        import backup
+
+        mocker.patch.object(
+            backup,
+            "summarize_backup",
+            return_value={
+                "overall_health": {"level": "critical", "reason": "r"},
+                "file_history": {"health": {"level": "critical", "reason": "off"}},
+                "windows_backup_schedule": {"health": {"level": "warning", "reason": "stale"}},
+            },
+        )
+        import bios_audit
+
+        mocker.patch.object(bios_audit, "recent_changes", return_value=[{"changes": [{"field": f} for f in "abcde"]}])
+        mocker.patch.object(bios_audit, "recent_errors", return_value=[{"errors": [{"field": f} for f in "pqrstu"]}])
+        import homenet
+
+        mocker.patch.object(
+            homenet,
+            "get_backup_health",
+            return_value={"verizon_stale": True, "verizon_age_days": None, "orbi_stale": True, "orbi_age_days": 45},
+        )
+        mocker.patch("processes._load_memory_snoozes", return_value={})
+        import metrics_history
+
+        return mocker.patch.object(metrics_history, "record_sample")
+
+    def test_every_concern_branch_in_order(self, mocker):
+        sample = self._everything(mocker)
+        import alerts
+
+        points = []
+
+        def rules(metric_points):
+            points.extend((p.metric, p.value, p.label) for p in metric_points)
+            return [{"level": "warning", "tab": "thermals", "title": "CPU rule"}]
+
+        mocker.patch.object(alerts, "evaluate_rules", side_effect=rules)
+        result = dashboard._compute_dashboard_summary()
+        assert self._rows(result) == EXPECTED_EVERYTHING
+        assert points == [
+            ("cpu_percent", 85.0, ""),
+            ("memory_percent", 93.8, "30,000 MB used"),
+            ("disk_percent", 96.0, "C:"),
+            ("disk_percent", 86.0, "D:"),
+        ]
+        assert (result["total"], result["critical"], result["warnings"], result["overall"]) == EXPECTED_COUNTS
+        assert sample.call_args.args[0]["concerns"] == result["concerns"]
+
+    def test_alerts_engine_fallback(self, mocker):
+        self._everything(mocker)
+        import alerts
+
+        mocker.patch.object(alerts, "evaluate_rules", side_effect=RuntimeError("rules file corrupt"))
+        rows = self._rows(dashboard._compute_dashboard_summary())
+        assert [r for r in rows if r[1] in ("thermals", "memory", "disk")] == EXPECTED_FALLBACK
+
+    def test_every_best_effort_source_can_crash(self, mocker):
+        self._everything(mocker)
+        boom = RuntimeError("boom")
+        import alerts
+        import backup
+        import baseline
+        import bios_audit
+        import disk
+        import homenet
+        import kernel_cpu
+        import metrics_history
+        import nas
+        import network
+        import task_watcher
+
+        for target, name in (
+            (alerts, "evaluate_rules"),
+            (kernel_cpu, "stuck_concern"),
+            (network, "network_health_concerns"),
+            (dashboard, "hardware_advisory_concerns"),
+            (dashboard, "memory_config_concerns"),
+            (dashboard, "storage_pool_concerns"),
+            (nas, "nas_storage_concerns"),
+            (task_watcher, "get_all_task_health"),
+            (baseline, "load_history"),
+            (backup, "summarize_backup"),
+            (bios_audit, "recent_changes"),
+            (homenet, "get_backup_health"),
+            (metrics_history, "record_sample"),
+            (disk, "_load_disk_snoozes"),
+        ):
+            mocker.patch.object(target, name, side_effect=boom)
+        mocker.patch("processes._load_memory_snoozes", side_effect=boom)
+        result = dashboard._compute_dashboard_summary()
+        assert self._rows(result) == EXPECTED_ALL_CRASH
+        assert result["gauges"]
+
+
+# Golden values recorded from the code BEFORE the split (2026-10-17).
+EXPECTED_EVERYTHING = [
+    ("critical", "credentials", "OneDrive is SUSPENDED — confirmed cause of Word/Outlook sign-in errors"),
+    ("critical", "credentials", "Microsoft 365 token expired (30h old)"),
+    ("critical", "credentials", "1 NAS drive(s) unreachable"),
+    ("critical", "thermals", "Critical temperature: 96°C (CPU Package)"),
+    ("critical", "processes", "chrome using 3,500 MB RAM"),
+    ("critical", "bios", "BIOS update available: 2.25.0"),
+    ("critical", "backup", "Backup health: critical -- backups are not being saved or are out of date"),
+    ("critical", "drivers", "1 device(s) with driver errors"),
+    ("warning", "credentials", "Fast Startup is enabled"),
+    ("warning", "thermals", "CPU rule"),
+    ("warning", "tasks", "Task X failing"),
+    ("warning", "baseline", "Cross-surface baseline drift cluster (5 events, 12 s)"),
+    ("warning", "logs", "BIOS audit collection errors (1 cycle(s) in 24h)"),
+    ("warning", "drivers", "NVIDIA driver update available: 1.0 → 2.0"),
+    ("info", "baseline", "System baseline drift detected (3 change(s) in 24h)"),
+    ("info", "bios", "BIOS/firmware setting change detected (1 in 24h)"),
+    ("info", "drivers", "4 third-party drivers are over 2 years old"),
+    ("info", "homenet", "Verizon CR1000A config backup is stale (never backed up)"),
+    ("info", "homenet", "Orbi RBRE960 config backup is stale (45 days old)"),
+]
+EXPECTED_COUNTS = (19, 8, 6, "critical")
+EXPECTED_FALLBACK = [
+    ("critical", "thermals", "Critical temperature: 96°C (CPU Package)"),
+    ("critical", "memory", "RAM at 93.8% (30,000 MB used)"),
+    ("critical", "disk", "Drive C is 96% full (10.5 GB free)"),
+    ("warning", "thermals", "CPU at 85% utilisation"),
+    ("warning", "disk", "Drive D is 86% full (100.0 GB free)"),
+]
+EXPECTED_ALL_CRASH = [
+    ("critical", "credentials", "OneDrive is SUSPENDED — confirmed cause of Word/Outlook sign-in errors"),
+    ("critical", "credentials", "Microsoft 365 token expired (30h old)"),
+    ("critical", "credentials", "1 NAS drive(s) unreachable"),
+    ("critical", "thermals", "Critical temperature: 96°C (CPU Package)"),
+    ("critical", "memory", "RAM at 93.8% (30,000 MB used)"),
+    ("critical", "disk", "Drive C is 96% full (10.5 GB free)"),
+    ("critical", "processes", "chrome using 3,500 MB RAM"),
+    ("critical", "bios", "BIOS update available: 2.25.0"),
+    ("critical", "drivers", "1 device(s) with driver errors"),
+    ("warning", "credentials", "Fast Startup is enabled"),
+    ("warning", "thermals", "CPU at 85% utilisation"),
+    ("warning", "disk", "Drive D is 86% full (100.0 GB free)"),
+    ("warning", "drivers", "NVIDIA driver update available: 1.0 → 2.0"),
+    ("info", "drivers", "4 third-party drivers are over 2 years old"),
+]
+
+
+class TestSummaryPartialFailures:
+    """A source that fails half-way keeps the concerns it already produced."""
+
+    @pytest.fixture(autouse=True)
+    def _everything(self, mocker):
+        TestSummaryCharacterization()._everything(mocker)
+        import alerts
+
+        mocker.patch.object(alerts, "evaluate_rules", return_value=[])
+
+    @staticmethod
+    def _rows(mocker):
+        return [(c["tab"], c["title"]) for c in dashboard._compute_dashboard_summary()["concerns"]]
+
+    def test_baseline_cluster_failure_keeps_drift_concern(self, mocker):
+        import baseline
+
+        mocker.patch.object(baseline, "correlation_alert", side_effect=RuntimeError("boom"))
+        tabs = [t for t, _ in self._rows(mocker) if t == "baseline"]
+        assert tabs == ["baseline"]
+
+    def test_bios_audit_error_read_failure_keeps_change_concern(self, mocker):
+        import bios_audit
+
+        mocker.patch.object(bios_audit, "recent_errors", side_effect=RuntimeError("boom"))
+        rows = self._rows(mocker)
+        assert ("bios", "BIOS/firmware setting change detected (1 in 24h)") in rows
+        assert not any(t == "logs" for t, _ in rows)
+
+    def test_orbi_failure_keeps_verizon_concern(self, mocker):
+        import homenet
+
+        mocker.patch.object(
+            homenet,
+            "get_backup_health",
+            return_value={"verizon_stale": True, "verizon_age_days": 10, "orbi_stale": True, "orbi_age_days": "bad"},
+        )
+        titles = [title for t, title in self._rows(mocker) if t == "homenet"]
+        assert titles == ["Verizon CR1000A config backup is stale (10 days old)"]
