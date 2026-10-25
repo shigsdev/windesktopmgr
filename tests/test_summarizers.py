@@ -3,7 +3,9 @@ test_summarizers.py
 Tests for all summarize_* functions — pure Python, no subprocess required.
 """
 
+import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -2206,3 +2208,95 @@ class TestSummarizeBios:
         d = self._data(latest="2.25.0", update_available=False)
         d["update"]["latest_date"] = "Aug 2026"
         assert "Latest reported: 2.25.0 (Aug 2026)" in self._texts(bios.summarize_bios(d))
+
+
+class TestSummarizeUpgradesGolden:
+    """Pins summarize_upgrades' whole output for six machine profiles,
+    recorded from the code before it was split into helpers (tech-debt
+    audit 2026-10-17, complexity 45)."""
+
+    GOLDEN = Path(__file__).parent / "fixtures" / "sysinfo_upgrades_golden.json"
+    GB = 1024**3
+
+    @classmethod
+    def profiles(cls):
+        dell = {
+            "BIOS": {"Manufacturer": "Dell Inc.", "SMBIOSBIOSVersion": "2.24.0"},
+            "Baseboard": {"Manufacturer": "Dell Inc.", "Product": "0XYZ"},
+            "Computer": {"Model": "XPS 8960"},
+            "CPU": {
+                "Name": "Intel(R) Core(TM) i9-14900K",
+                "SocketDesignation": "LGA1700",
+                "Architecture": "x64",
+                "Cores": 24,
+                "LogicalProcs": 32,
+            },
+        }
+
+        def stick(gb, part="CT16G56C46U5.M8D1"):
+            return {
+                "Capacity": gb * cls.GB,
+                "MemoryType": "DDR5",
+                "ConfiguredClockSpeed": 5600,
+                "FormFactor": "DIMM",
+                "PartNumber": part,
+            }
+
+        slots = [
+            {"SlotDesignation": "SLOT1", "CurrentUsage": "In Use", "Description": "PCIe 4.0 x16"},
+            {"SlotDesignation": "SLOT2", "CurrentUsage": "Available", "Description": "PCIe 4.0 x4"},
+            {"SlotDesignation": "PCIEX16_2", "CurrentUsage": "Available", "Description": "PCIe 4.0 x16"},
+            {"SlotDesignation": "M.2 WLAN", "CurrentUsage": "Available", "Description": "M.2 2230 E-key"},
+            {"SlotDesignation": "M.2 SSD 1", "CurrentUsage": "Available", "Description": "M.2 2280"},
+            {"SlotDesignation": "SLOT5", "CurrentUsage": "Available", "Description": "PCIe 3.0 x1"},
+        ]
+        gpus = [
+            {"Name": "Intel UHD 770", "AdapterCompatibility": "Intel"},
+            {"Name": "NVIDIA GeForce RTX 4060 Ti", "AdapterCompatibility": "NVIDIA"},
+        ]
+        arrays = [{"MemoryDevices": 4, "MaxCapacityGB": 128, "MemoryErrorCorrection": "None"}]
+        return {
+            "free_slots_busy_pcie": {
+                **dell,
+                "Memory": [stick(16), stick(16)],
+                "MemoryArray": arrays,
+                "PCIeSlots": slots,
+                "GPU": gpus,
+                "Disks": [
+                    {"Model": "WDC WD40EZRZ", "InterfaceType": "SCSI", "Size": 4000 * 10**9},
+                    {"Model": "Samsung SSD 990 PRO", "InterfaceType": "SCSI", "Size": 2000 * 10**9},
+                    {"Model": "ST2000DM008 SEAGATE", "InterfaceType": "IDE", "Size": 2000 * 10**9},
+                ],
+            },
+            "full_with_headroom": {**dell, "Memory": [stick(16)] * 4, "MemoryArray": arrays},
+            "full_no_per_slot": {**dell, "Memory": [stick(16)] * 4, "MemoryArray": [{"MemoryDevices": 4}]},
+            "fully_populated_at_max": {
+                **dell,
+                "Memory": [stick(32)] * 4,
+                "MemoryArray": [{"MemoryDevices": 4, "MaxCapacityGB": 128}],
+            },
+            "single_channel": {
+                "Computer": {"Model": "Generic"},
+                "Memory": [stick(8, part="")],
+                "MemoryArray": [{"MemoryDevices": 2, "MaxCapacityGB": 32}],
+                "PCIeSlots": [{"SlotDesignation": "SLOT1", "CurrentUsage": "Available", "Description": "PCIe x16"}],
+                "GPU": [{"Name": "Intel UHD", "AdapterCompatibility": "Intel"}],
+            },
+            "empty": {},
+        }
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "free_slots_busy_pcie",
+            "full_with_headroom",
+            "full_no_per_slot",
+            "fully_populated_at_max",
+            "single_channel",
+            "empty",
+        ],
+    )
+    def test_profile_matches_golden(self, name):
+        golden = json.loads(self.GOLDEN.read_text(encoding="utf-8"))
+        result = json.loads(json.dumps(sysinfo.summarize_upgrades(self.profiles()[name])))
+        assert result == golden[name]

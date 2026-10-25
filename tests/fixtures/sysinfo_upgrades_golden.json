@@ -1,0 +1,511 @@
+{
+ "empty": {
+  "opportunities": []
+ },
+ "free_slots_busy_pcie": {
+  "opportunities": [
+   {
+    "action": "Buy 2 × 16 GB DDR5-5600 DIMM matching your existing PartNumber",
+    "category": "memory",
+    "caveats": [
+     "XMP/EXPO profiles run at higher voltages (1.35-1.4 V) than JEDEC. Auto-detection only -- XMP capability is a board feature, not surfaced via WMI.",
+     "Your board reports 128 GB max but the Z790 chipset itself supports 192 GB. The lower number is usually a slot-count cap (4 slots × 32 GB per slot = 128 GB), not a Dell/HP firmware lockout. To exceed it you'd need a different board, not just bigger sticks.",
+     "The Crucial Memory Advisor link below shows specific module SKUs Crucial has validated against your model -- treat that as the authoritative compatibility list."
+    ],
+    "compat": [
+     {
+      "label": "JEDEC spec",
+      "value": "DDR5-5600 PC5-44800"
+     },
+     {
+      "label": "Form factor",
+      "value": "DIMM"
+     },
+     {
+      "label": "Voltage",
+      "value": "1.1 V"
+     },
+     {
+      "label": "ECC",
+      "value": "None"
+     },
+     {
+      "label": "Reference part #",
+      "value": "CT16G56C46U5.M8D1"
+     },
+     {
+      "label": "Per-stick capacity (matched)",
+      "value": "16 GB"
+     },
+     {
+      "label": "Board DIMM slots",
+      "value": "2 populated / 4 total"
+     },
+     {
+      "label": "Max stick size (per slot)",
+      "value": "32 GB (= board max ÷ slot count)"
+     },
+     {
+      "label": "Chipset ceiling (Z790)",
+      "value": "192 GB (chipset supports more than the board reports -- slot-count cap likely)"
+     }
+    ],
+    "detail": "You have 32 GB across 2 of 4 slots. Board reports max capacity 128 GB. Match your existing DDR5-5600 DIMM sticks (suggested: 2 × 16 GB).",
+    "headline": "Add up to 96 GB more RAM (2 of 4 DIMM slots free)",
+    "links": [
+     {
+      "label": "Crucial Memory Advisor (compatible RAM SKUs for this model)",
+      "url": "https://www.crucial.com/compatible-upgrade-for/dell/xps-8960"
+     }
+    ],
+    "severity": "info"
+   },
+   {
+    "action": "Pick a CPU in the LGA1700 family from your board's CPU support list",
+    "category": "cpu",
+    "caveats": [
+     "BIOS update may be required before a newer-generation CPU will POST.",
+     "Cooler compatibility -- some sockets use a different mounting pattern across generations.",
+     "Power delivery -- a high-TDP chip may exceed what your board's VRM can sustain."
+    ],
+    "compat": [
+     {
+      "label": "Socket",
+      "value": "LGA1700"
+     },
+     {
+      "label": "Architecture",
+      "value": "x64"
+     },
+     {
+      "label": "Current",
+      "value": "Intel(R) Core(TM) i9-14900K -- 24 cores / 32 threads"
+     }
+    ],
+    "detail": "Desktop CPUs in a standard socket can typically be swapped without replacing the board, as long as the new chip is on the same socket AND your board's chipset/BIOS supports it. The OEM CPU support list is the authoritative source for what your specific board accepts at what BIOS revision -- a BIOS update is sometimes required before a newer CPU will POST.",
+    "headline": "CPU is socketed (LGA1700) -- upgrade possible within socket family",
+    "links": [],
+    "severity": "info"
+   },
+   {
+    "action": "Pick the right slot for the card's lane width and generation",
+    "category": "pcie",
+    "caveats": [
+     "Slots SLOT2, PCIEX16_2 report Available to WMI but may be physically blocked by the GPU's cooler (typical for dual-slot discrete cards). Verify with the side panel off."
+    ],
+    "compat": [
+     {
+      "label": "SLOT5",
+      "value": "PCIe 3.0 x1"
+     }
+    ],
+    "detail": "Match the card's lane requirement (x1 / x4 / x16) to a slot of equal or greater width. Slot generation (PCIe 3.0 / 4.0 / 5.0) caps the card's bandwidth -- a PCIe 5.0 card in a PCIe 3.0 slot still works, just at lower throughput. M.2 WLAN and M.2 SSD slots are tracked separately under NIC and storage.",
+    "headline": "1 of 4 general PCIe slots physically usable (2 likely blocked by GPU)",
+    "severity": "info"
+   },
+   {
+    "action": "Buy an M.2 2230 E-key Wi-Fi 7 module + verify antenna routing",
+    "category": "nic",
+    "caveats": [
+     "Some OEM boards lock the WLAN slot to a vendor whitelist via BIOS.",
+     "Wi-Fi 7 needs Windows 11 24H2+ for full feature support."
+    ],
+    "compat": [
+     {
+      "label": "M.2 WLAN",
+      "value": "M.2 2230 E-key"
+     }
+    ],
+    "detail": "An M.2 E-key 2230 WLAN slot is available. Modern modules (Intel BE200, Qualcomm FastConnect 7800) drop in for Wi-Fi 7 (802.11be) plus Bluetooth 5.4 if your motherboard has CNVio / CNVi support and you can route the antenna cables to external connectors.",
+    "headline": "M.2 WLAN slot empty -- Wi-Fi 7 module compatible",
+    "links": [],
+    "severity": "info"
+   },
+   {
+    "action": "Buy a NIC matching your switch's max negotiated speed",
+    "category": "nic",
+    "caveats": [
+     "Cabling: 10 GbE over copper requires Cat6a or Cat7; Cat5e tops out at ~5 Gbps.",
+     "10 GbE NICs run hot -- verify case airflow over the slot area."
+    ],
+    "compat": [
+     {
+      "label": "SLOT5",
+      "value": "PCIe 3.0 x1"
+     }
+    ],
+    "detail": "10 GbE NICs (Intel X550-T2, Aquantia AQC107) fit in any x4+ slot. 2.5 GbE NICs are widely available in x1 form factors. Worth doing if you've got 2.5 GbE+ on your switch / NAS and your motherboard's built-in NIC tops out at 1 GbE.",
+    "headline": "Free PCIe slot for a 2.5 GbE / 10 GbE NIC",
+    "severity": "info"
+   },
+   {
+    "action": "Replace the OS/active-files HDD with an SSD; keep HDDs for bulk storage",
+    "category": "storage",
+    "caveats": [
+     "M.2 NVMe needs an empty M.2 slot on the board (verify in System Info > PCIe Slots).",
+     "Cloning the OS drive: use Macrium Reflect Free or the SSD vendor's migration tool; full image, then physically swap."
+    ],
+    "compat": [
+     {
+      "label": "Form factor options",
+      "value": "M.2 2280 NVMe (fastest, fewest cables) > 2.5\" SATA SSD (drop-in HDD replacement)"
+     }
+    ],
+    "detail": "Drives that look like HDDs (sizes: 3725 GB, 1863 GB). SSDs are dramatically faster on random I/O (boot, app launch, indexing) and cheaper per GB than they were two years ago. If the HDD holds bulk media you don't read often, leave it; if it holds OS / apps / active project files, migrate.",
+    "headline": "2 spinning-disk drives could be migrated to SSD",
+    "severity": "info"
+   }
+  ]
+ },
+ "full_no_per_slot": {
+  "opportunities": [
+   {
+    "action": "",
+    "category": "memory",
+    "compat": [
+     {
+      "label": "JEDEC spec",
+      "value": "DDR5-5600 PC5-44800"
+     },
+     {
+      "label": "Form factor",
+      "value": "DIMM"
+     },
+     {
+      "label": "Voltage",
+      "value": "1.1 V"
+     },
+     {
+      "label": "Reference part #",
+      "value": "CT16G56C46U5.M8D1"
+     },
+     {
+      "label": "Per-stick capacity (matched)",
+      "value": "16 GB"
+     },
+     {
+      "label": "Board DIMM slots",
+      "value": "4 populated / 4 total"
+     },
+     {
+      "label": "Chipset ceiling (Z790)",
+      "value": "192 GB"
+     }
+    ],
+    "detail": "All 4 DIMM slots populated; 64 GB at the board's reported max.",
+    "headline": "Memory fully populated",
+    "severity": "ok"
+   },
+   {
+    "action": "Pick a CPU in the LGA1700 family from your board's CPU support list",
+    "category": "cpu",
+    "caveats": [
+     "BIOS update may be required before a newer-generation CPU will POST.",
+     "Cooler compatibility -- some sockets use a different mounting pattern across generations.",
+     "Power delivery -- a high-TDP chip may exceed what your board's VRM can sustain."
+    ],
+    "compat": [
+     {
+      "label": "Socket",
+      "value": "LGA1700"
+     },
+     {
+      "label": "Architecture",
+      "value": "x64"
+     },
+     {
+      "label": "Current",
+      "value": "Intel(R) Core(TM) i9-14900K -- 24 cores / 32 threads"
+     }
+    ],
+    "detail": "Desktop CPUs in a standard socket can typically be swapped without replacing the board, as long as the new chip is on the same socket AND your board's chipset/BIOS supports it. The OEM CPU support list is the authoritative source for what your specific board accepts at what BIOS revision -- a BIOS update is sometimes required before a newer CPU will POST.",
+    "headline": "CPU is socketed (LGA1700) -- upgrade possible within socket family",
+    "links": [],
+    "severity": "info"
+   }
+  ]
+ },
+ "full_with_headroom": {
+  "opportunities": [
+   {
+    "action": "Replace existing sticks with higher-density DDR5 modules",
+    "category": "memory",
+    "caveats": [
+     "XMP/EXPO profiles run at higher voltages (1.35-1.4 V) than JEDEC. Auto-detection only -- XMP capability is a board feature, not surfaced via WMI.",
+     "Your board reports 128 GB max but the Z790 chipset itself supports 192 GB. The lower number is usually a slot-count cap (4 slots × 32 GB per slot = 128 GB), not a Dell/HP firmware lockout. To exceed it you'd need a different board, not just bigger sticks.",
+     "The Crucial Memory Advisor link below shows specific module SKUs Crucial has validated against your model -- treat that as the authoritative compatibility list."
+    ],
+    "compat": [
+     {
+      "label": "JEDEC spec",
+      "value": "DDR5-5600 PC5-44800"
+     },
+     {
+      "label": "Form factor",
+      "value": "DIMM"
+     },
+     {
+      "label": "Voltage",
+      "value": "1.1 V"
+     },
+     {
+      "label": "ECC",
+      "value": "None"
+     },
+     {
+      "label": "Reference part #",
+      "value": "CT16G56C46U5.M8D1"
+     },
+     {
+      "label": "Per-stick capacity (matched)",
+      "value": "16 GB"
+     },
+     {
+      "label": "Board DIMM slots",
+      "value": "4 populated / 4 total"
+     },
+     {
+      "label": "Max stick size (per slot)",
+      "value": "32 GB (= board max ÷ slot count)"
+     },
+     {
+      "label": "Chipset ceiling (Z790)",
+      "value": "192 GB (chipset supports more than the board reports -- slot-count cap likely)"
+     }
+    ],
+    "detail": "All 4 DIMM slots are populated with 64 GB. Board reports max capacity 128 GB, so further expansion means swapping existing sticks for higher-density modules. Per-slot ceiling is 32 GB -- buy modules of that capacity.",
+    "headline": "Up to 64 GB more RAM possible (requires replacing existing sticks)",
+    "links": [
+     {
+      "label": "Crucial Memory Advisor (compatible RAM SKUs for this model)",
+      "url": "https://www.crucial.com/compatible-upgrade-for/dell/xps-8960"
+     }
+    ],
+    "severity": "info"
+   },
+   {
+    "action": "Pick a CPU in the LGA1700 family from your board's CPU support list",
+    "category": "cpu",
+    "caveats": [
+     "BIOS update may be required before a newer-generation CPU will POST.",
+     "Cooler compatibility -- some sockets use a different mounting pattern across generations.",
+     "Power delivery -- a high-TDP chip may exceed what your board's VRM can sustain."
+    ],
+    "compat": [
+     {
+      "label": "Socket",
+      "value": "LGA1700"
+     },
+     {
+      "label": "Architecture",
+      "value": "x64"
+     },
+     {
+      "label": "Current",
+      "value": "Intel(R) Core(TM) i9-14900K -- 24 cores / 32 threads"
+     }
+    ],
+    "detail": "Desktop CPUs in a standard socket can typically be swapped without replacing the board, as long as the new chip is on the same socket AND your board's chipset/BIOS supports it. The OEM CPU support list is the authoritative source for what your specific board accepts at what BIOS revision -- a BIOS update is sometimes required before a newer CPU will POST.",
+    "headline": "CPU is socketed (LGA1700) -- upgrade possible within socket family",
+    "links": [],
+    "severity": "info"
+   }
+  ]
+ },
+ "fully_populated_at_max": {
+  "opportunities": [
+   {
+    "action": "",
+    "category": "memory",
+    "compat": [
+     {
+      "label": "JEDEC spec",
+      "value": "DDR5-5600 PC5-44800"
+     },
+     {
+      "label": "Form factor",
+      "value": "DIMM"
+     },
+     {
+      "label": "Voltage",
+      "value": "1.1 V"
+     },
+     {
+      "label": "Reference part #",
+      "value": "CT16G56C46U5.M8D1"
+     },
+     {
+      "label": "Per-stick capacity (matched)",
+      "value": "32 GB"
+     },
+     {
+      "label": "Board DIMM slots",
+      "value": "4 populated / 4 total"
+     },
+     {
+      "label": "Max stick size (per slot)",
+      "value": "32 GB (= board max ÷ slot count)"
+     },
+     {
+      "label": "Chipset ceiling (Z790)",
+      "value": "192 GB (chipset supports more than the board reports -- slot-count cap likely)"
+     }
+    ],
+    "detail": "All 4 DIMM slots populated; 128 GB at the board's reported max.",
+    "headline": "Memory fully populated",
+    "severity": "ok"
+   },
+   {
+    "action": "Pick a CPU in the LGA1700 family from your board's CPU support list",
+    "category": "cpu",
+    "caveats": [
+     "BIOS update may be required before a newer-generation CPU will POST.",
+     "Cooler compatibility -- some sockets use a different mounting pattern across generations.",
+     "Power delivery -- a high-TDP chip may exceed what your board's VRM can sustain."
+    ],
+    "compat": [
+     {
+      "label": "Socket",
+      "value": "LGA1700"
+     },
+     {
+      "label": "Architecture",
+      "value": "x64"
+     },
+     {
+      "label": "Current",
+      "value": "Intel(R) Core(TM) i9-14900K -- 24 cores / 32 threads"
+     }
+    ],
+    "detail": "Desktop CPUs in a standard socket can typically be swapped without replacing the board, as long as the new chip is on the same socket AND your board's chipset/BIOS supports it. The OEM CPU support list is the authoritative source for what your specific board accepts at what BIOS revision -- a BIOS update is sometimes required before a newer CPU will POST.",
+    "headline": "CPU is socketed (LGA1700) -- upgrade possible within socket family",
+    "links": [],
+    "severity": "info"
+   }
+  ]
+ },
+ "single_channel": {
+  "opportunities": [
+   {
+    "action": "Buy 1 × 8 GB DDR5-5600 DIMM matching your existing PartNumber",
+    "category": "memory",
+    "caveats": [
+     "XMP/EXPO profiles run at higher voltages (1.35-1.4 V) than JEDEC. Auto-detection only -- XMP capability is a board feature, not surfaced via WMI."
+    ],
+    "compat": [
+     {
+      "label": "JEDEC spec",
+      "value": "DDR5-5600 PC5-44800"
+     },
+     {
+      "label": "Form factor",
+      "value": "DIMM"
+     },
+     {
+      "label": "Voltage",
+      "value": "1.1 V"
+     },
+     {
+      "label": "Per-stick capacity (matched)",
+      "value": "8 GB"
+     },
+     {
+      "label": "Board DIMM slots",
+      "value": "1 populated / 2 total"
+     },
+     {
+      "label": "Max stick size (per slot)",
+      "value": "16 GB (= board max ÷ slot count)"
+     }
+    ],
+    "detail": "You have 8 GB across 1 of 2 slots. Board reports max capacity 32 GB. Match your existing DDR5-5600 DIMM sticks (suggested: 1 × 8 GB).",
+    "headline": "Add up to 24 GB more RAM (1 of 2 DIMM slot free)",
+    "links": [],
+    "severity": "info"
+   },
+   {
+    "action": "Add 1 matching DIMM to bring the system to dual-channel (8 GB → 16 GB)",
+    "category": "memory",
+    "compat": [
+     {
+      "label": "JEDEC spec",
+      "value": "DDR5-5600 PC5-44800"
+     },
+     {
+      "label": "Form factor",
+      "value": "DIMM"
+     },
+     {
+      "label": "Voltage",
+      "value": "1.1 V"
+     },
+     {
+      "label": "Per-stick capacity (matched)",
+      "value": "8 GB"
+     },
+     {
+      "label": "Board DIMM slots",
+      "value": "1 populated / 2 total"
+     },
+     {
+      "label": "Max stick size (per slot)",
+      "value": "16 GB (= board max ÷ slot count)"
+     }
+    ],
+    "detail": "Only 1 DIMM is populated. Adding a second matching stick (same capacity, speed, and ideally same PartNumber) enables dual-channel mode -- roughly 2× memory bandwidth at zero CPU cost. Most noticeable on integrated graphics, video editing, and memory-heavy workloads.",
+    "headline": "Running in single-channel mode",
+    "links": [],
+    "severity": "warning"
+   },
+   {
+    "action": "Pick the right slot for the card's lane width and generation",
+    "category": "pcie",
+    "caveats": [],
+    "compat": [
+     {
+      "label": "SLOT1",
+      "value": "PCIe x16"
+     }
+    ],
+    "detail": "Match the card's lane requirement (x1 / x4 / x16) to a slot of equal or greater width. Slot generation (PCIe 3.0 / 4.0 / 5.0) caps the card's bandwidth -- a PCIe 5.0 card in a PCIe 3.0 slot still works, just at lower throughput. M.2 WLAN and M.2 SSD slots are tracked separately under NIC and storage.",
+    "headline": "1 of 1 general PCIe slot physically usable",
+    "severity": "info"
+   },
+   {
+    "action": "Pick a card matching your PSU headroom + case length / height clearance",
+    "category": "gpu",
+    "caveats": [
+     "PSU wattage isn't visible to WMI -- check the label on the side of your PSU and add up the new GPU's TGP + ~150 W headroom for CPU/board/drives.",
+     "Case clearance: measure from the back of the case to the front fan / drive cage to confirm card length fits.",
+     "Power connectors: 12VHPWR (16-pin) vs 8-pin EPS -- newer cards often need an adapter or a PSU with native 12VHPWR."
+    ],
+    "compat": [
+     {
+      "label": "SLOT1",
+      "value": "PCIe x16"
+     }
+    ],
+    "detail": "Current GPU: Intel UHD. A free x16 slot can host a newer discrete card. Two constraints WinDesktopMgr can't measure: PSU wattage and physical case clearance. A modern high-end GPU draws 300-450 W and is 300-340 mm long, often 3 slots tall.",
+    "headline": "GPU upgrade slot available (1 free x16-class slot)",
+    "severity": "info"
+   },
+   {
+    "action": "Buy a NIC matching your switch's max negotiated speed",
+    "category": "nic",
+    "caveats": [
+     "Cabling: 10 GbE over copper requires Cat6a or Cat7; Cat5e tops out at ~5 Gbps.",
+     "10 GbE NICs run hot -- verify case airflow over the slot area."
+    ],
+    "compat": [
+     {
+      "label": "SLOT1",
+      "value": "PCIe x16"
+     }
+    ],
+    "detail": "10 GbE NICs (Intel X550-T2, Aquantia AQC107) fit in any x4+ slot. 2.5 GbE NICs are widely available in x1 form factors. Worth doing if you've got 2.5 GbE+ on your switch / NAS and your motherboard's built-in NIC tops out at 1 GbE.",
+    "headline": "Free PCIe slot for a 2.5 GbE / 10 GbE NIC",
+    "severity": "info"
+   }
+  ]
+ }
+}
