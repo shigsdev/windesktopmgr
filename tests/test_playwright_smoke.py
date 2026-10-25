@@ -2316,7 +2316,12 @@ class TestCodeHealthCardDetails:
     def test_tech_debt_details_lists_oversized_files_and_todos(self, loaded_page):
         """The specific card from the bug report: expanding Tech Debt
         must surface the actual oversized-file names + line counts, not
-        just the summary count."""
+        just the summary count.
+
+        Feeds the real renderer a fixed result instead of reading the live
+        scan: the repo itself has had no oversized files since #72 split
+        app.js, so a live-state assertion can't see this path any more.
+        (The live card/backend agreement is the test above.)"""
         page, _ = loaded_page
         self._goto_utilities(page)
 
@@ -2324,23 +2329,30 @@ class TestCodeHealthCardDetails:
             """
             (() => {
                 const card = document.querySelector('#util-ch-grid [data-scanner="tech_debt"]');
-                if (!card) return {found: false};
-                const det = card.querySelector('[data-scanner-details="tech_debt"]');
-                if (!det) return {found: true, hasDetails: false};
-                // Expand it (native <details>) and read the body text.
-                det.open = true;
-                return {found: true, hasDetails: true, text: det.textContent};
+                const result = {details: {
+                    large_files: [{file: "big_module.py", lines: 6123}],
+                    todos: [{file: "x.py", line: 7, text: "TODO wire this up"}],
+                }};
+                const host = document.createElement("div");
+                host.innerHTML = util_renderScannerDetails("tech_debt", result);
+                const det = host.querySelector('[data-scanner-details="tech_debt"]');
+                return {
+                    found: !!card,
+                    hasDetails: !!det,
+                    count: det && det.getAttribute("data-detail-count"),
+                    text: det ? det.textContent : "",
+                    clean: util_renderScannerDetails("tech_debt", {details: {large_files: [], todos: []}}),
+                };
             })()
             """
         )
         assert info["found"], "tech_debt card not rendered on utilities tab"
-        assert info["hasDetails"], "tech_debt card has no details disclosure -- the info button bug is back"
-        # The body should name at least one oversized file with a line
-        # count. windesktopmgr.py is always >5,000 lines on this repo.
-        assert "windesktopmgr.py" in info["text"], (
-            f"tech_debt details don't list the oversized files: {info['text'][:200]}"
-        )
-        assert "lines" in info["text"], "tech_debt details missing line-count labels"
+        assert info["hasDetails"], "tech_debt findings render no details disclosure -- the info button bug is back"
+        assert info["count"] == "2"
+        assert "big_module.py" in info["text"], f"oversized file not listed: {info['text'][:200]}"
+        assert "6,123 lines" in info["text"], "tech_debt details missing line-count labels"
+        assert "x.py:7" in info["text"], "TODO marker not listed"
+        assert info["clean"] == "", "a clean tech-debt scan must not render a details disclosure"
 
 
 # ── Logs tab exact-level filter (added 2026-06-08) ──────────────────────────
