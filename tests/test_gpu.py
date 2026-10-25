@@ -19,6 +19,16 @@ Coverage:
  10. Zero total memory — defensive guard against div-by-zero
  11. Unit conversion — bytes → MB
  12. Unexpected exception — non-NVMLError caught defensively
+ 13. Failure result shape — every failure returns the same keys as success
+ 14. Shutdown failure — an nvmlShutdown error never replaces the reading
+
+Reviewed 2026-10-25 (weekly tech-debt audit, stale-tests, backlog #109):
+get_gpu_metrics has not changed since these tests were written (only moved
+to gpu.py in #103). The fake pynvml was checked against the real library on
+this PC (nvidia-ml-py 13.595.45, RTX 4060 Ti): name is str, memory info has
+used/total/free, utilisation has gpu/memory, power is milliwatts -- all as
+mocked. Added 13-14 and shutdown checks on the zero-GPU path to close the
+gaps the review found.
 """
 
 import windesktopmgr as wdm
@@ -121,10 +131,11 @@ class TestGetGpuMetrics:
         assert result["utilization_pct"] is None
 
     def test_no_gpus_returns_unavailable(self, mocker):
-        self._install_fake_pynvml(mocker, count=0)
+        fake = self._install_fake_pynvml(mocker, count=0)
         result = wdm.get_gpu_metrics()
         assert result["available"] is False
         assert "no NVIDIA GPU" in result["error"]
+        fake.nvmlShutdown.assert_called_once()
 
     def test_query_error_after_successful_init(self, mocker):
         """NVML init OK but device query fails mid-call -- must not crash,
@@ -212,3 +223,26 @@ class TestGetGpuMetrics:
         assert "unexpected GPU collector error" in result["error"]
         assert "RuntimeError" in result["error"]
         assert "wat" in result["error"]
+
+    def test_failure_results_have_the_success_keys(self, mocker):
+        """The Trends card, dashboard fan-out and Diagnose perf probe read the
+        same keys whether or not a GPU answered; a failure must not drop any."""
+        self._install_fake_pynvml(mocker)
+        success_keys = set(wdm.get_gpu_metrics())
+        for kwargs in ({"init_error": "no driver"}, {"count": 0}, {"query_error": "boom"}):
+            self._install_fake_pynvml(mocker, **kwargs)
+            result = wdm.get_gpu_metrics()
+            assert set(result) == success_keys, kwargs
+            assert result["available"] is False
+            assert result["source"] is None
+            assert all(result[k] is None for k in success_keys - {"available", "source", "name", "error"})
+
+    def test_shutdown_error_keeps_the_reading(self, mocker):
+        """nvmlShutdown failing (best-effort cleanup) must not turn a good
+        reading into an error."""
+        fake = self._install_fake_pynvml(mocker)
+        fake.nvmlShutdown.side_effect = fake.NVMLError("uninitialized")
+        result = wdm.get_gpu_metrics()
+        assert result["available"] is True
+        assert result["error"] is None
+        assert result["temp_c"] == 52.0
