@@ -13,6 +13,7 @@ Key design decisions:
 
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 
@@ -96,6 +97,26 @@ def _isolate_diagnose_history_file(tmp_path_factory):
 # ── Fixture loading helpers ───────────────────────────────────────────────────
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
+
+
+def frontend_js_files() -> list[str]:
+    """Absolute paths of the frontend JS files, in the order index.html loads them.
+
+    Backlog #72 split static/js/app.js into app.js + static/js/tabs/*.js;
+    index.html's <script> tags are the one source of truth for the list.
+    """
+    with open(os.path.join(PROJECT_ROOT, "templates", "index.html"), encoding="utf-8") as f:
+        srcs = re.findall(r'<script src="/(static/js/[^"]+)"', f.read())
+    return [os.path.join(PROJECT_ROOT, *s.split("/")) for s in srcs]
+
+
+def read_frontend_js() -> str:
+    """All frontend JS as one string, for source-content assertions."""
+    parts = []
+    for path in frontend_js_files():
+        with open(path, encoding="utf-8") as f:
+            parts.append(f.read())
+    return "\n".join(parts)
 
 
 def load_fixture(relative_path: str):

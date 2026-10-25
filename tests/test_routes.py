@@ -4527,12 +4527,13 @@ class TestHeartbeatJsGuards:
     def _html(self) -> str:
         import pathlib
 
-        # Frontend source spans index.html + the extracted static/js/app.js
-        # (#55 PR 2). Read both so JS-content assertions still resolve.
+        from tests.conftest import read_frontend_js
+
+        # Frontend source spans index.html + static/js/ (#55 PR 2, split per tab
+        # in #72). Read both so JS-content assertions still resolve.
         root = pathlib.Path(__file__).resolve().parents[1]
         html = (root / "templates" / "index.html").read_text(encoding="utf-8")
-        js = (root / "static" / "js" / "app.js").read_text(encoding="utf-8")
-        return html + "\n" + js
+        return html + "\n" + read_frontend_js()
 
     def test_fetch_timeout_is_at_least_five_seconds(self):
         """2-second timeout was too tight under browser-connection-cap pressure."""
@@ -4573,12 +4574,13 @@ class TestFavicon:
     def _html(self) -> str:
         import pathlib
 
-        # Frontend source spans index.html + the extracted static/js/app.js
-        # (#55 PR 2). Read both so JS-content assertions still resolve.
+        from tests.conftest import read_frontend_js
+
+        # Frontend source spans index.html + static/js/ (#55 PR 2, split per tab
+        # in #72). Read both so JS-content assertions still resolve.
         root = pathlib.Path(__file__).resolve().parents[1]
         html = (root / "templates" / "index.html").read_text(encoding="utf-8")
-        js = (root / "static" / "js" / "app.js").read_text(encoding="utf-8")
-        return html + "\n" + js
+        return html + "\n" + read_frontend_js()
 
     def test_link_rel_icon_tags_present(self):
         html = self._html()
@@ -4660,9 +4662,9 @@ class TestOneEscapeHelper:
     JS_ARG_IN_HANDLER = _re.compile(r"""on[a-z]+="[^"]*'\$\{(?:esc|escHtml|_esc)\(""")
 
     def _js(self):
-        from pathlib import Path
+        from tests.conftest import read_frontend_js
 
-        return (Path(__file__).parent.parent / "static" / "js" / "app.js").read_text(encoding="utf-8")
+        return read_frontend_js()
 
     def test_exactly_one_escaper_implementation(self):
         js = self._js()
@@ -4693,9 +4695,9 @@ class TestNoHandRolledJsEscaping:
     HAND_ROLLED = r""".replace(/'/g, "\\'")"""
 
     def test_quote_to_backslash_quote_happens_only_inside_escjsarg(self):
-        from pathlib import Path
+        from tests.conftest import read_frontend_js
 
-        js = (Path(__file__).parent.parent / "static" / "js" / "app.js").read_text(encoding="utf-8")
+        js = read_frontend_js()
         assert js.count(self.HAND_ROLLED) == 1
         start = js.index("function escJsArg(")
         assert self.HAND_ROLLED in js[start : js.index("\n}", start)]

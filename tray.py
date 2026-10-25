@@ -76,7 +76,7 @@ def slugify_concern(title: str) -> str:
     Backlog #40 needs a deterministic round-trip from the concern's
     title -> URL fragment -> back to a CSS attribute selector on the
     rendered concern card. The same slug logic lives in JS (in
-    ``static/js/app.js``: ``slugifyConcern``) -- if you change one, change
+    ``static/js/tabs/dashboard.js``: ``slugifyConcern``) -- if you change one, change
     the other or the toast deep-link silently won't find its target.
 
     Lowercase, strip non-alphanumeric, collapse whitespace to single
