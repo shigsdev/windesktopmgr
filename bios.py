@@ -156,6 +156,289 @@ def _ver_gt(latest, current) -> bool:
     return left > right
 
 
+# DCU is pre-installed on Dell XPS systems at a predictable path
+_DCU_PATHS = (
+    r"C:\Program Files\Dell\CommandUpdate\dcu-cli.exe",
+    r"C:\Program Files (x86)\Dell\CommandUpdate\dcu-cli.exe",
+    r"C:\Program Files\Dell\Dell Command Update\dcu-cli.exe",
+)
+
+
+def _support_url(service_tag: str) -> str:
+    """Dell's personalised driver page for a service tag (generic page without one)."""
+    if service_tag:
+        return f"https://www.dell.com/support/home/en-us/product-support/servicetag/{service_tag}/drivers"
+    return "https://www.dell.com/support/home/en-us"
+
+
+def _read_bios_cache() -> dict | None:
+    """The cached verdict if it is under 24h old and from the current logic version."""
+    try:
+        if os.path.exists(BIOS_CACHE_FILE):
+            with open(BIOS_CACHE_FILE, encoding="utf-8") as f:
+                cached = json.load(f)
+            age = (datetime.now(timezone.utc) - _parse_ts(cached.get("checked_at", ""))).total_seconds() / 3600
+            if age < 24 and cached.get("logic_version") == _BIOS_LOGIC_VERSION:
+                return cached
+    except Exception:
+        pass
+    return None
+
+
+def _new_bios_result(current_version: str, service_tag: str) -> dict:
+    return {
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "logic_version": _BIOS_LOGIC_VERSION,
+        "current_version": current_version,
+        "latest_version": None,
+        "latest_date": None,
+        "update_available": False,
+        "release_notes": "",
+        "service_tag": service_tag,
+        "download_url": _support_url(service_tag),
+        "source": "unknown",
+        "error": None,
+    }
+
+
+def _bios_from_dcu(result: dict, current_version: str) -> None:
+    """Method 1: Dell Command Update CLI scan. Fills ``result`` in place."""
+    dcu_exe = next((p for p in _DCU_PATHS if os.path.exists(p)), None)
+    if not dcu_exe:
+        print("[BIOS] DCU not found")
+        return
+    try:
+        import tempfile
+        import uuid
+
+        tmp = os.path.join(tempfile.gettempdir(), f"dcu_scan_{uuid.uuid4().hex}.xml")
+        subprocess.run(
+            [dcu_exe, "/scan", f"-outputLog={tmp}", "-silent"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if os.path.exists(tmp):
+            try:
+                with open(tmp, encoding="utf-8", errors="replace") as f:
+                    xml_content = f.read()
+                # Find BIOS updates in the output
+                m = re.search(r'type="BIOS"[^/]*/.*?version="([0-9.]+)"', xml_content, re.DOTALL | re.IGNORECASE)
+                if not m:
+                    m = re.search(r'BIOS.*?version="([0-9.]+)"', xml_content, re.DOTALL | re.IGNORECASE)
+                if m:
+                    ver = m.group(1)
+                    result["latest_version"] = ver
+                    result["source"] = "dell_command_update"
+                    result["update_available"] = _ver_gt(ver, current_version)
+                    print(f"[BIOS] DCU found version: {ver}")
+            finally:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+    except Exception as e:
+        result["error"] = f"DCU: {e}"
+
+
+# XML element matching is case-INSENSITIVE here because the old PowerShell
+# relied on PS's case-insensitive property access (`$_.componentType.value` vs
+# the actual `ComponentType` element); ElementTree is case-sensitive by
+# default. Comparing the local tag name handles the catalog's default xmlns.
+def _findall_ci(parent, name):
+    t = name.lower()
+    return [c for c in parent.iter() if c.tag.rsplit("}", 1)[-1].lower() == t]
+
+
+def _find_child_ci(parent, name):
+    t = name.lower()
+    for c in parent:
+        if c.tag.rsplit("}", 1)[-1].lower() == t:
+            return c
+    return None
+
+
+def _best_catalog_bios(root):
+    """Newest (by releaseDate) XPS 8960 BIOS SoftwareComponent: (element, date) or (None, "")."""
+    best = None
+    best_date = ""
+    for sc in _findall_ci(root, "SoftwareComponent"):
+        ct = _find_child_ci(sc, "ComponentType")
+        if ct is None or (ct.get("value") or "").upper() != "BIOS":
+            continue
+        # Match on Model name *8960* OR systemID *0BC0* (XPS 8960).
+        matched = False
+        for m in _findall_ci(sc, "Model"):
+            mname = (m.get("name") or "").lower()
+            sysid = (m.get("systemID") or "").lower()
+            if "8960" in mname or "0bc0" in sysid:
+                matched = True
+                break
+        if not matched:
+            continue
+        rdate = sc.get("releaseDate", "")
+        if best is None or rdate > best_date:
+            best = sc
+            best_date = rdate
+    return best, best_date
+
+
+def _apply_catalog_bios(result: dict, best, best_date: str, current_version: str) -> None:
+    ver2 = best.get("dellVersion") or best.get("vendorVersion") or ""
+    if not ver2:
+        return
+    # Name/Display CDATA → element.text on the Display child.
+    name_text = ""
+    name_el = _find_child_ci(best, "Name")
+    if name_el is not None:
+        disp = _find_child_ci(name_el, "Display")
+        if disp is not None and disp.text:
+            name_text = disp.text.strip()
+    rel_path = best.get("path", "")
+    result["latest_version"] = ver2
+    result["latest_date"] = best_date
+    result["release_notes"] = name_text[:200]
+    if rel_path:
+        result["download_url"] = f"https://downloads.dell.com/{rel_path}"
+    result["source"] = "dell_catalog"
+    result["update_available"] = _ver_gt(ver2, current_version)
+    result["error"] = None
+    print(f"[BIOS] Catalog found version: {ver2}")
+
+
+def _bios_from_catalog(result: dict, current_version: str) -> None:
+    """Method 2: Dell public catalog XML. Fills ``result`` in place.
+
+    Pure-Python: urllib downloads the catalog, expand.exe (a Windows OS tool
+    — not PowerShell) extracts the .cab, ElementTree parses the XML. The
+    PowerShell heredoc this replaces was the last `subprocess powershell`
+    call in check_dell_bios_update (backlog #28 close-out).
+    """
+    import tempfile
+    import urllib.request
+    import xml.etree.ElementTree as ET
+
+    cab_path = os.path.join(tempfile.gettempdir(), "DellCatalog.cab")
+    xml_dir = os.path.join(tempfile.gettempdir(), "DellCatalog")
+    xml_path = os.path.join(xml_dir, "CatalogPC.xml")
+    try:
+        # Fetch the catalog (~2 MB). Cap the read at 16 MB so a hostile
+        # endpoint can't OOM us.
+        req = urllib.request.Request(
+            "https://downloads.dell.com/catalog/CatalogPC.cab",
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            cab_bytes = resp.read(16_777_216)
+        if not cab_bytes:
+            raise RuntimeError("empty catalog download")
+        with open(cab_path, "wb") as f:
+            f.write(cab_bytes)
+        os.makedirs(xml_dir, exist_ok=True)
+        # No CAB extractor in the Python stdlib — use the OS's expand.exe
+        # (not PowerShell). One light subprocess call, no PS process spawn.
+        subprocess.run(
+            ["expand.exe", cab_path, xml_path],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        # ruff S314: the XML source is the trusted Dell catalog over HTTPS
+        # (fixed URL, 16 MB read cap above), and the catalog schema has no
+        # external entities — adding a `defusedxml` dep for one parse is
+        # disproportionate.
+        tree = ET.parse(xml_path)  # noqa: S314
+        best, best_date = _best_catalog_bios(tree.getroot())
+        if best is not None:
+            _apply_catalog_bios(result, best, best_date, current_version)
+    except Exception as e2:  # noqa: BLE001
+        if result["error"]:
+            result["error"] += f" | Catalog: {e2}"
+        else:
+            result["error"] = f"Catalog: {e2}"
+    finally:
+        # Best-effort cleanup.
+        try:
+            if os.path.exists(cab_path):
+                os.remove(cab_path)
+            if os.path.exists(xml_dir):
+                shutil.rmtree(xml_dir, ignore_errors=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _bios_from_windows_update(result: dict, current_version: str, get_windows_update_drivers) -> None:
+    """Method 3: Windows Update pending BIOS check. Fills ``result`` in place.
+
+    Reuses get_windows_update_drivers() — the WU "available drivers" search
+    already surfaces BIOS/Firmware updates, so there is no need for a second
+    COM search here. This also shares the _wu_driver_cache if a driver scan
+    has already run.
+    """
+    try:
+        wu = get_windows_update_drivers()
+        bios_u = None
+        if wu:
+            bios_u = next(
+                (u for u in wu.values() if re.search(r"BIOS|Firmware", u.get("Title", ""), re.IGNORECASE)),
+                None,
+            )
+        if bios_u:
+            title = bios_u.get("Title", "")
+            m = re.search(r"(\d+\.\d+[.\d]*)", title)
+            ver3 = m.group(1) if m else ""
+            if ver3:
+                result["latest_version"] = ver3
+                result["release_notes"] = title[:200]
+                result["source"] = "windows_update"
+                # Was hardcoded True on the assumption that "WU only
+                # shows pending updates". It does not: WU kept offering
+                # Dell firmware 0.2.24.0 on a machine already running
+                # BIOS 2.24.0 - the same version, just packaged by WU as
+                # 0.MAJOR.MINOR.PATCH - so the tab reported a critical
+                # update that did not exist.
+                result["update_available"] = _ver_gt(ver3, current_version)
+                result["error"] = None
+                print(f"[BIOS] Windows Update found BIOS update: {title}")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _retry_service_tag(result: dict) -> None:
+    """Method 4: if the tag wasn't read at the top (e.g. timeout), try once more
+    for a direct personalised Dell support URL."""
+    try:
+        tag = _get_service_tag()
+        if tag and len(tag) >= 5:
+            result["service_tag"] = tag
+            result["download_url"] = _support_url(tag)
+            print(f"[BIOS] Service tag: {tag}")
+    except Exception:
+        pass
+
+
+def _save_bios_cache(result: dict, current_version: str) -> dict:
+    """Cache the verdict, but only one we could actually compute.
+
+    If WMI gave us no current BIOS version (it briefly does not, right after a
+    restart), the comparison had nothing to compare against - caching that
+    would pin a meaningless answer in place for 24h, which is exactly how a
+    wrong "update available" survived on this machine.
+    """
+    if not str(current_version).strip():
+        result["error"] = (result.get("error") or "") + " | current BIOS version unavailable; not cached"
+        return result
+    try:
+        with open(BIOS_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2)
+    except Exception:
+        pass
+
+    print(f"[BIOS] Done: current={current_version} latest={result['latest_version']} source={result['source']}")
+    return result
+
+
 def check_dell_bios_update(board_product: str, current_version: str) -> dict:
     """
     Check for Dell XPS 8960 BIOS updates via PowerShell on the local machine.
@@ -171,264 +454,22 @@ def check_dell_bios_update(board_product: str, current_version: str) -> dict:
     # service-tag WMI lookup is bounded via _get_service_tag() above.
     from windesktopmgr import get_windows_update_drivers
 
-    # ── Check cache ────────────────────────────────────────────────────────────
-    try:
-        if os.path.exists(BIOS_CACHE_FILE):
-            with open(BIOS_CACHE_FILE, encoding="utf-8") as f:
-                cached = json.load(f)
-            age = (datetime.now(timezone.utc) - _parse_ts(cached.get("checked_at", ""))).total_seconds() / 3600
-            if age < 24 and cached.get("logic_version") == _BIOS_LOGIC_VERSION:
-                return cached
-    except Exception:
-        pass
+    cached = _read_bios_cache()
+    if cached is not None:
+        return cached
 
     # Get service tag dynamically from WMI (bounded)
-    service_tag = ""
     tag = _get_service_tag()
-    if tag and len(tag) >= 5:
-        service_tag = tag
+    result = _new_bios_result(current_version, tag if tag and len(tag) >= 5 else "")
 
-    result = {
-        "checked_at": datetime.now(timezone.utc).isoformat(),
-        "logic_version": _BIOS_LOGIC_VERSION,
-        "current_version": current_version,
-        "latest_version": None,
-        "latest_date": None,
-        "update_available": False,
-        "release_notes": "",
-        "service_tag": service_tag,
-        "download_url": (
-            f"https://www.dell.com/support/home/en-us/product-support/servicetag/{service_tag}/drivers"
-            if service_tag
-            else "https://www.dell.com/support/home/en-us"
-        ),
-        "source": "unknown",
-        "error": None,
-    }
-
-    # ── Method 1: Dell Command Update CLI ─────────────────────────────────────
-    # DCU is pre-installed on Dell XPS systems at a predictable path
-    dcu_paths = [
-        r"C:\Program Files\Dell\CommandUpdate\dcu-cli.exe",
-        r"C:\Program Files (x86)\Dell\CommandUpdate\dcu-cli.exe",
-        r"C:\Program Files\Dell\Dell Command Update\dcu-cli.exe",
-    ]
-    dcu_exe = next((p for p in dcu_paths if os.path.exists(p)), None)
-    if dcu_exe:
-        try:
-            import tempfile
-            import uuid
-
-            tmp = os.path.join(tempfile.gettempdir(), f"dcu_scan_{uuid.uuid4().hex}.xml")
-            subprocess.run(
-                [dcu_exe, "/scan", f"-outputLog={tmp}", "-silent"],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            if os.path.exists(tmp):
-                try:
-                    with open(tmp, encoding="utf-8", errors="replace") as f:
-                        xml_content = f.read()
-                    # Find BIOS updates in the output
-                    m = re.search(r'type="BIOS"[^/]*/.*?version="([0-9.]+)"', xml_content, re.DOTALL | re.IGNORECASE)
-                    if not m:
-                        m = re.search(r'BIOS.*?version="([0-9.]+)"', xml_content, re.DOTALL | re.IGNORECASE)
-                    if m:
-                        ver = m.group(1)
-                        result["latest_version"] = ver
-                        result["source"] = "dell_command_update"
-                        result["update_available"] = _ver_gt(ver, current_version)
-                        print(f"[BIOS] DCU found version: {ver}")
-                finally:
-                    try:
-                        os.remove(tmp)
-                    except OSError:
-                        pass
-        except Exception as e:
-            result["error"] = f"DCU: {e}"
-    else:
-        print("[BIOS] DCU not found")
-
-    # ── Method 2: Dell public catalog XML ──────────────────────────────────────
-    # Pure-Python: urllib downloads the catalog, expand.exe (a Windows OS tool
-    # — not PowerShell) extracts the .cab, ElementTree parses the XML. The
-    # PowerShell heredoc this replaces was the last `subprocess powershell`
-    # call in check_dell_bios_update (backlog #28 close-out).
+    _bios_from_dcu(result, current_version)
     if not result["latest_version"]:
-        import tempfile
-        import urllib.request
-        import xml.etree.ElementTree as ET
-
-        cab_path = os.path.join(tempfile.gettempdir(), "DellCatalog.cab")
-        xml_dir = os.path.join(tempfile.gettempdir(), "DellCatalog")
-        xml_path = os.path.join(xml_dir, "CatalogPC.xml")
-        try:
-            # Fetch the catalog (~2 MB). Cap the read at 16 MB so a hostile
-            # endpoint can't OOM us.
-            req = urllib.request.Request(
-                "https://downloads.dell.com/catalog/CatalogPC.cab",
-                headers={"User-Agent": "Mozilla/5.0"},
-            )
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                cab_bytes = resp.read(16_777_216)
-            if not cab_bytes:
-                raise RuntimeError("empty catalog download")
-            with open(cab_path, "wb") as f:
-                f.write(cab_bytes)
-            os.makedirs(xml_dir, exist_ok=True)
-            # No CAB extractor in the Python stdlib — use the OS's expand.exe
-            # (not PowerShell). One light subprocess call, no PS process spawn.
-            subprocess.run(
-                ["expand.exe", cab_path, xml_path],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-
-            # XML element matching is case-INSENSITIVE here because the old
-            # PowerShell relied on PS's case-insensitive property access
-            # (`$_.componentType.value` vs the actual `ComponentType` element);
-            # ElementTree is case-sensitive by default. The `{*}` namespace
-            # wildcard handles the catalog's default xmlns.
-            def _findall_ci(parent, name):
-                t = name.lower()
-                return [c for c in parent.iter() if c.tag.rsplit("}", 1)[-1].lower() == t]
-
-            def _find_child_ci(parent, name):
-                t = name.lower()
-                for c in parent:
-                    if c.tag.rsplit("}", 1)[-1].lower() == t:
-                        return c
-                return None
-
-            # ruff S314: the XML source is the trusted Dell catalog over HTTPS
-            # (fixed URL, 16 MB read cap above), and the catalog schema has no
-            # external entities — adding a `defusedxml` dep for one parse is
-            # disproportionate.
-            tree = ET.parse(xml_path)  # noqa: S314
-            root = tree.getroot()
-            best = None
-            best_date = ""
-            for sc in _findall_ci(root, "SoftwareComponent"):
-                ct = _find_child_ci(sc, "ComponentType")
-                if ct is None or (ct.get("value") or "").upper() != "BIOS":
-                    continue
-                # Match on Model name *8960* OR systemID *0BC0* (XPS 8960).
-                matched = False
-                for m in _findall_ci(sc, "Model"):
-                    mname = (m.get("name") or "").lower()
-                    sysid = (m.get("systemID") or "").lower()
-                    if "8960" in mname or "0bc0" in sysid:
-                        matched = True
-                        break
-                if not matched:
-                    continue
-                rdate = sc.get("releaseDate", "")
-                if best is None or rdate > best_date:
-                    best = sc
-                    best_date = rdate
-
-            if best is not None:
-                ver2 = best.get("dellVersion") or best.get("vendorVersion") or ""
-                if ver2:
-                    # Name/Display CDATA → element.text on the Display child.
-                    name_text = ""
-                    name_el = _find_child_ci(best, "Name")
-                    if name_el is not None:
-                        disp = _find_child_ci(name_el, "Display")
-                        if disp is not None and disp.text:
-                            name_text = disp.text.strip()
-                    rel_path = best.get("path", "")
-                    result["latest_version"] = ver2
-                    result["latest_date"] = best_date
-                    result["release_notes"] = name_text[:200]
-                    if rel_path:
-                        result["download_url"] = f"https://downloads.dell.com/{rel_path}"
-                    result["source"] = "dell_catalog"
-                    result["update_available"] = _ver_gt(ver2, current_version)
-                    result["error"] = None
-                    print(f"[BIOS] Catalog found version: {ver2}")
-        except Exception as e2:  # noqa: BLE001
-            if result["error"]:
-                result["error"] += f" | Catalog: {e2}"
-            else:
-                result["error"] = f"Catalog: {e2}"
-        finally:
-            # Best-effort cleanup.
-            try:
-                if os.path.exists(cab_path):
-                    os.remove(cab_path)
-                if os.path.exists(xml_dir):
-                    shutil.rmtree(xml_dir, ignore_errors=True)
-            except Exception:  # noqa: BLE001
-                pass
-
-    # ── Method 3: Windows Update pending BIOS check ────────────────────────────
-    # Reuses get_windows_update_drivers() — the WU "available drivers" search
-    # already surfaces BIOS/Firmware updates, so there is no need for a second
-    # COM search here. This also shares the _wu_driver_cache if a driver scan
-    # has already run.
+        _bios_from_catalog(result, current_version)
     if not result["latest_version"]:
-        try:
-            wu = get_windows_update_drivers()
-            bios_u = None
-            if wu:
-                bios_u = next(
-                    (u for u in wu.values() if re.search(r"BIOS|Firmware", u.get("Title", ""), re.IGNORECASE)),
-                    None,
-                )
-            if bios_u:
-                title = bios_u.get("Title", "")
-                m = re.search(r"(\d+\.\d+[.\d]*)", title)
-                ver3 = m.group(1) if m else ""
-                if ver3:
-                    result["latest_version"] = ver3
-                    result["release_notes"] = title[:200]
-                    result["source"] = "windows_update"
-                    # Was hardcoded True on the assumption that "WU only
-                    # shows pending updates". It does not: WU kept offering
-                    # Dell firmware 0.2.24.0 on a machine already running
-                    # BIOS 2.24.0 - the same version, just packaged by WU as
-                    # 0.MAJOR.MINOR.PATCH - so the tab reported a critical
-                    # update that did not exist.
-                    result["update_available"] = _ver_gt(ver3, current_version)
-                    result["error"] = None
-                    print(f"[BIOS] Windows Update found BIOS update: {title}")
-        except Exception:  # noqa: BLE001
-            pass
-
-    # ── Method 4: Get service tag for a direct personalised Dell support URL ────
-    # If we didn't get it at the top (e.g. timeout), try once more
+        _bios_from_windows_update(result, current_version, get_windows_update_drivers)
     if not result.get("service_tag"):
-        try:
-            tag = _get_service_tag()
-            if tag and len(tag) >= 5:
-                result["service_tag"] = tag
-                result["download_url"] = (
-                    f"https://www.dell.com/support/home/en-us/product-support/servicetag/{tag}/drivers"
-                )
-                print(f"[BIOS] Service tag: {tag}")
-        except Exception:
-            pass
-
-    # ── Save cache ────────────────────────────────────────────────────────────
-    # Only cache a verdict we could actually compute. If WMI gave us no current
-    # BIOS version (it briefly does not, right after a restart), the comparison
-    # had nothing to compare against - caching that would pin a meaningless
-    # answer in place for 24h, which is exactly how a wrong "update available"
-    # survived on this machine.
-    if not str(current_version).strip():
-        result["error"] = (result.get("error") or "") + " | current BIOS version unavailable; not cached"
-        return result
-    try:
-        with open(BIOS_CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(result, f, indent=2)
-    except Exception:
-        pass
-
-    print(f"[BIOS] Done: current={current_version} latest={result['latest_version']} source={result['source']}")
-    return result
+        _retry_service_tag(result)
+    return _save_bios_cache(result, current_version)
 
 
 def get_bios_status() -> dict:
