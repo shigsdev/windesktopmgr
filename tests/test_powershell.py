@@ -3591,6 +3591,95 @@ class TestCheckDellBiosUpdate:
         assert result["source"] == "unknown"
 
 
+class TestCheckDellBiosUpdateGolden:
+    """Pins check_dell_bios_update's whole result, the cache it writes and the
+    commands it runs, for every source path. Recorded from the code before it
+    was split into helpers (tech-debt audit 2026-10-17, complexity 43).
+
+    Re-record (only when a behaviour change is intended):
+        WDM_RECORD_GOLDEN=1 pytest tests/test_powershell.py -k BiosUpdateGolden -p no:xdist
+    """
+
+    GOLDEN = os.path.join(os.path.dirname(__file__), "fixtures", "bios_update_golden.json")
+    CATALOG_XML_8960 = TestCheckDellBiosUpdate.CATALOG_XML_8960
+    CATALOG_XML_EMPTY = TestCheckDellBiosUpdate.CATALOG_XML_EMPTY
+    _mock_deps = TestCheckDellBiosUpdate._mock_deps
+    DCU = TestCheckDellBiosUpdate.DCU_XML_TEMPLATE.format
+
+    # name -> (_mock_deps kwargs, current BIOS version, how DCU's subprocess behaves)
+    SCENARIOS = {
+        "dcu_newer": ({"dcu_xml": DCU(ver="2.23.0")}, "2.22.0", None),
+        "dcu_same": ({"dcu_xml": DCU(ver="2.22.0")}, "2.22.0", None),
+        "dcu_raises_catalog_found": (
+            {"dcu_xml": DCU(ver="2.23.0"), "catalog_xml": CATALOG_XML_8960},
+            "2.22.0",
+            "raise_then_ok",
+        ),
+        "dcu_raises_catalog_fails": ({"dcu_xml": DCU(ver="2.23.0"), "catalog_fail": True}, "2.22.0", "raise"),
+        "catalog_newer": ({"catalog_xml": CATALOG_XML_8960}, "2.22.0", None),
+        "catalog_same": ({"catalog_xml": CATALOG_XML_8960}, "2.23.0", None),
+        "nothing_found": ({}, "2.22.0", None),
+        "catalog_fails_wu_newer": (
+            {"catalog_fail": True, "wu_drivers": {"k": {"Title": "Dell BIOS Update 2.24.0"}}},
+            "2.22.0",
+            None,
+        ),
+        "wu_same_version_packaged": (
+            {"wu_drivers": {"k": {"Title": "Dell Inc. Firmware Driver Update (0.2.24.0)"}}},
+            "2.24.0",
+            None,
+        ),
+        "no_service_tag": ({"service_tag": ""}, "2.22.0", None),
+        "empty_current_version": (
+            {"wu_drivers": {"k": {"Title": "Dell Inc. Firmware Driver Update (0.2.24.0)"}}},
+            "",
+            None,
+        ),
+    }
+
+    def _run(self, mocker, tmp_path, name):
+        import tempfile
+
+        kwargs, current, dcu_mode = self.SCENARIOS[name]
+        m = self._mock_deps(mocker, tmp_path, **kwargs)
+        ok = type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})()
+        if dcu_mode == "raise":
+            m.side_effect = OSError("dcu boom")
+        elif dcu_mode == "raise_then_ok":
+            m.side_effect = [OSError("dcu boom"), ok]
+        tmp_dirs = {str(tmp_path), tempfile.gettempdir()}
+
+        def norm(value):
+            text = json.dumps(value)
+            for d in tmp_dirs:
+                text = text.replace(json.dumps(d)[1:-1], "<TMP>")
+            return json.loads(text)
+
+        result = wdm.check_dell_bios_update("XPS8960", current)
+        cache = tmp_path / "bios.json"
+        cached = json.loads(cache.read_text(encoding="utf-8")) if cache.exists() else None
+        for d in (result, cached):
+            if d:
+                d.pop("checked_at", None)
+        return norm({"result": result, "cache": cached, "commands": [c.args[0] for c in m.call_args_list]})
+
+    @pytest.mark.parametrize("name", list(SCENARIOS))
+    def test_scenario_matches_golden(self, mocker, tmp_path, name):
+        observed = self._run(mocker, tmp_path, name)
+        if os.environ.get("WDM_RECORD_GOLDEN") == "1":
+            golden = {}
+            if os.path.exists(self.GOLDEN):
+                with open(self.GOLDEN, encoding="utf-8") as f:
+                    golden = json.load(f)
+            golden[name] = observed
+            with open(self.GOLDEN, "w", encoding="utf-8") as f:
+                json.dump(golden, f, indent=2, sort_keys=True)
+                f.write("\n")
+            pytest.skip("recorded")
+        with open(self.GOLDEN, encoding="utf-8") as f:
+            assert observed == json.load(f)[name]
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PowerShell Command Validation Tests — Phase 1: Static command-content gaps
 # ══════════════════════════════════════════════════════════════════════════════

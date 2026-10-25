@@ -1,0 +1,357 @@
+{
+  "catalog_fails_wu_newer": {
+    "cache": {
+      "current_version": "2.22.0",
+      "download_url": "https://www.dell.com/support/home/en-us/product-support/servicetag/9T46D14/drivers",
+      "error": null,
+      "latest_date": null,
+      "latest_version": "2.24.0",
+      "logic_version": 3,
+      "release_notes": "Dell BIOS Update 2.24.0",
+      "service_tag": "9T46D14",
+      "source": "windows_update",
+      "update_available": true
+    },
+    "commands": [],
+    "result": {
+      "current_version": "2.22.0",
+      "download_url": "https://www.dell.com/support/home/en-us/product-support/servicetag/9T46D14/drivers",
+      "error": null,
+      "latest_date": null,
+      "latest_version": "2.24.0",
+      "logic_version": 3,
+      "release_notes": "Dell BIOS Update 2.24.0",
+      "service_tag": "9T46D14",
+      "source": "windows_update",
+      "update_available": true
+    }
+  },
+  "catalog_newer": {
+    "cache": {
+      "current_version": "2.22.0",
+      "download_url": "https://downloads.dell.com/FOLDER01/bios.exe",
+      "error": null,
+      "latest_date": "2026-01-15",
+      "latest_version": "2.23.0",
+      "logic_version": 3,
+      "release_notes": "XPS 8960 BIOS Update",
+      "service_tag": "9T46D14",
+      "source": "dell_catalog",
+      "update_available": true
+    },
+    "commands": [
+      [
+        "expand.exe",
+        "<TMP>\\DellCatalog.cab",
+        "<TMP>\\DellCatalog\\CatalogPC.xml"
+      ]
+    ],
+    "result": {
+      "current_version": "2.22.0",
+      "download_url": "https://downloads.dell.com/FOLDER01/bios.exe",
+      "error": null,
+      "latest_date": "2026-01-15",
+      "latest_version": "2.23.0",
+      "logic_version": 3,
+      "release_notes": "XPS 8960 BIOS Update",
+      "service_tag": "9T46D14",
+      "source": "dell_catalog",
+      "update_available": true
+    }
+  },
+  "catalog_same": {
+    "cache": {
+      "current_version": "2.23.0",
+      "download_url": "https://downloads.dell.com/FOLDER01/bios.exe",
+      "error": null,
+      "latest_date": "2026-01-15",
+      "latest_version": "2.23.0",
+      "logic_version": 3,
+      "release_notes": "XPS 8960 BIOS Update",
+      "service_tag": "9T46D14",
+      "source": "dell_catalog",
+      "update_available": false
+    },
+    "commands": [
+      [
+        "expand.exe",
+        "<TMP>\\DellCatalog.cab",
+        "<TMP>\\DellCatalog\\CatalogPC.xml"
+      ]
+    ],
+    "result": {
+      "current_version": "2.23.0",
+      "download_url": "https://downloads.dell.com/FOLDER01/bios.exe",
+      "error": null,
+      "latest_date": "2026-01-15",
+      "latest_version": "2.23.0",
+      "logic_version": 3,
+      "release_notes": "XPS 8960 BIOS Update",
+      "service_tag": "9T46D14",
+      "source": "dell_catalog",
+      "update_available": false
+    }
+  },
+  "dcu_newer": {
+    "cache": {
+      "current_version": "2.22.0",
+      "download_url": "https://www.dell.com/support/home/en-us/product-support/servicetag/9T46D14/drivers",
+      "error": null,
+      "latest_date": null,
+      "latest_version": "2.23.0",
+      "logic_version": 3,
+      "release_notes": "",
+      "service_tag": "9T46D14",
+      "source": "dell_command_update",
+      "update_available": true
+    },
+    "commands": [
+      [
+        "C:\\Program Files\\Dell\\CommandUpdate\\dcu-cli.exe",
+        "/scan",
+        "-outputLog=<TMP>\\dcu_scan_00000000.xml",
+        "-silent"
+      ]
+    ],
+    "result": {
+      "current_version": "2.22.0",
+      "download_url": "https://www.dell.com/support/home/en-us/product-support/servicetag/9T46D14/drivers",
+      "error": null,
+      "latest_date": null,
+      "latest_version": "2.23.0",
+      "logic_version": 3,
+      "release_notes": "",
+      "service_tag": "9T46D14",
+      "source": "dell_command_update",
+      "update_available": true
+    }
+  },
+  "dcu_raises_catalog_fails": {
+    "cache": {
+      "current_version": "2.22.0",
+      "download_url": "https://www.dell.com/support/home/en-us/product-support/servicetag/9T46D14/drivers",
+      "error": "DCU: dcu boom | Catalog: <urlopen error dns>",
+      "latest_date": null,
+      "latest_version": null,
+      "logic_version": 3,
+      "release_notes": "",
+      "service_tag": "9T46D14",
+      "source": "unknown",
+      "update_available": false
+    },
+    "commands": [
+      [
+        "C:\\Program Files\\Dell\\CommandUpdate\\dcu-cli.exe",
+        "/scan",
+        "-outputLog=<TMP>\\dcu_scan_00000000.xml",
+        "-silent"
+      ]
+    ],
+    "result": {
+      "current_version": "2.22.0",
+      "download_url": "https://www.dell.com/support/home/en-us/product-support/servicetag/9T46D14/drivers",
+      "error": "DCU: dcu boom | Catalog: <urlopen error dns>",
+      "latest_date": null,
+      "latest_version": null,
+      "logic_version": 3,
+      "release_notes": "",
+      "service_tag": "9T46D14",
+      "source": "unknown",
+      "update_available": false
+    }
+  },
+  "dcu_raises_catalog_found": {
+    "cache": {
+      "current_version": "2.22.0",
+      "download_url": "https://downloads.dell.com/FOLDER01/bios.exe",
+      "error": null,
+      "latest_date": "2026-01-15",
+      "latest_version": "2.23.0",
+      "logic_version": 3,
+      "release_notes": "XPS 8960 BIOS Update",
+      "service_tag": "9T46D14",
+      "source": "dell_catalog",
+      "update_available": true
+    },
+    "commands": [
+      [
+        "C:\\Program Files\\Dell\\CommandUpdate\\dcu-cli.exe",
+        "/scan",
+        "-outputLog=<TMP>\\dcu_scan_00000000.xml",
+        "-silent"
+      ],
+      [
+        "expand.exe",
+        "<TMP>\\DellCatalog.cab",
+        "<TMP>\\DellCatalog\\CatalogPC.xml"
+      ]
+    ],
+    "result": {
+      "current_version": "2.22.0",
+      "download_url": "https://downloads.dell.com/FOLDER01/bios.exe",
+      "error": null,
+      "latest_date": "2026-01-15",
+      "latest_version": "2.23.0",
+      "logic_version": 3,
+      "release_notes": "XPS 8960 BIOS Update",
+      "service_tag": "9T46D14",
+      "source": "dell_catalog",
+      "update_available": true
+    }
+  },
+  "dcu_same": {
+    "cache": {
+      "current_version": "2.22.0",
+      "download_url": "https://www.dell.com/support/home/en-us/product-support/servicetag/9T46D14/drivers",
+      "error": null,
+      "latest_date": null,
+      "latest_version": "2.22.0",
+      "logic_version": 3,
+      "release_notes": "",
+      "service_tag": "9T46D14",
+      "source": "dell_command_update",
+      "update_available": false
+    },
+    "commands": [
+      [
+        "C:\\Program Files\\Dell\\CommandUpdate\\dcu-cli.exe",
+        "/scan",
+        "-outputLog=<TMP>\\dcu_scan_00000000.xml",
+        "-silent"
+      ]
+    ],
+    "result": {
+      "current_version": "2.22.0",
+      "download_url": "https://www.dell.com/support/home/en-us/product-support/servicetag/9T46D14/drivers",
+      "error": null,
+      "latest_date": null,
+      "latest_version": "2.22.0",
+      "logic_version": 3,
+      "release_notes": "",
+      "service_tag": "9T46D14",
+      "source": "dell_command_update",
+      "update_available": false
+    }
+  },
+  "empty_current_version": {
+    "cache": null,
+    "commands": [
+      [
+        "expand.exe",
+        "<TMP>\\DellCatalog.cab",
+        "<TMP>\\DellCatalog\\CatalogPC.xml"
+      ]
+    ],
+    "result": {
+      "current_version": "",
+      "download_url": "https://www.dell.com/support/home/en-us/product-support/servicetag/9T46D14/drivers",
+      "error": " | current BIOS version unavailable; not cached",
+      "latest_date": null,
+      "latest_version": "0.2.24.0",
+      "logic_version": 3,
+      "release_notes": "Dell Inc. Firmware Driver Update (0.2.24.0)",
+      "service_tag": "9T46D14",
+      "source": "windows_update",
+      "update_available": false
+    }
+  },
+  "no_service_tag": {
+    "cache": {
+      "current_version": "2.22.0",
+      "download_url": "https://www.dell.com/support/home/en-us",
+      "error": null,
+      "latest_date": null,
+      "latest_version": null,
+      "logic_version": 3,
+      "release_notes": "",
+      "service_tag": "",
+      "source": "unknown",
+      "update_available": false
+    },
+    "commands": [
+      [
+        "expand.exe",
+        "<TMP>\\DellCatalog.cab",
+        "<TMP>\\DellCatalog\\CatalogPC.xml"
+      ]
+    ],
+    "result": {
+      "current_version": "2.22.0",
+      "download_url": "https://www.dell.com/support/home/en-us",
+      "error": null,
+      "latest_date": null,
+      "latest_version": null,
+      "logic_version": 3,
+      "release_notes": "",
+      "service_tag": "",
+      "source": "unknown",
+      "update_available": false
+    }
+  },
+  "nothing_found": {
+    "cache": {
+      "current_version": "2.22.0",
+      "download_url": "https://www.dell.com/support/home/en-us/product-support/servicetag/9T46D14/drivers",
+      "error": null,
+      "latest_date": null,
+      "latest_version": null,
+      "logic_version": 3,
+      "release_notes": "",
+      "service_tag": "9T46D14",
+      "source": "unknown",
+      "update_available": false
+    },
+    "commands": [
+      [
+        "expand.exe",
+        "<TMP>\\DellCatalog.cab",
+        "<TMP>\\DellCatalog\\CatalogPC.xml"
+      ]
+    ],
+    "result": {
+      "current_version": "2.22.0",
+      "download_url": "https://www.dell.com/support/home/en-us/product-support/servicetag/9T46D14/drivers",
+      "error": null,
+      "latest_date": null,
+      "latest_version": null,
+      "logic_version": 3,
+      "release_notes": "",
+      "service_tag": "9T46D14",
+      "source": "unknown",
+      "update_available": false
+    }
+  },
+  "wu_same_version_packaged": {
+    "cache": {
+      "current_version": "2.24.0",
+      "download_url": "https://www.dell.com/support/home/en-us/product-support/servicetag/9T46D14/drivers",
+      "error": null,
+      "latest_date": null,
+      "latest_version": "0.2.24.0",
+      "logic_version": 3,
+      "release_notes": "Dell Inc. Firmware Driver Update (0.2.24.0)",
+      "service_tag": "9T46D14",
+      "source": "windows_update",
+      "update_available": false
+    },
+    "commands": [
+      [
+        "expand.exe",
+        "<TMP>\\DellCatalog.cab",
+        "<TMP>\\DellCatalog\\CatalogPC.xml"
+      ]
+    ],
+    "result": {
+      "current_version": "2.24.0",
+      "download_url": "https://www.dell.com/support/home/en-us/product-support/servicetag/9T46D14/drivers",
+      "error": null,
+      "latest_date": null,
+      "latest_version": "0.2.24.0",
+      "logic_version": 3,
+      "release_notes": "Dell Inc. Firmware Driver Update (0.2.24.0)",
+      "service_tag": "9T46D14",
+      "source": "windows_update",
+      "update_available": false
+    }
+  }
+}
