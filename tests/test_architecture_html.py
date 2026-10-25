@@ -95,6 +95,7 @@ TEST_FILES = [
     "test_recurring_audits.py",
     "test_kernel_cpu.py",
     "test_claude_automation.py",
+    "test_stallwatch.py",
 ]
 
 
