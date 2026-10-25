@@ -6,11 +6,11 @@ aiohappyeyeballs==2.6.1
 aiohttp==3.14.5
 aiosignal==1.4.0
 annotated-types==0.7.0
-anthropic==1.13.0
+anthropic==2.3.0
 anyio==4.15.1
 attrs==26.1.0
 blinker==1.9.0
-certifi==2026.2.25
+certifi==2026.10.23
 charset-normalizer==3.4.5
 click==8.1.8
 colorama==0.4.6
@@ -35,6 +35,7 @@ markupsafe==3.0.3
 more-itertools==10.8.0
 multidict==6.9.1
 nvidia-ml-py==13.595.45
+opentelemetry-api==1.45.1
 pillow==13.0.0
 propcache==0.4.1
 psutil==7.2.2
