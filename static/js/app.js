@@ -4320,7 +4320,7 @@ async function loadTrends() {
   const labels = {
     "cpu_percent":                  {label: "CPU %",        color: "#00d4ff", unit: "%"},
     "memory_percent":               {label: "Memory %",     color: "#a78bfa", unit: "%"},
-    "cpu_temp_c":                   {label: "Max Temp",     color: "#ff7043", unit: "°C"},
+    "cpu_temp_c":                   {label: "CPU Temp",     color: "#ff7043", unit: "°C"},
     // GPU sparklines (backlog #37). Only render when the backend actually
     // reported GPU data -- a machine with no NVIDIA driver simply won't
     // have these series in the response, so the cards self-hide below.

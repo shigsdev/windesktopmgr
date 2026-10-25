@@ -2133,6 +2133,24 @@ class TestBuildGauges:
         )
         assert g["cpu_temp"]["value"] == 48.0
 
+    def test_cpu_temp_never_uses_a_non_cpu_lhm_sensor(self):
+        """#110: when LHM reports no CPU sensor, the gauge shows "no sensor"
+        rather than a GPU/NVMe reading (the old all-sensor fallback)."""
+        g = self._by_key(
+            {
+                "thermals": {
+                    "perf": {},
+                    "temps": [
+                        {"Name": "GPU Hot Spot", "TempC": 71.0, "SensorId": "/gpu-nvidia/0/temperature/1"},
+                        {"Name": "Drive Temp", "TempC": 55.0, "SensorId": "/nvme/0/temperature/0"},
+                    ],
+                },
+                "gpu": {"available": False},
+            }
+        )
+        assert g["cpu_temp"]["value"] is None
+        assert g["cpu_temp"]["sub"] == "no sensor"
+
     def test_collector_error_dicts_dont_crash(self):
         g = self._by_key({"thermals": {"error": "boom"}, "gpu": {"error": "boom"}})
         assert all(g[k]["value"] is None for k in self.KEYS)

@@ -30,6 +30,7 @@ import re
 import threading
 from datetime import datetime, timedelta, timezone
 
+import metrics_history
 import processes
 
 # ── Dashboard summary cache ──────────────────────────────────────────────────
@@ -82,27 +83,18 @@ def _build_gauges(results: dict) -> list:
     gpu = results.get("gpu") if isinstance(results.get("gpu"), dict) else {}
 
     # CPU temp: hottest CPU sensor. With LHM merged in, `temps` also carries
-    # GPU/storage/board sensors, so restrict to CPU ones (by LHM SensorId
-    # /intelcpu//amdcpu/, else by name) before taking the max -- otherwise a hot
-    # GPU/NVMe reading would masquerade as the CPU temp. Fall back to any sensor
-    # when none is identifiable (e.g. a bare WMI thermal zone).
-    def _is_cpu_temp(t: dict) -> bool:
-        sid = (t.get("SensorId") or "").lower()
-        if sid:
-            return "cpu" in sid
-        return any(k in (t.get("Name") or "").lower() for k in ("cpu", "core", "package"))
-
-    cpu_vals = [_num(t.get("TempC")) for t in temps if isinstance(t, dict) and _is_cpu_temp(t)]
-    cpu_vals = [v for v in cpu_vals if v is not None]
-    all_vals = [_num(t.get("TempC")) for t in temps if isinstance(t, dict)]
-    all_vals = [v for v in all_vals if v is not None]
-    pick = cpu_vals or all_vals
-    cpu_temp = round(max(pick), 1) if pick else None
+    # GPU/storage/board sensors; metrics_history.hottest_cpu_temp keeps only
+    # CPU ones (shared with the cpu_temp_c trend series so both name the same
+    # number) and falls back to a bare WMI thermal zone, never a GPU/NVMe one.
+    cpu_max = metrics_history.hottest_cpu_temp(temps)
+    cpu_temp = round(cpu_max, 1) if cpu_max is not None else None
     # The value is the hottest sensor at that instant -- on a hybrid CPU the
     # favored P-cores swing 30 C within a second of any work, so the sub-line
     # adds the far steadier core average (LHM's "Core Average" sensor, else
     # the mean of the per-core readings) to keep a spike in perspective.
-    cpu_avg = _cpu_core_average([t for t in temps if isinstance(t, dict) and _is_cpu_temp(t)], _num)
+    cpu_avg = _cpu_core_average(
+        [t for t in temps if isinstance(t, dict) and metrics_history.is_cpu_temp_sensor(t)], _num
+    )
     if cpu_temp is None:
         cpu_temp_sub = "no sensor"
     elif cpu_avg is not None:
@@ -1109,8 +1101,6 @@ def _record_trend_sample(concerns: list[dict], results: dict) -> None:
     """Trend sampler (backlog #4). Best-effort, throttled internally to one
     sample per SAMPLE_INTERVAL — must never break the dashboard response."""
     try:
-        import metrics_history
-
         metrics_history.record_sample(
             {
                 "concerns": concerns,

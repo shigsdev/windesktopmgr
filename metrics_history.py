@@ -66,6 +66,40 @@ _history_lock = threading.RLock()
 # ── Metric extraction ──────────────────────────────────────────────
 
 
+def is_cpu_temp_sensor(t: dict) -> bool:
+    """True for a CPU temperature reading in the thermals ``temps`` list.
+
+    With LibreHardwareMonitor merged in, ``temps`` also carries GPU, NVMe and
+    memory sensors. LHM readings carry a SensorId (/intelcpu/..., /amdcpu/...);
+    readings without one are matched by name (CPU / Core / Package).
+    """
+    sid = (t.get("SensorId") or "").lower()
+    if sid:
+        return "cpu" in sid
+    return any(k in (t.get("Name") or "").lower() for k in ("cpu", "core", "package"))
+
+
+def hottest_cpu_temp(temps) -> float | None:
+    """Hottest CPU temperature in a thermals ``temps`` list, or None.
+
+    Shared by the dashboard CPU-temp gauge and the ``cpu_temp_c`` trend series
+    (backlog #110) so both name the same number. When no CPU sensor is
+    identifiable, a bare WMI thermal zone (no SensorId) still counts; a sensor
+    that has an id but isn't a CPU (GPU hot spot, NVMe, DIMM) never stands in
+    for the CPU.
+    """
+    readings = [
+        t
+        for t in temps or []
+        if isinstance(t, dict) and isinstance(t.get("TempC"), int | float) and not isinstance(t.get("TempC"), bool)
+    ]
+    cpu = [t["TempC"] for t in readings if is_cpu_temp_sensor(t)]
+    if cpu:
+        return float(max(cpu))
+    zones = [t["TempC"] for t in readings if not t.get("SensorId")]
+    return float(max(zones)) if zones else None
+
+
 def extract_metrics(summary: dict) -> dict:
     """Pull a flat ``{metric_key: number}`` dict from a /summary response.
 
@@ -99,14 +133,12 @@ def extract_metrics(summary: dict) -> dict:
         cpu_pct = (therm.get("perf") or {}).get("CPUPct")
         if isinstance(cpu_pct, int | float):
             metrics["cpu_percent"] = float(cpu_pct)
-        # Highest reported temperature across CPU + storage probes. A
-        # single max value per sample is enough for trend detection;
-        # per-zone breakdown is what the Thermals tab is for.
-        temps = therm.get("temps") or []
-        temp_values = [t.get("TempC") for t in temps if isinstance(t, dict)]
-        temp_values = [v for v in temp_values if isinstance(v, int | float)]
-        if temp_values:
-            metrics["cpu_temp_c"] = float(max(temp_values))
+        # Hottest CPU sensor -- the same number as the dashboard CPU Temp
+        # gauge. It used to be the max over EVERY sensor, so once LHM added
+        # GPU/NVMe/DIMM readings a hot GPU was recorded as the CPU (#110).
+        cpu_temp = hottest_cpu_temp(therm.get("temps"))
+        if cpu_temp is not None:
+            metrics["cpu_temp_c"] = cpu_temp
 
     mem = summary.get("memory") or {}
     if isinstance(mem, dict):
