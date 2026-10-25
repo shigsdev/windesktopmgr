@@ -33,7 +33,10 @@ pywin32>=311
 # Claude API client for Diagnose, AI identify and the ask-a-question box.
 # 1.x since backlog #70 (no call-site changes needed: no httpx objects,
 # raw responses, Text Completions or sampling params in this codebase).
-anthropic>=1.13,<2
+# 2.x since backlog #108: 2.0.0 only switches requests to API version
+# 2026-10-21 (no temperature/top_p/top_k, no documents in assistant turns,
+# no citations on user text, Admin API field renames) -- none apply here.
+anthropic>=2.3,<3
 # System-tray icon + menu (tray.py) and the icon image it draws.
 pystray>=0.19
 Pillow>=12.3.0
