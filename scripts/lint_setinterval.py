@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """lint_setinterval.py -- Flag unguarded setInterval / setTimeout recurring
-call sites in static/js/app.js (the app's JS, extracted from
-templates/index.html in #55 PR 2).
+call sites in static/js/ (app.js + tabs/*.js -- the app's JS, extracted from
+templates/index.html in #55 PR 2, split per tab in #72).
 
 The 2026-04-18 incident: ``pollTimer = setInterval(pollStatus, 800);`` had
 no preceding ``clearInterval(pollTimer)``. Every user click on "Scan Now"
@@ -26,7 +26,11 @@ import re
 import sys
 from pathlib import Path
 
-TARGETS = [Path("static/js/app.js")]
+# app.js + static/js/tabs/*.js (split per tab in backlog #72).
+# Anchored to the repo, not the cwd: a relative glob run from elsewhere would
+# match nothing and pass silently.
+ROOT = Path(__file__).resolve().parent.parent
+TARGETS = sorted((ROOT / "static" / "js").rglob("*.js"))
 
 # Matches: `ident = setInterval(...)` (not `const/let/var ident`)
 ASSIGN_RE = re.compile(r"^\s*([A-Za-z_][\w$]*)\s*=\s*setInterval\s*\(")
@@ -85,7 +89,7 @@ def main() -> int:
         for lineno, var, snippet in scan(target):
             ok = False
             print(
-                f"{target}:{lineno}: unguarded setInterval -> `{var}` "
+                f"{target.relative_to(ROOT).as_posix()}:{lineno}: unguarded setInterval -> `{var}` "
                 f"(add `if ({var}) {{ clearInterval({var}); {var} = null; }}` above this line)",
                 file=sys.stderr,
             )

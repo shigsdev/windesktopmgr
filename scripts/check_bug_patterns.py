@@ -219,7 +219,7 @@ def check_unguarded_setinterval() -> list[Finding]:
     return [
         Finding(
             check_id="unguarded-setinterval",
-            path="static/js/app.js",
+            path="static/js/",
             detail=f"lint_setinterval.py reported: {output[:1500]}",
         )
     ]

@@ -489,7 +489,39 @@
 
 </div><!-- /wrap -->
 
+<!-- Frontend JS (backlog #72): app.js = shared helpers + page switching, then one
+     classic script per tab. They share globals; ORDER MATTERS (same order the code
+     had inside the old single app.js). New file? add it here -- a test checks. -->
 <script src="/static/js/app.js"></script>
+<script src="/static/js/tabs/drivers.js"></script>
+<script src="/static/js/tabs/bsod.js"></script>
+<script src="/static/js/tabs/summary.js"></script>
+<script src="/static/js/tabs/startup.js"></script>
+<script src="/static/js/tabs/disk.js"></script>
+<script src="/static/js/tabs/network.js"></script>
+<script src="/static/js/tabs/updates.js"></script>
+<script src="/static/js/tabs/events.js"></script>
+<script src="/static/js/tabs/processes.js"></script>
+<script src="/static/js/tabs/thermals.js"></script>
+<script src="/static/js/tabs/services.js"></script>
+<script src="/static/js/tabs/health-history.js"></script>
+<script src="/static/js/tabs/timeline.js"></script>
+<script src="/static/js/tabs/memory.js"></script>
+<script src="/static/js/tabs/bios.js"></script>
+<script src="/static/js/tabs/warranty.js"></script>
+<script src="/static/js/tabs/credentials.js"></script>
+<script src="/static/js/tabs/dashboard.js"></script>
+<script src="/static/js/tabs/remediation.js"></script>
+<script src="/static/js/tabs/homenet.js"></script>
+<script src="/static/js/tabs/baseline.js"></script>
+<script src="/static/js/tabs/backup.js"></script>
+<script src="/static/js/tabs/utilities.js"></script>
+<script src="/static/js/tabs/logs.js"></script>
+<script src="/static/js/tabs/maintenance.js"></script>
+<script src="/static/js/tabs/docs.js"></script>
+<script src="/static/js/tabs/diagnose.js"></script>
+<script src="/static/js/tabs/sysinfo.js"></script>
+<script src="/static/js/tabs/architecture.js"></script>
 
   <!-- ══════════════════════════════════════════
        PAGE: STARTUP MANAGER

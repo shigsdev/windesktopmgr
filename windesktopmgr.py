@@ -3014,7 +3014,12 @@ def _assets_version() -> str:
     """
     global _assets_version_cache
     mtimes = []
-    for rel in ("static/css/app.css", "static/js/app.js", "templates/index.html"):
+    # Every JS file (app.js + static/js/tabs/*.js since backlog #72), sorted for a stable key.
+    js = sorted(
+        os.path.relpath(p, APP_DIR)
+        for p in glob.glob(os.path.join(APP_DIR, "static", "js", "**", "*.js"), recursive=True)
+    )
+    for rel in ("static/css/app.css", *js, "templates/index.html"):
         try:
             mtimes.append(os.path.getmtime(os.path.join(APP_DIR, rel)))
         except OSError:
