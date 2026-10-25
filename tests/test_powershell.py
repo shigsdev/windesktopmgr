@@ -3312,17 +3312,54 @@ class TestCheckDellBiosUpdate:
     # Sample XML that matches the BIOS version regex in the DCU parser
     DCU_XML_TEMPLATE = '<update type="BIOS" name="BIOS Update" version="{ver}"/>'
 
-    # Minimal catalog XML matching the production parser's case-insensitive
-    # lookups: SoftwareComponent + ComponentType=BIOS + Model name *8960*.
-    CATALOG_XML_8960 = """<Manifest xmlns="openmanage/cm/dm">
-  <SoftwareComponent releaseDate="2026-01-15" dellVersion="2.23.0" path="FOLDER01/bios.exe">
-    <Name><Display>XPS 8960 BIOS Update</Display></Name>
-    <ComponentType value="BIOS" />
+    # Dell's catalog index (CatalogIndexPC.xml), trimmed from the live file
+    # (2026-10-25): one GroupManifest per system, the XPS 8960's naming its own
+    # per-model catalog. Model names live in <Display> children.
+    INDEX_XML_8960 = """<ManifestIndex xmlns="openmanage/cm/dm">
+  <GroupManifest type="MTPDK">
+    <Display lang="en"><![CDATA[ PDK Catalog for Vostro Desktop Vostro 3020 T]]></Display>
+    <SupportedSystems><Brand key="85"><Model systemID="0C1F"><Display>Vostro 3020 T</Display></Model></Brand></SupportedSystems>
+    <ManifestInformation version="2026.10.20" path="FOLDER15000001M/1/Vostro_Desktop_0C1F.cab" />
+  </GroupManifest>
+  <GroupManifest type="MTPDK">
+    <Display lang="en"><![CDATA[ PDK Catalog for XPS Desktop XPS 8960]]></Display>
     <SupportedSystems>
-      <Brand>
-        <Model name="XPS 8960" systemID="0BC0" />
+      <Brand key="52" prefix="XPSDT">
+        <Model systemID="0BC0" systemIDType="BIOS"><Display lang="en"><![CDATA[XPS 8960]]></Display></Model>
       </Brand>
     </SupportedSystems>
+    <ManifestInformation version="2026.10.21" path="FOLDER15162537M/1/XPS_Desktop_0BC0.cab" />
+  </GroupManifest>
+</ManifestIndex>"""
+
+    # An index that doesn't list the XPS 8960 at all.
+    INDEX_XML_NO_8960 = '<ManifestIndex xmlns="openmanage/cm/dm"></ManifestIndex>'
+
+    # The XPS 8960 per-model catalog (XPS_Desktop_0BC0.xml), trimmed from the
+    # live file. Real-catalog traps the parser must survive: releaseDate is
+    # "Month DD, YYYY" (as text, September 2025 sorts after July 2026), 2.9.0 is
+    # older than 2.23.0 (as text it sorts after), and a newer non-BIOS
+    # component must be ignored. Newest BIOS here: 2.23.0.
+    CATALOG_XML_8960 = """<Manifest xmlns="openmanage/cm/dm" baseLocation="downloads.dell.com" version="2026.10.21">
+  <SoftwareComponent releaseDate="September 07, 2025" dellVersion="2.19.0" path="FOLDER13453600M/1/XPS8960_2.19.0_x64.exe">
+    <Name><Display lang="en"><![CDATA[Dell XPS 8960 System BIOS]]></Display></Name>
+    <ComponentType value="BIOS"><Display lang="en">BIOS</Display></ComponentType>
+    <SupportedSystems><Brand key="52" prefix="XPSDT"><Model systemID="0BC0"><Display>XPS 8960</Display></Model></Brand></SupportedSystems>
+  </SoftwareComponent>
+  <SoftwareComponent releaseDate="July 15, 2026" dellVersion="2.23.0" path="FOLDER14639669M/1/XPS8960_2.23.0_x64.exe">
+    <Name><Display lang="en"><![CDATA[Dell XPS 8960 System BIOS]]></Display></Name>
+    <ComponentType value="BIOS"><Display lang="en">BIOS</Display></ComponentType>
+    <SupportedSystems><Brand key="52" prefix="XPSDT"><Model systemID="0BC0"><Display>XPS 8960</Display></Model></Brand></SupportedSystems>
+  </SoftwareComponent>
+  <SoftwareComponent releaseDate="March 01, 2024" dellVersion="2.9.0" path="FOLDER11000000M/1/XPS8960_2.9.0_x64.exe">
+    <Name><Display lang="en"><![CDATA[Dell XPS 8960 System BIOS]]></Display></Name>
+    <ComponentType value="BIOS"><Display lang="en">BIOS</Display></ComponentType>
+    <SupportedSystems><Brand key="52" prefix="XPSDT"><Model systemID="0BC0"><Display>XPS 8960</Display></Model></Brand></SupportedSystems>
+  </SoftwareComponent>
+  <SoftwareComponent releaseDate="October 20, 2026" dellVersion="A10" path="FOLDER15100000M/1/Intel-IPF-Driver.exe">
+    <Name><Display lang="en"><![CDATA[Intel Innovation Platform Framework Driver]]></Display></Name>
+    <ComponentType value="DRVR"><Display lang="en">Driver</Display></ComponentType>
+    <SupportedSystems><Brand key="52" prefix="XPSDT"><Model systemID="0BC0"><Display>XPS 8960</Display></Model></Brand></SupportedSystems>
   </SoftwareComponent>
 </Manifest>"""
 
@@ -3340,14 +3377,17 @@ class TestCheckDellBiosUpdate:
         catalog_fail=False,
         wu_drivers=None,
         service_tag="9T46D14",
+        index_xml=None,
     ):
         """Mock WMI, filesystem, the catalog HTTP+CAB+ET path, and the WU COM layer.
 
         Args:
             dcu_xml: XML for the DCU scan output. None = DCU not installed.
-            catalog_xml: Catalog XML string to feed the ET.parse mock. If both
-                this and ``catalog_fail`` are unset, defaults to CATALOG_XML_EMPTY
-                so the catalog runs but matches nothing.
+            catalog_xml: XPS 8960 per-model catalog XML fed to the ET.parse mock.
+                If both this and ``catalog_fail`` are unset, defaults to
+                CATALOG_XML_EMPTY so the catalog runs but matches nothing.
+            index_xml: Catalog-index XML (CatalogIndexPC). Defaults to
+                INDEX_XML_8960, which points at the per-model catalog.
             catalog_fail: If True, make urlopen raise ``URLError`` — exercises the
                 "download failed" branch (Catalog never produces a result).
             wu_drivers: dict returned by get_windows_update_drivers() for the
@@ -3387,8 +3427,12 @@ class TestCheckDellBiosUpdate:
             fake_resp.read.return_value = b"FAKE_CAB"
             mocker.patch("urllib.request.urlopen", return_value=fake_resp)
             xml_blob = catalog_xml if catalog_xml is not None else self.CATALOG_XML_EMPTY
-            tree = ET.ElementTree(ET.fromstring(xml_blob))  # noqa: S314 — test fixture, inline literal
-            mocker.patch("xml.etree.ElementTree.parse", return_value=tree)
+            model_tree = ET.ElementTree(ET.fromstring(xml_blob))  # noqa: S314 — test fixture, inline literal
+            index_tree = ET.ElementTree(ET.fromstring(index_xml or self.INDEX_XML_8960))  # noqa: S314 — test fixture
+            mocker.patch(
+                "xml.etree.ElementTree.parse",
+                side_effect=lambda p: index_tree if "CatalogIndexPC" in os.path.basename(str(p)) else model_tree,
+            )
 
         _real_exists = os.path.exists
         run_responses = []
@@ -3409,10 +3453,11 @@ class TestCheckDellBiosUpdate:
                 "os.path.exists", side_effect=lambda p: False if "CommandUpdate" in str(p) else _real_exists(p)
             )
 
-        # The catalog path still spawns ONE subprocess: expand.exe (Windows OS
-        # tool, not PowerShell). Mock it as a no-op success.
+        # The catalog path spawns expand.exe (Windows OS tool, not PowerShell)
+        # once per .cab: the index, then the per-model catalog. Mock both as
+        # no-op successes.
         if not catalog_fail:
-            run_responses.append(type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})())
+            run_responses += [type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})() for _ in range(2)]
 
         m = mocker.patch("windesktopmgr.subprocess.run")
         if run_responses:
@@ -3460,14 +3505,89 @@ class TestCheckDellBiosUpdate:
         assert "powershell" not in cmd
 
     def test_catalog_fallback(self, mocker, tmp_path):
-        """Method 1 misses, Method 2 (catalog XML) finds the XPS 8960 BIOS."""
+        """Method 1 misses, Method 2 (per-model catalog) finds the XPS 8960 BIOS."""
         self._mock_deps(mocker, tmp_path, catalog_xml=self.CATALOG_XML_8960)
         result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
         assert result["source"] == "dell_catalog"
         assert result["latest_version"] == "2.23.0"
-        assert result["latest_date"] == "2026-01-15"
-        assert result["download_url"] == "https://downloads.dell.com/FOLDER01/bios.exe"
-        assert "XPS 8960 BIOS Update" in result["release_notes"]
+        assert result["latest_date"] == "July 15, 2026"
+        assert result["download_url"] == "https://downloads.dell.com/FOLDER14639669M/1/XPS8960_2.23.0_x64.exe"
+        assert result["release_notes"] == "Dell XPS 8960 System BIOS"
+        assert result["update_available"] is True
+
+    def test_catalog_downloads_index_then_model_catalog(self, mocker, tmp_path):
+        """Backlog #107: the XPS 8960 is not in CatalogPC.cab. The index names
+        its own catalog, which is the second (and only other) download."""
+        self._mock_deps(mocker, tmp_path, catalog_xml=self.CATALOG_XML_8960)
+        import urllib.request
+
+        wdm.check_dell_bios_update("XPS8960", "2.22.0")
+        urls = [c.args[0].full_url for c in urllib.request.urlopen.call_args_list]
+        assert urls == [
+            "https://downloads.dell.com/catalog/CatalogIndexPC.cab",
+            "https://downloads.dell.com/FOLDER15162537M/1/XPS_Desktop_0BC0.cab",
+        ]
+
+    def test_catalog_index_without_8960_reports_error(self, mocker, tmp_path):
+        self._mock_deps(mocker, tmp_path, catalog_xml=self.CATALOG_XML_8960, index_xml=self.INDEX_XML_NO_8960)
+        result = wdm.check_dell_bios_update("XPS8960", "2.22.0")
+        assert result["source"] == "unknown"
+        assert "not listed in Dell's catalog index" in (result["error"] or "")
+
+    def test_best_catalog_bios_ranks_by_version_not_date_text(self):
+        """Regression #107: comparing "Month DD, YYYY" strings picked
+        September 2025's 2.19.0 over July 2026's 2.23.0."""
+        import xml.etree.ElementTree as ET
+
+        root = ET.fromstring(self.CATALOG_XML_8960)  # noqa: S314 — test fixture
+        best, date = bios._best_catalog_bios(root)
+        assert best.get("dellVersion") == "2.23.0"
+        assert date == "July 15, 2026"
+
+    def test_model_match_reads_display_child(self):
+        """Regression #107: Dell names the model in <Display>, not a name attribute."""
+        import xml.etree.ElementTree as ET
+
+        by_display = ET.fromstring('<Model systemID="0000"><Display>XPS 8960</Display></Model>')  # noqa: S314
+        by_sysid = ET.fromstring('<Model systemID="0BC0" />')  # noqa: S314
+        other = ET.fromstring('<Model systemID="0C62"><Display>XPS-16-9640</Display></Model>')  # noqa: S314
+        assert bios._is_xps8960_model(by_display)
+        assert bios._is_xps8960_model(by_sysid)
+        assert not bios._is_xps8960_model(other)
+
+    @pytest.mark.parametrize(
+        "value, expected",
+        [("October 14, 2026", (2026, 10, 14)), ("2026-01-15", (2026, 1, 15)), ("", None), ("soon", None)],
+    )
+    def test_release_date_key(self, value, expected):
+        key = bios._release_date_key(value)
+        assert (key == wdm.datetime.min) if expected is None else (key.timetuple()[:3] == expected)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "../../etc/x.cab",
+            "FOLDER1/../../x.cab",
+            "https://evil.example/x.cab",
+            "//evil.example/x.cab",
+            "FOLDER1/1/x.exe",
+            "x.cab",
+            "FOLDER1/1/x y.cab",
+        ],
+    )
+    def test_model_catalog_path_rejects_unsafe_paths(self, path):
+        """The index decides the second download; only a plain
+        FOLDER.../name.cab path under downloads.dell.com is allowed."""
+        import xml.etree.ElementTree as ET
+
+        index = ET.fromstring(self.INDEX_XML_8960.replace("FOLDER15162537M/1/XPS_Desktop_0BC0.cab", path))  # noqa: S314
+        assert bios._model_catalog_path(index) == ""
+
+    def test_model_catalog_path_accepts_the_real_path(self):
+        import xml.etree.ElementTree as ET
+
+        index = ET.fromstring(self.INDEX_XML_8960)  # noqa: S314 — test fixture
+        assert bios._model_catalog_path(index) == "FOLDER15162537M/1/XPS_Desktop_0BC0.cab"
 
     def test_wu_fallback(self, mocker, tmp_path):
         """Methods 1 & 2 miss; Method 3 reuses get_windows_update_drivers()
@@ -3594,7 +3714,8 @@ class TestCheckDellBiosUpdate:
 class TestCheckDellBiosUpdateGolden:
     """Pins check_dell_bios_update's whole result, the cache it writes and the
     commands it runs, for every source path. Recorded from the code before it
-    was split into helpers (tech-debt audit 2026-10-17, complexity 43).
+    was split into helpers (tech-debt audit 2026-10-17, complexity 43);
+    re-recorded for the per-model catalog lookup (backlog #107).
 
     Re-record (only when a behaviour change is intended):
         WDM_RECORD_GOLDEN=1 pytest tests/test_powershell.py -k BiosUpdateGolden -p no:xdist
@@ -3603,6 +3724,8 @@ class TestCheckDellBiosUpdateGolden:
     GOLDEN = os.path.join(os.path.dirname(__file__), "fixtures", "bios_update_golden.json")
     CATALOG_XML_8960 = TestCheckDellBiosUpdate.CATALOG_XML_8960
     CATALOG_XML_EMPTY = TestCheckDellBiosUpdate.CATALOG_XML_EMPTY
+    INDEX_XML_8960 = TestCheckDellBiosUpdate.INDEX_XML_8960
+    INDEX_XML_NO_8960 = TestCheckDellBiosUpdate.INDEX_XML_NO_8960
     _mock_deps = TestCheckDellBiosUpdate._mock_deps
     DCU = TestCheckDellBiosUpdate.DCU_XML_TEMPLATE.format
 
@@ -3619,6 +3742,7 @@ class TestCheckDellBiosUpdateGolden:
         "catalog_newer": ({"catalog_xml": CATALOG_XML_8960}, "2.22.0", None),
         "catalog_same": ({"catalog_xml": CATALOG_XML_8960}, "2.23.0", None),
         "nothing_found": ({}, "2.22.0", None),
+        "index_without_8960": ({"catalog_xml": CATALOG_XML_8960, "index_xml": INDEX_XML_NO_8960}, "2.22.0", None),
         "catalog_fails_wu_newer": (
             {"catalog_fail": True, "wu_drivers": {"k": {"Title": "Dell BIOS Update 2.24.0"}}},
             "2.22.0",
@@ -3646,7 +3770,7 @@ class TestCheckDellBiosUpdateGolden:
         if dcu_mode == "raise":
             m.side_effect = OSError("dcu boom")
         elif dcu_mode == "raise_then_ok":
-            m.side_effect = [OSError("dcu boom"), ok]
+            m.side_effect = [OSError("dcu boom"), ok, ok]
         tmp_dirs = {str(tmp_path), tempfile.gettempdir()}
 
         def norm(value):
@@ -3808,7 +3932,7 @@ class TestCheckDellBiosCommandContent:
         """Mock deps with DCU not installed.
 
         After backlog #28 the catalog path is NOT a PS subprocess — it's
-        ``urllib.request.urlopen`` (downloads CatalogPC.cab), one ``expand.exe``
+        ``urllib.request.urlopen`` (downloads CatalogIndexPC.cab), one ``expand.exe``
         subprocess, and ``xml.etree.ElementTree.parse``. Mock all three so the
         catalog branch runs end-to-end without hitting the network and finds
         no matching SoftwareComponent.
@@ -3854,11 +3978,11 @@ class TestCheckDellBiosCommandContent:
         canonical Dell catalog endpoint."""
         mocks = self._mock_no_dcu(mocker, tmp_path)
         wdm.check_dell_bios_update("XPS8960", "2.22.0")
-        assert mocks["urlopen"].called, "urlopen should be called to fetch CatalogPC.cab"
+        assert mocks["urlopen"].called, "urlopen should be called to fetch the catalog index"
         # First positional arg may be a string URL or a urllib Request object.
         first_arg = mocks["urlopen"].call_args_list[0][0][0]
         url = first_arg.full_url if hasattr(first_arg, "full_url") else first_arg
-        assert "downloads.dell.com/catalog/CatalogPC.cab" in url
+        assert "downloads.dell.com/catalog/CatalogIndexPC.cab" in url
 
     def test_catalog_uses_expand_exe_not_powershell(self, mocker, tmp_path):
         """Regression for backlog #28 close-out: the catalog path's only
