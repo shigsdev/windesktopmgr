@@ -183,13 +183,22 @@ def _support_url(service_tag: str) -> str:
     return "https://www.dell.com/support/home/en-us"
 
 
-def _read_bios_cache() -> dict | None:
-    """The cached verdict if it is under 24h old and from the current logic version."""
+def _read_bios_cache(current_version: str = "") -> dict | None:
+    """The cached verdict if it is under 24h old, from the current logic version,
+    and computed for the BIOS that is installed now.
+
+    Backlog #112: after flashing 2.24.0 -> 2.25.0 the cached "update available,
+    current 2.24.0" kept showing for up to a day. A blank current_version
+    (WMI right after a restart) can't prove a change, so the cache still serves.
+    """
     try:
         if os.path.exists(BIOS_CACHE_FILE):
             with open(BIOS_CACHE_FILE, encoding="utf-8") as f:
                 cached = json.load(f)
             age = (datetime.now(timezone.utc) - _parse_ts(cached.get("checked_at", ""))).total_seconds() / 3600
+            installed = str(current_version).strip()
+            if installed and str(cached.get("current_version", "")).strip() != installed:
+                return None  # BIOS was flashed since the check
             if age < 24 and cached.get("logic_version") == _BIOS_LOGIC_VERSION:
                 return cached
     except Exception:
@@ -497,7 +506,7 @@ def check_dell_bios_update(board_product: str, current_version: str) -> dict:
     # service-tag WMI lookup is bounded via _get_service_tag() above.
     from windesktopmgr import get_windows_update_drivers
 
-    cached = _read_bios_cache()
+    cached = _read_bios_cache(current_version)
     if cached is not None:
         return cached
 

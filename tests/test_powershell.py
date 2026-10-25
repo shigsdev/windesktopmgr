@@ -3682,6 +3682,51 @@ class TestCheckDellBiosUpdate:
         saved = json.loads(cache.read_text(encoding="utf-8"))
         assert saved["logic_version"] == bios._BIOS_LOGIC_VERSION
 
+    def _fresh_cache(self, tmp_path, mocker, current_version):
+        cache = tmp_path / "bios_cache.json"
+        cache.write_text(
+            json.dumps(
+                {
+                    "checked_at": wdm.datetime.now(wdm.timezone.utc).isoformat(),
+                    "logic_version": bios._BIOS_LOGIC_VERSION,
+                    "current_version": current_version,
+                    "latest_version": "2.25.0",
+                    "update_available": True,
+                    "source": "dell_catalog",
+                }
+            ),
+            encoding="utf-8",
+        )
+        mocker.patch("bios.BIOS_CACHE_FILE", str(cache))
+        return cache
+
+    def test_cache_discarded_after_bios_flash(self, mocker, tmp_path):
+        """Backlog #112: the user flashed 2.24.0 -> 2.25.0 and the cached
+        "update available, current 2.24.0" kept showing for up to a day."""
+        self._fresh_cache(tmp_path, mocker, "2.24.0")
+        mocker.patch("bios._get_service_tag", return_value="ABC1234")
+        mocker.patch("windesktopmgr.get_windows_update_drivers", return_value={})
+        mocker.patch("windesktopmgr.subprocess.run")
+        mocker.patch("urllib.request.urlopen", side_effect=OSError("network disabled in tests"))
+        result = wdm.check_dell_bios_update("XPS8960", "2.25.0")
+        assert result["current_version"] == "2.25.0"
+        assert result["update_available"] is False, "pre-flash verdict was served after the flash"
+
+    def test_cache_kept_when_installed_version_unchanged(self, mocker, tmp_path):
+        self._fresh_cache(tmp_path, mocker, "2.24.0")
+        get_tag = mocker.patch("bios._get_service_tag")
+        result = wdm.check_dell_bios_update("XPS8960", "2.24.0")
+        get_tag.assert_not_called()
+        assert result["update_available"] is True
+
+    def test_cache_kept_when_installed_version_unknown(self, mocker, tmp_path):
+        """A blank WMI version (just after a restart) can't prove a flash happened."""
+        self._fresh_cache(tmp_path, mocker, "2.24.0")
+        get_tag = mocker.patch("bios._get_service_tag")
+        result = wdm.check_dell_bios_update("XPS8960", "")
+        get_tag.assert_not_called()
+        assert result["current_version"] == "2.24.0"
+
     def test_empty_current_version_is_not_cached(self, mocker, tmp_path):
         """Right after a restart WMI can briefly report no BIOSVersion.
 
