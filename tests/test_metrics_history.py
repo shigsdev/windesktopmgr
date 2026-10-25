@@ -3,6 +3,15 @@
 All tests redirect HISTORY_FILE to a tmp_path-backed file via the
 ``mh_tmp`` fixture so the real metrics_history.json on disk is never
 touched. No subprocess, no I/O outside tmp_path.
+
+Reviewed 2026-10-25 (weekly tech-debt audit, stale-tests, backlog #110):
+the module had not changed since these tests, but the thermals data it reads
+had -- LibreHardwareMonitor added GPU / NVMe / DIMM sensors to ``temps``, and
+``cpu_temp_c`` (the max over every sensor) recorded the GPU hot spot as the
+CPU temperature (live: 51.8 GPU Hot Spot vs 51.0 CPU). The old fixtures had
+no sensor ids, so the tests could not see it. Fixed via the shared
+``hottest_cpu_temp`` (same rule as the dashboard gauge); LHM-shaped fixtures
+below copied from the live /api/thermals/data.
 """
 
 import json
@@ -88,6 +97,59 @@ class TestExtractMetrics:
         s = _summary(temps=[{"TempC": "n/a"}, {"TempC": None}])
         m = mh.extract_metrics(s)
         assert "cpu_temp_c" not in m
+
+    # LHM-shaped readings, trimmed from the live /api/thermals/data (2026-10-25).
+    LHM_TEMPS = [
+        {"Name": "Core Max", "TempC": 51.0, "SensorId": "/intelcpu/0/temperature/0", "Source": "LibreHardwareMonitor"},
+        {
+            "Name": "CPU Package",
+            "TempC": 51.0,
+            "SensorId": "/intelcpu/0/temperature/26",
+            "Source": "LibreHardwareMonitor",
+        },
+        {
+            "Name": "GPU Hot Spot",
+            "TempC": 51.8,
+            "SensorId": "/gpu-nvidia/0/temperature/2",
+            "Source": "LibreHardwareMonitor",
+        },
+        {
+            "Name": "DIMM #0",
+            "TempC": 38.3,
+            "SensorId": "/memory/dimm/0/temperature/0",
+            "Source": "LibreHardwareMonitor",
+        },
+        {
+            "Name": "Composite Temperature",
+            "TempC": 38.0,
+            "SensorId": "/nvme/1/temperature/0",
+            "Source": "LibreHardwareMonitor",
+        },
+    ]
+
+    def test_cpu_temp_ignores_hotter_gpu_hot_spot(self):
+        """Regression #110: the GPU hot spot (51.8) was recorded as the CPU temp."""
+        m = mh.extract_metrics(_summary(temps=self.LHM_TEMPS))
+        assert m["cpu_temp_c"] == 51.0
+
+    def test_cpu_temp_absent_when_only_non_cpu_sensors(self):
+        """No CPU sensor among LHM readings -> no point, never a GPU/NVMe stand-in."""
+        temps = [t for t in self.LHM_TEMPS if "intelcpu" not in t["SensorId"]]
+        assert "cpu_temp_c" not in mh.extract_metrics(_summary(temps=temps))
+
+    def test_cpu_named_sensor_beats_hotter_bare_zone(self):
+        temps = [{"Name": "CPU Package", "TempC": 50.0}, {"Name": "Thermal Zone", "TempC": 60.0}]
+        assert mh.extract_metrics(_summary(temps=temps))["cpu_temp_c"] == 50.0
+
+    def test_bool_temp_is_not_a_reading(self):
+        assert "cpu_temp_c" not in mh.extract_metrics(_summary(temps=[{"Name": "CPU", "TempC": True}]))
+
+    def test_trend_and_dashboard_gauge_report_the_same_cpu_temp(self):
+        """The Trends series and the dashboard CPU Temp gauge must name one number."""
+        import dashboard
+
+        gauges = {g["key"]: g for g in dashboard._build_gauges({"thermals": {"temps": self.LHM_TEMPS}, "gpu": {}})}
+        assert gauges["cpu_temp"]["value"] == mh.extract_metrics(_summary(temps=self.LHM_TEMPS))["cpu_temp_c"]
 
     def test_memory_percent_computed_from_used_total(self):
         m = mh.extract_metrics(_summary(mem_used=8000, mem_total=16000))
