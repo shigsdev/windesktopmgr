@@ -6,7 +6,7 @@
       "error": null,
       "latest_date": null,
       "latest_version": "2.24.0",
-      "logic_version": 3,
+      "logic_version": 4,
       "release_notes": "Dell BIOS Update 2.24.0",
       "service_tag": "9T46D14",
       "source": "windows_update",
@@ -19,7 +19,7 @@
       "error": null,
       "latest_date": null,
       "latest_version": "2.24.0",
-      "logic_version": 3,
+      "logic_version": 4,
       "release_notes": "Dell BIOS Update 2.24.0",
       "service_tag": "9T46D14",
       "source": "windows_update",
@@ -29,12 +29,12 @@
   "catalog_newer": {
     "cache": {
       "current_version": "2.22.0",
-      "download_url": "https://downloads.dell.com/FOLDER01/bios.exe",
+      "download_url": "https://downloads.dell.com/FOLDER14639669M/1/XPS8960_2.23.0_x64.exe",
       "error": null,
-      "latest_date": "2026-01-15",
+      "latest_date": "July 15, 2026",
       "latest_version": "2.23.0",
-      "logic_version": 3,
-      "release_notes": "XPS 8960 BIOS Update",
+      "logic_version": 4,
+      "release_notes": "Dell XPS 8960 System BIOS",
       "service_tag": "9T46D14",
       "source": "dell_catalog",
       "update_available": true
@@ -42,18 +42,23 @@
     "commands": [
       [
         "expand.exe",
-        "<TMP>\\DellCatalog.cab",
-        "<TMP>\\DellCatalog\\CatalogPC.xml"
+        "<TMP>\\DellCatalog\\CatalogIndexPC.cab",
+        "<TMP>\\DellCatalog\\CatalogIndexPC.xml"
+      ],
+      [
+        "expand.exe",
+        "<TMP>\\DellCatalog\\ModelCatalog.cab",
+        "<TMP>\\DellCatalog\\ModelCatalog.xml"
       ]
     ],
     "result": {
       "current_version": "2.22.0",
-      "download_url": "https://downloads.dell.com/FOLDER01/bios.exe",
+      "download_url": "https://downloads.dell.com/FOLDER14639669M/1/XPS8960_2.23.0_x64.exe",
       "error": null,
-      "latest_date": "2026-01-15",
+      "latest_date": "July 15, 2026",
       "latest_version": "2.23.0",
-      "logic_version": 3,
-      "release_notes": "XPS 8960 BIOS Update",
+      "logic_version": 4,
+      "release_notes": "Dell XPS 8960 System BIOS",
       "service_tag": "9T46D14",
       "source": "dell_catalog",
       "update_available": true
@@ -62,12 +67,12 @@
   "catalog_same": {
     "cache": {
       "current_version": "2.23.0",
-      "download_url": "https://downloads.dell.com/FOLDER01/bios.exe",
+      "download_url": "https://downloads.dell.com/FOLDER14639669M/1/XPS8960_2.23.0_x64.exe",
       "error": null,
-      "latest_date": "2026-01-15",
+      "latest_date": "July 15, 2026",
       "latest_version": "2.23.0",
-      "logic_version": 3,
-      "release_notes": "XPS 8960 BIOS Update",
+      "logic_version": 4,
+      "release_notes": "Dell XPS 8960 System BIOS",
       "service_tag": "9T46D14",
       "source": "dell_catalog",
       "update_available": false
@@ -75,18 +80,23 @@
     "commands": [
       [
         "expand.exe",
-        "<TMP>\\DellCatalog.cab",
-        "<TMP>\\DellCatalog\\CatalogPC.xml"
+        "<TMP>\\DellCatalog\\CatalogIndexPC.cab",
+        "<TMP>\\DellCatalog\\CatalogIndexPC.xml"
+      ],
+      [
+        "expand.exe",
+        "<TMP>\\DellCatalog\\ModelCatalog.cab",
+        "<TMP>\\DellCatalog\\ModelCatalog.xml"
       ]
     ],
     "result": {
       "current_version": "2.23.0",
-      "download_url": "https://downloads.dell.com/FOLDER01/bios.exe",
+      "download_url": "https://downloads.dell.com/FOLDER14639669M/1/XPS8960_2.23.0_x64.exe",
       "error": null,
-      "latest_date": "2026-01-15",
+      "latest_date": "July 15, 2026",
       "latest_version": "2.23.0",
-      "logic_version": 3,
-      "release_notes": "XPS 8960 BIOS Update",
+      "logic_version": 4,
+      "release_notes": "Dell XPS 8960 System BIOS",
       "service_tag": "9T46D14",
       "source": "dell_catalog",
       "update_available": false
@@ -99,7 +109,7 @@
       "error": null,
       "latest_date": null,
       "latest_version": "2.23.0",
-      "logic_version": 3,
+      "logic_version": 4,
       "release_notes": "",
       "service_tag": "9T46D14",
       "source": "dell_command_update",
@@ -119,7 +129,7 @@
       "error": null,
       "latest_date": null,
       "latest_version": "2.23.0",
-      "logic_version": 3,
+      "logic_version": 4,
       "release_notes": "",
       "service_tag": "9T46D14",
       "source": "dell_command_update",
@@ -133,7 +143,7 @@
       "error": "DCU: dcu boom | Catalog: <urlopen error dns>",
       "latest_date": null,
       "latest_version": null,
-      "logic_version": 3,
+      "logic_version": 4,
       "release_notes": "",
       "service_tag": "9T46D14",
       "source": "unknown",
@@ -153,7 +163,7 @@
       "error": "DCU: dcu boom | Catalog: <urlopen error dns>",
       "latest_date": null,
       "latest_version": null,
-      "logic_version": 3,
+      "logic_version": 4,
       "release_notes": "",
       "service_tag": "9T46D14",
       "source": "unknown",
@@ -163,12 +173,12 @@
   "dcu_raises_catalog_found": {
     "cache": {
       "current_version": "2.22.0",
-      "download_url": "https://downloads.dell.com/FOLDER01/bios.exe",
+      "download_url": "https://downloads.dell.com/FOLDER14639669M/1/XPS8960_2.23.0_x64.exe",
       "error": null,
-      "latest_date": "2026-01-15",
+      "latest_date": "July 15, 2026",
       "latest_version": "2.23.0",
-      "logic_version": 3,
-      "release_notes": "XPS 8960 BIOS Update",
+      "logic_version": 4,
+      "release_notes": "Dell XPS 8960 System BIOS",
       "service_tag": "9T46D14",
       "source": "dell_catalog",
       "update_available": true
@@ -182,18 +192,23 @@
       ],
       [
         "expand.exe",
-        "<TMP>\\DellCatalog.cab",
-        "<TMP>\\DellCatalog\\CatalogPC.xml"
+        "<TMP>\\DellCatalog\\CatalogIndexPC.cab",
+        "<TMP>\\DellCatalog\\CatalogIndexPC.xml"
+      ],
+      [
+        "expand.exe",
+        "<TMP>\\DellCatalog\\ModelCatalog.cab",
+        "<TMP>\\DellCatalog\\ModelCatalog.xml"
       ]
     ],
     "result": {
       "current_version": "2.22.0",
-      "download_url": "https://downloads.dell.com/FOLDER01/bios.exe",
+      "download_url": "https://downloads.dell.com/FOLDER14639669M/1/XPS8960_2.23.0_x64.exe",
       "error": null,
-      "latest_date": "2026-01-15",
+      "latest_date": "July 15, 2026",
       "latest_version": "2.23.0",
-      "logic_version": 3,
-      "release_notes": "XPS 8960 BIOS Update",
+      "logic_version": 4,
+      "release_notes": "Dell XPS 8960 System BIOS",
       "service_tag": "9T46D14",
       "source": "dell_catalog",
       "update_available": true
@@ -206,7 +221,7 @@
       "error": null,
       "latest_date": null,
       "latest_version": "2.22.0",
-      "logic_version": 3,
+      "logic_version": 4,
       "release_notes": "",
       "service_tag": "9T46D14",
       "source": "dell_command_update",
@@ -226,7 +241,7 @@
       "error": null,
       "latest_date": null,
       "latest_version": "2.22.0",
-      "logic_version": 3,
+      "logic_version": 4,
       "release_notes": "",
       "service_tag": "9T46D14",
       "source": "dell_command_update",
@@ -238,8 +253,13 @@
     "commands": [
       [
         "expand.exe",
-        "<TMP>\\DellCatalog.cab",
-        "<TMP>\\DellCatalog\\CatalogPC.xml"
+        "<TMP>\\DellCatalog\\CatalogIndexPC.cab",
+        "<TMP>\\DellCatalog\\CatalogIndexPC.xml"
+      ],
+      [
+        "expand.exe",
+        "<TMP>\\DellCatalog\\ModelCatalog.cab",
+        "<TMP>\\DellCatalog\\ModelCatalog.xml"
       ]
     ],
     "result": {
@@ -248,10 +268,43 @@
       "error": " | current BIOS version unavailable; not cached",
       "latest_date": null,
       "latest_version": "0.2.24.0",
-      "logic_version": 3,
+      "logic_version": 4,
       "release_notes": "Dell Inc. Firmware Driver Update (0.2.24.0)",
       "service_tag": "9T46D14",
       "source": "windows_update",
+      "update_available": false
+    }
+  },
+  "index_without_8960": {
+    "cache": {
+      "current_version": "2.22.0",
+      "download_url": "https://www.dell.com/support/home/en-us/product-support/servicetag/9T46D14/drivers",
+      "error": "Catalog: XPS 8960 not listed in Dell's catalog index",
+      "latest_date": null,
+      "latest_version": null,
+      "logic_version": 4,
+      "release_notes": "",
+      "service_tag": "9T46D14",
+      "source": "unknown",
+      "update_available": false
+    },
+    "commands": [
+      [
+        "expand.exe",
+        "<TMP>\\DellCatalog\\CatalogIndexPC.cab",
+        "<TMP>\\DellCatalog\\CatalogIndexPC.xml"
+      ]
+    ],
+    "result": {
+      "current_version": "2.22.0",
+      "download_url": "https://www.dell.com/support/home/en-us/product-support/servicetag/9T46D14/drivers",
+      "error": "Catalog: XPS 8960 not listed in Dell's catalog index",
+      "latest_date": null,
+      "latest_version": null,
+      "logic_version": 4,
+      "release_notes": "",
+      "service_tag": "9T46D14",
+      "source": "unknown",
       "update_available": false
     }
   },
@@ -262,7 +315,7 @@
       "error": null,
       "latest_date": null,
       "latest_version": null,
-      "logic_version": 3,
+      "logic_version": 4,
       "release_notes": "",
       "service_tag": "",
       "source": "unknown",
@@ -271,8 +324,13 @@
     "commands": [
       [
         "expand.exe",
-        "<TMP>\\DellCatalog.cab",
-        "<TMP>\\DellCatalog\\CatalogPC.xml"
+        "<TMP>\\DellCatalog\\CatalogIndexPC.cab",
+        "<TMP>\\DellCatalog\\CatalogIndexPC.xml"
+      ],
+      [
+        "expand.exe",
+        "<TMP>\\DellCatalog\\ModelCatalog.cab",
+        "<TMP>\\DellCatalog\\ModelCatalog.xml"
       ]
     ],
     "result": {
@@ -281,7 +339,7 @@
       "error": null,
       "latest_date": null,
       "latest_version": null,
-      "logic_version": 3,
+      "logic_version": 4,
       "release_notes": "",
       "service_tag": "",
       "source": "unknown",
@@ -295,7 +353,7 @@
       "error": null,
       "latest_date": null,
       "latest_version": null,
-      "logic_version": 3,
+      "logic_version": 4,
       "release_notes": "",
       "service_tag": "9T46D14",
       "source": "unknown",
@@ -304,8 +362,13 @@
     "commands": [
       [
         "expand.exe",
-        "<TMP>\\DellCatalog.cab",
-        "<TMP>\\DellCatalog\\CatalogPC.xml"
+        "<TMP>\\DellCatalog\\CatalogIndexPC.cab",
+        "<TMP>\\DellCatalog\\CatalogIndexPC.xml"
+      ],
+      [
+        "expand.exe",
+        "<TMP>\\DellCatalog\\ModelCatalog.cab",
+        "<TMP>\\DellCatalog\\ModelCatalog.xml"
       ]
     ],
     "result": {
@@ -314,7 +377,7 @@
       "error": null,
       "latest_date": null,
       "latest_version": null,
-      "logic_version": 3,
+      "logic_version": 4,
       "release_notes": "",
       "service_tag": "9T46D14",
       "source": "unknown",
@@ -328,7 +391,7 @@
       "error": null,
       "latest_date": null,
       "latest_version": "0.2.24.0",
-      "logic_version": 3,
+      "logic_version": 4,
       "release_notes": "Dell Inc. Firmware Driver Update (0.2.24.0)",
       "service_tag": "9T46D14",
       "source": "windows_update",
@@ -337,8 +400,13 @@
     "commands": [
       [
         "expand.exe",
-        "<TMP>\\DellCatalog.cab",
-        "<TMP>\\DellCatalog\\CatalogPC.xml"
+        "<TMP>\\DellCatalog\\CatalogIndexPC.cab",
+        "<TMP>\\DellCatalog\\CatalogIndexPC.xml"
+      ],
+      [
+        "expand.exe",
+        "<TMP>\\DellCatalog\\ModelCatalog.cab",
+        "<TMP>\\DellCatalog\\ModelCatalog.xml"
       ]
     ],
     "result": {
@@ -347,7 +415,7 @@
       "error": null,
       "latest_date": null,
       "latest_version": "0.2.24.0",
-      "logic_version": 3,
+      "logic_version": 4,
       "release_notes": "Dell Inc. Firmware Driver Update (0.2.24.0)",
       "service_tag": "9T46D14",
       "source": "windows_update",

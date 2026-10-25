@@ -97,7 +97,19 @@ def get_current_bios() -> dict:
 # logic is discarded instead of serving its now-known-wrong verdict for the rest
 # of its 24h TTL. Without this, fixing the 0.2.24.0 false positive would not have
 # reached the user until the cache aged out.
-_BIOS_LOGIC_VERSION = 3
+# 4: catalog lookup moved to the per-model catalog (backlog #107).
+_BIOS_LOGIC_VERSION = 4
+
+# Dell's catalog index lists one small per-model catalog for each system. The
+# old CatalogPC.cab only covers business lines (Latitude/OptiPlex/Precision)
+# and never contained the XPS 8960, so the catalog method could not succeed.
+_DELL_DOWNLOADS = "https://downloads.dell.com/"
+_CATALOG_INDEX_URL = _DELL_DOWNLOADS + "catalog/CatalogIndexPC.cab"
+# A per-model catalog path as listed in the index, e.g.
+# FOLDER15162537M/1/XPS_Desktop_0BC0.cab. Anything else is refused so the
+# index cannot point the download anywhere but downloads.dell.com.
+_CATALOG_PATH_RE = re.compile(r"^[A-Za-z0-9_\-]+(?:/[A-Za-z0-9_.\-]+)*/[A-Za-z0-9_.\-]+\.cab$")
+_CATALOG_MAX_BYTES = 16_777_216
 
 # Intel shipped the Raptor Lake microcode mitigation in this Dell BIOS.
 _RAPTOR_MICROCODE_BIOS = "2.22.0"
@@ -258,29 +270,90 @@ def _find_child_ci(parent, name):
     return None
 
 
+def _is_xps8960_model(model) -> bool:
+    """True for a catalog <Model> naming the XPS 8960 (systemID 0BC0).
+
+    Dell puts the model name in a <Display> child, not a ``name`` attribute;
+    reading only the attribute meant name matching never worked.
+    """
+    if "0bc0" in (model.get("systemID") or "").lower():
+        return True
+    name = " ".join([model.get("name") or ""] + [d.text or "" for d in _findall_ci(model, "Display")])
+    return "8960" in name
+
+
+def _release_date_key(value: str) -> datetime:
+    """Sortable date for a catalog releaseDate ("October 14, 2026" or ISO)."""
+    for fmt in ("%B %d, %Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime((value or "").strip(), fmt)
+        except ValueError:
+            continue
+    return datetime.min
+
+
 def _best_catalog_bios(root):
-    """Newest (by releaseDate) XPS 8960 BIOS SoftwareComponent: (element, date) or (None, "")."""
-    best = None
-    best_date = ""
+    """Newest XPS 8960 BIOS SoftwareComponent: (element, releaseDate) or (None, "").
+
+    Newest = highest version, then latest release date. Comparing the
+    releaseDate STRINGS (the old rule) ranks "September 07, 2025" above
+    "October 14, 2026", because Dell writes dates as month names.
+    """
+    best, best_key, best_date = None, None, ""
     for sc in _findall_ci(root, "SoftwareComponent"):
         ct = _find_child_ci(sc, "ComponentType")
         if ct is None or (ct.get("value") or "").upper() != "BIOS":
             continue
-        # Match on Model name *8960* OR systemID *0BC0* (XPS 8960).
-        matched = False
-        for m in _findall_ci(sc, "Model"):
-            mname = (m.get("name") or "").lower()
-            sysid = (m.get("systemID") or "").lower()
-            if "8960" in mname or "0bc0" in sysid:
-                matched = True
-                break
-        if not matched:
+        if not any(_is_xps8960_model(m) for m in _findall_ci(sc, "Model")):
             continue
         rdate = sc.get("releaseDate", "")
-        if best is None or rdate > best_date:
-            best = sc
-            best_date = rdate
+        key = (_ver_parts(sc.get("dellVersion") or sc.get("vendorVersion") or ""), _release_date_key(rdate))
+        if best is None or key > best_key:
+            best, best_key, best_date = sc, key, rdate
     return best, best_date
+
+
+def _model_catalog_path(index_root) -> str:
+    """Path of the XPS 8960's own catalog in Dell's catalog index, or ""."""
+    for group in _findall_ci(index_root, "GroupManifest"):
+        if not any(_is_xps8960_model(m) for m in _findall_ci(group, "Model")):
+            continue
+        info = _find_child_ci(group, "ManifestInformation")
+        path = (info.get("path") or "").strip() if info is not None else ""
+        if path and ".." not in path and _CATALOG_PATH_RE.match(path):
+            return path
+    return ""
+
+
+def _fetch_catalog_root(url: str, work_dir: str, stem: str):
+    """Download a Dell .cab, unpack it with expand.exe, and parse the XML inside."""
+    import urllib.request
+    import xml.etree.ElementTree as ET
+
+    cab_path = os.path.join(work_dir, stem + ".cab")
+    xml_path = os.path.join(work_dir, stem + ".xml")
+    # Only ever downloads.dell.com: the index URL is a constant and model
+    # paths are validated by _CATALOG_PATH_RE before they get here.
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})  # noqa: S310
+    # Cap the read at 16 MB so a hostile endpoint can't OOM us.
+    with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
+        cab_bytes = resp.read(_CATALOG_MAX_BYTES)
+    if not cab_bytes:
+        raise RuntimeError(f"empty download: {url}")
+    with open(cab_path, "wb") as f:
+        f.write(cab_bytes)
+    # No CAB extractor in the Python stdlib — use the OS's expand.exe
+    # (not PowerShell). One light subprocess call, no PS process spawn.
+    subprocess.run(
+        ["expand.exe", cab_path, xml_path],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    # ruff S314: the XML source is the trusted Dell catalog over HTTPS
+    # (downloads.dell.com only, 16 MB read cap above), and the catalog schema
+    # has no external entities — adding a `defusedxml` dep is disproportionate.
+    return ET.parse(xml_path).getroot()  # noqa: S314
 
 
 def _apply_catalog_bios(result: dict, best, best_date: str, current_version: str) -> None:
@@ -307,49 +380,25 @@ def _apply_catalog_bios(result: dict, best, best_date: str, current_version: str
 
 
 def _bios_from_catalog(result: dict, current_version: str) -> None:
-    """Method 2: Dell public catalog XML. Fills ``result`` in place.
+    """Method 2: Dell's per-model catalog. Fills ``result`` in place.
 
-    Pure-Python: urllib downloads the catalog, expand.exe (a Windows OS tool
-    — not PowerShell) extracts the .cab, ElementTree parses the XML. The
-    PowerShell heredoc this replaces was the last `subprocess powershell`
-    call in check_dell_bios_update (backlog #28 close-out).
+    Two small downloads: the catalog index (CatalogIndexPC.cab, ~0.5 MB),
+    which names the XPS 8960's own catalog, then that catalog (~0.3 MB),
+    which lists every XPS 8960 BIOS release. Pure Python: urllib downloads,
+    expand.exe (a Windows OS tool — not PowerShell) unpacks each .cab,
+    ElementTree parses the XML (backlog #28 close-out, #107).
     """
     import tempfile
-    import urllib.request
-    import xml.etree.ElementTree as ET
 
-    cab_path = os.path.join(tempfile.gettempdir(), "DellCatalog.cab")
-    xml_dir = os.path.join(tempfile.gettempdir(), "DellCatalog")
-    xml_path = os.path.join(xml_dir, "CatalogPC.xml")
+    work_dir = os.path.join(tempfile.gettempdir(), "DellCatalog")
     try:
-        # Fetch the catalog (~2 MB). Cap the read at 16 MB so a hostile
-        # endpoint can't OOM us.
-        req = urllib.request.Request(
-            "https://downloads.dell.com/catalog/CatalogPC.cab",
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            cab_bytes = resp.read(16_777_216)
-        if not cab_bytes:
-            raise RuntimeError("empty catalog download")
-        with open(cab_path, "wb") as f:
-            f.write(cab_bytes)
-        os.makedirs(xml_dir, exist_ok=True)
-        # No CAB extractor in the Python stdlib — use the OS's expand.exe
-        # (not PowerShell). One light subprocess call, no PS process spawn.
-        subprocess.run(
-            ["expand.exe", cab_path, xml_path],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-
-        # ruff S314: the XML source is the trusted Dell catalog over HTTPS
-        # (fixed URL, 16 MB read cap above), and the catalog schema has no
-        # external entities — adding a `defusedxml` dep for one parse is
-        # disproportionate.
-        tree = ET.parse(xml_path)  # noqa: S314
-        best, best_date = _best_catalog_bios(tree.getroot())
+        os.makedirs(work_dir, exist_ok=True)
+        index_root = _fetch_catalog_root(_CATALOG_INDEX_URL, work_dir, "CatalogIndexPC")
+        model_path = _model_catalog_path(index_root)
+        if not model_path:
+            raise RuntimeError("XPS 8960 not listed in Dell's catalog index")
+        model_root = _fetch_catalog_root(_DELL_DOWNLOADS + model_path, work_dir, "ModelCatalog")
+        best, best_date = _best_catalog_bios(model_root)
         if best is not None:
             _apply_catalog_bios(result, best, best_date, current_version)
     except Exception as e2:  # noqa: BLE001
@@ -359,13 +408,7 @@ def _bios_from_catalog(result: dict, current_version: str) -> None:
             result["error"] = f"Catalog: {e2}"
     finally:
         # Best-effort cleanup.
-        try:
-            if os.path.exists(cab_path):
-                os.remove(cab_path)
-            if os.path.exists(xml_dir):
-                shutil.rmtree(xml_dir, ignore_errors=True)
-        except Exception:  # noqa: BLE001
-            pass
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def _bios_from_windows_update(result: dict, current_version: str, get_windows_update_drivers) -> None:
@@ -441,11 +484,11 @@ def _save_bios_cache(result: dict, current_version: str) -> dict:
 
 def check_dell_bios_update(board_product: str, current_version: str) -> dict:
     """
-    Check for Dell XPS 8960 BIOS updates via PowerShell on the local machine.
+    Check for Dell XPS 8960 BIOS updates on the local machine (no PowerShell).
     Priority:
-      1. Dell Command Update CLI (dcucli.exe) — already installed on XPS systems
-      2. Dell public update catalog XML (downloads.dell.com/catalog/CatalogPC.cab)
-         parsed via PowerShell Expand-Archive — no API, just a static file download
+      1. Dell Command Update CLI (dcu-cli.exe) — when installed
+      2. Dell's per-model catalog, found via downloads.dell.com/catalog/
+         CatalogIndexPC.cab — no API, just static file downloads
       3. Windows Update pending driver check — catches BIOS updates via WU
     Results cached for 24 hours.
     """
