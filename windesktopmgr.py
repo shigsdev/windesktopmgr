@@ -39,6 +39,7 @@ import codehealth  # noqa: E402 -- import order intentional
 import events  # noqa: E402 -- import order intentional
 import lhm
 import processes  # noqa: E402 -- import order intentional
+import stallwatch
 import sysinfo  # noqa: E402 -- import order intentional
 from applogging import get_logger
 from backup_routes import backup_bp
@@ -2921,6 +2922,13 @@ _request_log_suppressor = _RequestLogFloodSuppressor()
 def _log_request_start():
     """Stamp the start time so we can report request duration on completion."""
     request._wdm_start_time = time.time()
+    request._wdm_stall_token = stallwatch.request_started(request.method, request.path)
+
+
+@app.teardown_request
+def _stall_request_done(_exc):
+    """Teardown (not after_request) so a request that raised still leaves the stall watch."""
+    stallwatch.request_finished(getattr(request, "_wdm_stall_token", None))
 
 
 @app.after_request
@@ -4714,6 +4722,10 @@ def start_server(open_browser: bool = True):  # pragma: no cover
     events._load_event_cache()
     bsod._load_bsod_cache()
     _load_startup_cache()
+
+    # Backlog #106: thread stacks to Logs/stalls.log when a request or the
+    # whole process freezes, so the next unexplained stall has evidence.
+    stallwatch.start()
 
     # Start background lookup worker threads first so the queues are draining
     _worker_thread = threading.Thread(target=events._lookup_worker, daemon=True, name="EventLookupWorker")
