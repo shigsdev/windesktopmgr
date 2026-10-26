@@ -47,6 +47,7 @@ import os
 import re
 import subprocess
 import threading
+import tomllib
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -317,6 +318,28 @@ def _empty_result(name: str, error: str) -> dict:
 
 
 COVERAGE_STALE_DAYS = 3
+COVERAGE_GATE_DEFAULT = 80
+
+
+def coverage_gate() -> int:
+    """The --cov-fail-under value from pyproject.toml (80 if not found).
+
+    Every full test run must reach it or the commit is blocked, so a
+    .coverage file below it almost always comes from a PARTIAL run -- one
+    test file run with coverage on, which only measures import-time lines
+    (2026-10-25: a 12.6% file raised a false critical + a P0 backlog row).
+    """
+    try:
+        with open(os.path.join(_REPO_ROOT, "pyproject.toml"), "rb") as f:
+            addopts = tomllib.load(f)["tool"]["pytest"]["ini_options"]["addopts"]
+        for opt in addopts if isinstance(addopts, list) else str(addopts).split():
+            if str(opt).startswith("--cov-fail-under="):
+                return int(float(str(opt).split("=", 1)[1]))
+    except (OSError, KeyError, TypeError, ValueError, tomllib.TOMLDecodeError):
+        pass
+    return COVERAGE_GATE_DEFAULT
+
+
 """If .coverage hasn't been touched in this many days, the percentage
 is treated as stale -- the card shows the number with a (Xd old) tag
 AND the severity is downgraded so we don't fire warning/critical
@@ -393,6 +416,8 @@ def scan_coverage() -> dict:
     )[:5]
 
     is_stale = cov_age_days is not None and cov_age_days >= COVERAGE_STALE_DAYS
+    gate = coverage_gate()
+    likely_partial = False
 
     if is_stale:
         # Don't trust a stale number for severity assignment.  Show it
@@ -402,15 +427,18 @@ def scan_coverage() -> dict:
         summary = (
             f"{pct:.1f}% line coverage (stale -- last updated {cov_age_days:.1f}d ago; run pytest --cov to refresh)"
         )
-    elif pct >= 80:
+    elif pct >= gate:
         level = "ok"
         summary = f"{pct:.1f}% line coverage"
-    elif pct >= 50:
-        level = "warning"
-        summary = f"{pct:.1f}% line coverage"
     else:
-        level = "critical"
-        summary = f"{pct:.1f}% line coverage"
+        # Below the gate no full run could have committed, so this is a
+        # partial run's file, not a coverage drop: flag it, never critical.
+        likely_partial = True
+        level = "warning"
+        summary = (
+            f"{pct:.1f}% line coverage -- under the {gate}% gate, so probably from a partial "
+            "test run; click Refresh to measure the full suite"
+        )
     finished = datetime.now()
     return {
         "ok": True,
@@ -425,6 +453,7 @@ def scan_coverage() -> dict:
         "coverage_mtime": cov_mtime.isoformat(timespec="seconds") if cov_mtime else None,
         "coverage_age_days": round(cov_age_days, 2) if cov_age_days is not None else None,
         "is_stale": is_stale,
+        "likely_partial": likely_partial,
     }
 
 
@@ -1028,12 +1057,12 @@ def findings_to_backlog_entries(scan_result: dict) -> list[dict]:
           "severity": "info|warning|critical",
           "priority": "P0|P1|P2",
           "body": "<longer description>",
-          "source": "ruff|secrets|coverage|tech_debt"
+          "source": "ruff|secrets|tech_debt"
         }
 
     Filters:
-      - Coverage: only emit when level is warning/critical AND data is
-        fresh (don't fire on stale .coverage -- false signal)
+      - Coverage: never (the commit gate enforces it; a low reading is a
+        partial test run -- see scan_coverage / coverage_gate)
       - ruff: only F-prefix (correctness) and S-prefix (security);
         skip UP/PIE/etc. modernisation noise
       - secrets: always emit at critical
@@ -1043,27 +1072,10 @@ def findings_to_backlog_entries(scan_result: dict) -> list[dict]:
     entries: list[dict] = []
     scanners = scan_result.get("scanners", {}) if isinstance(scan_result, dict) else {}
 
-    # ── Coverage ────────────────────────────────────────────────────
-    cov = scanners.get("coverage") or {}
-    cov_level = cov.get("level")
-    cov_stale = bool(cov.get("is_stale"))
-    if cov_level in ("warning", "critical") and not cov_stale:
-        pct = cov.get("count", 0)
-        entries.append(
-            {
-                "fingerprint": _fingerprint("coverage", f"below_80_{cov_level}"),
-                "category": "Code Health",
-                "title": f"Test coverage at {pct}% (below 80% target)",
-                "severity": cov_level,
-                "priority": "P1" if cov_level == "warning" else "P0",
-                "body": (
-                    f"Coverage scanner detected {pct}% line coverage. "
-                    f"Action: identify uncovered files via `pytest --cov-report=term-missing` "
-                    f"and add tests for the worst offenders."
-                ),
-                "source": "coverage",
-            }
-        )
+    # Coverage: no rows. The --cov-fail-under gate blocks any commit below
+    # it, so a low reading comes from a partial test run, not from committed
+    # code (2026-10-25: a partial run's 12% filed a bogus P0). See
+    # scan_coverage / coverage_gate.
 
     # ── ruff (per-finding for F/S/B; rollup for style) ──────────────
     ruff = scanners.get("ruff") or {}
