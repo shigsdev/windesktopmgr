@@ -4064,25 +4064,51 @@ def codehealth_status_route():
          "scanner_names": [<str>, ...],               # registered scanners, in card order
          "is_refreshing_coverage": <bool>,            # pytest --cov refresh in flight (PR-2 of #51)
          "coverage_refresh_last_result": <dict|None>, # last refresh outcome (stdout/stderr tail)
-         "stale_days_threshold": <int>}
+         "stale_days_threshold": <int>,               # schedule interval, or STALE_DAYS when "off"
+         "schedule": <str>,                           # daily | weekly | monthly | off (#52)
+         "schedule_choices": [<str>, ...]}
 
     Empty ``state`` ({}) means no scan has ever completed -- the UI
     should render placeholder cards + a primary "Scan now" CTA.
     """
     state = codehealth.load_state()
+    schedule = codehealth.load_schedule()
+    stale_days = codehealth.schedule_days(schedule) or codehealth.STALE_DAYS
     return jsonify(
         {
             "ok": True,
             "state": state,
-            "is_stale": codehealth.is_stale(state),
+            "is_stale": codehealth.is_stale(state, days=stale_days),
             "is_running": codehealth.is_running(),
             "running_scanner": codehealth.running_scanner(),
             "scanner_names": codehealth.scanner_names(),
             "is_refreshing_coverage": codehealth.is_refreshing_coverage(),
             "coverage_refresh_last_result": codehealth.get_coverage_refresh_last_result(),
-            "stale_days_threshold": codehealth.STALE_DAYS,
+            "stale_days_threshold": stale_days,
+            "schedule": schedule,
+            "schedule_choices": list(codehealth.SCHEDULES),
         }
     )
+
+
+@app.route("/api/codehealth/schedule", methods=["POST"])
+def codehealth_schedule_route():
+    """Set the automatic scan schedule (backlog #52): daily / weekly / monthly / off."""
+    data = request.get_json(silent=True) or {}
+    choice = data.get("schedule")
+    if not choice:
+        return jsonify({"ok": False, "error": "Missing required field: schedule"}), 400
+    if choice not in codehealth.SCHEDULES:
+        return jsonify({"ok": False, "error": f"Unknown schedule: {choice}"}), 400
+    if not codehealth.save_schedule(choice):
+        return jsonify({"ok": False, "error": "Could not save the schedule"}), 500
+    return jsonify({"ok": True, "schedule": choice})
+
+
+@app.route("/api/codehealth/history")
+def codehealth_history_route():
+    """Past scans, oldest first (last HISTORY_MAX), for the trend lines (#52)."""
+    return jsonify({"ok": True, "history": codehealth.load_history()})
 
 
 @app.route("/api/codehealth/run", methods=["POST"])
@@ -4767,16 +4793,18 @@ def start_server(open_browser: bool = True):  # pragma: no cover
     print(f"[ServicesCache] Worker started. {len(_services_cache)} cached, {services_requeued} re-queued.")
     print(f"[ProcessCache]  Worker started. {len(processes._process_cache)} cached, {process_requeued} re-queued.")
 
-    # Codehealth scanners (backlog #51): fire a background scan on tray
-    # boot if the persisted state is missing OR older than STALE_DAYS.
+    # Codehealth scanners (backlog #51/#52): on tray boot, catch up on a
+    # scan the user's schedule (daily / weekly / monthly / off) says is due.
     # The four scanners (coverage / ruff / secrets / tech-debt) take
     # ~3-5 s total against this repo, so it's a fire-and-forget that
     # the user sees populated on the Utilities tab a few seconds after
-    # the tray comes up. PR-2 adds a proper cron + configurable cadence.
+    # the tray comes up.
     if codehealth.maybe_run_on_boot():
-        print("[CodeHealth]    Background scan kicked off (state stale or missing).")
+        print("[CodeHealth]    Background scan kicked off (due per schedule).")
     else:
-        print("[CodeHealth]    Skipped boot scan (state fresh).")
+        print("[CodeHealth]    Skipped boot scan (not due, or schedule off).")
+    # Backlog #52: hourly check so a long-running tray still scans on schedule.
+    codehealth.start_scheduler()
 
     # Router config backups are MANUAL (reverted 2026-05-11). The earlier
     # daemon-thread scheduler fired daily failures because neither vendor

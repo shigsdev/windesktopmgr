@@ -80,6 +80,8 @@ cloudcopy_history.json
 # Codehealth scanner state (backlog #51 runtime state, regenerates on scan)
 codehealth_state.json
 codehealth_emitted.json
+codehealth_history.json
+codehealth_schedule.json
 
 # ── Sensitive / personal ───────────────────────────────────────────────────
 # Gmail credentials (encrypted, but best not committed)

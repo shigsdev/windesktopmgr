@@ -2355,6 +2355,90 @@ class TestCodeHealthCardDetails:
         assert info["clean"] == "", "a clean tech-debt scan must not render a details disclosure"
 
 
+# ── Code-health schedule + history (backlog #52) ────────────────────────────
+
+
+class TestCodeHealthScheduleAndHistory:
+    """Backlog #52: the Auto-scan dropdown mirrors the saved schedule, and a
+    card's trend line opens the scan-history pop-up. History is fed in as a
+    fixture so the test doesn't depend on how many scans the live tray has
+    run (or change the user's saved schedule)."""
+
+    HISTORY = [
+        {
+            "finished_at": "2026-10-20T10:00:00",
+            "worst_level": "ok",
+            "scanners": {"ruff": {"level": "ok", "count": 0, "ok": True}},
+        },
+        {
+            "finished_at": "2026-10-21T10:00:00",
+            "worst_level": "warning",
+            "scanners": {"ruff": {"level": "warning", "count": 4, "ok": True}},
+        },
+        {
+            "finished_at": "2026-10-22T10:00:00",
+            "worst_level": "info",
+            "scanners": {"ruff": {"level": "info", "count": 2, "ok": True}},
+        },
+        {
+            "finished_at": "2026-10-23T10:00:00",
+            "worst_level": "ok",
+            "scanners": {"ruff": {"level": "ok", "count": 0, "ok": False}},
+        },
+    ]
+
+    def test_schedule_dropdown_matches_saved_schedule(self, loaded_page):
+        page, _ = loaded_page
+        TestCodeHealthCardDetails._goto_utilities(TestCodeHealthCardDetails(), page)
+        got = page.evaluate(
+            """
+            async () => {
+                const status = await (await fetch('/api/codehealth/status')).json();
+                const sel = document.getElementById('util-ch-schedule');
+                return {saved: status.schedule, shown: sel && sel.value,
+                        options: sel ? [...sel.options].map(o => o.value) : []};
+            }
+            """
+        )
+        assert got["options"] == ["daily", "weekly", "monthly", "off"]
+        assert got["shown"] == got["saved"], f"dropdown shows {got['shown']} but saved schedule is {got['saved']}"
+
+    def test_trend_line_opens_history_popup(self, loaded_page):
+        page, _ = loaded_page
+        TestCodeHealthCardDetails._goto_utilities(TestCodeHealthCardDetails(), page)
+        got = page.evaluate(
+            """
+            (history) => {
+                _utilHistory = history;
+                const host = document.createElement('div');
+                host.innerHTML = util_trendButton('ruff', 'var(--green)');
+                const btn = host.querySelector('[data-history-count]');
+                const out = {count: btn && btn.getAttribute('data-history-count'),
+                             hasLine: !!(btn && btn.querySelector('svg polyline'))};
+                util_openHistory('ruff');
+                const modal = document.getElementById('util-hist-modal');
+                out.open = modal.style.display;
+                out.rows = [...modal.querySelectorAll('[data-history-row]')].map(r => r.textContent.replace(/\\s+/g, ' ').trim());
+                util_closeHistory();
+                out.closed = modal.style.display;
+                _utilHistory = [];
+                out.tooFew = util_trendButton('secrets', 'var(--green)');
+                return out;
+            }
+            """,
+            self.HISTORY,
+        )
+        # The 10-23 run failed (ok: false), so 3 points, newest first in the list.
+        assert got["count"] == "3"
+        assert got["hasLine"], "trend button has no sparkline"
+        assert got["open"] == "flex"
+        assert len(got["rows"]) == 3
+        assert "INFO" in got["rows"][0].upper() and got["rows"][0].endswith("2 findings")
+        assert got["rows"][-1].endswith("0 findings")
+        assert got["closed"] == "none"
+        assert got["tooFew"] == "", "a scanner with under 2 runs must not show a trend line"
+
+
 # ── Logs tab exact-level filter (added 2026-06-08) ──────────────────────────
 
 

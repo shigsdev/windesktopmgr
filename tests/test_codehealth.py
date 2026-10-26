@@ -35,10 +35,14 @@ def ch_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr(codehealth, "STATE_FILE", str(state_path))
     monkeypatch.setattr(codehealth, "EMITTED_FILE", str(emitted_path))
     monkeypatch.setattr(codehealth, "BACKLOG_PATH", str(backlog_path))
+    monkeypatch.setattr(codehealth, "HISTORY_FILE", str(tmp_path / "codehealth_history.json"))
+    monkeypatch.setattr(codehealth, "SCHEDULE_FILE", str(tmp_path / "codehealth_schedule.json"))
     yield {
         "state": state_path,
         "emitted": emitted_path,
         "backlog": backlog_path,
+        "history": tmp_path / "codehealth_history.json",
+        "schedule": tmp_path / "codehealth_schedule.json",
         "tmp": tmp_path,
     }
 
@@ -1278,3 +1282,223 @@ class TestTechDebtBlindSpots:
 
     def test_small_drift_within_a_thousand_lines_is_not_refiled(self):
         assert self._entry("app.js", 11089)["fingerprint"] == self._entry("app.js", 11420)["fingerprint"]
+
+
+# ─── Backlog #52: schedule, history, dashboard concern ──────────────
+
+
+def _state(finished_at, worst="ok", **scanners):
+    return {
+        "finished_at": finished_at,
+        "worst_level": worst,
+        "scanners": scanners or {"ruff": {"ok": True, "level": "ok", "count": 0, "summary": "Clean"}},
+    }
+
+
+class TestSchedule:
+    def test_default_is_weekly(self, ch_tmp):
+        assert codehealth.load_schedule() == "weekly"
+
+    def test_save_and_load_round_trip(self, ch_tmp):
+        assert codehealth.save_schedule("daily") is True
+        assert codehealth.load_schedule() == "daily"
+
+    def test_unknown_choice_rejected(self, ch_tmp):
+        with pytest.raises(ValueError):
+            codehealth.save_schedule("hourly")
+        assert not ch_tmp["schedule"].exists()
+
+    def test_corrupt_or_unknown_file_falls_back_to_default(self, ch_tmp):
+        ch_tmp["schedule"].write_text("{not json", encoding="utf-8")
+        assert codehealth.load_schedule() == "weekly"
+        ch_tmp["schedule"].write_text(json.dumps({"schedule": "hourly"}), encoding="utf-8")
+        assert codehealth.load_schedule() == "weekly"
+        ch_tmp["schedule"].write_text(json.dumps(["daily"]), encoding="utf-8")
+        assert codehealth.load_schedule() == "weekly"
+
+    def test_schedule_days(self):
+        assert [codehealth.schedule_days(c) for c in ("daily", "weekly", "monthly", "off")] == [1, 7, 30, None]
+
+
+class TestIsDue:
+    def _ago(self, days):
+        return (codehealth.datetime.now() - codehealth.timedelta(days=days)).isoformat(timespec="seconds")
+
+    def test_off_is_never_due(self):
+        assert codehealth.is_due({}, "off") is False
+        assert codehealth.is_due(_state(self._ago(400)), "off") is False
+
+    def test_never_scanned_is_due(self):
+        assert codehealth.is_due({}, "weekly") is True
+
+    def test_due_only_past_the_interval(self):
+        state = _state(self._ago(3))
+        assert codehealth.is_due(state, "daily") is True
+        assert codehealth.is_due(state, "weekly") is False
+        assert codehealth.is_due(_state(self._ago(8)), "weekly") is True
+        assert codehealth.is_due(_state(self._ago(8)), "monthly") is False
+
+
+class TestScheduledRun:
+    def test_runs_when_due(self, ch_tmp, mocker):
+        run = mocker.patch("codehealth.run_in_background", return_value=True)
+        assert codehealth.maybe_run_scheduled() is True
+        run.assert_called_once()
+
+    def test_skips_when_off(self, ch_tmp, mocker):
+        codehealth.save_schedule("off")
+        run = mocker.patch("codehealth.run_in_background")
+        assert codehealth.maybe_run_scheduled() is False
+        assert codehealth.maybe_run_on_boot() is False
+        run.assert_not_called()
+
+    def test_skips_when_fresh(self, ch_tmp, mocker):
+        codehealth.save_state(_state(codehealth._now_iso()))
+        run = mocker.patch("codehealth.run_in_background")
+        assert codehealth.maybe_run_on_boot() is False
+        run.assert_not_called()
+
+    def test_scheduler_loop_ticks_and_survives_errors(self, mocker):
+        stop = codehealth.threading.Event()
+        calls = []
+
+        def tick():
+            calls.append(1)
+            if len(calls) == 2:
+                stop.set()
+            raise RuntimeError("boom")
+
+        mocker.patch("codehealth.maybe_run_scheduled", side_effect=tick)
+        mocker.patch.object(stop, "wait", side_effect=lambda _t: stop.is_set())
+        codehealth._scheduler_loop(stop)
+        assert len(calls) == 2
+
+    def test_start_scheduler_only_once(self, mocker, monkeypatch):
+        monkeypatch.setattr(codehealth, "_scheduler_started", False)
+        thread = mocker.patch("codehealth.threading.Thread")
+        assert codehealth.start_scheduler() is True
+        assert codehealth.start_scheduler() is False
+        thread.assert_called_once()
+        assert thread.call_args.kwargs["name"] == "CodeHealthScheduler"
+        assert thread.call_args.kwargs["daemon"] is True
+
+
+class TestHistory:
+    def test_missing_or_corrupt_history_is_empty(self, ch_tmp):
+        assert codehealth.load_history() == []
+        ch_tmp["history"].write_text("{oops", encoding="utf-8")
+        assert codehealth.load_history() == []
+        ch_tmp["history"].write_text(json.dumps({"not": "a list"}), encoding="utf-8")
+        assert codehealth.load_history() == []
+
+    def test_record_keeps_level_and_count_only(self, ch_tmp):
+        state = _state(
+            "2026-10-25T12:00:00",
+            "warning",
+            ruff={"ok": True, "level": "warning", "count": 3, "summary": "3 findings", "details": [{"x": 1}]},
+        )
+        assert codehealth.record_history(state) is True
+        [entry] = codehealth.load_history()
+        assert entry == {
+            "finished_at": "2026-10-25T12:00:00",
+            "worst_level": "warning",
+            "scanners": {"ruff": {"level": "warning", "count": 3, "ok": True}},
+        }
+
+    def test_record_caps_at_history_max(self, ch_tmp, monkeypatch):
+        monkeypatch.setattr(codehealth, "HISTORY_MAX", 3)
+        for i in range(5):
+            codehealth.record_history(_state(f"2026-10-2{i}T00:00:00"))
+        assert [h["finished_at"][:10] for h in codehealth.load_history()] == [
+            "2026-10-22",
+            "2026-10-23",
+            "2026-10-24",
+        ]
+
+    def test_state_without_scanners_is_not_recorded(self, ch_tmp):
+        assert codehealth.record_history({}) is False
+        assert codehealth.record_history({"scanners": {}}) is False
+        assert codehealth.load_history() == []
+
+    def test_full_scan_appends_history(self, ch_tmp, mocker):
+        mocker.patch("codehealth.scan_all", return_value=_state("2026-10-25T12:00:00"))
+        mocker.patch("codehealth.append_findings_to_backlog", return_value={})
+        codehealth._run_and_save()
+        assert len(codehealth.load_history()) == 1
+
+    def test_single_scanner_run_appends_history(self, ch_tmp, mocker):
+        mocker.patch(
+            "codehealth.scan_ruff",
+            return_value={"ok": True, "level": "ok", "count": 0, "summary": "Clean"},
+        )
+        mocker.patch("codehealth.append_findings_to_backlog", return_value={})
+        codehealth._run_one_and_save("ruff")
+        [entry] = codehealth.load_history()
+        assert entry["scanners"]["ruff"]["count"] == 0
+
+
+class TestDashboardConcerns:
+    def test_critical_state_gives_one_concern(self, ch_tmp):
+        state = _state(
+            "2026-10-25T12:00:00",
+            "critical",
+            secrets={"ok": True, "level": "critical", "count": 2, "summary": "2 potential secrets"},
+            ruff={"ok": True, "level": "ok", "count": 0, "summary": "Clean"},
+        )
+        [c] = codehealth.dashboard_concerns(state)
+        assert c["level"] == "critical"
+        assert c["tab"] == "utilities"
+        assert "secrets: 2 potential secrets" in c["detail"]
+        assert "ruff" not in c["detail"]
+
+    @pytest.mark.parametrize("level", ["ok", "info", "warning"])
+    def test_non_critical_gives_nothing(self, level):
+        assert codehealth.dashboard_concerns(_state("2026-10-25T12:00:00", level)) == []
+
+    def test_reads_saved_state_when_none_given(self, ch_tmp):
+        assert codehealth.dashboard_concerns() == []
+        codehealth.save_state(_state("2026-10-25T12:00:00", "critical"))
+        assert len(codehealth.dashboard_concerns()) == 1
+
+    def test_critical_without_detail_still_explains(self):
+        [c] = codehealth.dashboard_concerns({"worst_level": "critical", "scanners": {}})
+        assert c["detail"]
+
+
+class TestScheduleAndHistoryRoutes:
+    def test_status_reports_schedule(self, client, ch_tmp):
+        codehealth.save_schedule("monthly")
+        data = client.get("/api/codehealth/status").get_json()
+        assert data["schedule"] == "monthly"
+        assert data["schedule_choices"] == ["daily", "weekly", "monthly", "off"]
+        assert data["stale_days_threshold"] == 30
+
+    def test_status_stale_threshold_falls_back_when_off(self, client, ch_tmp):
+        codehealth.save_schedule("off")
+        assert client.get("/api/codehealth/status").get_json()["stale_days_threshold"] == codehealth.STALE_DAYS
+
+    def test_set_schedule(self, client, ch_tmp):
+        resp = client.post("/api/codehealth/schedule", json={"schedule": "daily"})
+        assert resp.status_code == 200
+        assert resp.get_json() == {"ok": True, "schedule": "daily"}
+        assert codehealth.load_schedule() == "daily"
+
+    def test_set_schedule_missing_field(self, client, ch_tmp):
+        resp = client.post("/api/codehealth/schedule", json={})
+        assert resp.status_code == 400
+        assert "schedule" in resp.get_json()["error"]
+
+    def test_set_schedule_unknown_value(self, client, ch_tmp):
+        resp = client.post("/api/codehealth/schedule", json={"schedule": "hourly"})
+        assert resp.status_code == 400
+        assert codehealth.load_schedule() == "weekly"
+
+    def test_set_schedule_save_failure(self, client, ch_tmp, mocker):
+        mocker.patch("codehealth.save_schedule", return_value=False)
+        assert client.post("/api/codehealth/schedule", json={"schedule": "daily"}).status_code == 500
+
+    def test_history_route(self, client, ch_tmp):
+        assert client.get("/api/codehealth/history").get_json() == {"ok": True, "history": []}
+        codehealth.record_history(_state("2026-10-25T12:00:00"))
+        history = client.get("/api/codehealth/history").get_json()["history"]
+        assert len(history) == 1

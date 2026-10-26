@@ -74,9 +74,23 @@ BACKLOG_PATH = os.environ.get(
     os.path.expanduser(r"~\.claude\projects\C--shigsapps-windesktopmgr\memory\project_backlog.md"),
 )
 
-# Auto-scan on tray boot if state is older than this. PR-2 makes this
-# configurable via the UI; PR-1 hardcodes a week.
+# Cards show "stale" past this age. With a schedule set, the schedule's
+# interval is used instead (see schedule_days); this is the fallback.
 STALE_DAYS = 7
+
+# Backlog #52 (B): automatic scans. The chosen interval lives in its own
+# file because every scan rewrites STATE_FILE wholesale.
+SCHEDULE_FILE = os.path.join(_REPO_ROOT, "codehealth_schedule.json")
+SCHEDULES = {"daily": 1, "weekly": 7, "monthly": 30, "off": None}
+DEFAULT_SCHEDULE = "weekly"
+# How often the scheduler thread checks whether a scan is due. Scans
+# themselves take 3-5 s and read files only (no pytest), so an hourly
+# check is cheap and keeps "daily" within an hour of on time.
+SCHEDULER_TICK_S = 3600
+
+# Backlog #52 (C): one compact entry per completed scan, newest last.
+HISTORY_FILE = os.path.join(_REPO_ROOT, "codehealth_history.json")
+HISTORY_MAX = 20
 
 # Per-scanner subprocess timeout. ruff/coverage/secrets all finish in
 # 1-3 s on this repo, so 60 s is generous head-room for slow runs.
@@ -171,6 +185,95 @@ def is_stale(state: dict, days: int = STALE_DAYS) -> bool:
     except (TypeError, ValueError):
         return True
     return dt < datetime.now() - timedelta(days=days)
+
+
+def load_schedule() -> str:
+    """The saved scan schedule, or DEFAULT_SCHEDULE if unset or unreadable."""
+    try:
+        with open(SCHEDULE_FILE, encoding="utf-8") as f:
+            choice = json.load(f).get("schedule")
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return DEFAULT_SCHEDULE
+    return choice if choice in SCHEDULES else DEFAULT_SCHEDULE
+
+
+def save_schedule(choice: str) -> bool:
+    """Persist a schedule choice. Raises ValueError for an unknown one."""
+    if choice not in SCHEDULES:
+        raise ValueError(f"unknown schedule: {choice!r}")
+    return _atomic_write_json(SCHEDULE_FILE, {"schedule": choice, "updated_at": _now_iso()})
+
+
+def schedule_days(choice: str) -> int | None:
+    """Interval in days for a schedule choice; None for "off"."""
+    return SCHEDULES.get(choice)
+
+
+def is_due(state: dict, choice: str) -> bool:
+    """True when the schedule says a scan should run now."""
+    days = schedule_days(choice)
+    if days is None:
+        return False
+    return is_stale(state, days=days)
+
+
+def load_history() -> list[dict]:
+    """Past scans, oldest first. [] if missing or malformed."""
+    try:
+        with open(HISTORY_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [e for e in data if isinstance(e, dict)] if isinstance(data, list) else []
+
+
+def record_history(state: dict) -> bool:
+    """Append one compact entry for a completed scan, keeping HISTORY_MAX.
+
+    Only level + count per scanner are kept -- enough for the trend line
+    and the timeline, and small enough to read on every Utilities load.
+    """
+    scanners = state.get("scanners")
+    if not isinstance(scanners, dict) or not scanners:
+        return False
+    entry = {
+        "finished_at": state.get("finished_at") or _now_iso(),
+        "worst_level": state.get("worst_level", "ok"),
+        "scanners": {
+            name: {"level": r.get("level", "ok"), "count": r.get("count", 0), "ok": bool(r.get("ok"))}
+            for name, r in scanners.items()
+            if isinstance(r, dict)
+        },
+    }
+    with _state_lock:
+        history = load_history()
+        history.append(entry)
+        return _atomic_write_json(HISTORY_FILE, history[-HISTORY_MAX:])
+
+
+def dashboard_concerns(state: dict | None = None) -> list[dict]:
+    """Backlog #52 (D): a Dashboard concern when the last scan is critical
+    (e.g. a secret in the repo or a security lint). Deep-links to Utilities."""
+    state = load_state() if state is None else state
+    if state.get("worst_level") != "critical":
+        return []
+    scanners = state.get("scanners") or {}
+    parts = [
+        f"{name}: {r.get('summary', '')}".strip()
+        for name, r in scanners.items()
+        if isinstance(r, dict) and r.get("level") == "critical"
+    ]
+    return [
+        {
+            "level": "critical",
+            "tab": "utilities",
+            "icon": "🩺",
+            "title": "Code health: critical finding in the last scan",
+            "detail": " · ".join(parts) or "A code-health scanner reported a critical finding.",
+            "action": "Open Utilities",
+            "action_fn": "switchTab('utilities')",
+        }
+    ]
 
 
 def is_running() -> bool:
@@ -600,6 +703,7 @@ def _run_and_save() -> None:
     try:
         result = scan_all()
         save_state(result)
+        record_history(result)
         _log.info("codehealth scan complete -- worst level: %s", result.get("worst_level"))
         # PR-2 sub-task B: turn findings into backlog rows. Best-effort
         # -- backlog file lives outside the repo (Claude project memory)
@@ -647,6 +751,7 @@ def _run_one_and_save(name: str) -> None:
         _running_scanner = name
     try:
         merged = scan_one(name)
+        record_history(merged)
         _log.info("codehealth single scan complete (%s) -- worst level: %s", name, merged.get("worst_level"))
         try:
             append_findings_to_backlog(merged)
@@ -674,14 +779,40 @@ def run_one_in_background(name: str) -> bool:
     return True
 
 
-def maybe_run_on_boot() -> bool:
-    """Tray hook: if persisted state is missing or stale (>7 days),
-    fire a background scan so the user sees fresh data after a tray
-    restart. Returns True if a scan was started."""
-    state = load_state()
-    if is_stale(state):
+def maybe_run_scheduled() -> bool:
+    """Start a background scan if the schedule says one is due.
+    Returns True if a scan was started."""
+    if is_due(load_state(), load_schedule()):
         return run_in_background()
     return False
+
+
+def maybe_run_on_boot() -> bool:
+    """Tray hook: catch up on a scan the schedule says is due (none when
+    the schedule is "off"). Returns True if a scan was started."""
+    return maybe_run_scheduled()
+
+
+_scheduler_started = False
+
+
+def _scheduler_loop(stop: threading.Event) -> None:
+    while not stop.wait(SCHEDULER_TICK_S):
+        try:
+            maybe_run_scheduled()
+        except Exception as exc:  # noqa: BLE001 -- the scheduler must keep ticking
+            _log.warning("codehealth scheduler tick failed: %s", exc)
+
+
+def start_scheduler() -> bool:
+    """Start the hourly schedule check once per process. Returns True if started."""
+    global _scheduler_started
+    with _run_lock:
+        if _scheduler_started:
+            return False
+        _scheduler_started = True
+    threading.Thread(target=_scheduler_loop, args=(threading.Event(),), daemon=True, name="CodeHealthScheduler").start()
+    return True
 
 
 # ─────────────────────────────────────────────────────────────────────
