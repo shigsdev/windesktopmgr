@@ -114,15 +114,22 @@ class TestScanCoverage:
         assert "87.2%" in result["summary"]
         assert result["details"][0]["file"] == "a.py"  # worst file first
 
-    def test_below_50_is_critical(self, ch_tmp, mocker, monkeypatch):
+    def test_far_below_gate_is_a_partial_run_not_critical(self, ch_tmp, mocker, monkeypatch):
+        """2026-10-25: a one-file test run left a 12.6% .coverage; the scan
+        called it critical, raised a Dashboard concern and filed a P0 row.
+        The gate blocks any commit below 80%, so this is a partial run."""
         cov_path = ch_tmp["tmp"] / ".coverage"
         cov_path.write_bytes(b"")
         monkeypatch.setattr(codehealth, "_REPO_ROOT", str(ch_tmp["tmp"]))
         mock_proc = mocker.MagicMock()
         mock_proc.returncode = 0
-        mock_proc.stdout = json.dumps({"totals": {"percent_covered": 30.0}, "files": {}})
+        mock_proc.stdout = json.dumps({"totals": {"percent_covered": 12.6}, "files": {}})
         mocker.patch("codehealth.subprocess.run", return_value=mock_proc)
-        assert codehealth.scan_coverage()["level"] == "critical"
+        result = codehealth.scan_coverage()
+        assert result["level"] == "warning"
+        assert result["likely_partial"] is True
+        assert "partial" in result["summary"]
+        assert "12.6%" in result["summary"]
 
     def test_between_50_and_80_is_warning(self, ch_tmp, mocker, monkeypatch):
         cov_path = ch_tmp["tmp"] / ".coverage"
@@ -132,7 +139,22 @@ class TestScanCoverage:
         mock_proc.returncode = 0
         mock_proc.stdout = json.dumps({"totals": {"percent_covered": 70.0}, "files": {}})
         mocker.patch("codehealth.subprocess.run", return_value=mock_proc)
-        assert codehealth.scan_coverage()["level"] == "warning"
+        result = codehealth.scan_coverage()
+        assert result["level"] == "warning"
+        assert result["likely_partial"] is True
+
+    def test_at_or_above_gate_is_ok(self, ch_tmp, mocker, monkeypatch):
+        cov_path = ch_tmp["tmp"] / ".coverage"
+        cov_path.write_bytes(b"")
+        monkeypatch.setattr(codehealth, "_REPO_ROOT", str(ch_tmp["tmp"]))
+        mocker.patch("codehealth.coverage_gate", return_value=80)
+        mock_proc = mocker.MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = json.dumps({"totals": {"percent_covered": 80.0}, "files": {}})
+        mocker.patch("codehealth.subprocess.run", return_value=mock_proc)
+        result = codehealth.scan_coverage()
+        assert result["level"] == "ok"
+        assert result["likely_partial"] is False
 
     def test_timeout_returns_error_dict(self, ch_tmp, mocker, monkeypatch):
         cov_path = ch_tmp["tmp"] / ".coverage"
@@ -746,33 +768,20 @@ _BACKLOG_SKELETON = """# Project Backlog
 
 
 class TestFindingsToBacklogEntries:
-    def test_coverage_warning_emits_entry(self):
+    @pytest.mark.parametrize("level", ["warning", "critical"])
+    def test_low_coverage_never_emits(self, level):
+        """A sub-gate reading is a partial test run (the gate blocks real
+        drops at commit), so it must not file a backlog row -- 2026-10-25
+        filed a bogus P0 "coverage at 12%"."""
         scan = {
             "scanners": {
-                "coverage": {"level": "warning", "count": 70, "is_stale": False},
+                "coverage": {"level": level, "count": 12, "is_stale": False, "likely_partial": True},
                 "ruff": {"details": []},
                 "secrets": {"level": "ok", "count": 0},
                 "tech_debt": {"details": {"large_files": []}},
             }
         }
-        entries = codehealth.findings_to_backlog_entries(scan)
-        assert len(entries) == 1
-        assert entries[0]["category"] == "Code Health"
-        assert entries[0]["priority"] == "P1"
-        assert "70%" in entries[0]["title"]
-
-    def test_coverage_critical_emits_p0(self):
-        scan = {
-            "scanners": {
-                "coverage": {"level": "critical", "count": 30, "is_stale": False},
-                "ruff": {"details": []},
-                "secrets": {"level": "ok", "count": 0},
-                "tech_debt": {"details": {"large_files": []}},
-            }
-        }
-        entries = codehealth.findings_to_backlog_entries(scan)
-        assert entries[0]["priority"] == "P0"
-        assert entries[0]["severity"] == "critical"
+        assert codehealth.findings_to_backlog_entries(scan) == []
 
     def test_stale_coverage_does_not_emit(self):
         """Don't add backlog rows from a historical/stale coverage
@@ -988,9 +997,9 @@ class TestFindingsToBacklogEntries:
     def test_fingerprint_is_stable_across_calls(self):
         scan = {
             "scanners": {
-                "coverage": {"level": "warning", "count": 70, "is_stale": False},
+                "coverage": {"level": "ok"},
                 "ruff": {"details": []},
-                "secrets": {"level": "ok"},
+                "secrets": {"level": "critical", "count": 1},
                 "tech_debt": {"details": {}},
             }
         }
@@ -1000,7 +1009,7 @@ class TestFindingsToBacklogEntries:
         # Different inputs -> different fingerprints.
         scan2 = dict(scan)
         scan2["scanners"] = dict(scan["scanners"])
-        scan2["scanners"]["coverage"] = {"level": "critical", "count": 30, "is_stale": False}
+        scan2["scanners"]["secrets"] = {"level": "critical", "count": 2}
         e3 = codehealth.findings_to_backlog_entries(scan2)
         assert e1[0]["fingerprint"] != e3[0]["fingerprint"]
 
@@ -1013,9 +1022,9 @@ class TestAppendFindingsToBacklog:
         self._setup_backlog(ch_tmp)
         scan = {
             "scanners": {
-                "coverage": {"level": "warning", "count": 70, "is_stale": False},
+                "coverage": {"level": "ok"},
                 "ruff": {"details": []},
-                "secrets": {"level": "ok"},
+                "secrets": {"level": "critical", "count": 1},
                 "tech_debt": {"details": {}},
             }
         }
@@ -1036,9 +1045,9 @@ class TestAppendFindingsToBacklog:
         self._setup_backlog(ch_tmp)
         scan = {
             "scanners": {
-                "coverage": {"level": "warning", "count": 70, "is_stale": False},
+                "coverage": {"level": "ok"},
                 "ruff": {"details": []},
-                "secrets": {"level": "ok"},
+                "secrets": {"level": "critical", "count": 1},
                 "tech_debt": {"details": {}},
             }
         }
@@ -1055,9 +1064,9 @@ class TestAppendFindingsToBacklog:
         # No backlog file created.
         scan = {
             "scanners": {
-                "coverage": {"level": "critical", "count": 20, "is_stale": False},
+                "coverage": {"level": "ok"},
                 "ruff": {"details": []},
-                "secrets": {"level": "ok"},
+                "secrets": {"level": "critical", "count": 1},
                 "tech_debt": {"details": {}},
             }
         }
@@ -1084,14 +1093,14 @@ class TestAppendFindingsToBacklog:
         self._setup_backlog(ch_tmp)
         scan = {
             "scanners": {
-                "coverage": {"level": "warning", "count": 70, "is_stale": False},
+                "coverage": {"level": "ok"},
                 "ruff": {
                     "details": [
                         {"code": "S105", "message": "hp", "file": "a.py", "line": 1},
                         {"code": "F401", "message": "ui", "file": "b.py", "line": 2},
                     ]
                 },
-                "secrets": {"level": "ok"},
+                "secrets": {"level": "critical", "count": 1},
                 "tech_debt": {"details": {}},
             }
         }
@@ -1107,9 +1116,9 @@ class TestAppendFindingsToBacklog:
         self._setup_backlog(ch_tmp)
         scan = {
             "scanners": {
-                "coverage": {"level": "warning", "count": 70, "is_stale": False},
+                "coverage": {"level": "ok"},
                 "ruff": {"details": []},
-                "secrets": {"level": "ok"},
+                "secrets": {"level": "critical", "count": 1},
                 "tech_debt": {"details": {}},
             }
         }
@@ -1125,9 +1134,9 @@ class TestAppendFindingsToBacklog:
         ch_tmp["backlog"].write_text("| 1 | foo | Small | P0 |\n", encoding="utf-8")
         scan = {
             "scanners": {
-                "coverage": {"level": "warning", "count": 70, "is_stale": False},
+                "coverage": {"level": "ok"},
                 "ruff": {"details": []},
-                "secrets": {"level": "ok"},
+                "secrets": {"level": "critical", "count": 1},
                 "tech_debt": {"details": {}},
             }
         }
@@ -1181,7 +1190,7 @@ class TestRunAndSaveAppendsToBacklog:
                 "scanners": {
                     "coverage": {"level": "ok"},
                     "ruff": {"details": [{"code": "F401", "message": "x", "file": "a.py", "line": 1}]},
-                    "secrets": {"level": "ok"},
+                    "secrets": {"level": "critical", "count": 1},
                     "tech_debt": {"details": {}},
                 },
             },
@@ -1200,9 +1209,9 @@ class TestRunAndSaveAppendsToBacklog:
             "codehealth.scan_all",
             return_value={
                 "scanners": {
-                    "coverage": {"level": "warning", "count": 70, "is_stale": False},
+                    "coverage": {"level": "ok"},
                     "ruff": {"details": []},
-                    "secrets": {"level": "ok"},
+                    "secrets": {"level": "critical", "count": 1},
                     "tech_debt": {"details": {}},
                 },
             },
@@ -1211,7 +1220,7 @@ class TestRunAndSaveAppendsToBacklog:
         codehealth._run_and_save()
         # State got persisted despite backlog miss.
         state = codehealth.load_state()
-        assert state.get("scanners", {}).get("coverage", {}).get("level") == "warning"
+        assert state.get("scanners", {}).get("secrets", {}).get("level") == "critical"
 
 
 class TestCoverageGateScope:
@@ -1502,3 +1511,39 @@ class TestScheduleAndHistoryRoutes:
         codehealth.record_history(_state("2026-10-25T12:00:00"))
         history = client.get("/api/codehealth/history").get_json()["history"]
         assert len(history) == 1
+
+
+class TestCoverageGate:
+    def _pyproject(self, tmp_path, monkeypatch, text):
+        (tmp_path / "pyproject.toml").write_text(text, encoding="utf-8")
+        monkeypatch.setattr(codehealth, "_REPO_ROOT", str(tmp_path))
+
+    def test_reads_the_real_repo_gate(self):
+        assert codehealth.coverage_gate() == 80
+
+    def test_reads_list_addopts(self, tmp_path, monkeypatch):
+        self._pyproject(
+            tmp_path, monkeypatch, '[tool.pytest.ini_options]\naddopts = ["--cov=.", "--cov-fail-under=85"]\n'
+        )
+        assert codehealth.coverage_gate() == 85
+
+    def test_reads_string_addopts(self, tmp_path, monkeypatch):
+        self._pyproject(tmp_path, monkeypatch, '[tool.pytest.ini_options]\naddopts = "-q --cov-fail-under=75.5"\n')
+        assert codehealth.coverage_gate() == 75
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            '[tool.pytest.ini_options]\naddopts = ["-q"]\n',
+            "[tool.other]\nx = 1\n",
+            "not = = toml",
+            '[tool.pytest.ini_options]\naddopts = ["--cov-fail-under=lots"]\n',
+        ],
+    )
+    def test_falls_back_to_default(self, tmp_path, monkeypatch, text):
+        self._pyproject(tmp_path, monkeypatch, text)
+        assert codehealth.coverage_gate() == codehealth.COVERAGE_GATE_DEFAULT
+
+    def test_missing_pyproject_falls_back(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(codehealth, "_REPO_ROOT", str(tmp_path))
+        assert codehealth.coverage_gate() == codehealth.COVERAGE_GATE_DEFAULT
