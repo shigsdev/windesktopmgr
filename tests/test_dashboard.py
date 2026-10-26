@@ -1025,3 +1025,38 @@ class TestSummaryPartialFailures:
         )
         titles = [title for t, title in self._rows(mocker) if t == "homenet"]
         assert titles == ["Verizon CR1000A config backup is stale (10 days old)"]
+
+
+class TestDashboardCodeHealthIntegration:
+    """Backlog #52 (D): a critical code-health scan surfaces on the Dashboard."""
+
+    def _baseline(self, mocker, tmp_path, monkeypatch, worst_level):
+        TestDashboardPhysicalDiskHealth._mock_deps(
+            TestDashboardPhysicalDiskHealth(),
+            mocker,
+            {"drives": [], "physical": [{"Name": "SSD", "Health": "Healthy", "Status": "OK"}], "io": []},
+        )
+        import codehealth
+
+        monkeypatch.setattr(codehealth, "STATE_FILE", str(tmp_path / "codehealth_state.json"))
+        codehealth.save_state(
+            {
+                "finished_at": "2026-10-25T12:00:00",
+                "worst_level": worst_level,
+                "scanners": {"secrets": {"ok": True, "level": worst_level, "count": 1, "summary": "1 leak found"}},
+            }
+        )
+
+    def _ch(self, resp):
+        return [c for c in resp.get_json()["concerns"] if c.get("tab") == "utilities"]
+
+    def test_critical_scan_raises_concern_linking_to_utilities(self, client, mocker, tmp_path, monkeypatch):
+        self._baseline(mocker, tmp_path, monkeypatch, "critical")
+        [c] = self._ch(client.get("/api/dashboard/summary"))
+        assert c["level"] == "critical"
+        assert c["action_fn"] == "switchTab('utilities')"
+        assert "1 leak found" in c["detail"]
+
+    def test_warning_scan_raises_nothing(self, client, mocker, tmp_path, monkeypatch):
+        self._baseline(mocker, tmp_path, monkeypatch, "warning")
+        assert self._ch(client.get("/api/dashboard/summary")) == []

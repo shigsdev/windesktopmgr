@@ -931,6 +931,13 @@ def _backup_concerns() -> list[dict]:
     ]
 
 
+def _codehealth_concerns() -> list[dict]:
+    """Critical code-health finding from the last Utilities scan (backlog #52)."""
+    import codehealth
+
+    return codehealth.dashboard_concerns()
+
+
 def _bios_audit_concerns() -> list[dict]:
     """BIOS audit-trail concerns: logged changes + collection errors in the last 24h."""
     import bios_audit
@@ -1158,6 +1165,7 @@ def _compute_dashboard_summary() -> dict:
         *_best_effort(_baseline_concerns),
         *_best_effort(_backup_concerns),
         *_best_effort(_bios_audit_concerns),
+        *_best_effort(_codehealth_concerns),
         *_driver_concerns(results),
     ]
     concerns.sort(key=lambda c: _LEVEL_ORDER.get(c.get("level", "info"), 2))

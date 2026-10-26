@@ -7,6 +7,8 @@
 // ══════════════════════════════════════════════════════════════════════════
 
 let _utilPollTimer = null;
+// Past scans from /api/codehealth/history, oldest first (backlog #52).
+let _utilHistory = [];
 
 async function util_load() {
   await Promise.all([
@@ -58,6 +60,7 @@ function util_renderScannerCard(name, label, icon, result, opts) {
   // the coverage card so the user can trigger a fresh pytest --cov
   // run from the UI when .coverage gets stale (the 2026-05-27 bug).
   const extraControl = (opts && opts.extraControl) || "";
+  const trend = (opts && opts.trend) || "";
   const detailsBlock = util_renderScannerDetails(name, result);
   return `
     <div data-scanner="${esc(name)}" style="background:var(--card);border:1px solid var(--border);border-left:3px solid ${color};
@@ -73,8 +76,83 @@ function util_renderScannerCard(name, label, icon, result, opts) {
         <span>${esc(ts)} · ${esc(dur)}</span>
         ${extraControl}
       </div>
+      ${trend}
       ${detailsBlock}
     </div>`;
+}
+
+// ── Scan history (backlog #52) ──────────────────────────────────────────
+// One value per past scan for this scanner: coverage's count is its %,
+// the others count findings. Runs where the scanner failed are skipped.
+function util_historySeries(name) {
+  return _utilHistory
+    .map(h => ({at: h.finished_at, r: (h.scanners || {})[name]}))
+    .filter(x => x.r && x.r.ok !== false && Number.isFinite(Number(x.r.count)))
+    .map(x => ({at: x.at, level: x.r.level || "ok", value: Number(x.r.count)}));
+}
+
+function util_sparkline(values, color, w, h) {
+  // Inline SVG polyline. Numbers only go into the markup, so no escaping.
+  if (values.length < 2) return "";
+  const nums = values.map(Number);
+  const min = Math.min(...nums), max = Math.max(...nums);
+  const span = max - min || 1;
+  const pts = nums.map((v, i) => {
+    const x = (i / (nums.length - 1)) * (w - 4) + 2;
+    const y = max === min ? h / 2 : h - 2 - ((v - min) / span) * (h - 4);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="max-width:100%" aria-hidden="true">
+    <polyline fill="none" stroke="${color}" stroke-width="1.5" points="${pts}"/></svg>`;
+}
+
+function util_trendButton(name, color) {
+  const series = util_historySeries(name);
+  if (series.length < 2) return "";
+  return `<button data-history-count="${series.length}" onclick="util_openHistory('${escJsArg(name)}')"
+      title="Show this scanner's last ${series.length} scans"
+      style="margin-top:8px;display:flex;align-items:center;gap:8px;width:100%;background:transparent;border:1px solid var(--border);
+             border-radius:6px;padding:4px 8px;cursor:pointer;color:var(--muted);font-size:10px;font-family:var(--font-mono)">
+      ${util_sparkline(series.map(p => p.value), color, 120, 22)}
+      <span>${series.length} scans · history</span></button>`;
+}
+
+function util_openHistory(name) {
+  const modal = document.getElementById("util-hist-modal");
+  if (!modal) return;
+  const series = util_historySeries(name);
+  const unit = name === "coverage" ? "%" : " findings";
+  document.getElementById("util-hist-title").textContent = `Scan history — ${util_humanise(name)}`;
+  document.getElementById("util-hist-chart").innerHTML = util_sparkline(series.map(p => p.value), "var(--cyan)", 560, 80);
+  document.getElementById("util-hist-body").innerHTML = series.length
+    ? series.slice().reverse().map(p => `
+        <div data-history-row style="display:flex;gap:12px;padding:4px 0;border-bottom:1px solid var(--border)">
+          <span style="flex:1;color:var(--muted)">${esc(p.at ? new Date(p.at).toLocaleString() : "?")}</span>
+          <span style="width:70px;color:${util_levelColor(p.level)};text-transform:uppercase">${esc(p.level)}</span>
+          <span style="width:110px;text-align:right;color:var(--text)">${esc(String(p.value))}${unit}</span>
+        </div>`).join("")
+    : `<div style="color:var(--muted)">No completed scans recorded yet.</div>`;
+  modal.style.display = "flex";
+}
+
+function util_closeHistory() {
+  const modal = document.getElementById("util-hist-modal");
+  if (modal) modal.style.display = "none";
+}
+
+async function util_setSchedule(choice) {
+  try {
+    const r = await fetch("/api/codehealth/schedule", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({schedule: choice}),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || `HTTP ${r.status}`);
+  } catch (e) {
+    alert("Couldn't save the scan schedule: " + e.message);
+  }
+  await util_loadCodeHealth();
 }
 
 function util_renderScannerDetails(name, result) {
@@ -163,6 +241,17 @@ async function util_loadCodeHealth(opts) {
   // A coverage refresh ends with an automatic scan_all so the
   // running flag flips through both phases.
   const anyInFlight = running || refreshingCov;
+  const sched = document.getElementById("util-ch-schedule");
+  if (sched && payload.schedule && document.activeElement !== sched) sched.value = payload.schedule;
+  // History changes only when a scan finishes, so skip it while polling one.
+  if (!anyInFlight) {
+    try {
+      const hr = await fetch("/api/codehealth/history");
+      _utilHistory = ((await hr.json()).history) || [];
+    } catch {
+      _utilHistory = [];
+    }
+  }
   if (anyInFlight) {
     if (lastSpan) {
       lastSpan.textContent = refreshingCov
@@ -253,7 +342,8 @@ async function util_loadCodeHealth(opts) {
                            font-size:10px;font-family:var(--font-mono)"
                     title="Re-run just this scanner">↻ Run</button>`;
     }
-    return [name, label, icon, scanners[name] || {}, {extraControl}];
+    const r = scanners[name] || {};
+    return [name, label, icon, r, {extraControl, trend: util_trendButton(name, util_levelColor(r.level || "ok"))}];
   });
   grid.innerHTML = refreshErrorBanner + cards.map(([_, label, icon, r, opts]) =>
     util_renderScannerCard(_, label, icon, r, opts)

@@ -2231,7 +2231,29 @@
       </div>
       <div style="display:flex;align-items:center;gap:10px">
         <span id="util-last-scan" style="font-size:11px;color:var(--muted)">Loading…</span>
+        <label style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px"
+               title="Automatic code-health scans. Each one takes ~3-5 s and only reads files.">Auto-scan
+          <select id="util-ch-schedule" onchange="util_setSchedule(this.value)"
+                  style="background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:11px;font-family:var(--font-mono)">
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+            <option value="monthly">Monthly</option>
+            <option value="off">Off</option>
+          </select>
+        </label>
         <button id="util-scan-btn" onclick="util_runScan()" class="btn-action" style="padding:6px 16px;font-size:12px">▶ Scan now</button>
+      </div>
+    </div>
+    <!-- Scan history pop-up (backlog #52): one scanner's last runs. -->
+    <div id="util-hist-modal" onclick="if (event.target === this) util_closeHistory()"
+         style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:1000;align-items:center;justify-content:center;padding:24px">
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;width:min(640px,95vw);max-height:90vh;overflow:auto">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px">
+          <div id="util-hist-title" style="font-size:16px;font-weight:700;color:var(--text-bright)">Scan history</div>
+          <button onclick="util_closeHistory()" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer">✕</button>
+        </div>
+        <div id="util-hist-chart" style="margin-bottom:12px"></div>
+        <div id="util-hist-body" style="font-size:11px;font-family:var(--font-mono)"></div>
       </div>
     </div>
 
@@ -2248,7 +2270,7 @@
     <div id="util-codehealth">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
         <div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)">Code Health</div>
-        <div style="font-size:10px;color:var(--muted)">Coverage · ruff · secrets · tech-debt — runs on demand and on tray boot if &gt;7 days stale · findings auto-append to project backlog (deduped)</div>
+        <div style="font-size:10px;color:var(--muted)">Coverage · ruff · secrets · tech-debt — runs on demand and on the Auto-scan schedule · click a trend line for the history · a critical finding raises a Dashboard concern · findings auto-append to project backlog (deduped)</div>
         <button onclick="util_resetEmitted()"
                 title="Clear the dedup memory so findings re-emit to backlog on next scan. Use if you've manually cleaned up the auto-generated rows."
                 style="margin-left:auto;background:transparent;border:1px solid var(--border);color:var(--muted);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:10px;font-family:var(--font-mono)">↺ Reset emitted</button>

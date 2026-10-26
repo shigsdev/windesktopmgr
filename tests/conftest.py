@@ -26,6 +26,7 @@ if PROJECT_ROOT not in sys.path:
 import pytest
 
 import bsod
+import codehealth
 import diagnose
 import disk
 import events
@@ -92,6 +93,27 @@ def _isolate_diagnose_history_file(tmp_path_factory):
         yield str(test_file)
     finally:
         diagnose.DIAGNOSE_HISTORY_FILE = real
+
+
+# Code health (backlog #52): the Dashboard now reads codehealth_state.json and
+# scans append to codehealth_history.json, so every test gets tmp copies of the
+# scan state, history and schedule files -- a real critical scan must not leak
+# into dashboard tests, and no test may write the live tray's files.
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _isolate_codehealth_files(tmp_path_factory):
+    """Redirect codehealth's state / history / schedule files to a per-session tmp dir."""
+    d = tmp_path_factory.mktemp("codehealth_isolated")
+    names = {"STATE_FILE": "state.json", "HISTORY_FILE": "history.json", "SCHEDULE_FILE": "schedule.json"}
+    real = {attr: getattr(codehealth, attr) for attr in names}
+    for attr, fname in names.items():
+        setattr(codehealth, attr, str(d / fname))
+    try:
+        yield d
+    finally:
+        for attr, value in real.items():
+            setattr(codehealth, attr, value)
 
 
 # ── Fixture loading helpers ───────────────────────────────────────────────────
