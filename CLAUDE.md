@@ -8,7 +8,7 @@ No step may be skipped. No exceptions.
 ```
 1. Code the change
 2. ruff check + format       →  python -m ruff check . && python -m ruff format .
-3. pytest                    →  python -m pytest tests/ -n auto   (parallel, ~48s)
+3. pytest                    →  python -m pytest tests/ -n auto --dist worksteal   (parallel, ~50s)
 3a. /code-review             →  invoke the code-review skill against the pending diff.
                                 High-priority findings MUST be resolved or justified
                                 in the commit message BEFORE step 5. (Plugin: code-
@@ -231,8 +231,9 @@ gates before committing. No exceptions.
 
 ```bash
 # Run tests with coverage (configured in pyproject.toml)
-pytest tests/ -v               # serial, clearer output (~3m37s)
-pytest tests/ -n auto          # parallel via xdist (~48s; pytest-cov merges per-worker)
+pytest tests/ -v               # serial, clearer output (~3.5 min)
+pytest tests/ -n auto --dist worksteal          # parallel via xdist (~50s; pytest-cov merges per-worker)
+pytest tests/ -n auto --dist worksteal --no-cov # fast iteration (~40-50s); keep coverage for the commit gate
 
 # Coverage floor is 80% — builds fail below this
 # Coverage report shows uncovered lines so you know what to test
@@ -531,15 +532,20 @@ this functional behavior still correct."
 ## Running tests
 
 ```bash
-# All tests (serial — cleanest output, ~3m37s for 2,670+ tests)
+# All tests (serial — cleanest output, ~3.5 min for 5,390 tests)
 pytest tests/ -v
 
 # All tests in parallel (backlog #30, recommended for fast iteration)
-# Distributes across CPU cores via pytest-xdist. ~48s on a 10-core box.
+# Distributes across CPU cores via pytest-xdist. ~50s on the i9-14900K
+# (24 workers). pyproject addopts add --capture=sys (fd capture breaks
+# worker spawn with WinError 6 on this machine). Pass --dist worksteal
+# (benchmarked fastest: load and loadfile were slower; 32 workers gained
+# ~2s and pegged the CPU at TjMax). It is not in addopts because
+# `-p no:xdist` would then reject it.
 # Each worker is its own Python process so module globals + tmp_path
 # files are per-worker isolated. Used by `python dev.py test` and the
 # pre-commit pytest hook.
-pytest tests/ -n auto
+pytest tests/ -n auto --dist worksteal
 
 # Single file
 pytest tests/test_powershell.py -v

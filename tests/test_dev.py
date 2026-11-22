@@ -81,7 +81,25 @@ class TestCommands:
         assert dev.cmd_test() is True
         cmd = run.call_args.args[1]
         assert cmd[:3] == [sys.executable, "-m", "pytest"]
-        assert cmd[-2:] == ["-n", "auto"]
+        assert cmd[cmd.index("-n") + 1] == "auto"
+        # worksteal benchmarked fastest; it lives here, not in pyproject
+        # addopts, so `-p no:xdist` runs still parse.
+        assert cmd[cmd.index("--dist") + 1] == "worksteal"
+
+    def test_pytest_config_keeps_xdist_options_out_of_addopts(self):
+        """Regression (2026-11-22): addopts carry --capture=sys (fd capture
+        kills xdist worker spawn with WinError 6 on this machine) but never
+        --dist -- an xdist-only option there makes `pytest -p no:xdist`, the
+        serial way to debug a dying worker, fail with "unrecognized
+        arguments". The parallel entry points pass --dist themselves."""
+        import tomllib
+
+        cfg = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        addopts = cfg["tool"]["pytest"]["ini_options"]["addopts"]
+        assert "--capture=sys" in addopts
+        assert not [a for a in addopts if a.startswith("--dist") or a in ("-n", "--numprocesses")]
+        hook = (REPO_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+        assert "-n auto --dist worksteal" in hook
 
     def test_all_reports_test_failure(self, mocker):
         mocker.patch("dev.cmd_fix", return_value=True)

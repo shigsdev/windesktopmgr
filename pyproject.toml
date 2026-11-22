@@ -34,12 +34,20 @@ addopts = [
     "--cov-fail-under=80",
     "-q",
     "-m", "not integration and not playwright",
+    # sys-level capture: fd-level capture (the default) makes `-n` die with
+    # "OSError: [WinError 6] The handle is invalid" on worker spawn on this
+    # machine since the 2026-11-22 repair. Harmless on serial runs.
+    "--capture=sys",
+    # NOT `--dist worksteal` here: it is an xdist option, so `-p no:xdist`
+    # (serial debugging of a dying worker) would fail with "unrecognized
+    # arguments". dev.py, pre-commit and check_test_coverage.py pass it.
 ]
 markers = [
     "integration: real PowerShell/Windows tests (run with: pytest -m integration)",
     "snapshot: tests using captured real system output as fixtures",
     "e2e: end-to-end smoke tests hitting Flask routes with multi-layer mocks",
     "playwright: frontend smoke tests (require live server; run with: pytest -m playwright)",
+    "real_mdns: keep homenet._mdns_resolve_batch unstubbed (tests that drive it with a fake zeroconf)",
 ]
 
 # ── ruff ──────────────────────────────────────────────────────────────────────
