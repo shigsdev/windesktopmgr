@@ -3636,7 +3636,7 @@ class TestCheckDellBiosUpdate:
             "file:///C:/Windows/win.ini",
             "https://evil.example/x.cab",
             "https://downloads.dell.com.evil.example/x.cab",
-            "https://user@downloads.dell.com/x.cab",
+            "https://user@downloads.dell.com/x.cab",  # fake-credential: userinfo trick the guard must refuse
             "ftp://downloads.dell.com/x.cab",
         ],
     )

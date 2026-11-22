@@ -326,6 +326,25 @@ class TestBugPatterns:
         assert "hunter2" not in finding.detail
         assert "bob:****@github.com" in finding.detail
 
+    def test_url_credentials_bare_username_not_shown_as_masked_token(self, mocker):
+        _fake_repo(mocker, cbp, {"cfg.py": 'URL = "https://bob@github.com/o/r.git"\n'})
+        [finding] = cbp.check_embedded_url_credentials()
+        assert "bob@github.com" in finding.detail
+        assert "****" not in finding.detail
+
+    def test_url_credentials_fake_marker_needs_a_reason(self, mocker):
+        _fake_repo(
+            mocker,
+            cbp,
+            {
+                "ok.py": 'u = "https://user@host/x"  # fake-credential: guard test input\n',
+                "bare.py": 'u = "https://user@host/x"  # fake-credential:\n',
+                # A password is never silenced by the line marker.
+                "tok.py": 'u = "https://bob:ghp_x@github.com/r"  # fake-credential: honest\n',
+            },
+        )
+        assert sorted(f.location for f in cbp.check_embedded_url_credentials()) == ["bare.py:1", "tok.py:1"]
+
     def test_url_credentials_allowlist_and_plain_urls(self, mocker):
         _fake_repo(
             mocker,
