@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -2987,11 +2987,11 @@ class TestGatherClusterContext:
         # Cluster: 14:00..14:05 local (naive).
         cluster_start = datetime(2026, 5, 22, 14, 0, 0)
         cluster_end = datetime(2026, 5, 22, 14, 5, 0)
-        # Build a UTC string for the moment "local 14:02" -- by
-        # subtracting the local UTC offset.
-        local_offset = datetime.now().astimezone().utcoffset()
-        utc_moment = cluster_start + timedelta(minutes=2) - local_offset
-        utc_repr = utc_moment.isoformat() + "+00:00"
+        # Build a UTC string for the moment "local 14:02". astimezone()
+        # on a naive datetime treats it as local time and applies the
+        # offset in force on May 22 -- not today's, which differs by an
+        # hour when today is on the other side of a DST change.
+        utc_repr = (cluster_start + timedelta(minutes=2)).astimezone(timezone.utc).isoformat()
         mocker.patch.object(
             baseline,
             "_recent_windows_updates",
@@ -3016,8 +3016,8 @@ class TestGatherClusterContext:
         ts2 = baseline._parse_to_naive_local("2026-05-22T18:00:00Z")
         # If local is UTC-4 (EDT) this becomes 14:00. We can't hardcode
         # because tests must work in any tz; just verify the offset is
-        # the local one.
-        local_offset = datetime.now().astimezone().utcoffset()
+        # the local one in force on May 22 (not today's -- DST may differ).
+        local_offset = datetime(2026, 5, 22, 18, tzinfo=timezone.utc).astimezone().utcoffset()
         expected = datetime(2026, 5, 22, 18, 0, 0) + local_offset
         assert ts2 == expected
         # +00:00 suffix should be equivalent to Z.
