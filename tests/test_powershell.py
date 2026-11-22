@@ -3437,11 +3437,18 @@ class TestCheckDellBiosUpdate:
         _real_exists = os.path.exists
         run_responses = []
 
+        # Every scenario gets a per-test temp dir. _bios_from_catalog used a
+        # fixed <gettempdir>/DellCatalog and rmtree'd it in `finally`; with the
+        # real %TEMP% that dir was shared by all xdist workers, so one worker's
+        # cleanup deleted another's mid-download and the catalog scenarios
+        # failed at random under -n auto (2026-11-22). The production code now
+        # uses a per-call mkdtemp dir too; this keeps test files in tmp_path.
+        mocker.patch("tempfile.gettempdir", return_value=str(tmp_path))
+
         if dcu_xml is not None:
             # Pre-create the scan output file with known content
             scan_file = tmp_path / "dcu_scan_00000000.xml"
             scan_file.write_text(dcu_xml, encoding="utf-8")
-            mocker.patch("tempfile.gettempdir", return_value=str(tmp_path))
             mocker.patch("uuid.uuid4", return_value=type("U", (), {"hex": "00000000"})())
 
             mocker.patch("os.path.exists", side_effect=lambda p: True if "CommandUpdate" in str(p) else _real_exists(p))
@@ -3503,6 +3510,38 @@ class TestCheckDellBiosUpdate:
         cmd = m.call_args_list[0][0][0]
         assert cmd[0].endswith("dcu-cli.exe")
         assert "powershell" not in cmd
+
+    def test_catalog_work_dir_is_per_test(self, mocker, tmp_path):
+        """Guard for the xdist race: the catalog's expand.exe calls must
+        target a DellCatalog_* dir under this test's tmp_path, never the
+        shared real %TEMP%."""
+        m = self._mock_deps(mocker, tmp_path, catalog_xml=self.CATALOG_XML_8960)
+        wdm.check_dell_bios_update("XPS8960", "2.22.0")
+        expand_calls = [c.args[0] for c in m.call_args_list if c.args[0][0] == "expand.exe"]
+        assert len(expand_calls) == 2
+        prefix = os.path.join(str(tmp_path), "DellCatalog_")
+        for cmd in expand_calls:
+            assert all(p.startswith(prefix) for p in cmd[1:]), cmd
+
+    def test_catalog_work_dir_is_unique_per_call(self, mocker, tmp_path):
+        """Regression: concurrent checks (dashboard fan-out + BIOS tab) must
+        not share one work dir, since each call rmtree's its own in `finally`."""
+        m = self._mock_deps(mocker, tmp_path, catalog_xml=self.CATALOG_XML_8960)
+        m.side_effect = None  # two runs -> plain return_value, not a fixed queue
+        m.return_value = type("R", (), {"stdout": "", "returncode": 0, "stderr": ""})()
+        result = {"error": None, "latest_version": None}
+        bios._bios_from_catalog(dict(result), "2.22.0")
+        bios._bios_from_catalog(dict(result), "2.22.0")
+        dirs = {os.path.dirname(c.args[0][1]) for c in m.call_args_list if c.args[0][0] == "expand.exe"}
+        assert len(dirs) == 2, dirs
+        assert not any(os.path.exists(d) for d in dirs), "work dirs must be cleaned up"
+
+    def test_catalog_mkdtemp_failure_is_reported_not_raised(self, mocker, tmp_path):
+        self._mock_deps(mocker, tmp_path, catalog_xml=self.CATALOG_XML_8960)
+        mocker.patch("tempfile.mkdtemp", side_effect=OSError("disk full"))
+        result = {"error": None, "latest_version": None}
+        bios._bios_from_catalog(result, "2.22.0")
+        assert "Catalog: disk full" in result["error"]
 
     def test_catalog_fallback(self, mocker, tmp_path):
         """Method 1 misses, Method 2 (per-model catalog) finds the XPS 8960 BIOS."""
@@ -3807,7 +3846,7 @@ class TestCheckDellBiosUpdateGolden:
     }
 
     def _run(self, mocker, tmp_path, name):
-        import tempfile
+        import re
 
         kwargs, current, dcu_mode = self.SCENARIOS[name]
         m = self._mock_deps(mocker, tmp_path, **kwargs)
@@ -3816,12 +3855,15 @@ class TestCheckDellBiosUpdateGolden:
             m.side_effect = OSError("dcu boom")
         elif dcu_mode == "raise_then_ok":
             m.side_effect = [OSError("dcu boom"), ok, ok]
-        tmp_dirs = {str(tmp_path), tempfile.gettempdir()}
+        # _mock_deps points tempfile.gettempdir at tmp_path, so every temp
+        # path (DCU scan file, catalog work dir) lives under it.
+        tmp_dir = str(tmp_path)
 
         def norm(value):
-            text = json.dumps(value)
-            for d in tmp_dirs:
-                text = text.replace(json.dumps(d)[1:-1], "<TMP>")
+            text = json.dumps(value).replace(json.dumps(tmp_dir)[1:-1], "<TMP>")
+            # The catalog work dir is a per-call mkdtemp (DellCatalog_<random>);
+            # collapse it so the golden file stays stable.
+            text = re.sub(r"DellCatalog_[A-Za-z0-9_]+", "DellCatalog", text)
             return json.loads(text)
 
         result = wdm.check_dell_bios_update("XPS8960", current)
