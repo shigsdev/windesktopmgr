@@ -399,9 +399,12 @@ def _bios_from_catalog(result: dict, current_version: str) -> None:
     """
     import tempfile
 
-    work_dir = os.path.join(tempfile.gettempdir(), "DellCatalog")
+    # Per-call dir: a fixed %TEMP%\DellCatalog was shared by concurrent checks
+    # (dashboard fan-out + BIOS tab on threaded Flask), and each call's
+    # rmtree in `finally` could delete the other's files mid-download.
+    work_dir = None
     try:
-        os.makedirs(work_dir, exist_ok=True)
+        work_dir = tempfile.mkdtemp(prefix="DellCatalog_")
         index_root = _fetch_catalog_root(_CATALOG_INDEX_URL, work_dir, "CatalogIndexPC")
         model_path = _model_catalog_path(index_root)
         if not model_path:
@@ -416,8 +419,9 @@ def _bios_from_catalog(result: dict, current_version: str) -> None:
         else:
             result["error"] = f"Catalog: {e2}"
     finally:
-        # Best-effort cleanup.
-        shutil.rmtree(work_dir, ignore_errors=True)
+        # Best-effort cleanup (work_dir is None if mkdtemp itself failed).
+        if work_dir:
+            shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def _bios_from_windows_update(result: dict, current_version: str, get_windows_update_drivers) -> None:
