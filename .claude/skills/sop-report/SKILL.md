@@ -37,5 +37,5 @@ whether architecture.html or the backlog was touched) by deriving them from git.
 
 - Read-only; it never edits files or runs gates.
 - The backlog check looks for `PR #<n>` (from the commit subject's `(#n)`) in
-  `~/.claude/projects/C--shigsapps-windesktopmgr/memory/project_backlog.md`;
-  override with `--backlog <path>`.
+  `BACKLOG.md` at the repo root (tracked since 2026-11-22); override with
+  `--backlog <path>`.

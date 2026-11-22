@@ -26,21 +26,24 @@ import codehealth
 
 @pytest.fixture
 def ch_tmp(tmp_path, monkeypatch):
-    """Redirect STATE_FILE + EMITTED_FILE + BACKLOG_PATH to tmp_path so
-    tests don't touch the real codehealth_state.json / emitted.json /
-    project backlog markdown next to the running tray."""
+    """Redirect STATE_FILE + EMITTED_FILE + BACKLOG_PATH + BACKLOG_INBOX_PATH
+    to tmp_path so tests don't touch the real codehealth_state.json /
+    emitted.json / BACKLOG.md / backlog_inbox.md next to the running tray."""
     state_path = tmp_path / "codehealth_state.json"
     emitted_path = tmp_path / "codehealth_emitted.json"
-    backlog_path = tmp_path / "project_backlog.md"
+    backlog_path = tmp_path / "BACKLOG.md"
+    inbox_path = tmp_path / "backlog_inbox.md"
     monkeypatch.setattr(codehealth, "STATE_FILE", str(state_path))
     monkeypatch.setattr(codehealth, "EMITTED_FILE", str(emitted_path))
     monkeypatch.setattr(codehealth, "BACKLOG_PATH", str(backlog_path))
+    monkeypatch.setattr(codehealth, "BACKLOG_INBOX_PATH", str(inbox_path))
     monkeypatch.setattr(codehealth, "HISTORY_FILE", str(tmp_path / "codehealth_history.json"))
     monkeypatch.setattr(codehealth, "SCHEDULE_FILE", str(tmp_path / "codehealth_schedule.json"))
     yield {
         "state": state_path,
         "emitted": emitted_path,
         "backlog": backlog_path,
+        "inbox": inbox_path,
         "history": tmp_path / "codehealth_history.json",
         "schedule": tmp_path / "codehealth_schedule.json",
         "tmp": tmp_path,
@@ -1031,14 +1034,16 @@ class TestAppendFindingsToBacklog:
         result = codehealth.append_findings_to_backlog(scan)
         assert result["ok"] is True
         assert result["appended"] == 1
-        text = ch_tmp["backlog"].read_text(encoding="utf-8")
+        # Tracked BACKLOG.md is never written -- rows land in the inbox.
+        assert ch_tmp["backlog"].read_text(encoding="utf-8") == _BACKLOG_SKELETON
+        text = ch_tmp["inbox"].read_text(encoding="utf-8")
         # New row should appear BEFORE the priority key line.
         new_row_idx = text.find("Scan finding")
         priority_idx = text.find("**Priority key:**")
         assert new_row_idx != -1
         assert priority_idx != -1
         assert new_row_idx < priority_idx
-        # Next number should be 52 (max existing was 51).
+        # Next number continues from BACKLOG.md: 52 (max existing was 51).
         assert "| 52 |" in text
 
     def test_dedup_skips_already_emitted_findings(self, ch_tmp):
@@ -1056,23 +1061,101 @@ class TestAppendFindingsToBacklog:
         assert r1["appended"] == 1
         assert r2["appended"] == 0
         assert r2["skipped"] == 1
-        # Backlog should have exactly ONE auto-row, not two.
-        text = ch_tmp["backlog"].read_text(encoding="utf-8")
+        # Inbox should have exactly ONE auto-row, not two.
+        text = ch_tmp["inbox"].read_text(encoding="utf-8")
         assert text.count("Scan finding") == 1
 
-    def test_missing_backlog_file_returns_error_no_crash(self, ch_tmp):
-        # No backlog file created.
-        scan = {
-            "scanners": {
-                "coverage": {"level": "ok"},
-                "ruff": {"details": []},
-                "secrets": {"level": "critical", "count": 1},
-                "tech_debt": {"details": {}},
+    def test_missing_inbox_is_created_from_template(self, ch_tmp):
+        # Neither BACKLOG.md nor the inbox exists (fresh checkout).
+        result = codehealth.append_findings_to_backlog(
+            {
+                "scanners": {
+                    "coverage": {"level": "ok"},
+                    "ruff": {"details": []},
+                    "secrets": {"level": "critical", "count": 1},
+                    "tech_debt": {"details": {}},
+                }
             }
-        }
-        result = codehealth.append_findings_to_backlog(scan)
+        )
+        assert result["ok"] is True
+        assert result["appended"] == 1
+        assert result["backlog_path"] == str(ch_tmp["inbox"])
+        text = ch_tmp["inbox"].read_text(encoding="utf-8")
+        assert text.startswith("# Backlog inbox (untracked)")
+        assert "| 100 |" in text  # no numbered rows anywhere -> default start
+        assert not ch_tmp["backlog"].exists()
+
+    def test_rows_stay_inside_the_inbox_table(self, ch_tmp):
+        """Rows go above the blank line before **Priority key:**, so on
+        GitHub they render as part of the table, and later appends follow them."""
+        codehealth.append_findings_to_backlog(
+            {
+                "scanners": {
+                    "coverage": {"level": "ok"},
+                    "ruff": {"details": []},
+                    "secrets": {"level": "critical", "count": 1},
+                    "tech_debt": {"details": {}},
+                }
+            }
+        )
+        codehealth.append_findings_to_backlog(
+            {
+                "scanners": {
+                    "coverage": {"level": "ok"},
+                    "ruff": {"details": [{"code": "F401", "message": "x", "file": "a.py", "line": 1}]},
+                    "secrets": {"level": "ok"},
+                    "tech_debt": {"details": {}},
+                }
+            }
+        )
+        lines = ch_tmp["inbox"].read_text(encoding="utf-8").splitlines()
+        sep = next(i for i, ln in enumerate(lines) if ln.startswith("|---"))
+        assert lines[sep + 1].startswith("| 100 |")
+        assert lines[sep + 2].startswith("| 101 |")
+        assert lines[sep + 3] == ""
+        assert lines[sep + 4].startswith("**Priority key:**")
+
+    def test_numbering_continues_across_backlog_and_inbox(self, ch_tmp):
+        self._setup_backlog(ch_tmp)  # BACKLOG.md has rows 50, 51
+        codehealth.append_findings_to_backlog(
+            {
+                "scanners": {
+                    "coverage": {"level": "ok"},
+                    "ruff": {"details": []},
+                    "secrets": {"level": "critical", "count": 1},
+                    "tech_debt": {"details": {}},
+                }
+            }
+        )
+        r2 = codehealth.append_findings_to_backlog(
+            {
+                "scanners": {
+                    "coverage": {"level": "ok"},
+                    "ruff": {"details": [{"code": "F401", "message": "x", "file": "a.py", "line": 1}]},
+                    "secrets": {"level": "ok"},
+                    "tech_debt": {"details": {}},
+                }
+            }
+        )
+        assert r2["appended"] == 1
+        text = ch_tmp["inbox"].read_text(encoding="utf-8")
+        assert "| 52 |" in text
+        assert "| 53 |" in text
+
+    def test_unwritable_inbox_returns_error_no_crash(self, ch_tmp, mocker):
+        mocker.patch("codehealth.ensure_backlog_inbox", side_effect=OSError("read-only"))
+        result = codehealth.append_findings_to_backlog(
+            {
+                "scanners": {
+                    "coverage": {"level": "ok"},
+                    "ruff": {"details": []},
+                    "secrets": {"level": "critical", "count": 1},
+                    "tech_debt": {"details": {}},
+                }
+            }
+        )
         assert result["ok"] is False
-        assert "not found" in result["error"]
+        assert "read-only" in result["error"]
         assert result["appended"] == 0
 
     def test_no_findings_returns_ok_with_zero_appended(self, ch_tmp):
@@ -1106,7 +1189,7 @@ class TestAppendFindingsToBacklog:
         }
         result = codehealth.append_findings_to_backlog(scan)
         assert result["appended"] == 3
-        text = ch_tmp["backlog"].read_text(encoding="utf-8")
+        text = ch_tmp["inbox"].read_text(encoding="utf-8")
         # Existing rows 50, 51 -- new ones should be 52, 53, 54.
         assert "| 52 |" in text
         assert "| 53 |" in text
@@ -1131,7 +1214,7 @@ class TestAppendFindingsToBacklog:
     def test_backlog_no_priority_key_anchor_falls_back_to_append(self, ch_tmp):
         """If the user has moved/removed the **Priority key:** anchor,
         the function should still succeed -- append at the end of the file."""
-        ch_tmp["backlog"].write_text("| 1 | foo | Small | P0 |\n", encoding="utf-8")
+        ch_tmp["inbox"].write_text("| 1 | foo | Small | P0 |\n", encoding="utf-8")
         scan = {
             "scanners": {
                 "coverage": {"level": "ok"},
@@ -1143,8 +1226,9 @@ class TestAppendFindingsToBacklog:
         result = codehealth.append_findings_to_backlog(scan)
         assert result["ok"] is True
         assert result["appended"] == 1
-        text = ch_tmp["backlog"].read_text(encoding="utf-8")
+        text = ch_tmp["inbox"].read_text(encoding="utf-8")
         assert "Scan finding" in text
+        assert "| 2 |" in text
 
 
 class TestEmittedFingerprintPersistence:
@@ -1197,7 +1281,7 @@ class TestRunAndSaveAppendsToBacklog:
         )
         ch_tmp["backlog"].write_text(_BACKLOG_SKELETON, encoding="utf-8")
         codehealth._run_and_save()
-        text = ch_tmp["backlog"].read_text(encoding="utf-8")
+        text = ch_tmp["inbox"].read_text(encoding="utf-8")
         assert "Scan finding" in text
         assert "F401" in text
 
@@ -1216,7 +1300,8 @@ class TestRunAndSaveAppendsToBacklog:
                 },
             },
         )
-        # No backlog file created -- function should swallow the error.
+        # Inbox can't be written -- function should swallow the error.
+        mocker.patch("codehealth.ensure_backlog_inbox", side_effect=OSError("read-only"))
         codehealth._run_and_save()
         # State got persisted despite backlog miss.
         state = codehealth.load_state()

@@ -68,12 +68,38 @@ STATE_FILE = os.path.join(_REPO_ROOT, "codehealth_state.json")
 # wipe the dedup memory.
 EMITTED_FILE = os.path.join(_REPO_ROOT, "codehealth_emitted.json")
 
-# Path to the project backlog markdown. Lives in Claude project memory
-# outside the repo. Overridable via env var so tests / CI can redirect.
-BACKLOG_PATH = os.environ.get(
-    "WINDESKTOPMGR_BACKLOG_PATH",
-    os.path.expanduser(r"~\.claude\projects\C--shigsapps-windesktopmgr\memory\project_backlog.md"),
-)
+# The project backlog is BACKLOG.md at the repo root (tracked). Automatic
+# scan findings go to the gitignored inbox next to it instead, so a scheduled
+# scan never dirties the deployed checkout (``dev.py deploy`` refuses a dirty
+# tree). Inbox rows are folded into BACKLOG.md with a normal PR. Both paths
+# are overridable via env var so tests / CI can redirect.
+BACKLOG_PATH = os.environ.get("WINDESKTOPMGR_BACKLOG_PATH", os.path.join(_REPO_ROOT, "BACKLOG.md"))
+BACKLOG_INBOX_PATH = os.environ.get("WINDESKTOPMGR_BACKLOG_INBOX_PATH", os.path.join(_REPO_ROOT, "backlog_inbox.md"))
+
+_INBOX_TEMPLATE = """# Backlog inbox (untracked)
+
+Automatic entries from the tray: code-health scan findings and post-update
+regressions. This file is gitignored. Fold its rows into BACKLOG.md with a
+normal PR, then delete them here. Row numbers continue from BACKLOG.md.
+
+### Backlog
+
+| # | Feature | Effort | Priority |
+|---|---------|--------|----------|
+
+**Priority key:** P0 = do next, P1 = high value, P2 = nice to have
+"""
+
+
+def ensure_backlog_inbox(path: str | None = None) -> str:
+    """Create the inbox from its template if it doesn't exist yet; return its path.
+    Raises OSError if it can't be written (callers treat that as non-fatal)."""
+    path = path or BACKLOG_INBOX_PATH
+    if not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(_INBOX_TEMPLATE)
+    return path
+
 
 # Cards show "stale" past this age. With a schedule set, the schedule's
 # interval is used instead (see schedule_days); this is the fallback.
@@ -734,10 +760,9 @@ def _run_and_save() -> None:
         save_state(result)
         record_history(result)
         _log.info("codehealth scan complete -- worst level: %s", result.get("worst_level"))
-        # PR-2 sub-task B: turn findings into backlog rows. Best-effort
-        # -- backlog file lives outside the repo (Claude project memory)
-        # so it might be missing on a different machine; skip silently
-        # in that case rather than failing the scan.
+        # PR-2 sub-task B: turn findings into backlog rows (in the untracked
+        # backlog inbox). Best-effort -- a write failure must never fail the
+        # scan.
         try:
             emit_result = append_findings_to_backlog(result)
             _log.info(
@@ -998,7 +1023,7 @@ def refresh_coverage_in_background() -> bool:
 # it should add them to the backlog". This turns scan results into
 # trackable backlog rows so a real-bug ruff finding or a secret leak
 # doesn't get scrolled past in a card grid -- it becomes a P0 line
-# item in project memory.
+# item in the backlog inbox (folded into BACKLOG.md by a PR).
 #
 # Dedup: each finding hashes to a stable fingerprint based on its
 # identity (category + the specific bug location / file / rule code).
@@ -1235,21 +1260,23 @@ def _format_backlog_row(num: int, entry: dict, today: str) -> str:
 
 
 def append_findings_to_backlog(scan_result: dict, backlog_path: str | None = None) -> dict:
-    """Append new scan findings (not already emitted) to the project
-    backlog markdown. Returns a result dict::
+    """Append new scan findings (not already emitted) to the backlog INBOX
+    (``backlog_path``, default ``BACKLOG_INBOX_PATH``), never to the tracked
+    BACKLOG.md. Row numbers continue from BACKLOG.md + the inbox combined so
+    folded-in rows never collide. Returns a result dict::
 
         {"ok": bool,
          "appended": int,
          "skipped": int,           # already-emitted count
          "fingerprints": [<new>],
-         "backlog_path": str,
+         "backlog_path": str,      # the inbox written to
          "error": str | None}
 
-    Best-effort: if the backlog file doesn't exist (e.g. fresh
-    machine without Claude project memory), returns ok=False with a
-    descriptive error rather than raising.
+    Best-effort: the inbox is created from a template if missing; any
+    read/write failure returns ok=False with a descriptive error rather
+    than raising.
     """
-    path = backlog_path or BACKLOG_PATH
+    path = backlog_path or BACKLOG_INBOX_PATH
     result: dict[str, Any] = {
         "ok": False,
         "appended": 0,
@@ -1258,9 +1285,6 @@ def append_findings_to_backlog(scan_result: dict, backlog_path: str | None = Non
         "backlog_path": path,
         "error": None,
     }
-    if not os.path.exists(path):
-        result["error"] = f"backlog not found at {path}"
-        return result
 
     candidates = findings_to_backlog_entries(scan_result)
     emitted = load_emitted_fingerprints()
@@ -1271,22 +1295,36 @@ def append_findings_to_backlog(scan_result: dict, backlog_path: str | None = Non
         return result
 
     try:
+        ensure_backlog_inbox(path)
         with open(path, encoding="utf-8") as f:
             text = f.read()
     except OSError as exc:
-        result["error"] = f"backlog read failed: {exc}"
+        result["error"] = f"backlog inbox read failed: {exc}"
         return result
+    main_text = ""
+    if os.path.exists(BACKLOG_PATH):
+        try:
+            with open(BACKLOG_PATH, encoding="utf-8") as f:
+                main_text = f.read()
+        except OSError:
+            pass  # numbering from the inbox alone is still usable
 
-    next_num = _next_backlog_number(text)
+    next_num = _next_backlog_number(main_text + "\n" + text)
     today = datetime.now().strftime("%Y-%m-%d")
     new_rows = [_format_backlog_row(next_num + i, entry, today) for i, entry in enumerate(new_entries)]
     block = "\n".join(new_rows) + "\n"
 
-    # Insert before "**Priority key:**" anchor (lives at the bottom of
-    # the Backlog table) so new rows land inside the table, not after
-    # the priority key. Falls back to appending if anchor is missing.
+    # Insert just above the "**Priority key:**" anchor (it sits under the
+    # Backlog table). When a blank line separates them, insert BEFORE that
+    # blank line so the rows stay part of the table. Falls back to
+    # appending if the anchor is missing.
     anchor = "**Priority key:**"
-    text = text.replace(anchor, block + "\n" + anchor, 1) if anchor in text else text.rstrip() + "\n\n" + block
+    if "\n\n" + anchor in text:
+        text = text.replace("\n\n" + anchor, "\n" + block + "\n" + anchor, 1)
+    elif anchor in text:
+        text = text.replace(anchor, block + "\n" + anchor, 1)
+    else:
+        text = text.rstrip() + "\n\n" + block
 
     # Atomic write so a crash mid-write doesn't corrupt the backlog.
     tmp = path + ".tmp"

@@ -52,9 +52,13 @@ _APPDATA = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Loc
 STATE_DIR = _APPDATA / "WinDesktopMgr"
 STATE_FILE = STATE_DIR / "post_update_state.json"
 
-# Backlog file lives in the user's Claude project memory so auto-entries land
-# where the planning workflow already reads them.
-BACKLOG_FILE = Path.home() / ".claude" / "projects" / "C--shigsapps-windesktopmgr" / "memory" / "project_backlog.md"
+# Auto-entries go to the gitignored backlog inbox at the repo root (same file
+# codehealth's scan findings use), never to the tracked BACKLOG.md, so the tray
+# never dirties the deployed checkout. Inbox rows are folded into BACKLOG.md
+# with a normal PR.
+BACKLOG_FILE = Path(
+    os.environ.get("WINDESKTOPMGR_BACKLOG_INBOX_PATH") or Path(__file__).resolve().parent / "backlog_inbox.md"
+)
 
 # SMTP — reuse the exact same credentials the daily SystemHealthDiag.py report
 # uses. The config lives in ``diag_email_config.xml`` next to this file and is
@@ -417,19 +421,15 @@ def send_email(subject: str, body: str) -> bool:
 
 def prepend_backlog_entry(hotfix: dict, pytest_result: dict, verify_result: dict) -> bool:
     """
-    Prepend a ``[POST-UPDATE REGRESSION]`` entry to the top of the project
-    backlog so the next planning pass sees it. Idempotent-safe: one call = one
-    entry (does not dedupe across runs — regressions from different hotfixes
-    are genuinely separate items).
+    Prepend a ``[POST-UPDATE REGRESSION]`` entry to the top of the backlog
+    inbox so the next planning pass sees it. Creates the inbox if missing.
+    Idempotent-safe: one call = one entry (does not dedupe across runs —
+    regressions from different hotfixes are genuinely separate items).
     """
     try:
-        if not BACKLOG_FILE.exists():
-            print(
-                f"[post_update_check] backlog file not found at {BACKLOG_FILE} — skipping auto-entry",
-                file=sys.stderr,
-            )
-            return False
+        from codehealth import ensure_backlog_inbox  # lazy: same template as scan findings
 
+        ensure_backlog_inbox(str(BACKLOG_FILE))
         existing = BACKLOG_FILE.read_text(encoding="utf-8")
         entry = _format_backlog_entry(hotfix, pytest_result, verify_result)
         # Prepend: insert directly after the file header (first blank line).

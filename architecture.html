@@ -871,7 +871,7 @@
           </div>
           <div class="fs-chip">
             <div class="fs-title">codehealth.py</div>
-            <div class="fs-sub">Utilities tab code-health scans (#51 PR-1+2 sub-tasks A+B, #52) · ~1,309 lines · 4 scanners: coverage (existing .coverage via coverage CLI JSON exporter; staleness detection demotes severity when >3d old; a reading under the pyproject --cov-fail-under gate is labelled a likely partial test run -- warning, never critical, no backlog row) · ruff (full repo, prefix categorisation S/F/B/UP) · secrets (scripts/check_repo_secrets.py + redaction-preserving) · tech-debt (TODO/FIXME walk over .py/.html/.js/.css + >5k-line file flag, re-filed per 1,000-line band) · severity ladder ok/info/warning/critical · background thread guard against double-runs · Auto-scan schedule daily/weekly/monthly/off (codehealth_schedule.json, default weekly; POST /api/codehealth/schedule) run by the hourly CodeHealthScheduler thread + a boot catch-up · scan history (codehealth_history.json, last 20, level + count per scanner; GET /api/codehealth/history) behind per-card trend lines + a history pop-up · a critical scan raises a Dashboard concern linking to Utilities (#52) · refresh-coverage button (pytest --cov -n auto in a worker thread + auto-rescan, ~45s, --basetemp isolation against xdist tmp_path races) · scan findings auto-append to project backlog with SHA-256 fingerprint dedup (filters: only warning/critical, skips UP/PIE noise and stale-coverage false positives)</div>
+            <div class="fs-sub">Utilities tab code-health scans (#51 PR-1+2 sub-tasks A+B, #52) · ~1,359 lines · 4 scanners: coverage (existing .coverage via coverage CLI JSON exporter; staleness detection demotes severity when >3d old; a reading under the pyproject --cov-fail-under gate is labelled a likely partial test run -- warning, never critical, no backlog row) · ruff (full repo, prefix categorisation S/F/B/UP) · secrets (scripts/check_repo_secrets.py + redaction-preserving) · tech-debt (TODO/FIXME walk over .py/.html/.js/.css + >5k-line file flag, re-filed per 1,000-line band) · severity ladder ok/info/warning/critical · background thread guard against double-runs · Auto-scan schedule daily/weekly/monthly/off (codehealth_schedule.json, default weekly; POST /api/codehealth/schedule) run by the hourly CodeHealthScheduler thread + a boot catch-up · scan history (codehealth_history.json, last 20, level + count per scanner; GET /api/codehealth/history) behind per-card trend lines + a history pop-up · a critical scan raises a Dashboard concern linking to Utilities (#52) · refresh-coverage button (pytest --cov -n auto in a worker thread + auto-rescan, ~45s, --basetemp isolation against xdist tmp_path races) · scan findings auto-append to the untracked backlog_inbox.md (row numbers continue from BACKLOG.md) with SHA-256 fingerprint dedup (filters: only warning/critical, skips UP/PIE noise and stale-coverage false positives)</div>
           </div>
           <div class="fs-chip" style="border-color:#00e5a033">
             <div class="fs-title" style="color:#00e5a0">maintenance.py</div>
@@ -933,9 +933,13 @@
             <div class="fs-title">scripts/lock_requirements.py</div>
             <div class="fs-sub">Dependency lock · ~91 lines · resolves requirements.txt + everything it pulls in from the installed environment &rarr; writes requirements.lock (exact versions the suite passed with) · reinstall with pip install -r requirements.lock · tests/test_requirements.py also fails when the app imports a package requirements.txt does not declare</div>
           </div>
+          <div class="fs-chip" style="border-color:#00e5a033">
+            <div class="fs-title" style="color:#00e5a0">BACKLOG.md + backlog_inbox.md</div>
+            <div class="fs-sub">Project backlog, tracked at the repo root since 2026-11-22 (rebuilt from the last backlog.html render after the out-of-repo memory copy was lost) · numbered Backlog table + dated Done table · updated in the same PR as every merged change · public repo: LAN IPs / MACs / serials written as [redacted-*] (guarded by tests/test_backlog_html.py) · the tray's automatic entries (codehealth scan findings, post_update_check regressions) go to the gitignored backlog_inbox.md so a scan never dirties the deployed checkout; folded into BACKLOG.md by PR</div>
+          </div>
           <div class="fs-chip">
             <div class="fs-title">scripts/backlog_html.py</div>
-            <div class="fs-sub">Readable backlog page · ~335 lines · reads memory/project_backlog.md (same path + WINDESKTOPMGR_BACKLOG_PATH override as codehealth) &rarr; writes gitignored backlog.html: open items by priority on top, all closed items in one collapsed section (newest first, each expandable) + live filter · run after every backlog update</div>
+            <div class="fs-sub">Readable backlog page · ~379 lines · reads BACKLOG.md + backlog_inbox.md (inbox rows tagged "inbox"; same paths + WINDESKTOPMGR_BACKLOG_PATH / _INBOX_PATH overrides as codehealth) · honours \| escaped pipes in cells &rarr; writes gitignored backlog.html: open items by priority on top, all closed items in one collapsed section (newest first, each expandable) + live filter · run after every backlog update</div>
           </div>
           <div class="fs-chip" style="border-color:#a855f733">
             <div class="fs-title" style="color:#a855f7">scripts/audit_common.py + check_*.py (scheduled audits)</div>
@@ -1115,7 +1119,7 @@
       </div>
       <div class="test-chip">
         <div class="test-title">test_backlog_html.py</div>
-        <div class="test-sub">19 tests · Done rows (pipes inside prose survive) · every real Backlog row shape (5 cells / value folded into Feature / no effort+priority) · ✅ closes, ⏳ stays open · priority then newest-first ordering · HTML escaping · closed section collapsed · main() exit codes</div>
+        <div class="test-sub">27 tests · Done rows (pipes inside prose survive) · \| escaped pipes don't split cells · every real Backlog row shape (5 cells / value folded into Feature / no effort+priority) · ✅ closes, ⏳ stays open · priority then newest-first ordering · HTML escaping · closed section collapsed · main() exit codes · inbox rows merged + tagged · real BACKLOG.md parses and has no unredacted LAN IP / MAC / service tag</div>
       </div>
       <div class="test-chip">
         <div class="test-title">test_check_repo_secrets.py</div>

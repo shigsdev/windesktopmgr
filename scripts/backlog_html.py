@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """backlog_html.py -- Render the project backlog as a readable HTML page.
 
-The backlog lives in project memory as one markdown file with two very wide
-tables (``### Done`` and ``### Backlog``). It is the project's record of what
-shipped, but 200+ rows of pipe-delimited prose are hard to read. This script
-turns it into one standalone page:
+The backlog is ``BACKLOG.md`` at the repo root: one markdown file with two
+very wide tables (``### Done`` and ``### Backlog``). It is the project's record
+of what shipped, but 300+ rows of pipe-delimited prose are hard to read. The
+tray's automatic entries land in the gitignored ``backlog_inbox.md`` next to
+it; those rows are shown too, tagged "inbox". This script turns both into one
+standalone page:
 
 * **Open** items at the top, grouped by priority (P0 first).
 * **Closed** items at the bottom inside ONE collapsed section; expanding it
@@ -18,10 +20,10 @@ Usage::
 
     python scripts/backlog_html.py                 # writes ./backlog.html
     python scripts/backlog_html.py --out x.html    # elsewhere
-    python scripts/backlog_html.py --backlog path/to/project_backlog.md
+    python scripts/backlog_html.py --backlog path/to/BACKLOG.md
 
-The output is gitignored: the backlog carries operational notes that do not
-belong in the public repo. Re-run after every backlog update.
+The output is gitignored (it is generated, and may include untracked inbox
+rows). Re-run after every backlog update.
 """
 
 from __future__ import annotations
@@ -35,13 +37,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-# Same source and override as codehealth.BACKLOG_PATH, so both tools always
-# read the same file.
-BACKLOG_PATH = os.environ.get(
-    "WINDESKTOPMGR_BACKLOG_PATH",
-    os.path.expanduser(r"~\.claude\projects\C--shigsapps-windesktopmgr\memory\project_backlog.md"),
-)
-DEFAULT_OUT = Path(__file__).resolve().parent.parent / "backlog.html"
+# Same sources and overrides as codehealth.BACKLOG_PATH / BACKLOG_INBOX_PATH,
+# so both tools always read the same files.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+BACKLOG_PATH = os.environ.get("WINDESKTOPMGR_BACKLOG_PATH", str(_REPO_ROOT / "BACKLOG.md"))
+INBOX_PATH = os.environ.get("WINDESKTOPMGR_BACKLOG_INBOX_PATH", str(_REPO_ROOT / "backlog_inbox.md"))
+DEFAULT_OUT = _REPO_ROOT / "backlog.html"
 
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _PRIORITY = re.compile(r"^P[0-3]\b")
@@ -67,9 +68,34 @@ def _inner(line: str) -> str:
     inner = line.strip()
     if inner.startswith("|"):
         inner = inner[1:]
-    if inner.endswith("|"):
+    if inner.endswith("|") and not inner.endswith(r"\|"):
         inner = inner[:-1]
     return inner
+
+
+# A column separator is a pipe NOT preceded by a backslash: cells write a
+# literal pipe as ``\|`` (GitHub's table escape; codehealth emits it too).
+_SEP = re.compile(r"(?<!\\)\|")
+
+
+def _unescape(cell: str) -> str:
+    return cell.replace(r"\|", "|")
+
+
+def _split(text: str, maxsplit: int) -> list[str]:
+    """``str.split("|", maxsplit)`` that skips escaped pipes."""
+    return _SEP.split(text, maxsplit=maxsplit)
+
+
+def _rsplit(text: str, maxsplit: int) -> list[str]:
+    """``str.rsplit("|", maxsplit)`` that skips escaped pipes."""
+    seps = [m.start() for m in _SEP.finditer(text)][-maxsplit:] if maxsplit else []
+    parts, prev = [], 0
+    for pos in seps:
+        parts.append(text[prev:pos])
+        prev = pos + 1
+    parts.append(text[prev:])
+    return parts
 
 
 def _split_title(text: str) -> tuple[str, str]:
@@ -98,13 +124,13 @@ def parse_done(md: str) -> list[Item]:
     for line in _section(md, "Done").splitlines():
         if not re.match(r"\|\s*\d{4}-\d{2}-\d{2}\s*\|", line):
             continue
-        c = [x.strip() for x in _inner(line).split("|", 3)]
+        c = [x.strip() for x in _split(_inner(line), 3)]
         if len(c) < 4:
             continue
         # The whole Feature cell is the title here: it is one short line, and
         # the PR reference often sits outside the bold.
-        title = re.sub(r"\s+", " ", _BOLD.sub(r"\1", c[2])).strip()
-        items.append(Item(title=title, body=c[3], closed=True, date=c[0], category=c[1]))
+        title = re.sub(r"\s+", " ", _BOLD.sub(r"\1", _unescape(c[2]))).strip()
+        items.append(Item(title=title, body=_unescape(c[3]), closed=True, date=c[0], category=_unescape(c[1])))
     return items
 
 
@@ -117,13 +143,14 @@ def parse_backlog(md: str) -> list[Item]:
     for line in _section(md, "Backlog").splitlines():
         if not re.match(r"\|\s*\d+\s*\|", line):
             continue
-        number, rest = _inner(line).split("|", 1)
+        number, rest = _split(_inner(line), 1)
         number = number.strip()
         effort = priority = ""
-        tail = rest.rsplit("|", 2)
+        tail = _rsplit(rest, 2)
         if len(tail) == 3 and _PRIORITY.match(tail[2].strip()):
-            rest, effort, priority = tail[0], tail[1].strip(), tail[2].strip()
-        feature, _, value = (x.strip() for x in rest.partition("|"))
+            rest, effort, priority = tail[0], _unescape(tail[1].strip()), tail[2].strip()
+        feature, value = ([*_split(rest, 1), ""])[:2]
+        feature, value = _unescape(feature.strip()), _unescape(value.strip())
         title, extra = _split_title(feature)
         body = " ".join(p for p in (extra, value) if p)
         closed = "✅" in feature
@@ -312,8 +339,15 @@ def render(open_items: list[Item], closed: list[Item], generated: str, source: s
 """
 
 
-def build(md: str, source: str, now: datetime | None = None) -> str:
+def build(md: str, source: str, now: datetime | None = None, inbox_md: str = "") -> str:
     items = parse_backlog(md) + parse_done(md)
+    if inbox_md:
+        # Inbox rows aren't in BACKLOG.md yet; tag them so it's clear they
+        # still need folding in.
+        inbox = parse_backlog(inbox_md) + parse_done(inbox_md)
+        for i in inbox:
+            i.tags.append("inbox")
+        items += inbox
     open_items, closed = split_open_closed(items)
     stamp = (now or datetime.now()).strftime("%Y-%m-%d %H:%M")
     return render(open_items, closed, stamp, source)
@@ -321,7 +355,8 @@ def build(md: str, source: str, now: datetime | None = None) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--backlog", default=BACKLOG_PATH, help="path to project_backlog.md")
+    ap.add_argument("--backlog", default=BACKLOG_PATH, help="path to BACKLOG.md")
+    ap.add_argument("--inbox", default=INBOX_PATH, help="path to backlog_inbox.md (optional; skipped if missing)")
     ap.add_argument("--out", default=str(DEFAULT_OUT), help="where to write the HTML page")
     args = ap.parse_args(argv)
     try:
@@ -329,7 +364,13 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as e:
         print(f"backlog_html: cannot read {args.backlog}: {e}", file=sys.stderr)
         return 1
-    Path(args.out).write_text(build(md, args.backlog), encoding="utf-8")
+    inbox_md = ""
+    if os.path.exists(args.inbox):
+        try:
+            inbox_md = Path(args.inbox).read_text(encoding="utf-8")
+        except OSError as e:
+            print(f"backlog_html: skipping unreadable inbox {args.inbox}: {e}", file=sys.stderr)
+    Path(args.out).write_text(build(md, args.backlog, inbox_md=inbox_md), encoding="utf-8")
     print(f"backlog_html: wrote {args.out}")
     return 0
 

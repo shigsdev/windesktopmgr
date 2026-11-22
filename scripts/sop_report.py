@@ -13,7 +13,7 @@ verify) stays ``[ ]`` for the author to fill in. Auto-detected:
   * tests touched alongside code (Phase 5)
   * architecture.html touched, or a Step-4 trigger it missed (new root /
     scripts / tests file) (Phase 9)
-  * backlog row -- project_backlog.md mentions "PR #<n>" from the subject
+  * backlog row -- BACKLOG.md mentions "PR #<n>" from the subject
   * optional ``--count-tests``: pytest --collect-only total
 
 Read-only. Exit 0 always (it's a report, not a gate).
@@ -27,9 +27,8 @@ import re
 import subprocess
 import sys
 
-DEFAULT_BACKLOG = os.path.join(
-    os.path.expanduser("~"), ".claude", "projects", "C--shigsapps-windesktopmgr", "memory", "project_backlog.md"
-)
+# BACKLOG.md at the repo root (moved out of Claude project memory 2026-11-22).
+DEFAULT_BACKLOG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "BACKLOG.md")
 _PR_RE = re.compile(r"\(#(\d+)\)\s*$")
 _CODE_SUFFIXES = (".py", ".js", ".css", ".ps1", ".bat", ".toml", ".txt", ".cfg", ".yaml", ".yml", ".json", ".lock")
 
@@ -190,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--title", required=True, help="Short description of the change")
     parser.add_argument("--commit", default="HEAD", help="Commit to report on (default HEAD)")
-    parser.add_argument("--backlog", default=DEFAULT_BACKLOG, help="project_backlog.md path")
+    parser.add_argument("--backlog", default=DEFAULT_BACKLOG, help="BACKLOG.md path")
     parser.add_argument("--count-tests", action="store_true", help="Also run pytest --collect-only (~10 s)")
     args = parser.parse_args(argv)
     facts = collect(args.commit, args.backlog)
