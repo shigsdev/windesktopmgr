@@ -156,7 +156,8 @@ class TestMain:
         src = tmp_path / "backlog.md"
         src.write_text(SAMPLE, encoding="utf-8")
         out = tmp_path / "out.html"
-        assert bh.main(["--backlog", str(src), "--out", str(out)]) == 0
+        missing_inbox = tmp_path / "no-inbox.md"
+        assert bh.main(["--backlog", str(src), "--inbox", str(missing_inbox), "--out", str(out)]) == 0
         assert out.read_text(encoding="utf-8").startswith("<!doctype html>")
 
     def test_unreadable_backlog_exits_1(self, tmp_path, capsys):
@@ -164,3 +165,98 @@ class TestMain:
         assert bh.main(["--backlog", str(tmp_path / "missing.md"), "--out", str(out)]) == 1
         assert "cannot read" in capsys.readouterr().err
         assert not out.exists()
+
+    def test_inbox_rows_are_merged_and_tagged(self, tmp_path):
+        src = tmp_path / "BACKLOG.md"
+        src.write_text(SAMPLE, encoding="utf-8")
+        inbox = tmp_path / "backlog_inbox.md"
+        inbox.write_text(
+            """### Backlog
+
+| # | Feature | Effort | Priority |
+|---|---|---|---|
+| 120 | **Scan finding: F401 in a.py** found by codehealth | Small | P1 |
+""",
+            encoding="utf-8",
+        )
+        out = tmp_path / "out.html"
+        assert bh.main(["--backlog", str(src), "--inbox", str(inbox), "--out", str(out)]) == 0
+        page = out.read_text(encoding="utf-8")
+        assert "Scan finding: F401 in a.py" in page
+        assert '<span class="chip warn">inbox</span>' in page
+
+    def test_defaults_point_at_repo_root(self):
+        root = Path(__file__).resolve().parent.parent
+        if "WINDESKTOPMGR_BACKLOG_PATH" not in __import__("os").environ:
+            assert Path(bh.BACKLOG_PATH) == root / "BACKLOG.md"
+        if "WINDESKTOPMGR_BACKLOG_INBOX_PATH" not in __import__("os").environ:
+            assert Path(bh.INBOX_PATH) == root / "backlog_inbox.md"
+
+
+class TestEscapedPipes:
+    r"""Cells write a literal pipe as ``\|`` (GitHub's table escape; codehealth
+    emits it too). It must not split columns, and renders as a plain pipe."""
+
+    MD = r"""### Done
+
+| Date | Category | Feature | Summary |
+|---|---|---|---|
+| 2026-11-22 | Bug Fix | **A \| B** (PR #9) | ran `dev.py [check\|fix]` ok |
+
+### Backlog
+
+| # | Feature | Value | Effort | Priority |
+|---|---|---|---|---|
+| 7 | **Pipe \| title** | value with \| pipe | Small | P1 |
+| 8 | ✅ 2026-11-01 **Closed \| row** | body \| text |
+"""
+
+    def test_done_cells_unescape(self):
+        (item,) = bh.parse_done(self.MD)
+        assert item.title == "A | B (PR #9)"
+        assert item.body == "ran `dev.py [check|fix]` ok"
+        assert item.category == "Bug Fix"
+
+    def test_backlog_cells_unescape_and_keep_effort_priority(self):
+        items = {i.number: i for i in bh.parse_backlog(self.MD)}
+        assert items["7"].title == "Pipe | title"
+        assert items["7"].body == "value with | pipe"
+        assert (items["7"].effort, items["7"].priority) == ("Small", "P1")
+        assert items["8"].closed is True
+        assert items["8"].title == "Closed | row"
+        assert items["8"].date == "2026-11-01"
+
+    def test_rsplit_matches_str_rsplit_without_escapes(self):
+        assert bh._rsplit("a|b|c|d", 2) == ["a|b", "c", "d"]
+        assert bh._rsplit("a|b", 0) == ["a|b"]
+        assert bh._rsplit(r"a|b\|c|d", 2) == ["a", r"b\|c", "d"]
+
+
+class TestRealBacklogFile:
+    """BACKLOG.md is in a PUBLIC repo. Guard the redaction rules the user
+    chose (2026-11-22) and that the file still parses."""
+
+    PATH = Path(__file__).resolve().parent.parent / "BACKLOG.md"
+
+    def _text(self):
+        return self.PATH.read_text(encoding="utf-8")
+
+    def test_parses_into_open_and_closed_items(self):
+        items = bh.parse_backlog(self._text()) + bh.parse_done(self._text())
+        open_items, closed = bh.split_open_closed(items)
+        assert len(open_items) >= 10
+        assert len(closed) >= 270
+
+    def test_no_private_network_details(self):
+        import re
+
+        text = self._text()
+        lan_ip = re.findall(r"\b(?:192\.168|10\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}\b", text)
+        mac = re.findall(r"\b(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b", text)
+        assert not lan_ip, f"unredacted LAN IPs: {lan_ip} -- write [redacted-ip]"
+        assert not mac, f"unredacted MACs: {mac} -- write [redacted-mac]"
+
+    def test_no_service_tag_or_secret_locations(self):
+        text = self._text()
+        for needle in ("9T46D14", "ConsoleHost_history", "716/718/720"):
+            assert needle not in text, f"{needle!r} must stay out of the public backlog"

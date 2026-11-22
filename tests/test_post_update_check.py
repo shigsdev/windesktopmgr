@@ -499,14 +499,34 @@ class TestPrependBacklogEntry:
         assert "1340 passed, 3 failed" in content
         assert "FAILED" in content  # verify line says FAILED
 
-    def test_missing_backlog_returns_false(self, tmp_path, mocker):
-        mocker.patch.object(puc, "BACKLOG_FILE", tmp_path / "does-not-exist.md")
+    def test_missing_inbox_is_created(self, tmp_path, mocker):
+        """The inbox is gitignored, so a fresh checkout has none -- create it
+        from codehealth's template instead of dropping the regression."""
+        inbox = tmp_path / "backlog_inbox.md"
+        mocker.patch.object(puc, "BACKLOG_FILE", inbox)
+        ok = puc.prepend_backlog_entry(
+            {"HotFixID": "KB1", "InstalledOn": ""},
+            {"passed": 0, "failed": 1, "elapsed_s": 1.0, "ok": False},
+            {"ok": False, "elapsed_s": 1.0},
+        )
+        assert ok is True
+        content = inbox.read_text(encoding="utf-8")
+        assert content.startswith("# Backlog inbox (untracked)")
+        assert "[POST-UPDATE REGRESSION]" in content
+
+    def test_unwritable_inbox_returns_false(self, tmp_path, mocker):
+        mocker.patch.object(puc, "BACKLOG_FILE", tmp_path / "missing-dir" / "backlog_inbox.md")
         ok = puc.prepend_backlog_entry(
             {"HotFixID": "KB1", "InstalledOn": ""},
             {"passed": 0, "failed": 1, "elapsed_s": 1.0, "ok": False},
             {"ok": False, "elapsed_s": 1.0},
         )
         assert ok is False
+
+    def test_default_target_is_the_untracked_inbox(self):
+        """Never the tracked BACKLOG.md: a tray write there would dirty the
+        deployed checkout and block `dev.py deploy`."""
+        assert puc.BACKLOG_FILE.name == "backlog_inbox.md"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

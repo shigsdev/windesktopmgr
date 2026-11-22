@@ -139,11 +139,26 @@ If **any** of these are touched, it is NOT docs-only — run the full workflow:
 
 ## 📓 Backlog Logging — Record Every Merged Change (MANDATORY)
 
-`project_backlog.md` (in project memory:
-`~/.claude/projects/C--shigsapps-windesktopmgr/memory/project_backlog.md`)
-is the project's running record of what shipped. It only stays
-trustworthy if **every** change updates it — a gap is how an entire
-session's work goes unrecorded.
+`BACKLOG.md` at the repo root is the project's running record of what
+shipped. It only stays trustworthy if **every** change updates it — a gap
+is how an entire session's work goes unrecorded. It is tracked in git, so
+the row goes **in the same PR as the change**. The PR number is known once
+`gh pr create` returns, so add the row then and push it to the branch before
+merging.
+
+(It moved into the repo on 2026-11-22. It used to live in Claude project
+memory, outside the repo, until a machine repair wiped it. It was rebuilt
+from the last `backlog.html` render.)
+
+**The repo is public — redact.** Write LAN IPs, MAC addresses, serials and
+service tags as `[redacted-ip]` / `[redacted-mac]` / `[redacted-tag]`, and
+describe security to-dos by the action, never by where a secret was found.
+
+**Automatic entries go to the inbox, not here.** The tray's code-health
+scans and post-update checks write to `backlog_inbox.md` (gitignored), so
+a scan never dirties the deployed checkout (`dev.py deploy` refuses a
+dirty tree). When the inbox has rows, fold them into `BACKLOG.md` with a
+normal PR and delete them from the inbox.
 
 **On every change that merges to `main`:**
 
@@ -162,8 +177,8 @@ as ⏭️ Skipped with a one-line reason — never skip silently.
 
 **Readable view:** after updating the backlog, regenerate the HTML page —
 `python scripts/backlog_html.py` writes `backlog.html` (gitignored) at the
-repo root: open items by priority on top, every closed item in one
-collapsed section at the bottom. ✅ in a Backlog row's Feature cell closes
+repo root: open items by priority on top (inbox rows tagged "inbox"),
+every closed item in one collapsed section at the bottom. ✅ in a Backlog row's Feature cell closes
 it; a partly shipped item uses ⏳ so it stays in the open list.
 
 ---

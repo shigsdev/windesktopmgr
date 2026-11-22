@@ -301,6 +301,13 @@ class TestCollect:
         facts = sop.collect("HEAD", str(tmp_path / "missing.md"))
         assert facts["backlog_hit"] is None and facts["merged"] is False and facts["sha"] == "HEAD"
 
+    def test_default_backlog_is_repo_root_backlog_md(self):
+        """The backlog moved into the repo (2026-11-22); the out-of-repo
+        memory copy was lost once in a machine repair."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        assert os.path.normcase(sop.DEFAULT_BACKLOG) == os.path.normcase(os.path.join(root, "BACKLOG.md"))
+        assert os.path.isfile(sop.DEFAULT_BACKLOG)
+
     def test_git_failure_is_empty(self, mocker):
         mocker.patch.object(
             sop.subprocess, "run", return_value=types.SimpleNamespace(returncode=128, stdout="x", stderr="")

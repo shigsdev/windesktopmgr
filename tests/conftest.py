@@ -103,17 +103,32 @@ def _isolate_diagnose_history_file(tmp_path_factory):
 
 @pytest.fixture(autouse=True, scope="session")
 def _isolate_codehealth_files(tmp_path_factory):
-    """Redirect codehealth's state / history / schedule files to a per-session tmp dir."""
+    """Redirect codehealth's state / history / schedule / emitted files and the
+    backlog inbox (plus post_update_check's inbox path) to a per-session tmp
+    dir. The inbox lives in the repo root, so a test that triggers a scan or a
+    post-update entry without its own patch must never write the deployed
+    checkout's backlog_inbox.md (2026-11-22)."""
+    import post_update_check
+
     d = tmp_path_factory.mktemp("codehealth_isolated")
-    names = {"STATE_FILE": "state.json", "HISTORY_FILE": "history.json", "SCHEDULE_FILE": "schedule.json"}
+    names = {
+        "STATE_FILE": "state.json",
+        "HISTORY_FILE": "history.json",
+        "SCHEDULE_FILE": "schedule.json",
+        "EMITTED_FILE": "emitted.json",
+        "BACKLOG_INBOX_PATH": "backlog_inbox.md",
+    }
     real = {attr: getattr(codehealth, attr) for attr in names}
     for attr, fname in names.items():
         setattr(codehealth, attr, str(d / fname))
+    real_puc_inbox = post_update_check.BACKLOG_FILE
+    post_update_check.BACKLOG_FILE = d / "backlog_inbox.md"
     try:
         yield d
     finally:
         for attr, value in real.items():
             setattr(codehealth, attr, value)
+        post_update_check.BACKLOG_FILE = real_puc_inbox
 
 
 # ── Fixture loading helpers ───────────────────────────────────────────────────
