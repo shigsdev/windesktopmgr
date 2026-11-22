@@ -1,9 +1,10 @@
 {
   "_doc": "Reviewed '# noqa: S...' suppressions (file + rule -> count) for scripts/check_security_posture.py. Refresh with `python scripts/check_security_posture.py --write-baseline` after reviewing a new one.",
-  "generated_at": "2026-10-12T20:37:06+00:00",
+  "generated_at": "2026-11-22T19:50:09+00:00",
   "suppressions": {
     "backup.py S314": 1,
     "baseline_routes.py S606": 1,
+    "bios.py S310": 2,
     "bios.py S314": 1,
     "diagnose_crash_probes.py S314": 1,
     "diagnose_crash_probes.py S405": 1,

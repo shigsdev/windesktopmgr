@@ -365,8 +365,11 @@ class TestEnumerateLogicalDrivesLive:
     classification path keeps working on the host's current drive layout.
     """
 
+    # classmethod: pytest 10 drops class-scoped fixtures defined as instance
+    # methods (PytestRemovedIn10Warning).
     @pytest.fixture(scope="class")
-    def drives(self):
+    @classmethod
+    def drives(cls):
         import disk
 
         try:

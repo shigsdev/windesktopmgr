@@ -253,17 +253,51 @@ def check_dependency_drift() -> list[Finding]:
 # ── stale-tests ──────────────────────────────────────────────────────────────
 
 
+def _module_under_test(rel: str, tracked: set[str]) -> str | None:
+    """The module ``tests/test_<name>.py`` covers -- ``<name>.py`` at the repo
+    root or in ``scripts/`` -- or None when no such file is tracked (route,
+    smoke and other cross-module test files)."""
+    name = rel[len("tests/test_") :]
+    for candidate in (name, f"scripts/{name}"):
+        if candidate in tracked:
+            return candidate
+    return None
+
+
 def check_stale_tests() -> list[Finding]:
+    """Old test files that may no longer match their module.
+
+    A test whose module is known is stale only when that module changed after
+    the test last did: an old test for an untouched module still tests what
+    the module does today. Test files with no single module fall back to age
+    alone."""
     today = datetime.date.today()
     findings = []
-    for rel in tracked_files((".py",)):
+    py_files = tracked_files((".py",))
+    tracked = set(py_files)
+    for rel in py_files:
         if not re.fullmatch(r"tests/test_[^/]+\.py", rel):
             continue
         last = last_commit_date(rel)
         if last is None:
             continue
         age = (today - last).days
-        if age > STALE_TEST_DAYS:
+        if age <= STALE_TEST_DAYS:
+            continue
+        module = _module_under_test(rel, tracked)
+        if module is not None:
+            module_last = last_commit_date(module)
+            if module_last is None or module_last <= last:
+                continue
+            findings.append(
+                Finding(
+                    check_id="stale-tests",
+                    path=rel,
+                    detail=f"last changed {last.isoformat()} ({age} days ago), but {module} changed "
+                    f"{module_last.isoformat()} — check it still tests what the module does today.",
+                )
+            )
+        else:
             findings.append(
                 Finding(
                     check_id="stale-tests",
@@ -353,7 +387,7 @@ CHECK_DESCRIPTIONS = {
     "large-files": f"Source files of {LARGE_FILE_LINE_THRESHOLD:,}+ lines — hard to review and to change safely.",
     "complex-functions": f"Functions with McCabe complexity over {COMPLEXITY_THRESHOLD} (too many branches to test).",
     "dependency-drift": "A package we declare is a whole major version behind its latest release.",
-    "stale-tests": f"Test files nobody has changed in {STALE_TEST_DAYS}+ days.",
+    "stale-tests": f"Test files unchanged for {STALE_TEST_DAYS}+ days whose module changed since.",
     "code-duplication": f"Copy-pasted blocks of {DUPLICATE_MIN_LINES}+ lines across .py/.js files.",
 }
 

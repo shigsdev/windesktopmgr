@@ -28,6 +28,7 @@ import re
 import shutil
 import subprocess
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import ai_identify as identify
 
@@ -334,18 +335,30 @@ def _model_catalog_path(index_root) -> str:
     return ""
 
 
+def _require_dell_url(url: object) -> None:
+    """Raise ValueError unless ``url`` is an https URL on downloads.dell.com."""
+    parsed = urlparse(url) if isinstance(url, str) else None
+    if parsed is None or parsed.scheme != "https" or parsed.netloc != "downloads.dell.com":
+        raise ValueError(f"refusing non-Dell catalog URL: {url}")
+
+
 def _fetch_catalog_root(url: str, work_dir: str, stem: str):
     """Download a Dell .cab, unpack it with expand.exe, and parse the XML inside."""
     import urllib.request
     import xml.etree.ElementTree as ET
 
+    # Only ever https://downloads.dell.com: the index URL is a constant and
+    # model paths are validated by _CATALOG_PATH_RE before they get here.
+    # _require_dell_url enforces that here too -- on the URL asked for AND the
+    # one urlopen ended at after any redirects -- which is what makes the two
+    # S310 (urlopen with an arbitrary scheme) suppressions safe.
+    _require_dell_url(url)
     cab_path = os.path.join(work_dir, stem + ".cab")
     xml_path = os.path.join(work_dir, stem + ".xml")
-    # Only ever downloads.dell.com: the index URL is a constant and model
-    # paths are validated by _CATALOG_PATH_RE before they get here.
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})  # noqa: S310
     # Cap the read at 16 MB so a hostile endpoint can't OOM us.
     with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310
+        _require_dell_url(resp.geturl())  # a redirect off Dell (or to http) is refused
         cab_bytes = resp.read(_CATALOG_MAX_BYTES)
     if not cab_bytes:
         raise RuntimeError(f"empty download: {url}")

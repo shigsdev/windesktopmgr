@@ -510,6 +510,46 @@ class TestTechDebt:
         assert finding.path == "tests/test_old.py"
         assert "200 days ago" in finding.detail
 
+    def test_stale_tests_skips_old_test_of_unchanged_module(self, mocker):
+        """An old test for a module that hasn't changed since still tests what
+        the module does today -- not a finding (report.py / check_repo_secrets
+        false positives, 2026-11-22)."""
+        _fake_repo(
+            mocker, ctd, {"tests/test_report.py": "", "report.py": "", "scripts/sec.py": "", "tests/test_sec.py": ""}
+        )
+        today = datetime.date.today()
+        dates = {
+            "tests/test_report.py": today - datetime.timedelta(days=200),
+            "report.py": today - datetime.timedelta(days=250),
+            "tests/test_sec.py": today - datetime.timedelta(days=190),
+            "scripts/sec.py": today - datetime.timedelta(days=190),
+        }
+        mocker.patch.object(ctd, "last_commit_date", side_effect=dates.get)
+        assert ctd.check_stale_tests() == []
+
+    def test_stale_tests_flags_old_test_when_module_changed_after(self, mocker):
+        _fake_repo(mocker, ctd, {"tests/test_bios.py": "", "bios.py": ""})
+        today = datetime.date.today()
+        dates = {
+            "tests/test_bios.py": today - datetime.timedelta(days=200),
+            "bios.py": today - datetime.timedelta(days=5),
+        }
+        mocker.patch.object(ctd, "last_commit_date", side_effect=dates.get)
+        [finding] = ctd.check_stale_tests()
+        assert finding.path == "tests/test_bios.py"
+        assert "bios.py changed" in finding.detail
+
+    def test_stale_tests_module_in_scripts_dir_is_found(self, mocker):
+        _fake_repo(mocker, ctd, {"tests/test_tool.py": "", "scripts/tool.py": ""})
+        today = datetime.date.today()
+        dates = {
+            "tests/test_tool.py": today - datetime.timedelta(days=300),
+            "scripts/tool.py": today - datetime.timedelta(days=1),
+        }
+        mocker.patch.object(ctd, "last_commit_date", side_effect=dates.get)
+        [finding] = ctd.check_stale_tests()
+        assert "scripts/tool.py changed" in finding.detail
+
     def test_duplication_skipped_locally_without_node(self, mocker, monkeypatch):
         monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
         mocker.patch.object(ctd, "_npx", return_value=None)

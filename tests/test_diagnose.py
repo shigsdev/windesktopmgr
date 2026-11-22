@@ -2167,6 +2167,23 @@ class TestCrashClass:
         r = diagnose.start_diagnosis("my pc froze", slots={"app_name": "   "}, symptom_class="crashes")
         assert diagnose._sessions[r["session_id"]]["slots"] == {}
 
+    @pytest.mark.parametrize("typed", ["e", "E:", "e:\\", "E drive", "  e  "])
+    def test_typed_drive_is_normalised(self, engine, typed):
+        r = diagnose.start_diagnosis("my disk is slow", slots={"drive": typed}, symptom_class="storage")
+        assert diagnose._sessions[r["session_id"]]["slots"].get("drive") == "E:"
+
+    @pytest.mark.parametrize("junk", ["x" * 5000, "my big drive", "<script>", "E:\\Users"])
+    def test_typed_drive_that_is_not_a_letter_is_dropped(self, engine, junk):
+        """Backlog #101: the route caps the drive slot itself, so an arbitrary
+        string never lands in the session (the UI's box limit isn't trusted)."""
+        r = diagnose.start_diagnosis("my disk is slow", slots={"drive": junk}, symptom_class="storage")
+        assert "drive" not in diagnose._sessions[r["session_id"]]["slots"]
+
+    @pytest.mark.parametrize("bad", [5, ["E"], {"d": "E"}])
+    def test_non_text_drive_is_rejected(self, engine, bad):
+        with pytest.raises(ValueError, match="drive"):
+            diagnose.start_diagnosis("my disk is slow", slots={"drive": bad}, symptom_class="storage")
+
     def test_payload_carries_the_local_utc_offset(self):
         payload = json.loads(diagnose.build_payload(_session()))
         assert re.fullmatch(r"[+-]\d\d:\d\d", payload["local_utc_offset"])
@@ -2985,6 +3002,17 @@ class TestRoutes:
         assert resp.status_code == 200
         sid = resp.get_json()["session_id"]
         assert diagnose.get_status(sid)["slots"] == {"target_host": "example.com"}
+
+    def test_start_stores_normalised_drive(self, client):
+        resp = self._start(client, symptom="my disk is slow", slots={"drive": "e drive"}, symptom_class="storage")
+        assert resp.status_code == 200
+        assert diagnose.get_status(resp.get_json()["session_id"])["slots"] == {"drive": "E:"}
+
+    def test_start_non_text_drive_is_400(self, client):
+        resp = self._start(client, symptom="my disk is slow", slots={"drive": 5}, symptom_class="storage")
+        assert resp.status_code == 400
+        assert resp.get_json()["ok"] is False
+        assert "drive" in resp.get_json()["error"]
 
     def test_start_awaiting_slots_is_200_unchanged(self, client):
         resp = self._start(client, symptom="my printer keeps jamming")

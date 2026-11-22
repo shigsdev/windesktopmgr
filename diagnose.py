@@ -1505,8 +1505,9 @@ _history_lock = threading.Lock()
 
 
 def _given_slots(slots: Any) -> dict:
-    """The caller's ``slots`` with ``target_host`` normalised and ``app_name``
-    trimmed (text, at most MAX_APP_NAME_CHARS). Raises ValueError."""
+    """The caller's ``slots`` with ``target_host`` normalised, ``app_name``
+    trimmed (text, at most MAX_APP_NAME_CHARS) and ``drive`` reduced to
+    ``"E:"`` form. Raises ValueError."""
     if slots is None:
         return {}
     if not isinstance(slots, dict):
@@ -1526,6 +1527,18 @@ def _given_slots(slots: Any) -> dict:
             out["app_name"] = app.strip()
         else:
             del out["app_name"]  # blank: keep the app the sentence named, if any
+    if "drive" in out:
+        # The UI caps the box, but the route must not trust it (backlog #101):
+        # keep only a normalised letter, so an arbitrary string never lands in
+        # the session or its history. Text that isn't a drive letter is
+        # dropped, as the storage probes already ignored it.
+        if not isinstance(out["drive"], str):
+            raise ValueError("drive must be text")
+        drive = diagnose_storage_probes.norm_drive(out["drive"])
+        if drive:
+            out["drive"] = drive
+        else:
+            del out["drive"]
     return out
 
 
