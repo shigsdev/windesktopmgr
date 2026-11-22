@@ -72,6 +72,11 @@ a dirty tree. See the Docs-Only Fast Path below for the one exception.
 
 **Step 7 is NON-OPTIONAL.** The SOP Compliance Report must be the LAST thing
 printed for every code change. See the template at the bottom of this file.
+"Last" means after the change is finished -- merged, and (for code changes)
+`python dev.py deploy` passed -- not the end of whatever reply pauses first.
+If you stop before merging to ask for approval, end that reply with a short
+status (what's done, what CI shows, what's pending), not the report; print
+the report once, after the deploy.
 `/sop-report` (`python scripts/sop_report.py --title ... --commit <sha>`)
 pre-marks files changed, docs-only, merged, tests touched, architecture.html
 and the backlog row; fill the remaining `[ ]` lines from what you ran.
@@ -665,6 +670,9 @@ Commit(s): <hashes>
 
 **Rules:**
 - This checklist MUST be printed — it is not optional
+- Print it once, after merge + deploy (Step 6) — never while still waiting
+  for merge approval; a reply that pauses before the merge ends with a short
+  status instead
 - Never silently skip a step — always mark and explain
 - ❌ Not done without justification means the change is incomplete
 - For the full SOP details, see `feedback_github_sop.md` in project memory
