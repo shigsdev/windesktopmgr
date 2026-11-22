@@ -38,6 +38,13 @@ MANAGED_TASKS: list[tuple[str, str, str, str]] = [
     ("System Health Diagnostic", "SystemHealthDiagnostic", DEFAULT_LOG_DIR, "SystemHealthDiag_"),
 ]
 
+# Repo-root setup script that registers each managed task. The dashboard's
+# "Re-register task" button runs it elevated via /api/tasks/reregister; that
+# route only accepts task names listed here.
+TASK_SETUP_SCRIPTS: dict[str, str] = {
+    "SystemHealthDiagnostic": "Setup-DiagSchedule.ps1",
+}
+
 # Detection thresholds
 CRASHLOOP_WINDOW = timedelta(hours=24)
 CRASHLOOP_MIN_FAILURES = 3
@@ -390,6 +397,12 @@ def concerns_from_health(results: list[dict]) -> list[dict]:
         # "Had logs but task vanished from scheduler" -- the task WAS set
         # up, now it isn't. Worth a warning.
         if not registered and has_logs:
+            task_name = r.get("task_name", "")
+            if task_name in TASK_SETUP_SCRIPTS:
+                action, action_fn = "Re-register task", f"dbReregisterTask('{task_name}')"
+            else:
+                # No known setup script -> don't render a dead button.
+                action, action_fn = "Open Logs folder", "openLogsFolder()"
             concerns.append(
                 {
                     "level": "warning",
@@ -397,8 +410,8 @@ def concerns_from_health(results: list[dict]) -> list[dict]:
                     "icon": "⏱",
                     "title": f"{display}: scheduled task unregistered",
                     "detail": "The task has historical log files but is not currently registered with Task Scheduler.",
-                    "action": "Re-register task",
-                    "action_fn": "",
+                    "action": action,
+                    "action_fn": action_fn,
                 }
             )
             continue

@@ -277,7 +277,9 @@ async function resumeBrokers() {
   btn.textContent = "▶ Resume Auth Brokers";
 }
 
-async function fixFastStartup() { await toggleFastStartup(false); }
+// Returns toggleFastStartup's {ok, message} so the dashboard concern card can
+// show the outcome (the cr-fast-toggle-* elements are on the Credentials tab).
+async function fixFastStartup() { return toggleFastStartup(false); }
 
 // Used by task_watcher concerns (backlog #27) — pops the Windows Logs/
 // folder in Explorer so the user can inspect the raw log files.
@@ -437,13 +439,16 @@ async function toggleFastStartup(enable) {
           + " Restart Windows to apply (use Restart, not Shut Down).";
       }
       setTimeout(() => loadCredentials(), 1500);
-    } else {
-      if (msg) { msg.style.color = "var(--red)"; msg.textContent = d.message || "Failed — try running as Administrator."; }
-      if (btn) { btn.disabled = false; btn.textContent = enable ? "Enable Fast Startup" : "⚡ Disable Fast Startup"; }
+      return { ok: true, message: d.message || "Done." };
     }
+    const err = d.message || d.error || "Failed — try running as Administrator.";
+    if (msg) { msg.style.color = "var(--red)"; msg.textContent = err; }
+    if (btn) { btn.disabled = false; btn.textContent = enable ? "Enable Fast Startup" : "⚡ Disable Fast Startup"; }
+    return { ok: false, message: err };
   } catch(e) {
     if (msg) { msg.style.color = "var(--red)"; msg.textContent = "Error: " + e.message; }
     if (btn) { btn.disabled = false; }
+    return { ok: false, message: "Error: " + e.message };
   }
 }
 

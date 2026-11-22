@@ -68,6 +68,7 @@ from dashboard import (
     _dashboard_refresh_lock,  # noqa: F401 -- re-exported; single-flight lock used by tests
     _dashboard_state,  # noqa: F401 -- re-exported; route reads/writes, tests mutate
     _trigger_dashboard_refresh_async,  # noqa: F401 -- re-exported; route calls it, tests patch it
+    dashboard_cache_mark_stale,
 )
 from diagnose import diagnose_bp
 from disk import (
@@ -3938,31 +3939,69 @@ def fix_fast_startup_route():
     """Toggle Fast Startup on or off via registry."""
     data = request.get_json() or {}
     enable = data.get("enable", False)
-    return jsonify(fix_fast_startup(enable))
+    if not isinstance(enable, bool):
+        return jsonify({"ok": False, "error": "enable must be true or false"}), 400
+    result = fix_fast_startup(enable)
+    if result.get("ok"):
+        dashboard_cache_mark_stale()
+    return jsonify(result)
+
+
+def _run_elevated(exe: str, args: str, action: str) -> dict:
+    """Launch ``exe args`` elevated through a UAC prompt (ShellExecuteW "runas").
+
+    The tray runs non-elevated (setup-startup.ps1 registers it with
+    RunLevel Limited), so HKLM writes and Task Scheduler registration need
+    this. ShellExecuteW returns once the prompt is answered: > 32 means the
+    user approved and the process started; <= 32 is an error (5 = declined).
+    It does not report the process's own exit code, so callers re-check
+    state afterwards. Same pattern as ``lhm._schtasks_elevated``.
+    """
+    try:
+        import ctypes  # noqa: PLC0415 -- Windows-only
+
+        # SW_HIDE = 0: no console window for the elevated process.
+        rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, args, None, 0)
+    except Exception as e:  # noqa: BLE001 -- ctypes/ShellExecuteW unavailable -> graceful
+        return {"ok": False, "error": f"could not {action}: ShellExecuteW failed ({type(e).__name__}: {e})"}
+    if rc <= 32:
+        reason = "the UAC prompt was declined" if rc == 5 else f"ShellExecuteW error {rc}"
+        return {"ok": False, "error": f"could not {action}: {reason}"}
+    return {"ok": True}
+
+
+_HIBERBOOT_KEY = r"SYSTEM\CurrentControlSet\Control\Session Manager\Power"
 
 
 def fix_fast_startup(enable):
     """Toggle Fast Startup via the ``HiberbootEnabled`` registry value
     (``HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power``).
 
-    Pure-Python via ``winreg`` — no PowerShell subprocess. Requires admin
-    (the key is under HKLM); a non-elevated process gets PermissionError,
-    surfaced in the message.
+    Tries ``winreg`` first (works when the app runs elevated). The key is
+    under HKLM, so the normal non-elevated tray gets PermissionError; it
+    then makes the same write with ``reg.exe`` through a UAC prompt.
     """
     value = 1 if enable else 0
     label = "enabled" if enable else "disabled"
     try:
-        key = winreg.OpenKey(
-            winreg.HKEY_LOCAL_MACHINE,
-            r"SYSTEM\CurrentControlSet\Control\Session Manager\Power",
-            0,
-            winreg.KEY_SET_VALUE,
-        )
+        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _HIBERBOOT_KEY, 0, winreg.KEY_SET_VALUE)
         try:
             winreg.SetValueEx(key, "HiberbootEnabled", 0, winreg.REG_DWORD, value)
         finally:
             winreg.CloseKey(key)
         return {"ok": True, "enabled": enable, "message": f"Fast Startup {label}."}
+    except PermissionError:
+        # value is the int 0/1, so nothing user-supplied reaches the command line.
+        args = f'add "HKLM\\{_HIBERBOOT_KEY}" /v HiberbootEnabled /t REG_DWORD /d {value} /f'
+        r = _run_elevated("reg.exe", args, f"{'enable' if enable else 'disable'} Fast Startup")
+        if r["ok"]:
+            return {
+                "ok": True,
+                "enabled": enable,
+                "elevated": True,
+                "message": f"Fast Startup {label} (approved through the UAC prompt).",
+            }
+        return {"ok": False, "enabled": enable, "message": f"Needs administrator rights, and {r['error']}."}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "enabled": enable, "message": str(e)}
 
@@ -4240,6 +4279,35 @@ def tasks_open_logs_folder_route():
         return jsonify({"ok": True, "path": log_dir})
     except OSError as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/tasks/reregister", methods=["POST"])
+def tasks_reregister_route():
+    """Re-register a managed scheduled task by running its setup script
+    elevated (UAC prompt). Only tasks listed in
+    ``task_watcher.TASK_SETUP_SCRIPTS`` are accepted, so the request can
+    never choose which script runs."""
+    import task_watcher  # lazy, like tasks_health_route
+
+    data = request.get_json(silent=True)
+    task_name = data.get("task_name") if isinstance(data, dict) else None
+    if not task_name or not isinstance(task_name, str):
+        return jsonify({"ok": False, "error": "Missing required field: task_name"}), 400
+    script = task_watcher.TASK_SETUP_SCRIPTS.get(task_name)
+    if not script:
+        return jsonify({"ok": False, "error": f"Unknown task: {task_name}"}), 400
+    path = os.path.join(APP_DIR, script)
+    if not os.path.isfile(path):
+        return jsonify({"ok": False, "error": f"Setup script not found: {path}"}), 404
+    r = _run_elevated(
+        "powershell.exe",
+        f'-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{path}"',
+        f"re-register {task_name}",
+    )
+    if not r["ok"]:
+        return jsonify({"ok": False, "error": r["error"]})
+    dashboard_cache_mark_stale()
+    return jsonify({"ok": True, "message": f"{script} launched with admin rights. Re-checking the task shortly."})
 
 
 @app.route("/api/memory/snooze", methods=["POST"])

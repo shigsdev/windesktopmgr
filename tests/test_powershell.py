@@ -4115,17 +4115,84 @@ class TestFixFastStartup:
         subkey = wdm.winreg.OpenKey.call_args[0][1]
         assert subkey.endswith(r"Session Manager\Power")
 
-    def test_permission_error_returns_ok_false(self, mocker):
-        """A non-elevated process can't write HKLM — surface it, don't crash."""
+    def test_permission_error_falls_back_to_elevated_reg(self, mocker):
+        """Regression (2026-11-22): the non-elevated tray always hit
+        PermissionError, so the button could never work. Now it retries
+        through reg.exe with a UAC prompt."""
         self._mock_winreg(mocker, fail=PermissionError("Access is denied"))
+        elev = mocker.patch("windesktopmgr._run_elevated", return_value={"ok": True})
+        result = wdm.fix_fast_startup(False)
+        assert result["ok"] is True
+        assert result["elevated"] is True
+        exe, args, _action = elev.call_args[0]
+        assert exe == "reg.exe"
+        assert r'"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power"' in args
+        assert "/v HiberbootEnabled /t REG_DWORD /d 0 /f" in args
+
+    def test_elevated_enable_writes_one(self, mocker):
+        self._mock_winreg(mocker, fail=PermissionError("Access is denied"))
+        elev = mocker.patch("windesktopmgr._run_elevated", return_value={"ok": True})
+        wdm.fix_fast_startup(True)
+        assert "/d 1 /f" in elev.call_args[0][1]
+
+    def test_permission_error_and_uac_declined_returns_ok_false(self, mocker):
+        self._mock_winreg(mocker, fail=PermissionError("Access is denied"))
+        mocker.patch(
+            "windesktopmgr._run_elevated",
+            return_value={"ok": False, "error": "could not disable Fast Startup: the UAC prompt was declined"},
+        )
         result = wdm.fix_fast_startup(False)
         assert result["ok"] is False
-        assert "denied" in result["message"].lower()
+        assert "administrator" in result["message"].lower()
+        assert "declined" in result["message"]
 
     def test_registry_error_returns_ok_false(self, mocker):
+        """A non-permission registry error doesn't trigger a UAC prompt."""
         self._mock_winreg(mocker, fail=OSError("cannot open key"))
+        elev = mocker.patch("windesktopmgr._run_elevated")
         result = wdm.fix_fast_startup(False)
         assert result["ok"] is False
+        elev.assert_not_called()
+
+
+class TestRunElevated:
+    """_run_elevated() — ShellExecuteW("runas") UAC launcher."""
+
+    def test_success_when_rc_above_32(self, mocker):
+        import ctypes
+
+        shell = mocker.patch.object(ctypes.windll.shell32, "ShellExecuteW", return_value=42)
+        assert wdm._run_elevated("reg.exe", "add X", "do it") == {"ok": True}
+        args = shell.call_args[0]
+        assert args[1] == "runas"
+        assert args[2] == "reg.exe"
+        assert args[3] == "add X"
+        assert args[5] == 0  # SW_HIDE
+
+    def test_rc_5_reports_uac_declined(self, mocker):
+        import ctypes
+
+        mocker.patch.object(ctypes.windll.shell32, "ShellExecuteW", return_value=5)
+        r = wdm._run_elevated("reg.exe", "add X", "disable Fast Startup")
+        assert r["ok"] is False
+        assert "declined" in r["error"]
+        assert "disable Fast Startup" in r["error"]
+
+    def test_other_rc_reports_code(self, mocker):
+        import ctypes
+
+        mocker.patch.object(ctypes.windll.shell32, "ShellExecuteW", return_value=2)
+        r = wdm._run_elevated("reg.exe", "add X", "do it")
+        assert r["ok"] is False
+        assert "error 2" in r["error"]
+
+    def test_exception_returns_ok_false(self, mocker):
+        import ctypes
+
+        mocker.patch.object(ctypes.windll.shell32, "ShellExecuteW", side_effect=OSError("boom"))
+        r = wdm._run_elevated("reg.exe", "add X", "do it")
+        assert r["ok"] is False
+        assert "boom" in r["error"]
 
 
 # ══════════════════════════════════════════════════════════════════════════════

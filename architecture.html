@@ -283,7 +283,7 @@
       <span style="font-size:9px;color:var(--cyan);font-weight:700;letter-spacing:.08em">FETCH / POST</span>
       <svg width="12" height="20"><polygon points="1,6 6,0 11,6" fill="var(--purple)"/><line x1="6" y1="6" x2="6" y2="20" stroke="var(--purple)" stroke-width="2"/></svg>
     </div>
-    <span style="font-size:9px;color:var(--muted);margin-left:12px">HTTP JSON · 161 API endpoints · localhost:5000</span>
+    <span style="font-size:9px;color:var(--muted);margin-left:12px">HTTP JSON · 162 API endpoints · localhost:5000</span>
   </div>
 
   <!-- ── LAYER 2: FLASK BACKEND ───────────────────────────────── -->
@@ -331,6 +331,7 @@
         <div class="route-chip" id="rt-bios-audit"><span class="method">GET</span>/api/bios/audit/history</div>
         <div class="route-chip"><span class="method">GET</span>/api/bios/audit/snapshot</div>
         <div class="route-chip" id="rt-tasks-health"><span class="method">GET</span>/api/tasks/health</div>
+        <div class="route-chip" id="rt-tasks-reregister" title="Runs a managed task's setup script elevated (UAC prompt); whitelisted task names only"><span class="method">POST</span>/api/tasks/reregister</div>
         <div class="route-chip" id="rt-alerts-rules"><span class="method">GET</span>/api/alerts/rules</div>
         <div class="route-chip"><span class="method">PATCH</span>/api/alerts/rules/&lt;id&gt;</div>
         <div class="route-chip" id="rt-metrics-history"><span class="method">GET</span>/api/metrics/history</div>
@@ -1247,7 +1248,7 @@
       <div style="flex-shrink:0;width:150px;background:#b388ff0a;border:1px solid #b388ff33;border-radius:8px;padding:14px 12px;text-align:center">
         <div style="font-size:18px;margin-bottom:6px">🐍</div>
         <div style="color:var(--purple);font-weight:700;font-size:11px;margin-bottom:4px">FLASK ROUTE</div>
-        <div style="color:var(--muted);font-size:10px;line-height:1.4">Matches one of 161 API endpoints</div>
+        <div style="color:var(--muted);font-size:10px;line-height:1.4">Matches one of 162 API endpoints</div>
       </div>
       <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 6px;flex-shrink:0">
         <div style="font-size:10px;color:var(--purple);font-weight:700;white-space:nowrap">subprocess</div>
