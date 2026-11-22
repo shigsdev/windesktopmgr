@@ -715,12 +715,18 @@ class TestConcernActionsResolve:
         # Concerns with process_name use the new multi-button group instead
         # of a single action_fn -- those bypass the window-lookup path.
         fns = []
+        no_handler = []
         for c in concerns:
             if c.get("process_name"):
                 continue
             fn = (c.get("action_fn") or "").strip()
             if fn:
                 fns.append(fn)
+            else:
+                # The renderer still draws a button for these, with no click
+                # handler -- the dead "Re-register task" button (2026-11-22).
+                no_handler.append(c.get("title"))
+        assert not no_handler, f"Concerns render a button with no action_fn (dead button): {no_handler}"
         if not fns:
             pytest.skip("no concerns currently emitted -- nothing to check")
 
@@ -736,6 +742,52 @@ class TestConcernActionsResolve:
             f"This is the openLogsFolder/2026-04-19 bug class -- a concern with a dead "
             f"action_fn silently does nothing when the user clicks it."
         )
+
+
+class TestConcernActionShowsResult:
+    """Clicking an admin-only concern action must show its outcome on the
+    dashboard card. Before 2026-11-22, "Disable Fast Startup" wrote its error
+    into Credentials-tab elements, so from the dashboard a failed click
+    looked like a dead button.
+
+    The summary is intercepted to inject a task-watcher concern, and
+    /api/tasks/reregister is stubbed to "UAC declined" -- no real elevation
+    or system change happens."""
+
+    def test_reregister_click_shows_error_on_card(self, loaded_page):
+        page, _ = loaded_page
+        concern = {
+            "level": "warning",
+            "tab": "dashboard",
+            "icon": "⏱",
+            "title": "Smoke Task: scheduled task unregistered",
+            "detail": "injected by test_playwright_smoke",
+            "action": "Re-register task",
+            "action_fn": "dbReregisterTask('SystemHealthDiagnostic')",
+        }
+
+        def _inject(route):
+            resp = route.fetch()
+            data = resp.json()
+            data["concerns"] = [concern] + list(data.get("concerns") or [])
+            route.fulfill(response=resp, json=data)
+
+        calls = []
+
+        def _stub_reregister(route):
+            calls.append(route.request.post_data_json)
+            route.fulfill(json={"ok": False, "error": "could not re-register: the UAC prompt was declined"})
+
+        page.route("**/api/dashboard/summary", _inject)
+        page.route("**/api/tasks/reregister", _stub_reregister)
+        page.evaluate("loadDashboard()")
+        card = page.locator(".concern-card", has_text="Smoke Task: scheduled task unregistered")
+        card.wait_for(timeout=15_000)
+        card.get_by_role("button", name="Re-register task →").click()
+        result = card.locator(".db-concern-result")
+        result.wait_for(timeout=5_000)
+        assert "UAC prompt was declined" in result.inner_text()
+        assert calls == [{"task_name": "SystemHealthDiagnostic"}]
 
 
 # ── Poll-accumulator regression guard ──────────────────────────────

@@ -1217,6 +1217,16 @@ def _trigger_dashboard_refresh_async():
     threading.Thread(target=_refresh, name="DashboardRefresh", daemon=True).start()
 
 
+def dashboard_cache_mark_stale() -> None:
+    """Age the cached summary past its TTL without dropping it. Called after
+    a concern action succeeds (Fast Startup off, task re-registered) so the
+    next request serves the old payload instantly AND starts a background
+    recompute, instead of the fixed concern lingering for up to 30 s."""
+    with _dashboard_cache_lock:
+        if _dashboard_state["data"] is not None:
+            _dashboard_state["ts"] = datetime.now() - _DASHBOARD_CACHE_TTL - timedelta(seconds=1)
+
+
 def _dashboard_cache_clear() -> None:
     """Test hook: drop the cached summary so the next request recomputes."""
     with _dashboard_cache_lock:

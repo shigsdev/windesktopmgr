@@ -1060,3 +1060,22 @@ class TestDashboardCodeHealthIntegration:
     def test_warning_scan_raises_nothing(self, client, mocker, tmp_path, monkeypatch):
         self._baseline(mocker, tmp_path, monkeypatch, "warning")
         assert self._ch(client.get("/api/dashboard/summary")) == []
+
+
+class TestDashboardCacheMarkStale:
+    """dashboard_cache_mark_stale() -- ages the cache after a concern action
+    succeeds so the next request recomputes (2026-11-22 dead-buttons fix)."""
+
+    def test_ages_cached_payload_past_ttl_but_keeps_it(self):
+        dashboard._dashboard_state["data"] = {"concerns": []}
+        dashboard._dashboard_state["ts"] = datetime.now()
+        dashboard.dashboard_cache_mark_stale()
+        age = datetime.now() - dashboard._dashboard_state["ts"]
+        assert age > dashboard._DASHBOARD_CACHE_TTL
+        assert dashboard._dashboard_state["data"] == {"concerns": []}
+
+    def test_noop_when_cache_empty(self):
+        dashboard._dashboard_state["data"] = None
+        dashboard._dashboard_state["ts"] = None
+        dashboard.dashboard_cache_mark_stale()
+        assert dashboard._dashboard_state["ts"] is None

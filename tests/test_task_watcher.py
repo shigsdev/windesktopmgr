@@ -288,6 +288,45 @@ class TestConcernsFromHealth:
         assert concerns[0]["level"] == "warning"
         assert "unregistered" in concerns[0]["title"].lower()
 
+    def test_unregistered_known_task_offers_reregister(self):
+        """Regression (2026-11-22): action_fn was "" so the button was dead."""
+        r = self._healthy()
+        r["schtasks"]["registered"] = False
+        c = task_watcher.concerns_from_health([r])[0]
+        assert c["action"] == "Re-register task"
+        assert c["action_fn"] == "dbReregisterTask('SystemHealthDiagnostic')"
+
+    def test_unregistered_unknown_task_falls_back_to_logs(self):
+        """No setup script for the task -> a working button, never an empty action_fn."""
+        r = self._healthy()
+        r["task_name"] = "SomeOtherTask"
+        r["schtasks"]["registered"] = False
+        c = task_watcher.concerns_from_health([r])[0]
+        assert c["action_fn"] == "openLogsFolder()"
+
+    def test_every_concern_has_an_action_fn(self):
+        """The dashboard renders a button for every concern; an empty
+        action_fn means a button with no click handler."""
+        variants = []
+        for registered, crash, stale in [(False, False, False), (False, True, False), (True, False, True)]:
+            r = self._healthy()
+            r["schtasks"]["registered"] = registered
+            r["log_summary"]["crashloop_detected"] = crash
+            r["log_summary"]["failures_in_24h"] = 5 if crash else 0
+            r["log_summary"]["success_stale"] = stale
+            variants.append(r)
+        concerns = task_watcher.concerns_from_health(variants)
+        assert len(concerns) == 3
+        assert all(c["action_fn"] for c in concerns), concerns
+
+    def test_every_setup_script_exists(self):
+        """TASK_SETUP_SCRIPTS names repo-root scripts the reregister route runs."""
+        import os
+
+        root = os.path.dirname(os.path.abspath(task_watcher.__file__))
+        for script in task_watcher.TASK_SETUP_SCRIPTS.values():
+            assert os.path.isfile(os.path.join(root, script)), script
+
     def test_stale_success_is_warning(self):
         r = self._healthy()
         r["log_summary"]["success_stale"] = True

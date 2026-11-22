@@ -134,6 +134,54 @@ function dbScheduleStaleRefetch(d, attempt) {
   }, 8000);
 }
 
+// Show a concern action's {ok, message|error} result under the concern's
+// detail line. textContent only (no innerHTML), so server text can't inject
+// markup. On success the server has marked its summary cache stale; after a
+// few seconds (time for reg.exe / the setup script to finish) we fetch once
+// to start the recompute and re-render only when the FRESH payload lands, so
+// the message isn't wiped by a re-render of the old cached concerns.
+function dbShowConcernResult(btn, res) {
+  if (!res || typeof res !== "object") return;
+  const text = res.message || res.error;
+  if (!text) return;
+  const body = btn.closest(".concern-card")?.querySelector(".db-concern-body");
+  if (!body) return;
+  let el = body.querySelector(".db-concern-result");
+  if (!el) {
+    el = document.createElement("div");
+    el.className = "db-concern-result";
+    el.style.cssText = "font-size:12px;font-weight:600;margin-top:6px;line-height:1.4";
+    body.appendChild(el);
+  }
+  el.style.color = res.ok ? "var(--green)" : "var(--red)";
+  el.textContent = text;
+  if (res.ok) setTimeout(dbRefreshAfterAction, 5000);
+}
+
+async function dbRefreshAfterAction() {
+  try {
+    const d = await (await fetch("/api/dashboard/summary")).json();
+    if (d.cache === "stale") dbScheduleStaleRefetch(d, 1);  // renders when the recompute lands
+    else renderDashboard(d);
+  } catch (_e) { /* next scheduled dashboard load will catch up */ }
+}
+
+// "Re-register task" on a task-watcher concern: runs the task's setup
+// script elevated (UAC prompt) via /api/tasks/reregister.
+async function dbReregisterTask(taskName) {
+  try {
+    const r = await fetch("/api/tasks/reregister", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task_name: taskName })
+    });
+    const d = await r.json();
+    return { ok: !!d.ok, message: d.message || d.error || (d.ok ? "Done." : "Failed.") };
+  } catch (e) {
+    return { ok: false, message: "Error: " + e.message };
+  }
+}
+
 async function loadDashboard() {
   document.getElementById("db-loading").style.display = "block";
   document.getElementById("db-content").style.display  = "none";
@@ -305,7 +353,7 @@ function renderDashboard(d) {
         background:${levelBg(c.level)};border:1px solid ${levelBorder(c.level)};
         border-left:4px solid ${levelBorder(c.level)};border-radius:8px;transition:box-shadow .3s,background .3s">
         <span style="font-size:22px;flex-shrink:0">${esc(c.icon||"•")}</span>
-        <div style="flex:1;min-width:0">
+        <div class="db-concern-body" style="flex:1;min-width:0">
           <div style="font-weight:700;font-size:13px;color:${levelColor(c.level)}">${esc(c.title)}</div>
           <div style="font-size:12px;color:var(--muted);margin-top:3px;line-height:1.4">${esc(c.detail||"")}</div>
         </div>
@@ -331,18 +379,31 @@ function renderDashboard(d) {
     const idx    = parseInt(btn.dataset.fn);
     const fnStr  = (_dashConcerns[idx] || {}).action_fn || "";
     if (!fnStr) return;
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", async () => {
       // Parse "functionName(args)" — handles resumeBrokers(), switchTab('x'), fixFastStartup()
       const match = fnStr.match(/^([a-zA-Z_$][a-zA-Z0-9_$]*)\((.*)\)$/);
-      if (match) {
-        const name = match[1];
-        const arg  = match[2].replace(/['"]/g, "").trim();
-        const fn   = window[name];
-        if (typeof fn === "function") {
-          arg ? fn(arg) : fn();
-        } else {
-          console.warn("Dashboard: function not found:", name);
-        }
+      if (!match) return;
+      const name = match[1];
+      const arg  = match[2].replace(/['"]/g, "").trim();
+      const fn   = window[name];
+      if (typeof fn !== "function") {
+        console.warn("Dashboard: function not found:", name);
+        dbShowConcernResult(btn, {ok: false, message: `This action isn't available (${name} not found).`});
+        return;
+      }
+      // Actions that return {ok, message} (fixFastStartup, dbReregisterTask)
+      // report on the card itself. Their own status elements may live on a
+      // tab that isn't showing, which made a failed click look like a dead button.
+      const label = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Working…";
+      try {
+        dbShowConcernResult(btn, await (arg ? fn(arg) : fn()));
+      } catch (e) {
+        dbShowConcernResult(btn, {ok: false, message: "Error: " + e.message});
+      } finally {
+        btn.disabled = false;
+        btn.textContent = label;
       }
     });
   });

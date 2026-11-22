@@ -1976,7 +1976,9 @@ class TestFixFastStartupRoute:
 
     def test_disable_fast_startup_returns_ok(self, client, mocker):
         self._mock_winreg(mocker)
+        stale = mocker.patch("windesktopmgr.dashboard_cache_mark_stale")
         resp = client.post("/api/credentials/fix-fast-startup", json={"enable": False})
+        stale.assert_called_once()
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["ok"] is True
@@ -1990,17 +1992,102 @@ class TestFixFastStartupRoute:
         assert data["enabled"] is True
 
     def test_registry_failure_returns_ok_false(self, client, mocker):
-        """A non-elevated process can't write the HKLM key — ok:False, no crash."""
+        """Non-elevated + UAC declined — ok:False with a message, no crash."""
         self._mock_winreg(mocker, fail=PermissionError("Access is denied"))
+        mocker.patch("windesktopmgr._run_elevated", return_value={"ok": False, "error": "declined"})
+        stale = mocker.patch("windesktopmgr.dashboard_cache_mark_stale")
         resp = client.post("/api/credentials/fix-fast-startup", json={"enable": False})
         data = resp.get_json()
         assert data["ok"] is False
+        assert data["message"]
+        stale.assert_not_called()
+
+    def test_non_bool_enable_returns_400(self, client, mocker):
+        """The string "false" is truthy -- must not be read as enable=True."""
+        self._mock_winreg(mocker)
+        resp = client.post("/api/credentials/fix-fast-startup", json={"enable": "false"})
+        assert resp.status_code == 400
+        assert resp.get_json()["ok"] is False
 
     def test_no_body_returns_400(self, client, mocker):
         """Empty body with JSON content type is rejected by Flask."""
         _mock_ps(mocker, stdout="OK:disabled")
         resp = client.post("/api/credentials/fix-fast-startup", data="", content_type="application/json")
         assert resp.status_code == 400
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# POST /api/tasks/reregister
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestTasksReregisterRoute:
+    """POST /api/tasks/reregister — runs a managed task's setup script elevated."""
+
+    def _post(self, client, body):
+        return client.post("/api/tasks/reregister", json=body)
+
+    def test_known_task_launches_setup_script_elevated(self, client, mocker):
+        mocker.patch("windesktopmgr.os.path.isfile", return_value=True)
+        elev = mocker.patch("windesktopmgr._run_elevated", return_value={"ok": True})
+        stale = mocker.patch("windesktopmgr.dashboard_cache_mark_stale")
+        resp = self._post(client, {"task_name": "SystemHealthDiagnostic"})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is True
+        stale.assert_called_once()
+        assert "Setup-DiagSchedule.ps1" in data["message"]
+        exe, args, _action = elev.call_args[0]
+        assert exe == "powershell.exe"
+        assert "-ExecutionPolicy Bypass -File" in args
+        assert args.rstrip('"').endswith("Setup-DiagSchedule.ps1")
+
+    def test_uac_declined_returns_ok_false(self, client, mocker):
+        mocker.patch("windesktopmgr.os.path.isfile", return_value=True)
+        mocker.patch("windesktopmgr._run_elevated", return_value={"ok": False, "error": "UAC prompt was declined"})
+        resp = self._post(client, {"task_name": "SystemHealthDiagnostic"})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["ok"] is False
+        assert "declined" in data["error"]
+
+    def test_missing_task_name_returns_400(self, client, mocker):
+        elev = mocker.patch("windesktopmgr._run_elevated")
+        resp = self._post(client, {})
+        assert resp.status_code == 400
+        assert "task_name" in resp.get_json()["error"]
+        elev.assert_not_called()
+
+    def test_non_string_task_name_returns_400(self, client, mocker):
+        elev = mocker.patch("windesktopmgr._run_elevated")
+        resp = self._post(client, {"task_name": ["SystemHealthDiagnostic"]})
+        assert resp.status_code == 400
+        elev.assert_not_called()
+
+    def test_unknown_task_returns_400_and_runs_nothing(self, client, mocker):
+        """Input sanitisation: only whitelisted task names map to a script."""
+        elev = mocker.patch("windesktopmgr._run_elevated")
+        resp = self._post(client, {"task_name": '..\\evil" -Command "calc'})
+        assert resp.status_code == 400
+        assert resp.get_json()["ok"] is False
+        elev.assert_not_called()
+
+    def test_missing_setup_script_returns_404(self, client, mocker):
+        mocker.patch("windesktopmgr.os.path.isfile", return_value=False)
+        elev = mocker.patch("windesktopmgr._run_elevated")
+        resp = self._post(client, {"task_name": "SystemHealthDiagnostic"})
+        assert resp.status_code == 404
+        elev.assert_not_called()
+
+    def test_no_body_returns_400(self, client):
+        resp = client.post("/api/tasks/reregister", data="", content_type="application/json")
+        assert resp.status_code == 400
+
+    def test_non_object_body_returns_400(self, client, mocker):
+        elev = mocker.patch("windesktopmgr._run_elevated")
+        resp = self._post(client, ["SystemHealthDiagnostic"])
+        assert resp.status_code == 400
+        elev.assert_not_called()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
