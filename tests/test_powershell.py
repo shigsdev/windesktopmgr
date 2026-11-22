@@ -3425,6 +3425,7 @@ class TestCheckDellBiosUpdate:
             fake_resp.__enter__ = mocker.MagicMock(return_value=fake_resp)
             fake_resp.__exit__ = mocker.MagicMock(return_value=False)
             fake_resp.read.return_value = b"FAKE_CAB"
+            fake_resp.geturl.return_value = "https://downloads.dell.com/catalog/CatalogIndexPC.cab"
             mocker.patch("urllib.request.urlopen", return_value=fake_resp)
             xml_blob = catalog_xml if catalog_xml is not None else self.CATALOG_XML_EMPTY
             model_tree = ET.ElementTree(ET.fromstring(xml_blob))  # noqa: S314 — test fixture, inline literal
@@ -3627,6 +3628,39 @@ class TestCheckDellBiosUpdate:
 
         index = ET.fromstring(self.INDEX_XML_8960)  # noqa: S314 — test fixture
         assert bios._model_catalog_path(index) == "FOLDER15162537M/1/XPS_Desktop_0BC0.cab"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://downloads.dell.com/catalog/CatalogIndexPC.cab",
+            "file:///C:/Windows/win.ini",
+            "https://evil.example/x.cab",
+            "https://downloads.dell.com.evil.example/x.cab",
+            "https://user@downloads.dell.com/x.cab",
+            "ftp://downloads.dell.com/x.cab",
+        ],
+    )
+    def test_fetch_catalog_root_refuses_non_dell_urls(self, mocker, tmp_path, url):
+        """The S310 suppressions on the catalog download rely on the URL being
+        https://downloads.dell.com; the fetch enforces that itself and never
+        opens anything else (scheme, host, or userinfo tricks)."""
+        urlopen = mocker.patch("urllib.request.urlopen")
+        with pytest.raises(ValueError, match="non-Dell"):
+            bios._fetch_catalog_root(url, str(tmp_path), "X")
+        urlopen.assert_not_called()
+
+    @pytest.mark.parametrize("final", ["http://downloads.dell.com/x.cab", "https://cdn.evil.example/x.cab"])
+    def test_fetch_catalog_root_refuses_redirect_off_dell(self, mocker, tmp_path, final):
+        """urlopen follows redirects; a catalog that ends up on plain http or
+        another host is refused before any of it is read or written."""
+        resp = mocker.MagicMock()
+        resp.__enter__.return_value = resp
+        resp.geturl.return_value = final
+        mocker.patch("urllib.request.urlopen", return_value=resp)
+        with pytest.raises(ValueError, match="non-Dell"):
+            bios._fetch_catalog_root("https://downloads.dell.com/catalog/CatalogIndexPC.cab", str(tmp_path), "X")
+        resp.read.assert_not_called()
+        assert not (tmp_path / "X.cab").exists()
 
     def test_wu_fallback(self, mocker, tmp_path):
         """Methods 1 & 2 miss; Method 3 reuses get_windows_update_drivers()
@@ -4042,6 +4076,7 @@ class TestCheckDellBiosCommandContent:
         fake_resp.__enter__ = mocker.MagicMock(return_value=fake_resp)
         fake_resp.__exit__ = mocker.MagicMock(return_value=False)
         fake_resp.read.return_value = b"FAKE_CAB"
+        fake_resp.geturl.return_value = "https://downloads.dell.com/catalog/CatalogIndexPC.cab"
         urlopen_mock = mocker.patch("urllib.request.urlopen", return_value=fake_resp)
 
         # ET.parse → minimal in-memory tree with no SoftwareComponents.
