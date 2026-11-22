@@ -63,7 +63,18 @@ def run_pytest_with_coverage() -> dict:
     with tempfile.TemporaryDirectory(prefix="cov-audit-") as tmp:
         report = Path(tmp) / "coverage.json"
         proc = subprocess.run(
-            [sys.executable, "-m", "pytest", "tests/", "-n", "auto", f"--cov-report=json:{report}", "-q"],
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "tests/",
+                "-n",
+                "auto",
+                "--dist",
+                "worksteal",
+                f"--cov-report=json:{report}",
+                "-q",
+            ],
             capture_output=True,
             text=True,
             check=False,

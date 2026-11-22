@@ -1,11 +1,38 @@
 """Tests for Home Network Management feature."""
 
 import os
+import socket
 import subprocess
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock
 
-import pytest  # noqa: F401 -- used by backlog #10 classes via pytest.skip
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _no_real_lan_io(request, mocker):
+    """Default every test in this file to "the LAN is silent".
+
+    Without this, any test that reaches ``homenet_full_scan`` or
+    ``_resolve_names_batch`` without mocking every leaf did real I/O on the
+    developer's network: a 3 s zeroconf broadcast, reverse DNS on 192.168.x,
+    ``nbtstat -A`` (5 s timeout), a TCP probe of the Orbi router and the real
+    Wi-Fi helper (PowerShell, and ``netsh wlan connect`` when Wi-Fi was off
+    the Orbi network). That was ~100 s of the suite and made results depend
+    on the LAN.
+
+    Tests that need a leaf to behave a certain way patch it again: a later
+    ``mocker.patch`` of the same target wins. ``@pytest.mark.real_mdns``
+    leaves ``_mdns_resolve_batch`` itself in place for the tests that drive
+    it with a fake ``zeroconf`` module.
+    """
+    if not request.node.get_closest_marker("real_mdns"):
+        mocker.patch("homenet._mdns_resolve_batch", return_value={})
+    mocker.patch("homenet._wifi_ensure_orbi_connected", return_value=(False, True, ""))
+    mocker.patch("homenet._wifi_restore")
+    mocker.patch("homenet.socket.gethostbyaddr", side_effect=socket.herror("no real DNS in tests"))
+    mocker.patch("homenet.socket.create_connection", side_effect=OSError("no real TCP in tests"))
+    mocker.patch("homenet.subprocess.run", return_value=MagicMock(stdout="", stderr="", returncode=0))
 
 
 class TestHomeNetCredentialRoutes:
@@ -902,6 +929,7 @@ class TestVendorCategorySubstring:
         assert _categorise_by_vendor_substring("apple inc.") == "Phone"
 
 
+@pytest.mark.real_mdns
 class TestMdnsResolveBatch:
     """Mock the zeroconf module so we don't actually broadcast during tests."""
 

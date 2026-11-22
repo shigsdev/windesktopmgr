@@ -75,17 +75,19 @@ def cmd_test():
     """Run full test suite in parallel via pytest-xdist (backlog #30).
 
     `-n auto` distributes the ~1,800 unit tests across all CPU cores --
-    cuts the wall-time from ~3m37s to ~48s on a 10-core box. Each worker
+    cuts the wall-time from ~3.5 min to ~50s (24 workers, i9-14900K).
+    --dist worksteal benchmarked fastest (load/loadfile slower); --capture=sys
+    comes from pyproject addopts. Each worker
     is its own Python process so module-level globals (autouse
     reset_globals) and tmp_path-scoped fixture files don't interfere.
 
     `-v` is dropped because xdist's per-worker output interleaves on
-    -v anyway; the per-test names aren't useful when 10 workers run
+    -v anyway; the per-test names aren't useful when 24 workers run
     in parallel. The summary line at the end still shows pass/fail
     counts and total elapsed time.
     """
     print(f"\n{BOLD}Tests{RESET}")
-    return run("pytest", [sys.executable, "-m", "pytest", "tests/", "-n", "auto"])
+    return run("pytest", [sys.executable, "-m", "pytest", "tests/", "-n", "auto", "--dist", "worksteal"])
 
 
 def cmd_all():

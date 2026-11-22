@@ -1416,6 +1416,27 @@ class TestRouterConfigBackup:
         assert result["backup_dir"] == _isolate_backups_dir
 
 
+def _reload_homenet():
+    """``importlib.reload(homenet)`` that keeps conftest's inventory isolation.
+
+    A reload re-runs ``HOMENET_INVENTORY_FILE = os.path.join(APP_DIR, ...)``,
+    which points it back at the REAL inventory next to homenet.py and undoes
+    conftest's session-wide tmp redirect for every later test on the worker.
+    Under ``--dist worksteal`` that tripped the isolation guard test; from the
+    primary checkout, a later unmocked save would clobber the user's real
+    friendly names (the 2026-05-08 incident class). Re-apply the redirect
+    straight after the reload so it is never left pointing at production.
+    """
+    import importlib
+
+    import homenet
+
+    isolated = homenet.HOMENET_INVENTORY_FILE
+    importlib.reload(homenet)
+    homenet.HOMENET_INVENTORY_FILE = isolated
+    return homenet
+
+
 class TestBackupsDirResolution:
     """The new feature 2026-05-10: BACKUPS_DIR is no longer the repo
     dir's ``backups/`` subfolder; defaults to ``~/OneDrive/WinDesktopMgr/
@@ -1424,18 +1445,16 @@ class TestBackupsDirResolution:
 
     These tests reload homenet under different env states. Don't
     monkey-patch the module-level value here -- the point IS to
-    exercise the import-time resolution logic.
+    exercise the import-time resolution logic. Always reload through
+    ``_reload_homenet`` so the inventory-file isolation survives.
     """
 
     def test_default_path_uses_user_onedrive_folder(self, monkeypatch):
         """Default (no env var) should resolve to ~/OneDrive/WinDesktopMgr/backup."""
-        import importlib
         import os as _os
 
         monkeypatch.delenv("WINDESKTOPMGR_BACKUP_DIR", raising=False)
-        import homenet
-
-        importlib.reload(homenet)
+        homenet = _reload_homenet()
         try:
             expected = _os.path.join(_os.path.expanduser("~"), "OneDrive", "WinDesktopMgr", "backup")
             assert expected == homenet.BACKUPS_DIR, (
@@ -1445,35 +1464,27 @@ class TestBackupsDirResolution:
             # Restore via reimport so subsequent tests in this session
             # see the real (or env-overridden) value rather than whatever
             # this test left around.
-            importlib.reload(homenet)
+            _reload_homenet()
 
     def test_env_var_override_wins_over_default(self, monkeypatch, tmp_path):
         """WINDESKTOPMGR_BACKUP_DIR set -> that path wins."""
-        import importlib
-
         custom = str(tmp_path / "custom-backup-location")
         monkeypatch.setenv("WINDESKTOPMGR_BACKUP_DIR", custom)
-        import homenet
-
-        importlib.reload(homenet)
+        homenet = _reload_homenet()
         try:
             assert custom == homenet.BACKUPS_DIR
         finally:
             monkeypatch.delenv("WINDESKTOPMGR_BACKUP_DIR", raising=False)
-            importlib.reload(homenet)
+            _reload_homenet()
 
     def test_ensure_backup_dir_creates_intermediate_parents(self, monkeypatch, tmp_path):
         """The OneDrive default path may have multiple non-existent
         parent directories on first run (e.g. WinDesktopMgr/ then
         backup/). _ensure_backup_dir + the underlying os.makedirs MUST
         create the whole chain, not just the leaf."""
-        import importlib
-
         deep = str(tmp_path / "level1" / "level2" / "level3" / "backup")
         monkeypatch.setenv("WINDESKTOPMGR_BACKUP_DIR", deep)
-        import homenet
-
-        importlib.reload(homenet)
+        _reload_homenet()
         try:
             from homenet import _ensure_backup_dir
 
@@ -1482,7 +1493,15 @@ class TestBackupsDirResolution:
             assert path.endswith(os.path.join("backup", "orbi"))
         finally:
             monkeypatch.delenv("WINDESKTOPMGR_BACKUP_DIR", raising=False)
-            importlib.reload(homenet)
+            _reload_homenet()
+
+    def test_reload_keeps_inventory_file_isolated(self, _isolate_homenet_inventory_file):
+        """Regression: reloading homenet must not point HOMENET_INVENTORY_FILE
+        back at the real inventory next to homenet.py (worksteal flake,
+        2026-11-22)."""
+        homenet = _reload_homenet()
+        assert _isolate_homenet_inventory_file == homenet.HOMENET_INVENTORY_FILE
+        assert os.path.join(homenet.APP_DIR, "homenet_inventory.json") != homenet.HOMENET_INVENTORY_FILE
 
 
 class TestBackupHealthRoute:

@@ -12,10 +12,12 @@ repos:
       - id: pytest
         name: pytest
         # -n auto parallelises across CPU cores via pytest-xdist (backlog #30).
-        # Cuts pre-commit pytest from ~3m37s to ~48s on a 10-core box. Each
+        # Cuts pre-commit pytest from ~3.5 min to ~50s (24 workers, i9-14900K);
+        # --dist worksteal benchmarked fastest; --capture=sys comes from
+        # pyproject addopts. Each
         # worker is its own Python process; tmp_path + autouse reset_globals
         # keep state isolated per worker.
-        entry: python -m pytest tests/ -n auto -x -q --no-header
+        entry: python -m pytest tests/ -n auto --dist worksteal -x -q --no-header
         language: system
         pass_filenames: false
         files: '\.py$'
