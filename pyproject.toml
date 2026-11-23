@@ -48,6 +48,7 @@ markers = [
     "e2e: end-to-end smoke tests hitting Flask routes with multi-layer mocks",
     "playwright: frontend smoke tests (require live server; run with: pytest -m playwright)",
     "real_mdns: keep homenet._mdns_resolve_batch unstubbed (tests that drive it with a fake zeroconf)",
+    "real_nas_probe: keep credentials._tcp_probe unstubbed (tests that drive it with a mocked socket)",
 ]
 
 # ── ruff ──────────────────────────────────────────────────────────────────────

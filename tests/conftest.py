@@ -75,6 +75,16 @@ def _isolate_homenet_inventory_file(tmp_path_factory):
         homenet.HOMENET_INVENTORY_FILE = real
 
 
+@pytest.fixture(autouse=True)
+def _no_real_nas_probe(request, mocker):
+    """Mapped-drive reachability is a real name lookup + TCP connect to the NAS
+    (credentials._tcp_probe). Default every test to "NAS answers" so results
+    never depend on the LAN; ``@pytest.mark.real_nas_probe`` keeps the real
+    function for the tests that drive it with a mocked socket."""
+    if not request.node.get_closest_marker("real_nas_probe"):
+        mocker.patch("credentials._tcp_probe", return_value=True)
+
+
 # Same structural guard for the Diagnose audit trail, which holds the exact
 # payloads sent off-machine. A diagnosis worker thread writes history after
 # its session turns terminal, so a test that forgets to redirect the file (or

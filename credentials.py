@@ -22,8 +22,73 @@ to avoid a circular import for two trivial helpers.
 """
 
 import json
+import re
+import socket
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
+
+# Mapped-drive reachability is probed here in Python, not in the SMB
+# PowerShell script. That script gave each drive 1.5 s for name lookup AND
+# the TCP connect together, but a bare NAS name (\\shigs78nas) misses DNS and
+# falls back to LLMNR/NetBIOS, which took ~2.7 s on this LAN, so reachable
+# NASes were reported down (2026-11-22). Each unique host is now probed once,
+# in parallel, with a budget that covers a slow lookup.
+_NAS_PROBE_BUDGET_S = 8.0
+_NAS_CONNECT_TIMEOUT_S = 2.0
+_UNC_HOST_RE = re.compile(r"^(?:\\\\|//)([^\\/]+)")
+
+
+def _unc_host(root: object) -> str:
+    """``\\\\nas\\share`` or ``//nas/export`` -> ``nas``; anything else -> ""."""
+    m = _UNC_HOST_RE.match(root) if isinstance(root, str) else None
+    return m.group(1) if m else ""
+
+
+def _tcp_probe(host: str, port: int) -> bool:
+    """True if any address ``host`` resolves to accepts a TCP connect on ``port``."""
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (OSError, UnicodeError):
+        return False
+    for *_, addr in infos:
+        try:
+            with socket.create_connection(addr[:2], timeout=_NAS_CONNECT_TIMEOUT_S):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _probe_hosts_reachable(targets: set) -> dict:
+    """``{(host, port): bool}`` for every target, all probed in parallel.
+
+    A probe still running when the budget ends counts as unreachable. The pool
+    is not joined, so a hung name lookup can't hold up the caller.
+    """
+    if not targets:
+        return {}
+    pool = ThreadPoolExecutor(max_workers=min(len(targets), 8), thread_name_prefix="nas-probe")
+    futs = {pool.submit(_tcp_probe, host, port): (host, port) for host, port in targets}
+    done, _ = wait(futs, timeout=_NAS_PROBE_BUDGET_S)
+    pool.shutdown(wait=False, cancel_futures=True)
+    return {t: f in done and f.exception() is None and bool(f.result()) for f, t in futs.items()}
+
+
+def _apply_drive_reachability(drives: list) -> None:
+    """Set ``Reachable`` on each mapped drive that names a host (in place)."""
+    targets = {}
+    for i, d in enumerate(drives):
+        host = _unc_host(d.get("DisplayRoot"))
+        if not host:
+            continue
+        port = d.get("Port")
+        if not isinstance(port, int) or isinstance(port, bool):
+            port = 2049 if "NFS" in str(d.get("Protocol", "")) else 445
+        targets[i] = (host, port)
+    verdicts = _probe_hosts_reachable(set(targets.values()))
+    for i, target in targets.items():
+        drives[i]["Reachable"] = verdicts.get(target, False)
 
 
 def _parse_ts(ts_str: str) -> datetime:
@@ -100,28 +165,18 @@ try {
                     $proto   = if ($uncPath -match '^//') { "NFS" } else { "SMB/CIFS" }
                     $portNum = if ($proto -eq "NFS") { 2049 } else { 445 }
                     $dialect = ""
-                    $reachable = $false
-                    try {
-                        if ($uncPath -match '^\\\\([^\\]+)') {
-                            $nasHost = $Matches[1]
-                            $tcp  = New-Object Net.Sockets.TcpClient
-                            $conn = $tcp.BeginConnect($nasHost, $portNum, $null, $null)
-                            $reachable = $conn.AsyncWaitHandle.WaitOne(1500, $false)
-                            $tcp.Close()
-                            if ($reachable -and $proto -eq "SMB/CIFS") {
-                                try {
-                                    $sc = Get-SmbConnection -ServerName $nasHost -ErrorAction SilentlyContinue |
-                                          Select-Object -First 1
-                                    if ($sc) { $dialect = $sc.Dialect }
-                                } catch {}
-                            }
-                        }
-                    } catch { $reachable = $false }
+                    # Reachability is probed in Python (credentials._apply_drive_reachability).
+                    if ($proto -eq "SMB/CIFS" -and $uncPath -match '^\\\\([^\\]+)') {
+                        try {
+                            $sc = Get-SmbConnection -ServerName $Matches[1] -ErrorAction SilentlyContinue |
+                                  Select-Object -First 1
+                            if ($sc) { $dialect = $sc.Dialect }
+                        } catch {}
+                    }
                     $mappedDrives += [PSCustomObject]@{
                         Name        = $letter
                         Root        = "$letter`:\"
                         DisplayRoot = $uncPath
-                        Reachable   = [bool]$reachable
                         Protocol    = $proto
                         Port        = $portNum
                         Dialect     = $dialect
@@ -141,17 +196,6 @@ try {
         if ($disp -match '^\\\\' -or $disp -match '^//') {
             $alreadyAdded = $mappedDrives | Where-Object { $_.Name -eq $pd.Name }
             if (-not $alreadyAdded) {
-                # TCP port 445 check - works from non-interactive sessions
-            $reachable = $false
-            try {
-                if ($pd.DisplayRoot -match '^\\\\([^\\]+)') {
-                    $h = $Matches[1]
-                    $t = New-Object Net.Sockets.TcpClient
-                    $c = $t.BeginConnect($h, 445, $null, $null)
-                    $reachable = $c.AsyncWaitHandle.WaitOne(1000, $false)
-                    $t.Close()
-                }
-            } catch {}
                 $proto     = if ($disp -match '^//') { "NFS" } else { "SMB/CIFS" }
                 $portNum   = if ($proto -eq "NFS") { 2049 } else { 445 }
                 $dialect   = ""
@@ -159,7 +203,6 @@ try {
                     Name        = $pd.Name
                     Root        = $pd.Root
                     DisplayRoot = $disp
-                    Reachable   = [bool]$reachable
                     Protocol    = $proto
                     Port        = $portNum
                     Dialect     = $dialect
@@ -431,6 +474,10 @@ try {
 
     # Drives - SMB/CIFS/NFS
     drives = smb.get("MappedDrives", []) if isinstance(smb, dict) else []
+    if isinstance(drives, dict):  # PS emits {} instead of [{}] for one drive
+        drives = [drives]
+    drives = [d for d in drives if isinstance(d, dict)] if isinstance(drives, list) else []
+    _apply_drive_reachability(drives)
     drives_down = [d for d in drives if not d.get("Reachable", True)]
     drives_up = [d for d in drives if d.get("Reachable", True)]
     smb_drives = [d for d in drives if "SMB" in d.get("Protocol", "")]
