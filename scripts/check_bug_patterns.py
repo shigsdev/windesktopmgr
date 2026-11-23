@@ -53,6 +53,13 @@ _SELF = frozenset({"scripts/check_bug_patterns.py", "tests/test_recurring_audits
 
 _URL_CRED_RE = re.compile(r"https?://[^@\s/]+(?::[^@\s/]+)?@[^\s]")
 _URL_CRED_MASK_RE = re.compile(r"(://[^:/\s@]+)(:[^@/\s]+)?@")
+# One line can be marked as a deliberate fake (e.g. a userinfo URL a guard
+# must refuse): `# fake-credential: <reason>`. The reason is required so the
+# marker is reviewable in the diff, like a justified ruff S suppression. It
+# never silences a URL carrying a password: a pasted token stays flagged even
+# if someone marks it "fake" (fake passwords go in the file allowlist).
+_URL_CRED_FAKE_RE = re.compile(r"#\s*fake-credential:\s*\S")
+_URL_CRED_WITH_PASSWORD_RE = re.compile(r"https?://[^:/\s@]+:[^@/\s]+@")
 
 # Files that document or test the leak shape with fake credentials.
 _URL_CRED_ALLOWLIST = _SELF | {
@@ -64,6 +71,10 @@ _URL_CRED_ALLOWLIST = _SELF | {
 }
 
 
+def _mask_userinfo(m: re.Match) -> str:
+    return f"{m.group(1)}{':****' if m.group(2) else ''}@"
+
+
 def check_embedded_url_credentials() -> list[Finding]:
     findings = []
     for rel in tracked_files():
@@ -73,16 +84,21 @@ def check_embedded_url_credentials() -> list[Finding]:
         if text is None:
             continue
         for num, line in enumerate(text.splitlines(), start=1):
-            if _URL_CRED_RE.search(line):
-                masked = _URL_CRED_MASK_RE.sub(r"\1:****@", line.strip())
-                findings.append(
-                    Finding(
-                        check_id="embedded-url-credentials",
-                        path=rel,
-                        line=num,
-                        detail=f"{masked[:160]} — rotate that credential now; use the credential manager or an env var.",
-                    )
+            if not _URL_CRED_RE.search(line):
+                continue
+            if _URL_CRED_FAKE_RE.search(line) and not _URL_CRED_WITH_PASSWORD_RE.search(line):
+                continue
+            # Mask only a password: a bare username stays "user@", so the
+            # report never implies a hidden token that isn't there.
+            masked = _URL_CRED_MASK_RE.sub(_mask_userinfo, line.strip())
+            findings.append(
+                Finding(
+                    check_id="embedded-url-credentials",
+                    path=rel,
+                    line=num,
+                    detail=f"{masked[:160]} — rotate that credential now; use the credential manager or an env var.",
                 )
+            )
     return findings
 
 
