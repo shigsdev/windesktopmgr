@@ -3152,6 +3152,37 @@ class TestCredentialsNetworkPSCommands:
         assert ps_smb, "Could not find SMB script among captured PS commands"
         assert "$portNum   = if" in ps_smb or "$portNum = if" in ps_smb
 
+    def test_smb_script_leaves_reachability_to_python(self, mocker):
+        """Regression (2026-11-22): the PS TCP probe gave name lookup + connect
+        1.5 s, so a NAS whose bare name resolves via NetBIOS (~2.7 s) was
+        reported down. The probe lives in credentials._tcp_probe now."""
+        ps_smb = self._find_smb_script(self._capture_ps_commands(mocker))
+        assert ps_smb
+        assert "BeginConnect" not in ps_smb
+        assert "Reachable" not in ps_smb
+
+    def test_slow_name_lookup_nas_is_reported_reachable(self, mocker):
+        """End to end: drives from the SMB script get Reachable from the Python
+        probe, one probe per unique (host, port)."""
+        drives = [
+            {"Name": "N", "DisplayRoot": r"\\shigs78nas2\plex4", "Protocol": "SMB/CIFS", "Port": 445},
+            {"Name": "Q", "DisplayRoot": r"\\shigs78nas\plex2", "Protocol": "SMB/CIFS", "Port": 445},
+            {"Name": "R", "DisplayRoot": r"\\shigs78nas\plex", "Protocol": "SMB/CIFS", "Port": 445},
+        ]
+        self._patch_ps(mocker, per_script={"PSDrive": json.dumps({"MappedDrives": drives})})
+        probe = mocker.patch("credentials._tcp_probe", return_value=True)
+        result = wdm.get_credentials_network_health()
+        assert result["drives_down"] == []
+        assert [d["Reachable"] for d in result["drives"]] == [True, True, True]
+        assert sorted(c.args for c in probe.call_args_list) == [("shigs78nas", 445), ("shigs78nas2", 445)]
+
+    def test_single_mapped_drive_object_is_normalised(self, mocker):
+        one = {"Name": "Z", "DisplayRoot": r"\\nas\z", "Protocol": "SMB/CIFS", "Port": 445}
+        self._patch_ps(mocker, per_script={"PSDrive": json.dumps({"MappedDrives": one})})
+        mocker.patch("credentials._tcp_probe", return_value=False)
+        result = wdm.get_credentials_network_health()
+        assert [d["Name"] for d in result["drives_down"]] == ["Z"]
+
     def test_smb_fallback_has_no_dialect2_typo(self, mocker):
         """PSDrive fallback block must not reference $dialect2 (was a typo)."""
         commands = self._capture_ps_commands(mocker)
@@ -3232,6 +3263,108 @@ class TestCredentialsNetworkPSCommands:
         result = wdm.get_credentials_network_health()
         assert result["creds"] == []
         assert result["drives"] == []
+
+
+@pytest.mark.real_nas_probe
+class TestDriveReachabilityProbe:
+    """credentials' in-process NAS probe (replaced the 1.5 s PS TcpClient probe)."""
+
+    @pytest.mark.parametrize(
+        "root,host",
+        [
+            (r"\\shigs78nas\plex", "shigs78nas"),
+            ("//nfs-box/export/media", "nfs-box"),
+            (r"\\192.168.1.98\share", "192.168.1.98"),
+            ("C:\\", ""),
+            ("", ""),
+            (None, ""),
+        ],
+    )
+    def test_unc_host(self, root, host):
+        import credentials
+
+        assert credentials._unc_host(root) == host
+
+    def test_tcp_probe_true_when_an_address_connects(self, mocker):
+        import credentials
+
+        mocker.patch(
+            "credentials.socket.getaddrinfo",
+            return_value=[(0, 0, 0, "", ("fe80::1", 445, 0, 7)), (0, 0, 0, "", ("192.168.1.98", 445))],
+        )
+        conn = mocker.patch("credentials.socket.create_connection")
+        conn.side_effect = [OSError("v6 link-local"), mocker.MagicMock()]
+        assert credentials._tcp_probe("shigs78nas", 445) is True
+        assert conn.call_args.args[0] == ("192.168.1.98", 445)
+        assert conn.call_args.kwargs["timeout"] == credentials._NAS_CONNECT_TIMEOUT_S
+
+    def test_tcp_probe_false_when_name_does_not_resolve(self, mocker):
+        import socket as _socket
+
+        import credentials
+
+        mocker.patch("credentials.socket.getaddrinfo", side_effect=_socket.gaierror("no such host"))
+        conn = mocker.patch("credentials.socket.create_connection")
+        assert credentials._tcp_probe("nonexistent", 445) is False
+        conn.assert_not_called()
+
+    def test_tcp_probe_false_when_every_connect_fails(self, mocker):
+        import credentials
+
+        mocker.patch("credentials.socket.getaddrinfo", return_value=[(0, 0, 0, "", ("192.168.1.98", 445))])
+        mocker.patch("credentials.socket.create_connection", side_effect=TimeoutError("timed out"))
+        assert credentials._tcp_probe("shigs78nas", 445) is False
+
+    def test_probe_counts_overrunning_probe_as_unreachable(self, mocker):
+        """A probe still running at the budget is "down", and the caller is not
+        held up waiting for it."""
+        import threading
+        import time as _time
+
+        import credentials
+
+        release = threading.Event()
+
+        def _probe(host, port):
+            if host == "slow":
+                release.wait(5)
+            return True
+
+        mocker.patch("credentials._tcp_probe", side_effect=_probe)
+        mocker.patch("credentials._NAS_PROBE_BUDGET_S", 0.2)
+        t0 = _time.monotonic()
+        try:
+            out = credentials._probe_hosts_reachable({("fast", 445), ("slow", 445)})
+        finally:
+            release.set()
+        assert _time.monotonic() - t0 < 2
+        assert out == {("fast", 445): True, ("slow", 445): False}
+
+    def test_probe_exception_is_unreachable_not_raised(self, mocker):
+        import credentials
+
+        mocker.patch("credentials._tcp_probe", side_effect=RuntimeError("boom"))
+        assert credentials._probe_hosts_reachable({("nas", 445)}) == {("nas", 445): False}
+
+    def test_probe_no_targets_starts_nothing(self, mocker):
+        import credentials
+
+        probe = mocker.patch("credentials._tcp_probe")
+        assert credentials._probe_hosts_reachable(set()) == {}
+        probe.assert_not_called()
+
+    def test_apply_port_defaults_and_hostless_drives(self, mocker):
+        import credentials
+
+        probe = mocker.patch("credentials._tcp_probe", return_value=True)
+        drives = [
+            {"Name": "N", "DisplayRoot": "//nfs-box/media", "Protocol": "NFS"},  # no Port -> 2049
+            {"Name": "S", "DisplayRoot": r"\\nas\s", "Port": "445"},  # junk Port -> 445
+            {"Name": "L", "DisplayRoot": "C:\\", "Reachable": False},  # no host: left alone
+        ]
+        credentials._apply_drive_reachability(drives)
+        assert sorted(c.args for c in probe.call_args_list) == [("nas", 445), ("nfs-box", 2049)]
+        assert [d.get("Reachable") for d in drives] == [True, True, False]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
